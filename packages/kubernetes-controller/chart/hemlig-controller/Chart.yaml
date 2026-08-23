@@ -1,0 +1,22 @@
+apiVersion: v2
+name: hemlig-controller
+description: Kubernetes import and export controller for Hemlig secrets
+type: application
+version: 0.1.0
+# The release workflow replaces this with the immutable Git tag for a published
+# chart. `main` keeps development installs on the mutable controller image.
+appVersion: main
+kubeVersion: ">=1.28.0-0"
+home: https://github.com/zyno-io/hemlig
+sources:
+  - https://github.com/zyno-io/hemlig
+maintainers:
+  - name: Zyno IO
+    url: https://github.com/zyno-io
+keywords:
+  - secrets
+  - kubernetes
+  - hemlig
+  - controller
+annotations:
+  artifacthub.io/license: Apache-2.0

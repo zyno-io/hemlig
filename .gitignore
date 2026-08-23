@@ -9,3 +9,4 @@ coverage/
 .playwright-mcp/
 docs/.mdxserve/
 hemlig-kubernetes-controller-plan.png
+*.tgz

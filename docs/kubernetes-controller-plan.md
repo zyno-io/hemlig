@@ -29,26 +29,26 @@ during one migration release but is not extended further.
 
 ## Fixed decisions
 
-| Decision | Chosen design | Why |
-| --- | --- | --- |
-| Node version | Node 24 everywhere: engine constraints, controller image, Lambda runtime, and esbuild target | A single supported runtime avoids development, container, and Lambda drift. |
-| API topology | A cluster-scoped HemligProvider plus namespaced HemligConsumer, HemligSecretImport, and HemligSecretExport | Separates public endpoint configuration from namespace workloads and supports more than one Hemlig installation per cluster. |
-| Administrator access | The controller receives no administrator OIDC token, client secret, or token-file path | A namespace controller must not hold a credential able to manage every Hemlig secret. |
-| Bootstrap | An administrator creates a one-time opaque bootstrap capability for an AgentGrant; the controller redeems it once with a locally generated CSR | The capability can activate one pre-scoped identity only. It cannot browse, read, write, or manage arbitrary secrets. |
-| Namespace authorization | Each AgentGrant binds consumer identity, environment, read prefixes, write prefixes, and capabilities; Hemlig enforces it before payload read/write | Kubernetes namespaces and RBAC alone cannot constrain a remote credential. |
-| Identity | One mTLS consumer identity per HemligConsumer, normally per namespace and environment | An ACL grant is least-privilege and does not let one namespace read another namespace's grants. |
-| Enrollment | The controller generates a 3072-bit RSA key and CSR, Hemlig signs it, registers it for MQTT, and the controller writes a kubernetes.io/tls Secret | The private key is generated and retained in the cluster; it is never sent to Hemlig or placed in CR status. |
-| Import source of truth | Hemlig consumer API plus the current-access snapshot | ACL revocation is a security event, so the controller can remove previously materialized targets. |
-| Export source of truth | The referenced Kubernetes Secret | Kubernetes data is authoritative for an export; remote drift is reconciled back to it. |
-| Target writes | Full replacement only on an exact import-owner marker | No merge behavior, clobbering, or ownership takeover of a user-owned Secret. |
-| Delete behavior | A remote revocation always deletes the exact managed target; CR deletion retains it by default and supports explicit Delete | Revocation must remove plaintext promptly. Removing a CR is an administrative hand-off, not proof that data should be destroyed. |
-| Change detection | Kubernetes watches immediately enqueue exports; AWS IoT Core MQTT notifications immediately enqueue imports | Both directions converge in seconds while periodic snapshots remain the correctness backstop. |
-| Deployment | The reusable Hemlig CDK construct owns AWS resources, IAM, stream mappings, alarms, and IoT policy; the chart owns Kubernetes resources | Installers provision one reviewed topology instead of reimplementing AWS security policy per cluster. |
-| Packaging | OCI image, Helm chart, raw generated CRDs, and Kind plus MiniStack tests | A cluster operator should be installable without depending on the AWS/CDK consumer repository. |
+| Decision                | Chosen design                                                                                                                                       | Why                                                                                                                              |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Node version            | Node 24 everywhere: engine constraints, controller image, Lambda runtime, and esbuild target                                                        | A single supported runtime avoids development, container, and Lambda drift.                                                      |
+| API topology            | A cluster-scoped HemligProvider plus namespaced HemligConsumer, HemligSecretImport, and HemligSecretExport                                          | Separates public endpoint configuration from namespace workloads and supports more than one Hemlig installation per cluster.     |
+| Administrator access    | The controller receives no administrator OIDC token, client secret, or token-file path                                                              | A namespace controller must not hold a credential able to manage every Hemlig secret.                                            |
+| Bootstrap               | An administrator creates a one-time opaque bootstrap capability for an AgentGrant; the controller redeems it once with a locally generated CSR      | The capability can activate one pre-scoped identity only. It cannot browse, read, write, or manage arbitrary secrets.            |
+| Namespace authorization | Each AgentGrant binds consumer identity, environment, read prefixes, write prefixes, and capabilities; Hemlig enforces it before payload read/write | Kubernetes namespaces and RBAC alone cannot constrain a remote credential.                                                       |
+| Identity                | One mTLS consumer identity per HemligConsumer, normally per namespace and environment                                                               | An ACL grant is least-privilege and does not let one namespace read another namespace's grants.                                  |
+| Enrollment              | The controller generates a 3072-bit RSA key and CSR, Hemlig signs it, registers it for MQTT, and the controller writes a kubernetes.io/tls Secret   | The private key is generated and retained in the cluster; it is never sent to Hemlig or placed in CR status.                     |
+| Import source of truth  | Hemlig consumer API plus the current-access snapshot                                                                                                | ACL revocation is a security event, so the controller can remove previously materialized targets.                                |
+| Export source of truth  | The referenced Kubernetes Secret                                                                                                                    | Kubernetes data is authoritative for an export; remote drift is reconciled back to it.                                           |
+| Target writes           | Full replacement only on an exact import-owner marker                                                                                               | No merge behavior, clobbering, or ownership takeover of a user-owned Secret.                                                     |
+| Delete behavior         | A remote revocation always deletes the exact managed target; CR deletion retains it by default and supports explicit Delete                         | Revocation must remove plaintext promptly. Removing a CR is an administrative hand-off, not proof that data should be destroyed. |
+| Change detection        | Kubernetes watches immediately enqueue exports; AWS IoT Core MQTT notifications immediately enqueue imports                                         | Both directions converge in seconds while periodic snapshots remain the correctness backstop.                                    |
+| Deployment              | The reusable Hemlig CDK construct owns AWS resources, IAM, stream mappings, alarms, and IoT policy; the chart owns Kubernetes resources             | Installers provision one reviewed topology instead of reimplementing AWS security policy per cluster.                            |
+| Packaging               | OCI image, Helm chart, raw generated CRDs, and Kind plus MiniStack tests                                                                            | A cluster operator should be installable without depending on the AWS/CDK consumer repository.                                   |
 
 ## Architecture and trust boundaries
 
-~~~mermaid
+```mermaid
 flowchart LR
   admin[Hemlig administrator] -->|OIDC| control[Administrator API]
   admin -->|issues one-time capability| bootstrapSecret[Namespaced bootstrap Secret]
@@ -64,7 +64,7 @@ flowchart LR
   api --> outbox[Notification outbox]
   outbox --> publisher[Notification Lambda]
   publisher --> mqtt
-~~~
+```
 
 The platform team creates a HemligProvider. It contains public, non-secret
 endpoint configuration and the namespace selector allowed to use it. Namespace
@@ -115,7 +115,7 @@ reported through conditions.
 
 ### HemligProvider (cluster scoped)
 
-~~~yaml
+```yaml
 apiVersion: hemlig.io/v1beta1
 kind: HemligProvider
 metadata:
@@ -126,7 +126,7 @@ spec:
   allowedNamespaces:
     matchLabels:
       hemlig.io/provider-production: "true"
-~~~
+```
 
 This resource contains no credentials, AWS identity, or bootstrap capability.
 Its Ready condition means only that the resource is syntactically valid and has
@@ -135,7 +135,7 @@ that attempts it.
 
 ### HemligConsumer (namespaced)
 
-~~~yaml
+```yaml
 apiVersion: hemlig.io/v1beta1
 kind: HemligConsumer
 metadata:
@@ -149,7 +149,7 @@ spec:
   identity:
     secretName: hemlig-payments-client
     rotateBefore: 720h
-~~~
+```
 
 The desired resource never declares its own consumer ID, environment, paths, or
 capabilities. The bootstrap capability is the authority for those values; the
@@ -186,7 +186,7 @@ agent configuration through mTLS before use.
 
 ### HemligSecretImport (namespaced)
 
-~~~yaml
+```yaml
 apiVersion: hemlig.io/v1beta1
 kind: HemligSecretImport
 metadata:
@@ -199,7 +199,7 @@ spec:
     name: payments-api
     type: Opaque
   deletionPolicy: Retain
-~~~
+```
 
 consumerRef, secretId, and target.name are immutable. The target defaults to
 the CR name and must be in the CR namespace. On a successful read the
@@ -223,7 +223,7 @@ delete operation.
 
 ### HemligSecretExport (namespaced)
 
-~~~yaml
+```yaml
 apiVersion: hemlig.io/v1beta1
 kind: HemligSecretExport
 metadata:
@@ -241,7 +241,7 @@ spec:
       owner: payments
       system: billing
   adoptionPolicy: CreateOnly
-~~~
+```
 
 The source must exist in the same namespace. The controller serializes exactly
 its persisted data map as Hemlig base64 entries; it does not consume stringData,
@@ -281,7 +281,7 @@ RemoteConflict for the next work-queue attempt.
 AgentGrant is a Hemlig administrator API resource, not a Kubernetes CR. This
 keeps remote policy approval with the people and tools that administer Hemlig.
 
-~~~json
+```json
 {
   "consumerId": "prod-payments",
   "environment": "prod",
@@ -290,7 +290,7 @@ keeps remote policy approval with the people and tools that administer Hemlig.
   "writePathPrefixes": ["payments/production"],
   "displayName": "payments namespace in prod cluster"
 }
-~~~
+```
 
 Path authorization is segment-aware: a prefix matches the exact path or a path
 starting with that prefix followed by a slash. Empty/root prefixes are rejected.
@@ -309,11 +309,11 @@ refreshed, used to alter a grant, or used as an access token.
 The CDK stack adds a POST bootstrap redemption route on the administrator API
 domain before the JWT-protected default route:
 
-~~~text
+```text
 POST /v1/bootstrap/redeem
 Authorization: Bootstrap hmlb_opaque-capability
 body: { apiCertificateSigningRequestPem }
-~~~
+```
 
 The route is not OIDC or mTLS authenticated because it establishes the first
 mTLS identity. Its handler accepts no desired consumer ID, environment, path,
@@ -325,15 +325,15 @@ protection, and safe failure auditing.
 
 After redemption, the controller uses these mTLS agent routes:
 
-| Route | Capability | Controller use |
-| --- | --- | --- |
-| GET /v1/changes | read | Rebuild current access snapshot after connect and on scheduled resync. |
-| GET /v1/secrets/secretId | read | Conditional pull with If-None-Match. |
-| GET /v1/agent/config | read | Validate grant/scope and obtain public MQTT connection metadata. |
-| POST /v1/agent/secrets | write | Create a path-scoped secret with caller's initial read grant. |
-| PUT /v1/agent/secrets/secretId | write | Update allowed metadata with ETag. |
-| PUT /v1/agent/secrets/secretId/payload | write | Replace payload with ETag and idempotency. |
-| POST /v1/agent/identities/rotate | read | Rotate only caller's mTLS/MQTT leaf. |
+| Route                                  | Capability | Controller use                                                         |
+| -------------------------------------- | ---------- | ---------------------------------------------------------------------- |
+| GET /v1/changes                        | read       | Rebuild current access snapshot after connect and on scheduled resync. |
+| GET /v1/secrets/secretId               | read       | Conditional pull with If-None-Match.                                   |
+| GET /v1/agent/config                   | read       | Validate grant/scope and obtain public MQTT connection metadata.       |
+| POST /v1/agent/secrets                 | write      | Create a path-scoped secret with caller's initial read grant.          |
+| PUT /v1/agent/secrets/secretId         | write      | Update allowed metadata with ETag.                                     |
+| PUT /v1/agent/secrets/secretId/payload | write      | Replace payload with ETag and idempotency.                             |
+| POST /v1/agent/identities/rotate       | read       | Rotate only caller's mTLS/MQTT leaf.                                   |
 
 The namespace agent never receives administrator routes, plaintext from the
 administrator payload route, another consumer's grant state, or an operation
@@ -367,7 +367,7 @@ A DynamoDB Stream invokes a dedicated Node 24 notification Lambda within
 seconds. It publishes QoS 1, non-retained MQTT messages to the target
 consumer's private AWS IoT Core topic:
 
-~~~json
+```json
 {
   "schemaVersion": 1,
   "kind": "secret.changed",
@@ -375,7 +375,7 @@ consumer's private AWS IoT Core topic:
   "controlVersionId": "ctl-01J...",
   "payloadVersionId": "pay-01J..."
 }
-~~~
+```
 
 A revocation has kind secret.revoked and no payload version. MQTT never carries
 payload data, data keys, ACLs, paths, tokens, certificates, or a presigned URL.
@@ -476,20 +476,20 @@ condition. Consumers additionally expose IdentityReady and NotificationReady;
 imports expose TargetReady; exports expose SourceReady and RemoteReady.
 Conditions use stable reasons so alerting does not parse human strings.
 
-| Reason | Resource | Meaning and operator action |
-| --- | --- | --- |
-| ProviderNotPermitted | Consumer, import, export | Namespace does not match provider selector. Fix provider selector or namespace label. |
-| BootstrapTokenUnavailable | Consumer | Expected Secret/key is absent. Restore the single-use token before expiry. |
-| BootstrapRejected | Consumer | Token expired, was consumed, or does not match provider. Mint a new token for the same grant if appropriate. |
-| IdentityOwnershipConflict | Consumer | TLS Secret is foreign or altered. Restore exact owned identity or resolve deliberately. |
-| NotificationUnavailable | Consumer | MQTT certificate/topic/session is not ready. Periodic snapshot still converges. |
-| TargetOwnershipConflict | Import | Target is foreign, altered, or immutable. Pick another target or deliberately remove it. |
-| AccessRevoked | Import | Hemlig no longer grants consumer; managed local target was removed. |
-| PathNotPermitted | Import, export | AgentGrant denies secret path. Change administrator-managed grant, not CR. |
-| SourceNotFound | Export | Referenced source Secret does not exist. |
-| SourceIsImportManaged | Export | A loop was blocked; choose application-owned source. |
-| RemoteAlreadyExists | Export | Set explicit Adopt only after confirming ownership. |
-| RemoteConflict | Export | Another permitted writer changed control state repeatedly. Resolve ownership. |
+| Reason                    | Resource                 | Meaning and operator action                                                                                  |
+| ------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| ProviderNotPermitted      | Consumer, import, export | Namespace does not match provider selector. Fix provider selector or namespace label.                        |
+| BootstrapTokenUnavailable | Consumer                 | Expected Secret/key is absent. Restore the single-use token before expiry.                                   |
+| BootstrapRejected         | Consumer                 | Token expired, was consumed, or does not match provider. Mint a new token for the same grant if appropriate. |
+| IdentityOwnershipConflict | Consumer                 | TLS Secret is foreign or altered. Restore exact owned identity or resolve deliberately.                      |
+| NotificationUnavailable   | Consumer                 | MQTT certificate/topic/session is not ready. Periodic snapshot still converges.                              |
+| TargetOwnershipConflict   | Import                   | Target is foreign, altered, or immutable. Pick another target or deliberately remove it.                     |
+| AccessRevoked             | Import                   | Hemlig no longer grants consumer; managed local target was removed.                                          |
+| PathNotPermitted          | Import, export           | AgentGrant denies secret path. Change administrator-managed grant, not CR.                                   |
+| SourceNotFound            | Export                   | Referenced source Secret does not exist.                                                                     |
+| SourceIsImportManaged     | Export                   | A loop was blocked; choose application-owned source.                                                         |
+| RemoteAlreadyExists       | Export                   | Set explicit Adopt only after confirming ownership.                                                          |
+| RemoteConflict            | Export                   | Another permitted writer changed control state repeatedly. Resolve ownership.                                |
 
 Events are rate-limited and include only resource names, revision IDs,
 fingerprints, HTTP class, and safe reason codes. They never contain Secret
@@ -498,22 +498,30 @@ response bodies.
 
 ## Security and RBAC
 
-The Helm chart creates two profiles:
+The planned Helm chart creates two profiles:
 
-| Profile | Kubernetes permissions | Remote Hemlig permission |
-| --- | --- | --- |
-| import | Read exact bootstrap/identity Secrets, manage import targets, read Hemlig CR/status, leases, watches | Bootstrap redemption once, then mTLS read/snapshot/MQTT receive within AgentGrant scope |
-| export | Import profile plus read allowed source Secrets and mTLS agent writes within AgentGrant scope | Bootstrap redemption once, then mTLS path-scoped export writes |
+| Profile | Kubernetes permissions                                                                               | Remote Hemlig permission                                                                |
+| ------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| import  | Read exact bootstrap/identity Secrets, manage import targets, read Hemlig CR/status, leases, watches | Bootstrap redemption once, then mTLS read/snapshot/MQTT receive within AgentGrant scope |
+| export  | Import profile plus read allowed source Secrets and mTLS agent writes within AgentGrant scope        | Bootstrap redemption once, then mTLS path-scoped export writes                          |
 
 The export profile does not add administrator API access. It differs only by
 permission to read source Secret data in permitted Kubernetes namespaces.
 
-The chart supports a namespace allowlist or selector and generates namespaced
-Role and RoleBinding objects for the restricted model. A broad ClusterRole is an
-explicitly documented platform-admin option, not the default. It never grants
-deletecollection, wildcard API groups, pod exec, or access to all Secrets merely
-for convenience. The controller may get bootstrap Secrets only by exact names
-referenced from a pending HemligConsumer; it must not list them.
+The released initial chart is deliberately a broad ClusterRole installation:
+the current controller uses all-namespaces resource listing and watches. It does
+not pretend that a provider selector or AgentGrant scope narrows its Kubernetes
+permissions. It grants no deletecollection, wildcard API groups, or pod exec,
+but it does need Secret read/write permission cluster-wide until scoped
+discovery and namespaced watches are implemented. The remote AgentGrant remains
+the keyspace boundary, while the provider selector limits which namespaces can
+enroll against a provider.
+
+The restricted model remains the next RBAC milestone. It will accept an
+explicit namespace allowlist or selector, generate namespaced Role and
+RoleBinding objects, and change controller list/watch behavior to match. The
+controller may get bootstrap Secrets only by exact names referenced from a
+pending HemligConsumer; it must not list them.
 
 The controller image runs as non-root with a read-only root filesystem, no
 service-account token automount unless the selected installation mechanism needs
@@ -530,99 +538,103 @@ logging.
 - [x] Move controller Docker build/runtime images to Node 24.
 - [x] Move CDK Lambda runtime and bundling target to Node 24.
 - [ ] Build, lint, test, package, and deploy against Node 24 in CI and an
-  isolated AWS acceptance account.
+      isolated AWS acceptance account.
 
 ### Phase 1 — remote authorization and shared contracts
 
 - [x] Add AgentGrant and bootstrap-capability administrator routes, immutable
-  scope records, opaque hash-stored one-use token records, and agent audit
-  operations.
+      scope records, opaque hash-stored one-use token records, and agent audit
+      operations.
 - [x] Add explicit unauthenticated bootstrap redemption route before the JWT
-  default route, with tight validation/replay/throttle controls.
+      default route, with tight validation/replay/throttle controls.
 - [x] Add mTLS agent config and path-scoped secret create/update/payload routes;
-  keep ACL changes administrator-only. Agent self-identity rotation remains
-  pending.
+      keep ACL changes administrator-only. Agent self-identity rotation remains
+      pending.
 - [x] Enforce segment-aware read/write prefixes plus normal consumer ACL checks
-  before every path-dependent operation.
+      before every path-dependent operation.
 - [x] Add current snapshot and bootstrap/agent response types to @hemlig/client.
-  The controller must consume canonical contracts rather than duplicate HTTP
-  shapes.
+      The controller must consume canonical contracts rather than duplicate HTTP
+      shapes.
 
 ### Phase 2 — CDK notification topology
 
 - [x] Add CDK-owned notification outbox table stream, Node 24 publisher
-  Lambda, SQS dead-letter queue, logs, alarms, dashboards, and encryption.
+      Lambda, SQS dead-letter queue, logs, alarms, dashboards, and encryption.
 - [x] Add CDK-owned AWS IoT policy and narrowly scoped bootstrap enrollment and
-  publisher IAM actions. Rotation/recovery cleanup remains pending.
+      publisher IAM actions. Rotation/recovery cleanup remains pending.
 - [x] Register the bootstrap identity with AWS IoT and attach its policy before
-  activating the AgentGrant. The generic consumer enrollment flow remains
-  available for non-agent consumers.
+      activating the AgentGrant. The generic consumer enrollment flow remains
+      available for non-agent consumers.
 - [ ] Add IoT deactivation/detachment to leaf revocation and recovery cleanup.
 - [x] Write grouped notification outbox records transactionally for the old/new
-  ACL union on metadata, ACL, payload, creation, and revocation changes.
+      ACL union on metadata, ACL, payload, creation, and revocation changes.
 
 ### Phase 3 — v1beta1 controller core
 
 - [x] Add v1beta1 schemas for provider, consumer, import, and export; keep
-  v1alpha1 served but deprecated.
+      v1alpha1 served but deprecated.
 - [x] Add canonical desired-state comparators for metadata, payloads,
-  identifiers, target/identity markers, and deterministic idempotency keys.
+      identifiers, target/identity markers, and deterministic idempotency keys.
 - [x] Implement automatic bootstrap enrollment, identity ownership,
-  provider namespace authorization, watches, source debounce, MQTT hints, and
-  ten-minute snapshot resync.
+      provider namespace authorization, watches, source debounce, MQTT hints, and
+      ten-minute snapshot resync.
 - [ ] Add Lease leadership, per-provider rate limiting, manual enrollment, and
-  leaf rotation before running more than one replica.
+      leaf rotation before running more than one replica.
 - [x] Implement import snapshot/revocation deletion and agent-scoped export
-  creation, adoption, ETag, and idempotency semantics.
+      creation, adoption, ETag, and idempotency semantics.
 
 ### Phase 4 — packaging and operability
 
-- [ ] Create packages/kubernetes-controller/chart/hemlig-controller with CRDs,
-  import/export profiles, RBAC, Deployment, ServiceMonitor-compatible metrics,
-  PDB, security context, network-policy examples, and values schema.
+- [x] Create packages/kubernetes-controller/chart/hemlig-controller with CRDs,
+      the current broad RBAC profile, Deployment, hardened security context, values
+      schema, Helm lint/render CI, release-tag packaging, and publishing through
+      `zyno-io/charts` GitHub Releases.
+- [ ] Add the namespace-restricted import/export profiles, ServiceMonitor-
+      compatible metrics, PDB, and network-policy examples after the controller can
+      scope discovery and watches to those namespaces.
 - [ ] Keep rendered standalone manifests under config for non-Helm users.
 - [ ] Add healthz, readyz, Prometheus metrics, a hardened Node 24 OCI image,
-  SBOM, image provenance, and versioned release notes.
+      SBOM, image provenance, and versioned release notes.
 - [ ] Publish migration guidance and a deterministic v1alpha1 to v1beta1
-  conversion command; never ask users to edit live status by hand.
+      conversion command; never ask users to edit live status by hand.
 
 ### Phase 5 — verification and release
 
 - [ ] Unit-test desired-state builders, owner checks, deterministic idempotency
-  keys, path-boundary matcher, bootstrap hash/redeem state machine, conditions,
-  retry classification, and no-log guarantee.
+      keys, path-boundary matcher, bootstrap hash/redeem state machine, conditions,
+      retry classification, and no-log guarantee.
 - [ ] Test remote services with MiniStack for DynamoDB/S3/KMS workflow, outbox
-  transaction, and notification retry behavior. MiniStack cannot emulate API
-  Gateway JWT/mTLS, AWS IoT broker authorization, CORS, or deployed Object Lock;
-  retain isolated AWS acceptance tests for those boundaries.
+      transaction, and notification retry behavior. MiniStack cannot emulate API
+      Gateway JWT/mTLS, AWS IoT broker authorization, CORS, or deployed Object Lock;
+      retain isolated AWS acceptance tests for those boundaries.
 - [ ] Test controller reconcilers against fake Kubernetes, Hemlig, and MQTT
-  transports for creation, no-op, target/source conflict, path denial, lost
-  status write, expired bootstrap, redemption replay, leaf rotation, IoT
-  reconnect, and remote revocation.
+      transports for creation, no-op, target/source conflict, path denial, lost
+      status write, expired bootstrap, redemption replay, leaf rotation, IoT
+      reconnect, and remote revocation.
 - [ ] Add Kind integration tests that install chart/CRDs, exercise source
-  watches, leader failover, Kubernetes RBAC, MQTT-triggered import, and exact
-  Secret ownership/deletion.
+      watches, leader failover, Kubernetes RBAC, MQTT-triggered import, and exact
+      Secret ownership/deletion.
 - [ ] Add isolated CDK deployment acceptance: create bootstrap capability,
-  enroll controller leaf, prove its IoT policy cannot subscribe outside its
-  topic, publish a remote change, and observe Kubernetes import convergence
-  without waiting for snapshot timer.
+      enroll controller leaf, prove its IoT policy cannot subscribe outside its
+      topic, publish a remote change, and observe Kubernetes import convergence
+      without waiting for snapshot timer.
 - [ ] Gate 0.2.0-rc.1 on Node 24 workspace lint/build/test, MiniStack, Kind,
-  CDK synth, chart rendering, AWS acceptance, SBOM, and clean artifact install.
+      CDK synth, chart rendering, AWS acceptance, SBOM, and clean artifact install.
 
 ## File-level implementation map
 
-| Area | Planned files |
-| --- | --- |
-| Node baseline | Root/workspace manifests, controller Dockerfile, cdk/stack.ts, CI images/workflows |
-| Shared contracts | packages/client/src/index.ts and tests |
-| Agent authorization | Domain types/validation, agent/bootstrap services, admin/consumer handlers, repositories, audit adapters |
-| AWS notification | cdk/stack.ts, CDK tests, notification handler, outbox repository, enrollment/recovery services |
-| Controller | packages/kubernetes-controller/src/api/v1beta1.ts, controllers, kubernetes, mqtt, runtime |
-| CRDs/manifests | packages/kubernetes-controller/config/crds, config/rbac, config/samples |
-| Helm | packages/kubernetes-controller/chart/hemlig-controller |
-| Tests | Service/handler/CDK tests, controller unit tests, Kind tests, MiniStack and AWS acceptance scenarios |
-| Documentation | Controller/chart README, API reference, architecture, threat model, CDK integration, this plan, migration guide |
-| CI/release | Workspace scripts, Node 24 image workflow, chart release, SBOM/provenance workflow |
+| Area                | Planned files                                                                                                   |
+| ------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Node baseline       | Root/workspace manifests, controller Dockerfile, cdk/stack.ts, CI images/workflows                              |
+| Shared contracts    | packages/client/src/index.ts and tests                                                                          |
+| Agent authorization | Domain types/validation, agent/bootstrap services, admin/consumer handlers, repositories, audit adapters        |
+| AWS notification    | cdk/stack.ts, CDK tests, notification handler, outbox repository, enrollment/recovery services                  |
+| Controller          | packages/kubernetes-controller/src/api/v1beta1.ts, controllers, kubernetes, mqtt, runtime                       |
+| CRDs/manifests      | packages/kubernetes-controller/config/crds, config/rbac, config/samples                                         |
+| Helm                | packages/kubernetes-controller/chart/hemlig-controller                                                          |
+| Tests               | Service/handler/CDK tests, controller unit tests, Kind tests, MiniStack and AWS acceptance scenarios            |
+| Documentation       | Controller/chart README, API reference, architecture, threat model, CDK integration, this plan, migration guide |
+| CI/release          | Workspace scripts, Node 24 image workflow, chart release, SBOM/provenance workflow                              |
 
 ## Acceptance criteria
 

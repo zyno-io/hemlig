@@ -1,0 +1,52 @@
+# This release profile deliberately has cluster-wide Kubernetes RBAC. The
+# current controller discovers Hemlig resources across namespaces and watches
+# source Secrets globally. Hemlig AgentGrant path scopes and HemligProvider
+# namespace selectors still bound remote secret access, but are not a
+# replacement for reviewing this Kubernetes permission grant.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/zyno-io/hemlig-controller
+  pullPolicy: IfNotPresent
+  # Defaults to the chart appVersion: `main` for source installs and the
+  # immutable Git tag for published chart releases.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+  automountServiceAccountToken: true
+
+rbac:
+  # Set false only when an administrator supplies an equivalent ClusterRole
+  # and ClusterRoleBinding for this ServiceAccount.
+  create: true
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+controller:
+  reconcileIntervalMilliseconds: 600000
+  sourceDebounceMilliseconds: 250
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

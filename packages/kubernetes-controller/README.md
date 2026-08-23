@@ -25,9 +25,27 @@ manifests install one replica; Lease leadership, manual enrollment, and leaf
 rotation are tracked in the [controller plan](../../docs/kubernetes-controller-plan.md)
 before multi-replica support is declared.
 
-Install [CRDs](config/crds.yaml) then the broad cluster-operator
-[manager manifest](config/manager.yaml). The forthcoming Helm chart will make
-the namespace-restricted RBAC profile the default.
+For a release install, use the Zyno chart repository:
+
+```sh
+helm repo add zyno https://zyno-io.github.io/charts
+helm repo update
+helm upgrade --install hemlig-controller zyno/hemlig-controller \
+  --namespace hemlig-system \
+  --create-namespace
+```
+
+The chart installs the CRDs by default. Its current ClusterRole is deliberately
+cluster-wide: the controller lists and watches Hemlig resources and source
+Secrets across namespaces. `HemligProvider` namespace selectors and the remote
+`AgentGrant` path scope still constrain which remote secret keyspaces a
+namespace can use, but they do not narrow this Kubernetes RBAC grant. Review
+that grant before installing it. Namespace-restricted Kubernetes RBAC depends
+on a controller runtime that can limit discovery and watches to an explicit
+namespace set; it is not represented as a false least-privilege option today.
+
+For a non-Helm installation, apply [CRDs](config/crds.yaml) then the broad
+cluster-operator [manager manifest](config/manager.yaml).
 
 ```yaml
 apiVersion: hemlig.io/v1beta1
@@ -83,3 +101,10 @@ Build from the monorepo root:
 ```sh
 docker build -f packages/kubernetes-controller/Dockerfile -t hemlig-controller:dev .
 ```
+
+CI publishes `ghcr.io/zyno-io/hemlig-controller:main` from `main`; a Git tag
+such as `v0.1.0` publishes the exact `:v0.1.0` image and a matching immutable
+`hemlig-controller-0.1.0.tgz` asset in the
+[Zyno charts repository](https://github.com/zyno-io/charts). The charts
+repository then regenerates its public Helm index. Generated chart archives are
+never committed to this source repository.

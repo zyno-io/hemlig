@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -78,10 +79,124 @@ jobs:
         run: docker compose -f docker-compose.ministack.yml down -v
 
   controller-image:
-    name: Controller image build
+    name: Controller image build and publish
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/hemlig-controller
     steps:
       - uses: actions/checkout@v4
+      - name: Select image tag
+        id: image
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            echo "tag=main" >> "$GITHUB_OUTPUT"
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=ci" >> "$GITHUB_OUTPUT"
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Log in to GitHub Container Registry
+        if: steps.image.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build the Node 24 controller image
-        run: docker build --pull --file packages/kubernetes-controller/Dockerfile --tag hemlig-controller:ci .
+        run: |
+          docker build --pull \
+            --file packages/kubernetes-controller/Dockerfile \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --tag "$IMAGE:${{ steps.image.outputs.tag }}" \
+            .
+      - name: Publish the controller image
+        if: steps.image.outputs.push == 'true'
+        run: docker push "$IMAGE:${{ steps.image.outputs.tag }}"
+
+  helm-chart:
+    name: Helm chart validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+      - name: Lint chart
+        run: helm lint packages/kubernetes-controller/chart/hemlig-controller
+      - name: Render chart including CRDs
+        run: >-
+          helm template hemlig-controller
+          packages/kubernetes-controller/chart/hemlig-controller
+          --namespace hemlig-system
+          --include-crds
+          > /tmp/hemlig-controller.yaml
+
+  publish-helm-chart:
+    name: Publish Helm chart
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [controller-image, helm-chart]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+      - name: Validate release tag and package chart
+        id: package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "$version" == "$GITHUB_REF_NAME" ]]; then
+            echo "Release tags must start with v, such as v0.1.0." >&2
+            exit 1
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "Release tag $GITHUB_REF_NAME is not a Helm-compatible SemVer tag." >&2
+            exit 1
+          fi
+          mkdir -p dist/charts
+          helm package packages/kubernetes-controller/chart/hemlig-controller \
+            --destination dist/charts \
+            --version "$version" \
+            --app-version "$GITHUB_REF_NAME"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=hemlig-controller-$version" >> "$GITHUB_OUTPUT"
+          echo "package=dist/charts/hemlig-controller-$version.tgz" >> "$GITHUB_OUTPUT"
+      - name: Require charts repository credential
+        env:
+          CHARTS_REPO_TOKEN: ${{ secrets.CHARTS_REPO_TOKEN }}
+        run: |
+          if [[ -z "$CHARTS_REPO_TOKEN" ]]; then
+            echo "CHARTS_REPO_TOKEN must be a fine-grained token with Contents read/write access to zyno-io/charts." >&2
+            exit 1
+          fi
+      - name: Create immutable charts repository release
+        env:
+          GH_TOKEN: ${{ secrets.CHARTS_REPO_TOKEN }}
+          CHART_PACKAGE: ${{ steps.package.outputs.package }}
+          CHART_RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
+          CHART_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          if gh release view "$CHART_RELEASE_TAG" --repo zyno-io/charts > /dev/null 2>&1; then
+            echo "Chart release $CHART_RELEASE_TAG already exists in zyno-io/charts; releases are immutable." >&2
+            exit 1
+          fi
+          gh release create "$CHART_RELEASE_TAG" "$CHART_PACKAGE" \
+            --repo zyno-io/charts \
+            --title "Hemlig controller $CHART_VERSION" \
+            --notes "Published from zyno-io/hemlig Git tag $GITHUB_REF_NAME."

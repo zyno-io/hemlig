@@ -1,0 +1,42 @@
+{{- if .Values.rbac.create }}
+# The controller currently reconciles the Hemlig CRs and source/target Secrets
+# across namespaces, so this role is intentionally cluster-scoped. The remote
+# HemligProvider selector and AgentGrant path scope remain separate controls.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "hemlig-controller.fullname" . }}
+  labels:
+    {{- include "hemlig-controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["hemlig.io"]
+    resources: ["hemligproviders"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["hemlig.io"]
+    resources: ["hemligconsumers", "hemligsecretimports", "hemligsecretexports"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["hemlig.io"]
+    resources: ["hemligconsumers/status", "hemligsecretimports/status", "hemligsecretexports/status"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "hemlig-controller.fullname" . }}
+  labels:
+    {{- include "hemlig-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "hemlig-controller.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "hemlig-controller.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
