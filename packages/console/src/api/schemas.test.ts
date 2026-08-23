@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { catalogPage, environmentListResponse, secretTreePage } from "./schemas";
+import {
+  auditPage,
+  catalogPage,
+  environmentListResponse,
+  secretTreePage,
+} from "./schemas";
 
 const catalogEntryFixture = {
   secretId: "stripe-api-key",
@@ -37,7 +42,14 @@ describe("secretTreePage", () => {
   it("accepts a root response, where pathPrefix is omitted", () => {
     const page = secretTreePage.parse({
       environment: "prod",
-      folders: [{ segment: "payments", path: "payments", secretCount: 3, kind: "derived" }],
+      folders: [
+        {
+          segment: "payments",
+          path: "payments",
+          secretCount: 3,
+          kind: "derived",
+        },
+      ],
       secrets: [],
       truncated: false,
       generatedAt: "2026-08-23T00:00:00.000Z",
@@ -50,13 +62,24 @@ describe("secretTreePage", () => {
     const page = secretTreePage.parse({
       environment: "prod",
       pathPrefix: "payments",
-      folders: [{ segment: "stripe", path: "payments/stripe", secretCount: 12, kind: "both" }],
+      folders: [
+        {
+          segment: "stripe",
+          path: "payments/stripe",
+          secretCount: 12,
+          kind: "both",
+        },
+      ],
       secrets: [catalogEntryFixture],
       truncated: true,
       generatedAt: "2026-08-23T00:00:00.000Z",
     });
     expect(page.pathPrefix).toBe("payments");
-    expect(page.folders[0]).toMatchObject({ segment: "stripe", secretCount: 12, kind: "both" });
+    expect(page.folders[0]).toMatchObject({
+      segment: "stripe",
+      secretCount: 12,
+      kind: "both",
+    });
     expect(page.secrets[0]?.secretId).toBe("stripe-api-key");
     // `truncated` is the only signal a level was capped rather than complete;
     // losing it would make an incomplete list look like the full contents.
@@ -88,9 +111,38 @@ describe("environmentListResponse", () => {
 
     expect(() =>
       environmentListResponse.parse({
-        environments: [{ name: "staging", createdAt: "2026-08-23T00:00:00.000Z" }],
+        environments: [
+          { name: "staging", createdAt: "2026-08-23T00:00:00.000Z" },
+        ],
         generatedAt: "2026-08-23T00:00:00.000Z",
       }),
     ).toThrow();
+  });
+});
+
+describe("auditPage", () => {
+  it("accepts only safe, payload-free evidence fields", () => {
+    const page = auditPage.parse({
+      date: "2026-08-23",
+      events: [
+        {
+          eventId: "event-1",
+          at: "2026-08-23T10:00:00.000Z",
+          correlationId: "corr-1",
+          outcome: "succeeded",
+          actor: { type: "human", id: "admin-1" },
+          operation: "adminget:/v1/admin/secrets",
+          target: { secretId: "payments-api" },
+        },
+      ],
+      nextCursor: "signed-cursor",
+      generatedAt: "2026-08-23T10:00:01.000Z",
+    });
+
+    expect(page.events[0]).toMatchObject({
+      operation: "adminget:/v1/admin/secrets",
+      target: { secretId: "payments-api" },
+    });
+    expect(page.nextCursor).toBe("signed-cursor");
   });
 });

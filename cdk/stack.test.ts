@@ -98,6 +98,23 @@ describe("HemligStack", () => {
       AuthorizationScopes: ["hemlig.admin"],
     });
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "GET /v1/admin/audit",
+      AuthorizationType: "JWT",
+      AuthorizationScopes: ["hemlig.admin"],
+    });
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "s3:ListBucket",
+            Condition: { StringLike: { "s3:prefix": ["audit/*"] } },
+          }),
+          Match.objectLike({ Action: "s3:GetObject" }),
+          Match.objectLike({ Action: "s3:PutObject" }),
+        ]),
+      },
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "POST /v1/bootstrap/redeem",
       AuthorizationType: "NONE",
     });
@@ -169,7 +186,9 @@ describe("HemligStack", () => {
             Condition: {
               StringEquals: {
                 "kms:EncryptionContext:service": "hemlig",
-                "kms:EncryptionContext:purpose": Match.arrayWith(["secret-payload"]),
+                "kms:EncryptionContext:purpose": Match.arrayWith([
+                  "secret-payload",
+                ]),
               },
             },
           }),

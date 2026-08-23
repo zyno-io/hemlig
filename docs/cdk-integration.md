@@ -174,8 +174,11 @@ generate payload data keys and decrypt issuer envelopes or current payloads only
 under their respective `issuer-ca` and `secret-payload` KMS contexts. The
 bootstrap Lambda can generate and decrypt only `issuer-ca` envelope material;
 all `kms:GenerateDataKey` grants are context-conditioned, not generic CMK
-grants.
-All application roles only have `PutObject` for the audit prefix.
+grants. Normal application roles only have `PutObject` for the audit prefix.
+The separately deployed audit-query Lambda shares administrator JWT
+authorization but is the sole role with prefix-scoped `ListBucket` and
+`GetObject` access; it retains immutable `PutObject` access to record archive
+views.
 
 ## Agent bootstrap and notifications
 

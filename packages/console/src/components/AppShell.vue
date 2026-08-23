@@ -27,7 +27,9 @@ const switcherPlaceholder = computed(() => {
   if (environments.error.value) {
     return "Unavailable";
   }
-  return environments.data.value === undefined ? "Loading…" : "No environments yet";
+  return environments.data.value === undefined
+    ? "Loading…"
+    : "No environments yet";
 });
 
 const switchEnvironment = (event: Event): void => {
@@ -43,25 +45,41 @@ const tabs = computed(() => {
   // there may genuinely be none yet on a fresh deployment.
   if (currentEnv.value !== undefined) {
     items.push(
-      { name: "secrets", label: "Secrets", to: { name: "secrets", params: { env: currentEnv.value } } },
-      { name: "consumers", label: "Consumers", to: { name: "consumers", params: { env: currentEnv.value } } },
+      {
+        name: "secrets",
+        label: "Secrets",
+        to: { name: "secrets", params: { env: currentEnv.value } },
+      },
+      {
+        name: "consumers",
+        label: "Consumers",
+        to: { name: "consumers", params: { env: currentEnv.value } },
+      },
     );
   }
   items.push(
-    { name: "environments", label: "Environments", to: { name: "environments" } },
+    {
+      name: "environments",
+      label: "Environments",
+      to: { name: "environments" },
+    },
+    { name: "audit", label: "Audit", to: { name: "audit" } },
     { name: "trust", label: "Trust", to: { name: "trust" } },
     { name: "about", label: "About", to: { name: "about" } },
   );
   return items;
 });
 
-const active = (name: string): boolean => String(route.name ?? "").startsWith(name);
+const active = (name: string): boolean =>
+  String(route.name ?? "").startsWith(name);
 </script>
 
 <template>
   <div class="min-h-screen">
     <header class="border-b border-line bg-surface-raised">
-      <div class="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-6 py-3">
+      <div
+        class="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-6 py-3"
+      >
         <RouterLink :to="{ name: 'root' }" class="font-semibold tracking-tight">
           Hemlig
         </RouterLink>
@@ -73,20 +91,34 @@ const active = (name: string): boolean => String(route.name ?? "").startsWith(na
             :value="currentEnv"
             @change="switchEnvironment"
           >
-            <option v-if="environmentNames.length === 0" value="">{{ switcherPlaceholder }}</option>
-            <option v-for="environment in environmentNames" :key="environment" :value="environment">
+            <option v-if="environmentNames.length === 0" value="">
+              {{ switcherPlaceholder }}
+            </option>
+            <option
+              v-for="environment in environmentNames"
+              :key="environment"
+              :value="environment"
+            >
               {{ environment }}
             </option>
           </select>
-          <RouterLink class="text-xs text-accent hover:underline" :to="{ name: 'environments' }">
+          <RouterLink
+            class="text-xs text-accent hover:underline"
+            :to="{ name: 'environments' }"
+          >
             Manage
           </RouterLink>
         </label>
         <div class="ml-auto flex items-center gap-3 text-sm">
-          <span v-if="devMode" class="rounded bg-warn/15 px-2 py-0.5 text-xs text-warn">
+          <span
+            v-if="devMode"
+            class="rounded bg-warn/15 px-2 py-0.5 text-xs text-warn"
+          >
             dev bridge — no identity provider
           </span>
-          <span class="text-ink-muted">{{ store.session?.displayName ?? store.session?.subject }}</span>
+          <span class="text-ink-muted">{{
+            store.session?.displayName ?? store.session?.subject
+          }}</span>
           <button
             v-if="!devMode"
             class="rounded border border-line px-2 py-1 hover:bg-surface"
@@ -102,7 +134,11 @@ const active = (name: string): boolean => String(route.name ?? "").startsWith(na
           :key="tab.name"
           :to="tab.to"
           class="border-b-2 px-3 py-2 text-sm"
-          :class="active(tab.name) ? 'border-accent text-ink' : 'border-transparent text-ink-muted hover:text-ink'"
+          :class="
+            active(tab.name)
+              ? 'border-accent text-ink'
+              : 'border-transparent text-ink-muted hover:text-ink'
+          "
         >
           {{ tab.label }}
         </RouterLink>

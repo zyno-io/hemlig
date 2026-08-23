@@ -2,15 +2,16 @@
 
 This is the public reference for the **implemented v0.4 HTTP API**. Its
 machine-readable contract is [openapi/consumer-secrets.yaml](../openapi/consumer-secrets.yaml).
-It includes organizational browsing and the safe CSR enrollment/certificate
-routes. Audit querying and issuer-root rotation are intentionally excluded.
+It includes organizational browsing, bounded immutable-audit browsing, and the
+safe CSR enrollment/certificate routes. Issuer-root rotation is intentionally
+excluded.
 
 ## Base URLs
 
-| API           | URL                     | Caller                              |
-| ------------- | ----------------------- | ----------------------------------- |
-| Administrator | `https://<adminFqdn>`   | Administrator with a valid JWT      |
-| Delivery      | `https://<apiFqdn>`     | Enrolled workload identity over mTLS |
+| API           | URL                   | Caller                               |
+| ------------- | --------------------- | ------------------------------------ |
+| Administrator | `https://<adminFqdn>` | Administrator with a valid JWT       |
+| Delivery      | `https://<apiFqdn>`   | Enrolled workload identity over mTLS |
 
 The CDK stack receives both FQDNs. `apiFqdn` names a generic delivery endpoint,
 even though Kubernetes workloads are its first consumer. It disables each generated API Gateway
@@ -239,6 +240,20 @@ destructive replacement without retaining or exposing payload key names.
 
 ## Administrator routes
 
+### `GET /v1/admin/audit?date=<YYYY-MM-DD>&cursor=<opaque>`
+
+Every authenticated administrator may browse immutable application evidence for
+one UTC day. `date` defaults to the current UTC day. A page contains at most
+50 records in newest-first order; its cursor is signed, bound to the requesting
+administrator and date, and expires after 15 minutes. The console exposes this
+as the **Audit** tab.
+
+Records contain only timestamp, correlation ID, actor, operation, outcome,
+safe target IDs, source IP when available, and a safe reason code. They never
+contain plaintext payloads, request bodies, tokens, or certificate material.
+Reading the archive itself creates ordinary audit events, so audit-browser
+activity is visible in later pages.
+
 ### `GET /v1/admin/secrets/{secretId}`
 
 Returns the current immutable control revision—including metadata and ACL—but
@@ -324,8 +339,18 @@ Authorization: Bearer <JWT>
   "environment": "prod",
   "pathPrefix": "payments",
   "folders": [
-    { "segment": "stripe", "path": "payments/stripe", "secretCount": 12, "kind": "both" },
-    { "segment": "adyen", "path": "payments/adyen", "secretCount": 0, "kind": "explicit" }
+    {
+      "segment": "stripe",
+      "path": "payments/stripe",
+      "secretCount": 12,
+      "kind": "both"
+    },
+    {
+      "segment": "adyen",
+      "path": "payments/adyen",
+      "secretCount": 0,
+      "kind": "explicit"
+    }
   ],
   "secrets": [],
   "truncated": false,
@@ -661,15 +686,15 @@ prefix scope. All secret reads still require the agent's regular per-secret
 read ACL in addition to its path scope; agent writes can only affect their
 write path scope and can never modify an ACL.
 
-| Route | Purpose |
-| --- | --- |
-| `GET /v1/agent/config` | Returns the active grant's safe scope and the exact AWS IoT endpoint/client/topic. |
-| `GET /v1/agent/secrets/{secretId}` | Conditional payload read within read scope. |
-| `GET /v1/agent/secrets/{secretId}/control` | Returns only agent-visible metadata and ETag, including for a write-only exporter. |
-| `POST /v1/agent/secrets` | Creates a path-scoped empty secret with the caller's initial read ACL. |
-| `PUT /v1/agent/secrets/{secretId}` | Updates agent-allowed metadata with `If-Match`. |
-| `PUT /v1/agent/secrets/{secretId}/payload` | Replaces payload with `If-Match`. |
-| `GET /v1/changes` | Returns the path-filtered current snapshot; an out-of-scope move is represented as `secret.revoked` so the local target is removed. |
+| Route                                      | Purpose                                                                                                                             |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/agent/config`                     | Returns the active grant's safe scope and the exact AWS IoT endpoint/client/topic.                                                  |
+| `GET /v1/agent/secrets/{secretId}`         | Conditional payload read within read scope.                                                                                         |
+| `GET /v1/agent/secrets/{secretId}/control` | Returns only agent-visible metadata and ETag, including for a write-only exporter.                                                  |
+| `POST /v1/agent/secrets`                   | Creates a path-scoped empty secret with the caller's initial read ACL.                                                              |
+| `PUT /v1/agent/secrets/{secretId}`         | Updates agent-allowed metadata with `If-Match`.                                                                                     |
+| `PUT /v1/agent/secrets/{secretId}/payload` | Replaces payload with `If-Match`.                                                                                                   |
+| `GET /v1/changes`                          | Returns the path-filtered current snapshot; an out-of-scope move is represented as `secret.revoked` so the local target is removed. |
 
 Agent payload/control writes require `Idempotency-Key`; updates also require
 `If-Match`. The MQTT topic carries only `schemaVersion`, kind, secret ID, and
@@ -692,6 +717,5 @@ semantics.
 
 ## Deliberately excluded routes
 
-There is no public issuer-root-rotation endpoint, audit-query endpoint, or
-consumer-side write API. These need additional lifecycle/audit-boundary design;
-clients must not infer them from the DynamoDB record shape.
+There is no public issuer-root-rotation endpoint or consumer-side write API.
+Clients must not infer future lifecycle routes from the DynamoDB record shape.

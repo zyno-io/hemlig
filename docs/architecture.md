@@ -5,8 +5,8 @@ those consumers AWS credentials. Administrators define encrypted secrets and
 consumer read ACLs; enrolled consumers receive only the payloads they may read.
 
 This document describes the v0.4 implementation. It includes organizational
-metadata/catalog browsing and the enrollment/truststore workflow. Issuer-root
-rotation and audit query remain intentionally excluded. See
+metadata/catalog browsing, the enrollment/truststore workflow, and bounded
+audit-archive browsing. Issuer-root rotation remains intentionally excluded. See
 [API reference](api.md) for the HTTP contract and
 [deployment guide](cdk-integration.md) for installation inputs.
 
@@ -27,6 +27,7 @@ flowchart LR
   bootstrap[Namespace bootstrap Secret] -->|one-use token + CSR| bootstrapApi[Bootstrap route]
   operator[Consumer operator] -->|mTLS leaf| consumerApi[Consumer HTTP API]
   adminApi --> adminLambda[Admin Lambda]
+  adminApi --> auditQueryLambda[Audit query Lambda]
   bootstrapApi --> bootstrapLambda[Bootstrap Lambda]
   consumerApi --> consumerLambda[Consumer Lambda]
   adminLambda --> table[(DynamoDB control table)]
@@ -36,6 +37,7 @@ flowchart LR
   adminLambda --> revisions[(S3 immutable revisions)]
   consumerLambda --> revisions
   adminLambda --> audit[(S3 Object Lock audit archive)]
+  auditQueryLambda --> audit
   consumerLambda --> audit
   bootstrapLambda --> iot[AWS IoT Core]
   table -->|DynamoDB Stream| notificationLambda[Notification Lambda]
@@ -61,12 +63,12 @@ identity row.
 
 ## Authentication and trust boundaries
 
-| Caller           | Authentication                                                         | Rights                                                      |
-| ---------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Administrator    | External OIDC JWT, immutable configured actor claim (`sub` by default) | Secret mutation                                             |
-| Consumer operator | Client certificate DER SHA-256 fingerprint in DynamoDB                | Its allowed active secret reads and current access snapshot |
-| Namespace agent | One-use bootstrap capability, then the same mTLS leaf plus AgentGrant | Only its configured read/write path prefixes and MQTT topic |
-| Worker           | EventBridge/Lambda execution role                                      | Recovery or retention only                                  |
+| Caller            | Authentication                                                         | Rights                                                      |
+| ----------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Administrator     | External OIDC JWT, immutable configured actor claim (`sub` by default) | Secret mutation                                             |
+| Consumer operator | Client certificate DER SHA-256 fingerprint in DynamoDB                 | Its allowed active secret reads and current access snapshot |
+| Namespace agent   | One-use bootstrap capability, then the same mTLS leaf plus AgentGrant  | Only its configured read/write path prefixes and MQTT topic |
+| Worker            | EventBridge/Lambda execution role                                      | Recovery or retention only                                  |
 
 API Gateway verifies the administrator JWT, and the handler verifies its issuer
 and audience again before using the configured subject claim for the audit
@@ -271,29 +273,29 @@ delete a different version.
 One on-demand DynamoDB table uses `pk`/`sk`, point-in-time recovery, and sparse
 GSIs for scheduled work.
 
-| Key                                   | Purpose                                                                |
-| ------------------------------------- | ---------------------------------------------------------------------- |
-| `SECRET#<id> / HEAD`                  | Current revisions, state, environment, write lease                     |
-| `SECRET#<id> / CONTROL#<version>`     | Control workflow/object metadata                                       |
-| `SECRET#<id> / PAYLOAD#<version>`     | Payload workflow/object metadata                                       |
-| `CONSUMER#<id> / SECRET#<id>`         | Current grant or `REVOKED` tombstone                                   |
-| `CONSUMER#<id> / PROFILE`             | Immutable consumer environment/URI identity and activation state       |
-| `IDENTITY#<sha256> / PROFILE`         | Consumer API leaf identity and validity                                |
-| `SYSTEM#ISSUER / PROFILE`             | One public root, KMS-wrapped private-key envelope, and root validity    |
-| `TRUSTSTORE#ROOTS / ROOT#<sha256>`    | The public deployment-wide issuing-root truststore anchor               |
-| `ENROLLMENT#<operation> / STATE`      | Recoverable enrollment state and truststore publication due time       |
-| `SYSTEM#TRUSTSTORE / STATE`           | Singleton publication lease and current/pending version-pinned bundle  |
-| `IDEMPOTENCY#<actor> / REQUEST#<key>` | Mutation state and terminal-audit marker                               |
-| `AGENT_GRANT#<id> / PROFILE`          | Administrator-owned path/capability boundary and activation state       |
-| `CONSUMER#<id> / AGENT_GRANT`         | Prevents an agent identity from falling back to unscoped delivery       |
-| `BOOTSTRAP#<sha256> / STATE`          | Hash-only, expiring, one-use CSR redemption capability                  |
-| `NOTIFICATION#<id> / EVENT`           | Pending/delivered MQTT hint; TTL begins only after terminal delivery    |
-| `WORKFLOW#DUE` GSI                    | Expired prepared workflow discovery                                    |
-| `RETENTION#DUE` GSI                   | Eligible non-head revision discovery                                   |
-| `CATALOG#<environment>` GSI           | Current `HEAD` records in path/secret order                            |
-| `CONSUMERS#<environment>` GSI         | Administrative consumer profiles in consumer-ID order                  |
-| `CONSUMER#<id>` identity GSI          | Administrative API leaves in expiration order                          |
-| `SECRET#<id>` revision GSI            | Newest-first bounded control-revision management history               |
+| Key                                   | Purpose                                                               |
+| ------------------------------------- | --------------------------------------------------------------------- |
+| `SECRET#<id> / HEAD`                  | Current revisions, state, environment, write lease                    |
+| `SECRET#<id> / CONTROL#<version>`     | Control workflow/object metadata                                      |
+| `SECRET#<id> / PAYLOAD#<version>`     | Payload workflow/object metadata                                      |
+| `CONSUMER#<id> / SECRET#<id>`         | Current grant or `REVOKED` tombstone                                  |
+| `CONSUMER#<id> / PROFILE`             | Immutable consumer environment/URI identity and activation state      |
+| `IDENTITY#<sha256> / PROFILE`         | Consumer API leaf identity and validity                               |
+| `SYSTEM#ISSUER / PROFILE`             | One public root, KMS-wrapped private-key envelope, and root validity  |
+| `TRUSTSTORE#ROOTS / ROOT#<sha256>`    | The public deployment-wide issuing-root truststore anchor             |
+| `ENROLLMENT#<operation> / STATE`      | Recoverable enrollment state and truststore publication due time      |
+| `SYSTEM#TRUSTSTORE / STATE`           | Singleton publication lease and current/pending version-pinned bundle |
+| `IDEMPOTENCY#<actor> / REQUEST#<key>` | Mutation state and terminal-audit marker                              |
+| `AGENT_GRANT#<id> / PROFILE`          | Administrator-owned path/capability boundary and activation state     |
+| `CONSUMER#<id> / AGENT_GRANT`         | Prevents an agent identity from falling back to unscoped delivery     |
+| `BOOTSTRAP#<sha256> / STATE`          | Hash-only, expiring, one-use CSR redemption capability                |
+| `NOTIFICATION#<id> / EVENT`           | Pending/delivered MQTT hint; TTL begins only after terminal delivery  |
+| `WORKFLOW#DUE` GSI                    | Expired prepared workflow discovery                                   |
+| `RETENTION#DUE` GSI                   | Eligible non-head revision discovery                                  |
+| `CATALOG#<environment>` GSI           | Current `HEAD` records in path/secret order                           |
+| `CONSUMERS#<environment>` GSI         | Administrative consumer profiles in consumer-ID order                 |
+| `CONSUMER#<id>` identity GSI          | Administrative API leaves in expiration order                         |
+| `SECRET#<id>` revision GSI            | Newest-first bounded control-revision management history              |
 
 `GET /v1/changes` is a paginated _current access snapshot_, not an event log.
 The cursor is HMAC-signed, bound to one consumer, and expires after 15 minutes.
@@ -325,10 +327,10 @@ response. A conditional `304` read is audited, as are scheduled recovery and
 retention actions; post-authorization handler failures are best-effort audited
 as `failed`. TLS or JWT requests rejected before an actor exists are not
 application events and must be investigated through API Gateway logs. Each
-object has a unique key:
+object has a unique, reverse-time sortable key:
 
 ```text
-audit/<yyyy>/<mm>/<dd>/<event-id>.json
+audit/<yyyy>/<mm>/<dd>/<descending-timestamp>-<event-id>.json
 ```
 
 Events contain a timestamp, correlation ID, stable actor, operation, safe
@@ -340,6 +342,14 @@ Compliance retention prevents deletion or shortened retention; it does not
 make a compromised writer unable to add misleading _new_ events. Hemlig claims
 locked retention, not hash-chain tamper evidence. See the
 [threat model](threat-model.md) for residual risks.
+
+`GET /v1/admin/audit` is served by a dedicated query Lambda. It has the same
+administrator JWT authorization as other management routes, but only this role
+receives `s3:ListBucket` and `s3:GetObject` on the archive prefix. The normal
+administrator Lambda remains write-only. Querying one UTC day reads at most 50
+immutable records per page; a caller-bound signed cursor continues the page.
+The query Lambda writes its own audit events, preserving evidence of archive
+access without granting its archive-read permission to ordinary handlers.
 
 ## Recovery and retention
 
@@ -372,20 +382,22 @@ Stateful resources use `RemovalPolicy.RETAIN`; the stack never uses an S3
 auto-delete custom resource. Roles are separated: admin can generate payload
 data keys and decrypt issuer envelopes and current payloads only with their
 respective required contexts; consumer can decrypt referenced payloads;
-application roles only receive `PutObject` access to the audit prefix.
+application roles receive only `PutObject` access to the audit prefix. The
+dedicated audit-query Lambda additionally has prefix-scoped list/read access
+and the same immutable-write ability needed to record archive views.
 
 ## Implementation status
 
-| Capability                                                              | Status                 |
-| ----------------------------------------------------------------------- | ---------------------- |
-| Secret create, metadata/ACL update, payload update                      | Implemented            |
-| Organizational paths, tags, and admin catalog browse                    | Implemented            |
-| Consumer read, ETag, current access snapshot                            | Implemented            |
-| Envelope encryption, immutable revisions, Object Lock provisioning      | Implemented            |
-| Audit, recovery, and retention                                          | Implemented foundation |
-| FQDN-driven CDK deployment                                              | Implemented            |
-| CSR enrollment, truststore publication, leaf rotation, leaf revocation | Implemented            |
-| Issuer-root rotation, audit query, and hash-chain seals                 | Deliberately excluded  |
+| Capability                                                             | Status                |
+| ---------------------------------------------------------------------- | --------------------- |
+| Secret create, metadata/ACL update, payload update                     | Implemented           |
+| Organizational paths, tags, and admin catalog browse                   | Implemented           |
+| Consumer read, ETag, current access snapshot                           | Implemented           |
+| Envelope encryption, immutable revisions, Object Lock provisioning     | Implemented           |
+| Audit archive, query UI, recovery, and retention                       | Implemented           |
+| FQDN-driven CDK deployment                                             | Implemented           |
+| CSR enrollment, truststore publication, leaf rotation, leaf revocation | Implemented           |
+| Issuer-root rotation and hash-chain seals                              | Deliberately excluded |
 
 [PLAN.md](../PLAN.md) records longer-term issuer-root rotation and audit-boundary
 acceptance criteria.

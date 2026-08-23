@@ -81,7 +81,10 @@ export class HemligApi {
    * treat a `conflict` as "this folder already exists" rather than a failed
    * mutation.
    */
-  public createFolder(environment: string, path: string): Promise<s.FolderDefinition> {
+  public createFolder(
+    environment: string,
+    path: string,
+  ): Promise<s.FolderDefinition> {
     return this.request(s.folderDefinition, "/v1/admin/folders", {
       method: "POST",
       body: { environment, path },
@@ -105,7 +108,10 @@ export class HemligApi {
   }
 
   public getSecret(secretId: string): Promise<s.ControlRevision> {
-    return this.request(s.controlRevision, `/v1/admin/secrets/${encode(secretId)}`);
+    return this.request(
+      s.controlRevision,
+      `/v1/admin/secrets/${encode(secretId)}`,
+    );
   }
 
   public getSecretPayload(secretId: string): Promise<s.SecretReadResponse> {
@@ -144,24 +150,35 @@ export class HemligApi {
     input: { metadata?: s.Metadata; acl?: readonly s.Grant[] },
     idempotencyKey: string,
   ): Promise<s.ControlRevision> {
-    return this.request(s.controlRevision, `/v1/admin/secrets/${encode(secretId)}`, {
-      method: "PUT",
-      body: input,
-      idempotencyKey,
-      ifMatch: controlVersionId,
-    });
+    return this.request(
+      s.controlRevision,
+      `/v1/admin/secrets/${encode(secretId)}`,
+      {
+        method: "PUT",
+        body: input,
+        idempotencyKey,
+        ifMatch: controlVersionId,
+      },
+    );
   }
 
   public putPayload(
     secretId: string,
     controlVersionId: string,
-    payload: Readonly<Record<string, { encoding: "utf8" | "base64"; value: string }>>,
+    payload: Readonly<
+      Record<string, { encoding: "utf8" | "base64"; value: string }>
+    >,
     idempotencyKey: string,
   ): Promise<s.ControlRevision> {
     return this.request(
       s.controlRevision,
       `/v1/admin/secrets/${encode(secretId)}/payload`,
-      { method: "PUT", body: { payload }, idempotencyKey, ifMatch: controlVersionId },
+      {
+        method: "PUT",
+        body: { payload },
+        idempotencyKey,
+        ifMatch: controlVersionId,
+      },
     );
   }
 
@@ -175,7 +192,10 @@ export class HemligApi {
   }
 
   public getConsumer(consumerId: string): Promise<s.ConsumerDetail> {
-    return this.request(s.consumerDetail, `/v1/admin/consumers/${encode(consumerId)}`);
+    return this.request(
+      s.consumerDetail,
+      `/v1/admin/consumers/${encode(consumerId)}`,
+    );
   }
 
   public listApiIdentities(
@@ -212,7 +232,11 @@ export class HemligApi {
     return this.request(
       s.apiIdentityResult,
       `/v1/admin/consumers/${encode(consumerId)}/api-identities`,
-      { method: "POST", body: { apiCertificateSigningRequestPem }, idempotencyKey },
+      {
+        method: "POST",
+        body: { apiCertificateSigningRequestPem },
+        idempotencyKey,
+      },
     );
   }
 
@@ -251,6 +275,19 @@ export class HemligApi {
     });
   }
 
+  /**
+   * Reads immutable application evidence through the dedicated archive-query
+   * route. A cursor is bound to both this administrator and one UTC date.
+   */
+  public listAudit(input: {
+    date: string;
+    cursor?: string;
+  }): Promise<s.AuditPage> {
+    return this.request(s.auditPage, "/v1/admin/audit", {
+      query: input,
+    });
+  }
+
   public getIssuer(): Promise<s.IssuerStatus> {
     return this.request(s.issuerStatus, "/v1/admin/issuer");
   }
@@ -277,11 +314,17 @@ export class HemligApi {
   }
 
   /** For routes with no response body, such as the folder DELETE's 204. */
-  private async requestEmpty(path: string, options: RequestOptions = {}): Promise<void> {
+  private async requestEmpty(
+    path: string,
+    options: RequestOptions = {},
+  ): Promise<void> {
     await this.fetchResponse(path, options);
   }
 
-  private async fetchResponse(path: string, options: RequestOptions = {}): Promise<Response> {
+  private async fetchResponse(
+    path: string,
+    options: RequestOptions = {},
+  ): Promise<Response> {
     const url = new URL(path, this.config.adminApiUrl);
     for (const [name, value] of Object.entries(options.query ?? {})) {
       if (value !== undefined && value.length > 0) {
@@ -311,7 +354,8 @@ export class HemligApi {
       response = await this.fetchImpl(url, {
         method: options.method ?? "GET",
         headers,
-        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        body:
+          options.body === undefined ? undefined : JSON.stringify(options.body),
         cache: "no-store",
         credentials: "omit",
         mode: "cors",

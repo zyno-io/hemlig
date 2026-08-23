@@ -31,10 +31,11 @@ It also supports CSR-based consumer enrollment: Hemlig creates one online,
 deployment-wide issuing root, KMS-wraps that root under the same application
 CMK used for payload envelopes, signs each consumer's client-certificate CSR,
 and publishes the one root as a version-pinned API Gateway truststore. It
-supports overlapping API-leaf rotation and immediate leaf revocation.
-Issuer-root rotation and audit querying remain deliberately out of scope. Do
-not use this pre-1.0 project to deliver production credentials without an
-isolated AWS acceptance test for your OIDC and mTLS configuration.
+supports overlapping API-leaf rotation and immediate leaf revocation. It also
+provides bounded, administrator-authorized browsing of its immutable
+application audit archive. Issuer-root rotation remains deliberately out of
+scope. Do not use this pre-1.0 project to deliver production credentials
+without an isolated AWS acceptance test for your OIDC and mTLS configuration.
 
 ## Documentation
 
@@ -128,18 +129,21 @@ controls require an isolated AWS acceptance environment.
 ## Lambda entry points
 
 - `dist/handlers/admin.handler`
+- `dist/handlers/audit-query.handler`
 - `dist/handlers/consumer.handler`
 - `dist/handlers/recovery.handler`
 - `dist/handlers/retention.handler`
 
-`audit-query` is intentionally not included in the normal Hemlig deployment.
-It must live in an audit boundary with a separate archive-read role.
+`audit-query` runs as a separate archive-read role in the normal deployment.
+It shares administrator JWT authorization with the management API, while the
+normal administrator handler remains write-only to the archive.
 
 ## Security posture
 
 Application audit events never include secret values, request bodies, tokens,
-or private keys. The audit role is write-only to its assigned prefix. Secret
-payloads are encrypted before S3 with a new KMS data key per payload revision.
+or private keys. Normal application roles are write-only to the audit prefix;
+the dedicated audit-query role alone can list and read it. Secret payloads are
+encrypted before S3 with a new KMS data key per payload revision.
 The same CMK wraps the online issuing root with a separate encryption context;
 only the admin function has context-restricted issuer decrypt permission.
 

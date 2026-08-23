@@ -223,11 +223,11 @@ three screens; the point is to confirm the properties the UI depends on.
 Enroll a consumer through the console with a CSR you generated locally, then
 exercise the delivery API with three certificates:
 
-| Certificate | Expected |
-| --- | --- |
-| the issued, active leaf | `200` with the payload |
+| Certificate                                    | Expected                                               |
+| ---------------------------------------------- | ------------------------------------------------------ |
+| the issued, active leaf                        | `200` with the payload                                 |
 | the same leaf after revoking it in the console | rejected, immediately — no truststore propagation wait |
-| a leaf signed by an unrelated CA | rejected at TLS |
+| a leaf signed by an unrelated CA               | rejected at TLS                                        |
 
 **Pass:** all three. Revocation is a strongly consistent DynamoDB read, so the
 second case must take effect on the very next request.
@@ -243,7 +243,9 @@ These are the controls MiniStack cannot evaluate at all.
 **Pass:**
 
 - The admin and delivery roles can `PutObject` to the audit prefix and cannot
-  read or delete anything in it.
+  read or delete anything in it. Only the dedicated audit-query role can list
+  and read that prefix; it also has immutable `PutObject` to record archive
+  views.
 - The delivery role can decrypt only with the `purpose=secret-payload`
   encryption context, and cannot decrypt the issuer envelope.
 - The admin role can decrypt only with `purpose=issuer-ca`.

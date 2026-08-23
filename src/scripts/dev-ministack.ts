@@ -70,7 +70,10 @@ const ensureBucket = async (
     // Absent; create it below.
   }
   await s3.send(
-    new CreateBucketCommand({ Bucket: name, ObjectLockEnabledForBucket: objectLock }),
+    new CreateBucketCommand({
+      Bucket: name,
+      ObjectLockEnabledForBucket: objectLock,
+    }),
   );
   await s3.send(
     new PutBucketVersioningCommand({
@@ -101,7 +104,11 @@ const ensureTable = async (dynamo: DynamoDBClient): Promise<void> => {
   } catch {
     // Absent; create it below.
   }
-  const attributeNames = new Set(["pk", "sk", ...indexes.flatMap(([, pk, sk]) => [pk, sk])]);
+  const attributeNames = new Set([
+    "pk",
+    "sk",
+    ...indexes.flatMap(([, pk, sk]) => [pk, sk]),
+  ]);
   await dynamo.send(
     new CreateTableCommand({
       TableName: table,
@@ -149,13 +156,20 @@ const ensureKey = async (kms: KMSClient): Promise<string> => {
   if (keyId === undefined || keyArn === undefined) {
     throw new Error("MiniStack KMS did not return a key ARN.");
   }
-  await kms.send(new CreateAliasCommand({ AliasName: alias, TargetKeyId: keyId }));
+  await kms.send(
+    new CreateAliasCommand({ AliasName: alias, TargetKeyId: keyId }),
+  );
   process.stdout.write(`created key ${alias}\n`);
   return keyArn;
 };
 
 const run = async (): Promise<void> => {
-  const s3 = new S3Client({ endpoint, region, credentials, forcePathStyle: true });
+  const s3 = new S3Client({
+    endpoint,
+    region,
+    credentials,
+    forcePathStyle: true,
+  });
   const dynamo = new DynamoDBClient({ endpoint, region, credentials });
   const kms = new KMSClient({ endpoint, region, credentials });
 
@@ -197,9 +211,13 @@ const run = async (): Promise<void> => {
     HEMLIG_ENVIRONMENT: localEnvironment,
     DELIVERY_API_CUSTOM_DOMAIN_NAME: "api.local.test",
     DELIVERY_API_HOSTNAME: "api.local.test",
+    IOT_ENDPOINT: "localhost",
+    IOT_NOTIFICATION_POLICY_NAME: "ministack-notifications",
+    IOT_NOTIFICATION_TOPIC_PREFIX: "hemlig/ministack/consumers",
     CURSOR_HMAC_KEY:
       process.env.CURSOR_HMAC_KEY ?? randomBytes(48).toString("base64"),
-    ADMIN_JWT_ISSUER: process.env.ADMIN_JWT_ISSUER ?? "https://local.test/issuer",
+    ADMIN_JWT_ISSUER:
+      process.env.ADMIN_JWT_ISSUER ?? "https://local.test/issuer",
     ADMIN_JWT_AUDIENCE: process.env.ADMIN_JWT_AUDIENCE ?? "hemlig-local",
     ADMIN_ACTOR_SUBJECT_CLAIM: "sub",
     MAX_PAYLOAD_BYTES: "768000",

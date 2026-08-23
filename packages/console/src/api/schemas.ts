@@ -210,6 +210,33 @@ export const environmentListResponse = z.object({
   generatedAt: z.string(),
 });
 
+export const auditOutcome = z.enum([
+  "attempted",
+  "authorized",
+  "succeeded",
+  "failed",
+]);
+
+export const auditEvent = z.object({
+  eventId: z.string(),
+  at: z.string(),
+  correlationId: z.string(),
+  outcome: auditOutcome,
+  actor,
+  operation: z.string(),
+  target: z.record(z.string()).optional(),
+  permission: z.literal("read").optional(),
+  sourceIp: z.string().optional(),
+  reasonCode: z.string().optional(),
+});
+
+export const auditPage = z.object({
+  date: z.string(),
+  events: z.array(auditEvent).max(50),
+  nextCursor: z.string().optional(),
+  generatedAt: z.string(),
+});
+
 /**
  * An explicit, empty folder record — never a secret. Creating one has no
  * effect on any secret's path, and deleting one never touches a secret
@@ -239,6 +266,8 @@ export type IssuerStatus = z.infer<typeof issuerStatus>;
 export type SecretRevisionPage = z.infer<typeof secretRevisionPage>;
 export type EnvironmentDefinition = z.infer<typeof environmentDefinition>;
 export type EnvironmentListResponse = z.infer<typeof environmentListResponse>;
+export type AuditEvent = z.infer<typeof auditEvent>;
+export type AuditPage = z.infer<typeof auditPage>;
 export type FolderDefinition = z.infer<typeof folderDefinition>;
 export type SecretReadResponse = z.infer<typeof secretReadResponse>;
 export type Metadata = z.infer<typeof metadata>;

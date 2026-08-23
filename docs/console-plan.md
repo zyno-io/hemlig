@@ -49,19 +49,19 @@ corrected.
 
 ### Ownership
 
-| Concern | Owner | Notes |
-| --- | --- | --- |
-| HTTP routes, request and response shapes | Backend | The console never defines a shape. |
-| Authentication and authorization | Backend | Gateway JWT authorizer plus handler re-check. |
-| All validation that has consequences | Backend | The console may mirror rules for UX; the server decides. |
-| Encryption, storage, audit, retention | Backend | The console has no visibility into any of it. |
-| `openapi/consumer-secrets.yaml` | Backend | Single source of truth for the wire. |
-| CORS policy | Backend | The console's origin is backend configuration. |
-| Screens, navigation, forms, presentation | Frontend | |
-| Token acquisition and lifetime in the browser | Frontend | The provider is configured by the backend deployment. |
+| Concern                                        | Owner    | Notes                                                                       |
+| ---------------------------------------------- | -------- | --------------------------------------------------------------------------- |
+| HTTP routes, request and response shapes       | Backend  | The console never defines a shape.                                          |
+| Authentication and authorization               | Backend  | Gateway JWT authorizer plus handler re-check.                               |
+| All validation that has consequences           | Backend  | The console may mirror rules for UX; the server decides.                    |
+| Encryption, storage, audit, retention          | Backend  | The console has no visibility into any of it.                               |
+| `openapi/consumer-secrets.yaml`                | Backend  | Single source of truth for the wire.                                        |
+| CORS policy                                    | Backend  | The console's origin is backend configuration.                              |
+| Screens, navigation, forms, presentation       | Frontend |                                                                             |
+| Token acquisition and lifetime in the browser  | Frontend | The provider is configured by the backend deployment.                       |
 | Retry, reconciliation, and pagination behavior | Frontend | Driven by backend properties — see [the leakage table](#what-leaks-across). |
-| Static hosting infrastructure | Seam | Defined in backend CDK, serves frontend output. |
-| `@hemlig/client` | Seam | Typed expression of the contract, used by both. |
+| Static hosting infrastructure                  | Seam     | Defined in backend CDK, serves frontend output.                             |
+| `@hemlig/client`                               | Seam     | Typed expression of the contract, used by both.                             |
 
 ### Rules
 
@@ -95,41 +95,40 @@ the service dictate frontend behavior, and making that coupling explicit is the
 point of this section — each row is a backend fact the frontend is required to
 know.
 
-| Backend property | Frontend obligation |
-| --- | --- |
-| Secret mutations hard-conflict on a reused idempotency key and never replay (`src/services/secrets.ts:260`) | An ambiguous outcome must be reconciled by refetching, never retried |
-| Consumer mutations replay the recorded result for the same key (`src/services/consumers.ts:359`) | An ambiguous outcome may be retried with the same key |
-| Control revisions are the optimistic-concurrency token | Every mutation carries `If-Match`; a `412` never auto-retries |
-| Catalog pages are post-filtered after a `Limit: 100` read (`src/repositories/dynamo.ts:418-436`) | A page may be empty and still have a cursor; never render "no results" before the cursor is absent |
-| Cursors are HMAC-bound to actor and filters, and expire in 15 minutes | Any filter change resets pagination |
-| Every request writes audit objects into a seven-year Compliance archive (`src/handlers/admin.ts:24-38`) | No polling, no background refetch, no N+1 |
-| Administrator payload reads are explicit, audited requests | Keep plaintext component-local; never cache or auto-load it |
-| The gateway rejects bad tokens with a bare `401` before Lambda | `401` and `403` mean different things and get different handling |
-| No delete route exists | Retirement is ACL removal plus a tombstone, and the UI must say so |
+| Backend property                                                                                            | Frontend obligation                                                                                |
+| ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Secret mutations hard-conflict on a reused idempotency key and never replay (`src/services/secrets.ts:260`) | An ambiguous outcome must be reconciled by refetching, never retried                               |
+| Consumer mutations replay the recorded result for the same key (`src/services/consumers.ts:359`)            | An ambiguous outcome may be retried with the same key                                              |
+| Control revisions are the optimistic-concurrency token                                                      | Every mutation carries `If-Match`; a `412` never auto-retries                                      |
+| Catalog pages are post-filtered after a `Limit: 100` read (`src/repositories/dynamo.ts:418-436`)            | A page may be empty and still have a cursor; never render "no results" before the cursor is absent |
+| Cursors are HMAC-bound to actor and filters, and expire in 15 minutes                                       | Any filter change resets pagination                                                                |
+| Every request writes audit objects into a seven-year Compliance archive (`src/handlers/admin.ts:24-38`)     | No polling, no background refetch, no N+1                                                          |
+| Administrator payload reads are explicit, audited requests                                                  | Keep plaintext component-local; never cache or auto-load it                                        |
+| The gateway rejects bad tokens with a bare `401` before Lambda                                              | `401` and `403` mean different things and get different handling                                   |
+| No delete route exists                                                                                      | Retirement is ACL removal plus a tombstone, and the UI must say so                                 |
 
 ### What is deliberately absent
 
 Neither side builds these, because the API excludes them by design.
 
-| Not built | Reason |
-| --- | --- |
-| Audit log viewer | No audit-query endpoint; the archive lives in a separate audit boundary with its own read role. |
-| Secret deletion | No delete route. Retirement is ACL removal plus the `REVOKED` tombstone. |
-| Issuer-root rotation | Excluded from v0.2; needs a reviewed overlap protocol. |
-| Consumer-side operations | The consumer API is mTLS-only and has no write surface. |
+| Not built                | Reason                                                                   |
+| ------------------------ | ------------------------------------------------------------------------ |
+| Secret deletion          | No delete route. Retirement is ACL removal plus the `REVOKED` tombstone. |
+| Issuer-root rotation     | Excluded from v0.2; needs a reviewed overlap protocol.                   |
+| Consumer-side operations | The consumer API is mTLS-only and has no write surface.                  |
 
 Each gets an explicit empty state that explains the absence, not a disabled
 button that implies a missing permission.
 
 ### Decisions already taken
 
-| Decision | Choice | Why |
-| --- | --- | --- |
-| Frontend stack | Vue 3 + Vite | First-party Vite support, small dependency surface, strong TypeScript story. |
-| Entry topology | Separate origins with CORS | Keeps the real client IP in audit events and no proxy in the bearer-token path. |
-| CSR handling | Paste or upload, plus an opt-in in-browser generator | Reversed after the original paste-only decision. See [the record](#in-browser-csr-generation). |
-| Console origin | Explicit `consoleFqdn` within the deployment zone | Enables one exact CORS origin; it does not provision static hosting. |
-| Payload key visibility | Count only | Provides destructive-replacement warning without disclosing key names. |
+| Decision               | Choice                                               | Why                                                                                            |
+| ---------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Frontend stack         | Vue 3 + Vite                                         | First-party Vite support, small dependency surface, strong TypeScript story.                   |
+| Entry topology         | Separate origins with CORS                           | Keeps the real client IP in audit events and no proxy in the bearer-token path.                |
+| CSR handling           | Paste or upload, plus an opt-in in-browser generator | Reversed after the original paste-only decision. See [the record](#in-browser-csr-generation). |
+| Console origin         | Explicit `consoleFqdn` within the deployment zone    | Enables one exact CORS origin; it does not provision static hosting.                           |
+| Payload key visibility | Count only                                           | Provides destructive-replacement warning without disclosing key names.                         |
 
 ---
 
@@ -148,16 +147,16 @@ its own.
 
 The following v0.3 backend work resolves the console-facing API gaps.
 
-| # | v0.3 resolution | Blocks |
-| --- | --- | --- |
-| 1 | Exact-origin CORS plus explicit unauthenticated `OPTIONS /{proxy+}` when `consoleFqdn` is configured | Every browser request |
-| 2 | Consumer directory, detail, and identity-list routes backed by sparse GSIs | Consumer screens, ACL picker |
-| 3 | `payloadKeyCount` on control revisions and catalog entries | Non-destructive payload editing |
-| 4 | Environments are administrator-defined via `GET`/`POST /v1/admin/environments`, not deployment configuration — see [the record](#environment-enumeration) | Environment switcher |
-| 5 | Public issuer and truststore status route | Trust status page |
-| 6 | Bounded newest-first revision history route | "What changed, when, by whom" |
-| 7 | Terminal enrollment failure is `409 enrollment_failed` | Enrollment retry logic |
-| 8 | Optional scope protection at gateway and handler, activated with console CORS | Browser administrator access |
+| #   | v0.3 resolution                                                                                                                                           | Blocks                          |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| 1   | Exact-origin CORS plus explicit unauthenticated `OPTIONS /{proxy+}` when `consoleFqdn` is configured                                                      | Every browser request           |
+| 2   | Consumer directory, detail, and identity-list routes backed by sparse GSIs                                                                                | Consumer screens, ACL picker    |
+| 3   | `payloadKeyCount` on control revisions and catalog entries                                                                                                | Non-destructive payload editing |
+| 4   | Environments are administrator-defined via `GET`/`POST /v1/admin/environments`, not deployment configuration — see [the record](#environment-enumeration) | Environment switcher            |
+| 5   | Public issuer and truststore status route                                                                                                                 | Trust status page               |
+| 6   | Bounded newest-first revision history route                                                                                                               | "What changed, when, by whom"   |
+| 7   | Terminal enrollment failure is `409 enrollment_failed`                                                                                                    | Enrollment retry logic          |
+| 8   | Optional scope protection at gateway and handler, activated with console CORS                                                                             | Browser administrator access    |
 
 ## API refinement adopted in v0.3
 
@@ -212,13 +211,13 @@ export interface DeploymentConfig {
   readonly environmentName: string;
   /** Zone containing both API names and the optional browser origin. */
   readonly zoneDomain: string;
-  readonly consoleFqdn?: string;   // exact allowed browser origin
+  readonly consoleFqdn?: string; // exact allowed browser origin
   readonly adminFqdn: string;
   readonly apiFqdn: string;
   readonly oidcIssuer: string;
   readonly oidcAudience: string;
   readonly oidcSubjectClaim: string;
-  readonly oidcAdminScope?: string;         // required with consoleFqdn
+  readonly oidcAdminScope?: string; // required with consoleFqdn
   readonly existingHostedZoneId?: string;
 }
 ```
@@ -242,18 +241,32 @@ fingerprints are not hostname-bound, so certificates do not need re-issuance.
 const adminApi = new apigatewayv2.HttpApi(this, "AdminApi", {
   apiName: `${prefix}-admin`,
   defaultAuthorizer: authorizer,
-  defaultIntegration: new HttpLambdaIntegration("AdminIntegration", adminFunction),
+  defaultIntegration: new HttpLambdaIntegration(
+    "AdminIntegration",
+    adminFunction,
+  ),
   createDefaultStage: false,
   disableExecuteApiEndpoint: true,
-  corsPreflight: consoleEnabled ? {
-    allowOrigins: [`https://${consoleFqdn}`],
-    allowMethods: [CorsHttpMethod.GET, CorsHttpMethod.POST,
-                   CorsHttpMethod.PUT, CorsHttpMethod.DELETE],
-    allowHeaders: ["authorization", "content-type", "idempotency-key", "if-match"],
-    exposeHeaders: ["etag"],
-    allowCredentials: false,
-    maxAge: Duration.minutes(10),
-  } : undefined,
+  corsPreflight: consoleEnabled
+    ? {
+        allowOrigins: [`https://${consoleFqdn}`],
+        allowMethods: [
+          CorsHttpMethod.GET,
+          CorsHttpMethod.POST,
+          CorsHttpMethod.PUT,
+          CorsHttpMethod.DELETE,
+        ],
+        allowHeaders: [
+          "authorization",
+          "content-type",
+          "idempotency-key",
+          "if-match",
+        ],
+        exposeHeaders: ["etag"],
+        allowCredentials: false,
+        maxAge: Duration.minutes(10),
+      }
+    : undefined,
 });
 ```
 
@@ -363,10 +376,10 @@ worse than no mirror because the console will trust it. Five write paths of
 bespoke consistency code plus a backfill script, to avoid two index
 definitions.
 
-| Index | Partition key | Sort key | On |
-| --- | --- | --- | --- |
-| `consumer-directory` | `consumerDirectoryPk = CONSUMERS#<environment>` | `consumerDirectorySk = <consumerId>` | `CONSUMER#<id> / PROFILE` |
-| `consumer-identity` | `identityConsumerPk = CONSUMER#<consumerId>` | `identityConsumerSk = <notAfter>#<fingerprint>` | `IDENTITY#<fp> / PROFILE` |
+| Index                | Partition key                                   | Sort key                                        | On                        |
+| -------------------- | ----------------------------------------------- | ----------------------------------------------- | ------------------------- |
+| `consumer-directory` | `consumerDirectoryPk = CONSUMERS#<environment>` | `consumerDirectorySk = <consumerId>`            | `CONSUMER#<id> / PROFILE` |
+| `consumer-identity`  | `identityConsumerPk = CONSUMER#<consumerId>`    | `identityConsumerSk = <notAfter>#<fingerprint>` | `IDENTITY#<fp> / PROFILE` |
 
 Both are sparse — the attributes exist only on those two record types. Deleting
 or updating the authoritative record updates the index automatically, avoiding
@@ -511,9 +524,9 @@ GET /v1/admin/secrets/{secretId}/revisions
 }
 ```
 
-Control-plane state, not audit evidence, so this does not cross the audit
-boundary. It gives the console a history view without an audit-query API. Never
-a presigned URL, never the payload.
+Control-plane state, not audit evidence, so this remains distinct from the
+console's separate immutable-audit browser. It never returns a presigned URL
+or payload.
 
 The route uses the sparse `secret-revision` GSI, whose
 `createdAt#controlVersionId` sort key gives it meaningful newest-first order.
@@ -595,17 +608,17 @@ sources. Add a row to `docs/monorepo.md`.
 
 ## F1. Stack
 
-| Concern | Choice |
-| --- | --- |
-| Framework | Vue 3.5, `<script setup lang="ts">`, strict TypeScript |
-| Build | Vite 6 |
-| Routing | Vue Router 4, history mode |
-| Client state | Pinia — session and environment context only |
-| Server cache | `@tanstack/vue-query` |
-| Auth | `oidc-client-ts` |
-| Response validation | `zod` at the API boundary |
-| Styling | Tailwind, no component library |
-| Test | Vitest, `@vue/test-utils`, `@testing-library/vue`, MSW, Playwright |
+| Concern             | Choice                                                             |
+| ------------------- | ------------------------------------------------------------------ |
+| Framework           | Vue 3.5, `<script setup lang="ts">`, strict TypeScript             |
+| Build               | Vite 6                                                             |
+| Routing             | Vue Router 4, history mode                                         |
+| Client state        | Pinia — session and environment context only                       |
+| Server cache        | `@tanstack/vue-query`                                              |
+| Auth                | `oidc-client-ts`                                                   |
+| Response validation | `zod` at the API boundary                                          |
+| Styling             | Tailwind, no component library                                     |
+| Test                | Vitest, `@vue/test-utils`, `@testing-library/vue`, MSW, Playwright |
 
 No component library: twelve screens do not justify the supply chain, and a
 secrets console benefits from a dependency tree a reviewer can read.
@@ -687,22 +700,22 @@ access.
 
 ## F4. Route map
 
-| Path | View | Backend route |
-| --- | --- | --- |
-| `/` | redirect to last-used or first environment | — |
-| `/auth/callback` | OIDC redirect handler | — |
-| `/auth/silent` | silent-renew target, renders nothing | — |
-| `/e/:env/secrets` | Secrets catalog | `GET /v1/admin/secrets` |
-| `/e/:env/secrets/new` | Create wizard | `POST /v1/admin/secrets`, then payload `PUT` |
-| `/e/:env/secrets/:secretId` | Secret detail | `GET /v1/admin/secrets/{id}` |
-| `/e/:env/secrets/:secretId/metadata` | Metadata and ACL editor | `PUT /v1/admin/secrets/{id}` |
-| `/e/:env/secrets/:secretId/payload` | Payload editor | `GET`, then `PUT /v1/admin/secrets/{id}/payload` |
-| `/e/:env/secrets/:secretId/revisions` | History | `GET .../revisions` |
-| `/e/:env/consumers` | Consumer list | `GET /v1/admin/consumers` |
-| `/e/:env/consumers/new` | Enroll | `POST /v1/admin/consumers` |
-| `/e/:env/consumers/:consumerId` | Consumer detail and identities | `GET /v1/admin/consumers/{id}` |
-| `/trust` | Issuer and truststore status | `GET /v1/admin/issuer` |
-| `/about` | Deployment info, documented exclusions | `config.json` only |
+| Path                                  | View                                       | Backend route                                    |
+| ------------------------------------- | ------------------------------------------ | ------------------------------------------------ |
+| `/`                                   | redirect to last-used or first environment | —                                                |
+| `/auth/callback`                      | OIDC redirect handler                      | —                                                |
+| `/auth/silent`                        | silent-renew target, renders nothing       | —                                                |
+| `/e/:env/secrets`                     | Secrets catalog                            | `GET /v1/admin/secrets`                          |
+| `/e/:env/secrets/new`                 | Create wizard                              | `POST /v1/admin/secrets`, then payload `PUT`     |
+| `/e/:env/secrets/:secretId`           | Secret detail                              | `GET /v1/admin/secrets/{id}`                     |
+| `/e/:env/secrets/:secretId/metadata`  | Metadata and ACL editor                    | `PUT /v1/admin/secrets/{id}`                     |
+| `/e/:env/secrets/:secretId/payload`   | Payload editor                             | `GET`, then `PUT /v1/admin/secrets/{id}/payload` |
+| `/e/:env/secrets/:secretId/revisions` | History                                    | `GET .../revisions`                              |
+| `/e/:env/consumers`                   | Consumer list                              | `GET /v1/admin/consumers`                        |
+| `/e/:env/consumers/new`               | Enroll                                     | `POST /v1/admin/consumers`                       |
+| `/e/:env/consumers/:consumerId`       | Consumer detail and identities             | `GET /v1/admin/consumers/{id}`                   |
+| `/trust`                              | Issuer and truststore status               | `GET /v1/admin/issuer`                           |
+| `/about`                              | Deployment info, documented exclusions     | `config.json` only                               |
 
 Environment is a path segment rather than store-only state, so a URL is
 shareable and a mis-scoped request is visible in the address bar. Switching
@@ -855,15 +868,15 @@ storage, or an error message. Cleared on unmount and navigation. Inputs use
 
 ### Error taxonomy
 
-| Status | Behavior |
-| --- | --- |
-| `401` (no envelope) | Gateway rejected the token before Lambda — expired, malformed, wrong audience, missing scope. Re-authenticate. **No error envelope and no `correlationId`** — do not try to parse one. |
-| `403 forbidden` | Gateway accepted the token, the handler rejected it. Gateway and Lambda configuration have drifted. Show a configuration-error state; re-authenticating will not help. |
-| `400 bad_request` | Inline field error where the message identifies a field, otherwise a toast with `correlationId`. |
-| `404 not_found` | Empty state, not an error toast. On the issuer route, "no consumers enrolled yet". |
-| `409 enrollment_failed` | Terminal enrollment failure — stop and surface the operation ID; repair issuer or truststore configuration before retrying. Other `409` responses require normal idempotency reconciliation. |
-| `412 precondition_failed` | The concurrency panel. |
-| `500`, `503`, network, timeout | Outcome unknown, per above. |
+| Status                         | Behavior                                                                                                                                                                                     |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `401` (no envelope)            | Gateway rejected the token before Lambda — expired, malformed, wrong audience, missing scope. Re-authenticate. **No error envelope and no `correlationId`** — do not try to parse one.       |
+| `403 forbidden`                | Gateway accepted the token, the handler rejected it. Gateway and Lambda configuration have drifted. Show a configuration-error state; re-authenticating will not help.                       |
+| `400 bad_request`              | Inline field error where the message identifies a field, otherwise a toast with `correlationId`.                                                                                             |
+| `404 not_found`                | Empty state, not an error toast. On the issuer route, "no consumers enrolled yet".                                                                                                           |
+| `409 enrollment_failed`        | Terminal enrollment failure — stop and surface the operation ID; repair issuer or truststore configuration before retrying. Other `409` responses require normal idempotency reconciliation. |
+| `412 precondition_failed`      | The concurrency panel.                                                                                                                                                                       |
+| `500`, `503`, network, timeout | Outcome unknown, per above.                                                                                                                                                                  |
 
 Distinguishing `401` from `403` matters and an earlier draft had it wrong. The
 authorizer rejects expired and wrong-audience tokens itself, before the Lambda,
@@ -996,7 +1009,7 @@ console is enabled.
 - **Cache behaviors.** The **default** behavior must be uncached, with an
   explicit `/assets/*` behavior carrying the long `immutable` `max-age`.
   Inverting this is a trap: CloudFront selects a behavior from the viewer
-  request URI *before* `defaultRootObject` is applied, so `/` matches the
+  request URI _before_ `defaultRootObject` is applied, so `/` matches the
   default behavior rather than any `/index.html` pattern — an aggressive
   default caches the app shell at the edge, and invalidating `/index.html`
   clears a different cache key. Deep links behave the same way. Give the
@@ -1018,14 +1031,14 @@ console is enabled.
 
 ## S4. Testing across the boundary
 
-| Layer | Owner | What |
-| --- | --- | --- |
-| Backend unit | Backend | Existing Jest suites, extended for B4 inheritance, B5 index queries, B6 `DELETED` inclusion, B7 error code |
-| Frontend unit | Frontend | Mirrors of `src/domain/validation.ts` rules, the idempotency reconciliation state machine, cursor-reset logic |
-| Component | Frontend | Destructive-replace confirmation, ten-grant ACL cap, 412 panel preserving a draft, 409 reconciliation, empty-page-with-cursor |
-| **Contract** | **Seam** | MSW fixtures generated from `openapi/consumer-secrets.yaml`, plus a test that fails if the console sends a header or parameter the contract does not declare |
-| End-to-end | Frontend | Playwright with a mocked provider and MSW: create → payload → ACL; enroll → download leaf → revoke |
-| Acceptance | Backend | Isolated AWS account |
+| Layer         | Owner    | What                                                                                                                                                         |
+| ------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Backend unit  | Backend  | Existing Jest suites, extended for B4 inheritance, B5 index queries, B6 `DELETED` inclusion, B7 error code                                                   |
+| Frontend unit | Frontend | Mirrors of `src/domain/validation.ts` rules, the idempotency reconciliation state machine, cursor-reset logic                                                |
+| Component     | Frontend | Destructive-replace confirmation, ten-grant ACL cap, 412 panel preserving a draft, 409 reconciliation, empty-page-with-cursor                                |
+| **Contract**  | **Seam** | MSW fixtures generated from `openapi/consumer-secrets.yaml`, plus a test that fails if the console sends a header or parameter the contract does not declare |
+| End-to-end    | Frontend | Playwright with a mocked provider and MSW: create → payload → ACL; enroll → download leaf → revoke                                                           |
+| Acceptance    | Backend  | Isolated AWS account                                                                                                                                         |
 
 The contract test is the boundary made executable, and it is the reason B10
 ships with the handlers rather than after them. If the console and the service
@@ -1045,14 +1058,14 @@ acceptance environment `PLAN.md` already calls for.
 Two streams. The backend stream is the long pole and the only one that touches
 the service; the frontend stream is additive and carries no service risk.
 
-| Phase | Stream | Content | Status |
-| --- | --- | --- | --- |
-| 0 | Backend | B1–B10 | **Done.** B1's domain rename landed as `api.N.domain.com`; see below. |
-| 1 | Frontend | Workspace, Vite, config bootstrap, OIDC, shell, environment switcher, error plumbing, catalog, secret detail read-only | **Done** |
-| 2 | Frontend | Create wizard, metadata/ACL editing, payload editor, concurrency and idempotency handling | **Done** |
-| 3 | Frontend | Consumers, enrollment, rotation, revocation, trust status | **Done** |
-| 4 | Seam | S3, host construct, us-east-1 certificate, CSP, publication, README, monorepo table | In progress |
-| 5 | Both | Acceptance runbook (`docs/acceptance.md`) | **Done.** CSP is enforced from the outset rather than rolled out report-only, and accessibility is deliberately deferred. |
+| Phase | Stream   | Content                                                                                                                | Status                                                                                                                    |
+| ----- | -------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 0     | Backend  | B1–B10                                                                                                                 | **Done.** B1's domain rename landed as `api.N.domain.com`; see below.                                                     |
+| 1     | Frontend | Workspace, Vite, config bootstrap, OIDC, shell, environment switcher, error plumbing, catalog, secret detail read-only | **Done**                                                                                                                  |
+| 2     | Frontend | Create wizard, metadata/ACL editing, payload editor, concurrency and idempotency handling                              | **Done**                                                                                                                  |
+| 3     | Frontend | Consumers, enrollment, rotation, revocation, trust status                                                              | **Done**                                                                                                                  |
+| 4     | Seam     | S3, host construct, us-east-1 certificate, CSP, publication, README, monorepo table                                    | In progress                                                                                                               |
+| 5     | Both     | Acceptance runbook (`docs/acceptance.md`)                                                                              | **Done.** CSP is enforced from the outset rather than rolled out report-only, and accessibility is deliberately deferred. |
 
 ### What Phase 0 actually shipped, versus this plan
 
@@ -1073,8 +1086,9 @@ Two places the implementation deliberately diverged, both improvements:
 
 MiniStack has no API Gateway and no identity provider, so the console cannot
 obtain a token or reach a deployed route locally. `yarn dev:api` provisions
-a stable MiniStack environment and invokes `src/handlers/admin.ts` in process
-behind a loopback HTTP bridge, fabricating the JWT claims API Gateway would
+a stable MiniStack environment and invokes the matching administrator or
+audit-query handler in process behind a loopback HTTP bridge, fabricating the
+JWT claims API Gateway would
 have validated. It refuses to run against a non-local `AWS_ENDPOINT_URL`,
 unsets any ambient `AWS_PROFILE`, and is never packaged.
 
@@ -1090,18 +1104,18 @@ proceed independently, and the contract test tells you when they have drifted.
 
 ### Backend work breakdown
 
-| # | Item | Touches | Depends on |
-| --- | --- | --- | --- |
-| B1 | Preserve delivery FQDN; optional console origin configuration | `cdk/config.ts`, `cdk/stack.ts`, tests, docs | — |
-| B2 | CORS and the `OPTIONS /{proxy+}` route | `cdk/stack.ts`, `cdk/stack.test.ts` | B1 |
-| B3 | Required `hemlig.admin` scope | `cdk/config.ts`, `cdk/stack.ts`, `src/aws/config.ts`, `src/auth/actors.ts`, `docs/threat-model.md` | B1 |
-| B4 | Count-only payload information and inheritance | `src/domain/types.ts`, `src/services/secrets.ts`, `src/repositories/dynamo.ts`, tests | — |
-| B5 | Two sparse GSIs and four read routes | `cdk/stack.ts`, `src/aws/config.ts`, `src/repositories/dynamo.ts`, `src/handlers/admin.ts` | — |
-| B6 | Revision history route | `src/handlers/admin.ts`, `src/repositories/dynamo.ts` | — |
-| B7 | Terminal enrollment error code | `src/services/consumers.ts`, `docs/api.md` | — |
-| B8 | `sourceIp` through `humanOperation`; stale doc corrections | `src/services/operations.ts`, handlers, `docs/` | — |
-| B10 | OpenAPI and docs | `openapi/`, `docs/`, `README.md` | B2–B8 |
-| S1 | `@hemlig/client` split and new methods | `packages/client/` | B10 |
+| #   | Item                                                          | Touches                                                                                            | Depends on |
+| --- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ---------- |
+| B1  | Preserve delivery FQDN; optional console origin configuration | `cdk/config.ts`, `cdk/stack.ts`, tests, docs                                                       | —          |
+| B2  | CORS and the `OPTIONS /{proxy+}` route                        | `cdk/stack.ts`, `cdk/stack.test.ts`                                                                | B1         |
+| B3  | Required `hemlig.admin` scope                                 | `cdk/config.ts`, `cdk/stack.ts`, `src/aws/config.ts`, `src/auth/actors.ts`, `docs/threat-model.md` | B1         |
+| B4  | Count-only payload information and inheritance                | `src/domain/types.ts`, `src/services/secrets.ts`, `src/repositories/dynamo.ts`, tests              | —          |
+| B5  | Two sparse GSIs and four read routes                          | `cdk/stack.ts`, `src/aws/config.ts`, `src/repositories/dynamo.ts`, `src/handlers/admin.ts`         | —          |
+| B6  | Revision history route                                        | `src/handlers/admin.ts`, `src/repositories/dynamo.ts`                                              | —          |
+| B7  | Terminal enrollment error code                                | `src/services/consumers.ts`, `docs/api.md`                                                         | —          |
+| B8  | `sourceIp` through `humanOperation`; stale doc corrections    | `src/services/operations.ts`, handlers, `docs/`                                                    | —          |
+| B10 | OpenAPI and docs                                              | `openapi/`, `docs/`, `README.md`                                                                   | B2–B8      |
+| S1  | `@hemlig/client` split and new methods                        | `packages/client/`                                                                                 | B10        |
 
 B2 and B3 are opt-in: existing machine-to-machine callers remain audience-only
 until `consoleFqdn` and `oidcAdminScope` are configured together. B4–B8 are
@@ -1144,8 +1158,8 @@ directly instead of taking `@peculiar/x509` (8+ transitive packages), `pkijs`
 (6), or in-browser `node-forge` (zero-dep but pure-JS, so keygen takes seconds).
 
 The decisive argument is that **a DER writer whose output is verified fails
-closed.** A bug in an ASN.1 *parser* is dangerous, because malformed input can
-be coerced into something that wrongly validates. A bug in a *writer* can only
+closed.** A bug in an ASN.1 _parser_ is dangerous, because malformed input can
+be coerced into something that wrongly validates. A bug in a _writer_ can only
 produce bytes that fail to parse — and this output is checked twice, by a unit
 test using the same node-forge parser `src/services/issuer.ts` runs
 server-side, and by the service itself on submit. No DER bug can yield a weaker
@@ -1188,11 +1202,11 @@ surface and `payloadKeys` extends an existing exposure rather than opening a new
 one. But key names are more likely than a description to name a system or a
 credential, and the field is immutable and retained.
 
-| Option | Console capability | Disclosure |
-| --- | --- | --- |
+| Option                            | Console capability                                            | Disclosure                                                                         |
+| --------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `payloadKeys` + `payloadKeyCount` | Pre-filled editor; names the exact keys about to be destroyed | Key names in every control revision, readable by the consumer role for all secrets |
-| `payloadKeyCount` only | Confirmation states "4 entries exist, you are submitting 2" | A count; no names |
-| Neither | Blind replace-all with a generic warning | None |
+| `payloadKeyCount` only            | Confirmation states "4 entries exist, you are submitting 2"   | A count; no names                                                                  |
+| Neither                           | Blind replace-all with a generic warning                      | None                                                                               |
 
 Count-only carries most of the safety value — it stops the destructive edit — at
 a fraction of the disclosure. Names buy editing convenience, not safety, so
@@ -1232,7 +1246,7 @@ form, and the console sources its environment switcher from the API instead of
   and the most likely cause of a dead console on first deploy. The explicit
   unauthenticated `OPTIONS /{proxy+}` route is in place and synthesises with
   `AuthorizationType: NONE` and no scopes, but whether API Gateway attaches the
-  configured CORS headers to an *integration* response on an explicit OPTIONS
+  configured CORS headers to an _integration_ response on an explicit OPTIONS
   route cannot be tested locally — MiniStack has no API Gateway. If it does not,
   preflight returns 204 with no `Access-Control-Allow-Origin` and every request
   is blocked. The obvious fallback may not work either: AWS documents that when

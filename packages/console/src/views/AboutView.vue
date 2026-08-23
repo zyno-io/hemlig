@@ -4,9 +4,14 @@ import { useAppStore } from "../stores/app";
 const store = useAppStore();
 
 const excluded = [
-  ["Audit log", "There is no audit-query endpoint. The archive lives in a separate audit boundary with its own read role."],
-  ["Deleting a secret", "No delete route exists. Retirement is removing the consumer from the ACL, which leaves a REVOKED tombstone the operator acts on."],
-  ["Rotating the issuer root", "Deliberately excluded until an overlap and migration protocol is reviewed."],
+  [
+    "Deleting a secret",
+    "No delete route exists. Retirement is removing the consumer from the ACL, which leaves a REVOKED tombstone the operator acts on.",
+  ],
+  [
+    "Rotating the issuer root",
+    "Deliberately excluded until an overlap and migration protocol is reviewed.",
+  ],
 ];
 </script>
 
@@ -29,9 +34,10 @@ const excluded = [
     <section>
       <h2 class="font-medium">Who is an administrator</h2>
       <p class="mt-1 max-w-2xl text-ink-muted">
-        Hemlig has no internal user directory. The identity provider controls administrator
-        assignment; the API requires its configured issuer, audience, scope, and optional role.
-        This console cannot grant or restrict that access.
+        Hemlig has no internal user directory. The identity provider controls
+        administrator assignment; the API requires its configured issuer,
+        audience, scope, and optional role. This console cannot grant or
+        restrict that access.
       </p>
     </section>
 
@@ -48,9 +54,10 @@ const excluded = [
     <section>
       <h2 class="font-medium">Why nothing auto-refreshes</h2>
       <p class="mt-1 max-w-2xl text-ink-muted">
-        Every administrator request writes audit evidence into an Object Lock Compliance
-        archive that cannot be deleted for seven years. Polling would write permanent
-        records nobody asked for, so refreshing is always an explicit action.
+        Every administrator request writes audit evidence into an Object Lock
+        Compliance archive that cannot be deleted for seven years. Polling would
+        write permanent records nobody asked for, so refreshing is always an
+        explicit action.
       </p>
     </section>
   </div>

@@ -3,6 +3,7 @@ import {
   GetObjectCommand,
   GetObjectRetentionCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   PutObjectRetentionCommand,
   type S3Client,
@@ -88,6 +89,38 @@ export class ObjectStore {
       throw serviceUnavailable("S3 object checksum verification failed.");
     }
     return JSON.parse(Buffer.from(contents).toString("utf8")) as T;
+  }
+
+  /**
+   * Lists only object keys beneath an already-authorized prefix. Callers that
+   * need content must still load every returned object through getJson(), so
+   * an S3 key never becomes trusted application data on its own.
+   */
+  public async listKeys(
+    bucket: string,
+    prefix: string,
+    continuationToken: string | undefined,
+    maxKeys: number,
+  ): Promise<{
+    readonly keys: readonly string[];
+    readonly nextContinuationToken?: string;
+  }> {
+    const response = await this.s3.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+        MaxKeys: maxKeys,
+      }),
+    );
+    return {
+      keys: (response.Contents ?? [])
+        .map((item) => item.Key)
+        .filter((key): key is string => key !== undefined),
+      ...(response.NextContinuationToken === undefined
+        ? {}
+        : { nextContinuationToken: response.NextContinuationToken }),
+    };
   }
 
   public async existsWithChecksum(

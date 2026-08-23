@@ -237,30 +237,40 @@ export class HemligStack extends Stack {
     }).getResponseField("endpointAddress");
     const iotArnPrefix = `arn:${this.partition}:iot:${this.region}:${this.account}`;
     const attachedThingName = "${iot:Connection.Thing.ThingName}";
-    const notificationPolicy = new iot.CfnPolicy(this, "AgentNotificationPolicy", {
-      policyName: notificationPolicyName,
-      policyDocument: {
-        Version: "2012-10-17",
-        Statement: [
-          {
-            Effect: "Allow",
-            Action: ["iot:Connect"],
-            Resource: [`${iotArnPrefix}:client/${attachedThingName}`],
-            Condition: { Bool: { "iot:Connection.Thing.IsAttached": "true" } },
-          },
-          {
-            Effect: "Allow",
-            Action: ["iot:Subscribe"],
-            Resource: [`${iotArnPrefix}:topicfilter/${notificationTopicPrefix}/${attachedThingName}`],
-          },
-          {
-            Effect: "Allow",
-            Action: ["iot:Receive"],
-            Resource: [`${iotArnPrefix}:topic/${notificationTopicPrefix}/${attachedThingName}`],
-          },
-        ],
+    const notificationPolicy = new iot.CfnPolicy(
+      this,
+      "AgentNotificationPolicy",
+      {
+        policyName: notificationPolicyName,
+        policyDocument: {
+          Version: "2012-10-17",
+          Statement: [
+            {
+              Effect: "Allow",
+              Action: ["iot:Connect"],
+              Resource: [`${iotArnPrefix}:client/${attachedThingName}`],
+              Condition: {
+                Bool: { "iot:Connection.Thing.IsAttached": "true" },
+              },
+            },
+            {
+              Effect: "Allow",
+              Action: ["iot:Subscribe"],
+              Resource: [
+                `${iotArnPrefix}:topicfilter/${notificationTopicPrefix}/${attachedThingName}`,
+              ],
+            },
+            {
+              Effect: "Allow",
+              Action: ["iot:Receive"],
+              Resource: [
+                `${iotArnPrefix}:topic/${notificationTopicPrefix}/${attachedThingName}`,
+              ],
+            },
+          ],
+        },
       },
-    });
+    );
     new kms.Alias(this, "ApplicationKeyAlias", {
       aliasName: `alias/${prefix}-application`,
       targetKey: applicationKey,
@@ -339,6 +349,14 @@ export class HemligStack extends Stack {
       "src/handlers/admin.ts",
       environment,
     );
+    // Archive reads are deliberately isolated from the normal write-capable
+    // administrator handler. Both routes use the same administrator JWT.
+    const auditQueryFunction = this.function(
+      "AuditQueryFunction",
+      `${prefix}-audit-query`,
+      "src/handlers/audit-query.ts",
+      environment,
+    );
     const consumerFunction = this.function(
       "ConsumerFunction",
       `${prefix}-consumer`,
@@ -394,9 +412,7 @@ export class HemligStack extends Stack {
       "issuer-ca",
       "secret-payload",
     ]);
-    grantEnvelopeDataKey(consumerFunction, applicationKey, [
-      "secret-payload",
-    ]);
+    grantEnvelopeDataKey(consumerFunction, applicationKey, ["secret-payload"]);
     grantEnvelopeDataKey(bootstrapFunction, applicationKey, ["issuer-ca"]);
     // The admin Lambda uses this same application CMK to unwrap only the
     // issuing-root envelope. Consumer functions remain decrypt-only for
@@ -453,12 +469,38 @@ export class HemligStack extends Stack {
       }),
     );
     auditBucket.grantPut(adminFunction, `${auditPrefix}/*`);
+    // Bucket.grantRead() also grants broad s3:List* and s3:GetBucket* access
+    // to the entire bucket. The audit query needs only one prefix, so keep
+    // its IAM role aligned with the handler's date-derived prefix.
+    auditQueryFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["s3:ListBucket"],
+        resources: [auditBucket.bucketArn],
+        conditions: { StringLike: { "s3:prefix": [`${auditPrefix}/*`] } },
+      }),
+    );
+    auditQueryFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["s3:GetObject"],
+        resources: [auditBucket.arnForObjects(`${auditPrefix}/*`)],
+      }),
+    );
+    auditQueryFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["s3:PutObject"],
+        resources: [auditBucket.arnForObjects(`${auditPrefix}/*`)],
+      }),
+    );
     auditBucket.grantPut(consumerFunction, `${auditPrefix}/*`);
     auditBucket.grantPut(bootstrapFunction, `${auditPrefix}/*`);
     auditBucket.grantPut(recoveryFunction, `${auditPrefix}/*`);
     auditBucket.grantPut(retentionFunction, `${auditPrefix}/*`);
     grantTruststorePublisher(adminFunction, truststoreBucket, props.apiFqdn);
-    grantTruststorePublisher(bootstrapFunction, truststoreBucket, props.apiFqdn);
+    grantTruststorePublisher(
+      bootstrapFunction,
+      truststoreBucket,
+      props.apiFqdn,
+    );
     bootstrapFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: [
@@ -472,17 +514,22 @@ export class HemligStack extends Stack {
         resources: ["*"],
       }),
     );
-    const notificationDeadLetterQueue = new sqs.Queue(this, "NotificationDeadLetterQueue", {
-      queueName: `${prefix}-notification-dlq`,
-      encryption: sqs.QueueEncryption.SQS_MANAGED,
-      retentionPeriod: Duration.days(14),
-      removalPolicy: RemovalPolicy.RETAIN,
-    });
+    const notificationDeadLetterQueue = new sqs.Queue(
+      this,
+      "NotificationDeadLetterQueue",
+      {
+        queueName: `${prefix}-notification-dlq`,
+        encryption: sqs.QueueEncryption.SQS_MANAGED,
+        retentionPeriod: Duration.days(14),
+        removalPolicy: RemovalPolicy.RETAIN,
+      },
+    );
     new cloudwatch.Alarm(this, "NotificationDeadLetterAlarm", {
       alarmName: `${prefix}-notification-dlq-not-empty`,
-      metric: notificationDeadLetterQueue.metricApproximateNumberOfMessagesVisible({
-        period: Duration.minutes(5),
-      }),
+      metric:
+        notificationDeadLetterQueue.metricApproximateNumberOfMessagesVisible({
+          period: Duration.minutes(5),
+        }),
       threshold: 1,
       evaluationPeriods: 1,
       comparisonOperator:
@@ -536,6 +583,10 @@ export class HemligStack extends Stack {
       "AdminIntegration",
       adminFunction,
     );
+    const auditQueryIntegration = new HttpLambdaIntegration(
+      "AuditQueryIntegration",
+      auditQueryFunction,
+    );
     const bootstrapIntegration = new HttpLambdaIntegration(
       "BootstrapIntegration",
       bootstrapFunction,
@@ -582,6 +633,11 @@ export class HemligStack extends Stack {
         authorizationScopes: [],
       });
     }
+    adminApi.addRoutes({
+      path: "/v1/admin/audit",
+      methods: [apigatewayv2.HttpMethod.GET],
+      integration: auditQueryIntegration,
+    });
     adminApi.addRoutes({
       path: "/v1/bootstrap/redeem",
       methods: [apigatewayv2.HttpMethod.POST],
@@ -1028,7 +1084,11 @@ export class HemligStack extends Stack {
         // the same deliberately scoped bootstrap roles and asset bucket.
         ...(bootstrapQualifier === undefined
           ? {}
-          : { synthesizer: new DefaultStackSynthesizer({ qualifier: bootstrapQualifier }) }),
+          : {
+              synthesizer: new DefaultStackSynthesizer({
+                qualifier: bootstrapQualifier,
+              }),
+            }),
       },
     );
     const certificateZone = route53.HostedZone.fromHostedZoneAttributes(

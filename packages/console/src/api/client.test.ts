@@ -5,7 +5,12 @@ import type { RuntimeConfig } from "../config";
 const config: RuntimeConfig = {
   deploymentName: "hml-test",
   adminApiUrl: "https://admin.example.com",
-  auth: { mode: "oidc", authority: "https://idp.example.com", clientId: "c", scopes: ["s"] },
+  auth: {
+    mode: "oidc",
+    authority: "https://idp.example.com",
+    clientId: "c",
+    scopes: ["s"],
+  },
 };
 
 const tokens = { accessToken: async () => "token" };
@@ -30,7 +35,9 @@ describe("HemligApi transport", () => {
     vi.stubGlobal("fetch", real);
 
     const api = new HemligApi(config, tokens);
-    await expect(api.listSecrets({ environment: "dev" })).resolves.toMatchObject({
+    await expect(
+      api.listSecrets({ environment: "dev" }),
+    ).resolves.toMatchObject({
       secrets: [],
     });
 
@@ -55,7 +62,12 @@ describe("HemligApi transport", () => {
     }) as unknown as typeof fetch;
 
     const api = new HemligApi(config, tokens, fetchImpl);
-    await api.updateSecret("s", "ctl-1", { metadata: { description: "test secret" } }, "key-123");
+    await api.updateSecret(
+      "s",
+      "ctl-1",
+      { metadata: { description: "test secret" } },
+      "key-123",
+    );
 
     const headers = calls[0]?.headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer token");
@@ -75,15 +87,52 @@ describe("HemligApi transport", () => {
         payload: { PASSWORD: { encoding: "utf8", value: "value" } },
       }),
     );
-    const api = new HemligApi(config, tokens, fetchMock as unknown as typeof fetch);
+    const api = new HemligApi(
+      config,
+      tokens,
+      fetchMock as unknown as typeof fetch,
+    );
 
     await expect(api.getSecretPayload("payments-api")).resolves.toMatchObject({
       payloadVersionId: "pay-2",
     });
     const request = fetchMock.mock.calls[0]?.[0];
-    expect(request?.pathname).toBe(
-      "/v1/admin/secrets/payments-api/payload",
+    expect(request?.pathname).toBe("/v1/admin/secrets/payments-api/payload");
+  });
+
+  it("reads a caller-bound audit archive page", async () => {
+    const fetchMock = vi.fn(async (_url: URL, _options?: RequestInit) =>
+      jsonOk({
+        date: "2026-08-23",
+        events: [
+          {
+            eventId: "event-1",
+            at: "2026-08-23T10:00:00.000Z",
+            correlationId: "corr-1",
+            outcome: "succeeded",
+            actor: { type: "human", id: "admin-1" },
+            operation: "adminget:/v1/admin/secrets",
+          },
+        ],
+        nextCursor: "signed-next",
+        generatedAt: "2026-08-23T10:00:01.000Z",
+      }),
     );
+    const api = new HemligApi(
+      config,
+      tokens,
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await expect(
+      api.listAudit({ date: "2026-08-23", cursor: "signed-prior" }),
+    ).resolves.toMatchObject({
+      nextCursor: "signed-next",
+    });
+    const request = fetchMock.mock.calls[0]?.[0];
+    expect(request?.pathname).toBe("/v1/admin/audit");
+    expect(request?.searchParams.get("date")).toBe("2026-08-23");
+    expect(request?.searchParams.get("cursor")).toBe("signed-prior");
   });
 
   it("reports a transport failure as an unknown outcome and keeps the cause", async () => {
@@ -111,7 +160,9 @@ describe("HemligApi transport", () => {
     }) as unknown as typeof fetch;
 
     const api = new HemligApi(config, tokens, fetchImpl);
-    await expect(api.createEnvironment("staging")).resolves.toMatchObject({ name: "staging" });
+    await expect(api.createEnvironment("staging")).resolves.toMatchObject({
+      name: "staging",
+    });
 
     const headers = calls[0]?.headers as Record<string, string>;
     expect(headers["idempotency-key"]).toBeUndefined();

@@ -146,6 +146,141 @@ describe("console management indexes", () => {
     ]));
   });
 
+  it("atomically replaces a full ACL and emits grouped grant and revocation hints", async () => {
+    const dynamo = { send: jest.fn().mockResolvedValue({}) } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    const revokedConsumerIds = Array.from({ length: 40 }, (_, index) => `old-${index}`);
+    const grantedConsumerIds = Array.from({ length: 40 }, (_, index) => `new-${index}`);
+    const control = {
+      schemaVersion: 1 as const,
+      secretId: "payments-api",
+      controlVersionId: "ctl-next",
+      payloadVersionId: "pay-next",
+      payloadKeyCount: 1,
+      environment: "prod",
+      state: "ACTIVE" as const,
+      createdAt: "2026-08-23T00:00:00.000Z",
+      createdBy: { type: "human" as const, id: "admin-1" },
+      metadata: {},
+      acl: grantedConsumerIds.map((consumerId) => ({
+        consumerId,
+        permissions: ["read"] as const,
+      })),
+    };
+    const completed: CompletedMutation = {
+      prepared: {
+        operationId: "op-2",
+        idempotencyKey: "acl-replacement-key",
+        actor: { type: "human", id: "admin-1" },
+        requestDigest: "digest",
+        secretId: control.secretId,
+        environment: control.environment,
+        expectedControlVersionId: "ctl-prior",
+        control,
+        controlKey: "controls/payments-api/ctl-next.json",
+        controlChecksumSha256: "checksum-control",
+        controlBytes: Buffer.from("control"),
+        payload: {
+          revision: {
+            schemaVersion: 1,
+            secretId: control.secretId,
+            payloadVersionId: "pay-next",
+            environment: control.environment,
+            createdAt: control.createdAt,
+            createdBy: control.createdBy,
+            payload: {
+              algorithm: "AES-256-GCM",
+              encryptedDataKey: "key",
+              iv: "iv",
+              tag: "tag",
+              ciphertext: "ciphertext",
+            },
+          },
+          key: "payloads/payments-api/pay-next.json",
+          checksumSha256: "checksum-payload",
+          bytes: Buffer.from("payload"),
+        },
+        expiresAt: "2026-08-23T00:10:00.000Z",
+      },
+      controlObject: {
+        bucket: "revisions",
+        key: "controls/payments-api/ctl-next.json",
+        versionId: "control-version",
+        checksumSha256: "checksum-control",
+      },
+      payloadObject: {
+        bucket: "revisions",
+        key: "payloads/payments-api/pay-next.json",
+        versionId: "payload-version",
+        checksumSha256: "checksum-payload",
+      },
+      priorHead: {
+        pk: "SECRET#payments-api",
+        sk: "HEAD",
+        secretId: "payments-api",
+        environment: "prod",
+        controlVersionId: "ctl-prior",
+        payloadVersionId: "pay-prior",
+        state: "ACTIVE",
+      },
+      priorAccess: revokedConsumerIds.map((consumerId) => ({
+        pk: `CONSUMER#${consumerId}`,
+        sk: "SECRET#payments-api",
+        consumerId,
+        secretId: "payments-api",
+        environment: "prod",
+        permissions: ["read"] as const,
+        controlVersionId: "ctl-prior",
+        payloadVersionId: "pay-prior",
+        state: "ACTIVE" as const,
+        changeKind: "secret.changed" as const,
+      })),
+    };
+
+    await repository.completeMutation(completed);
+
+    expect(dynamo.send).toHaveBeenCalledTimes(1);
+    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as TransactWriteCommand;
+    const items = command.input.TransactItems ?? [];
+    const putItems = items.flatMap((item) => item.Put?.Item === undefined ? [] : [item.Put.Item]);
+    const accessItems = putItems.filter((item) => String(item.pk).startsWith("CONSUMER#"));
+    const notifications = putItems.filter((item) => String(item.pk).startsWith("NOTIFICATION#"));
+
+    expect(items).toHaveLength(87);
+    expect(accessItems).toHaveLength(80);
+    expect(accessItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        consumerId: grantedConsumerIds[0],
+        permissions: ["read"],
+        state: "ACTIVE",
+        controlVersionId: "ctl-next",
+        payloadVersionId: "pay-next",
+      }),
+      expect.objectContaining({
+        consumerId: revokedConsumerIds[0],
+        permissions: [],
+        state: "REVOKED",
+        controlVersionId: "ctl-next",
+        payloadVersionId: "pay-next",
+      }),
+    ]));
+    expect(notifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        consumerIds: grantedConsumerIds,
+        kind: "secret.changed",
+        controlVersionId: "ctl-next",
+        payloadVersionId: "pay-next",
+      }),
+      expect.objectContaining({
+        consumerIds: revokedConsumerIds,
+        kind: "secret.revoked",
+        controlVersionId: "ctl-next",
+      }),
+    ]));
+    const revocation = notifications.find((item) => item.kind === "secret.revoked");
+    expect(revocation).not.toHaveProperty("payloadVersionId");
+  });
+
   it("hydrates listed access grants from each secret's current head", async () => {
     const dynamo = {
       send: jest
