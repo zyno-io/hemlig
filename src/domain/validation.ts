@@ -7,10 +7,10 @@ const environmentName = /^[a-z][a-z0-9-]{0,63}$/;
 const metadataPath = /^[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*$/;
 const tagKey = /^[a-z][a-z0-9-]{0,31}$/;
 const tagValue = /^[A-Za-z0-9][A-Za-z0-9._@+\/-]{0,127}$/;
-// A mutation writes one access row and one transactional notification row for
-// each member of the old/new ACL union. Twenty grants leaves safe headroom
-// below DynamoDB's 100-item transaction maximum even when every grant changes.
-const maximumAclGrants = 20;
+// Ordinary writes use one grouped notification record. An ACL replacement
+// still atomically changes up to 80 access rows (40 grants revoked and 40
+// granted), leaving room below DynamoDB's 100-action transaction limit.
+const maximumAclGrants = 40;
 
 export const assertIdentifier = (value: string, field: string): void => {
     if (!identifier.test(value)) {

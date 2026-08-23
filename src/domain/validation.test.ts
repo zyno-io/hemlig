@@ -9,12 +9,16 @@ describe('secret validation', () => {
         expect(payload.CERT).toEqual({ encoding: 'base64', value: 'Y2VydA==' });
     });
 
-    it('rejects an ACL with more than twenty consumers', () => {
-        const acl = Array.from({ length: 21 }, (_, index) => ({
+    it('accepts forty ACL consumers and rejects a forty-first', () => {
+        const acl = Array.from({ length: 40 }, (_, index) => ({
             consumerId: `consumer-${index}`,
             permissions: ['read'],
         }));
-        expect(() => parseGrants(acl)).toThrow('zero and 20');
+        expect(parseGrants(acl)).toHaveLength(40);
+        expect(() => parseGrants([
+            ...acl,
+            { consumerId: 'consumer-40', permissions: ['read'] },
+        ])).toThrow('zero and 40');
     });
 
     it('accepts bounded organizational paths and tags', () => {
