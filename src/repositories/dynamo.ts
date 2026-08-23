@@ -15,8 +15,8 @@ import type {
   Actor,
   CatalogPage,
   ChangePage,
-  ClusterProvisioningResult,
-  ClusterRecord,
+  ConsumerProvisioningResult,
+  ConsumerRecord,
   ControlRevision,
   EnrollmentOperationType,
   EnrollmentRecord,
@@ -39,9 +39,18 @@ export interface StoredWorkflow {
   readonly objectKey: string;
   readonly checksumSha256: string;
   readonly expiresAt: string;
-  readonly serialized?: Record<string, unknown>;
+  readonly serialized?: object;
   readonly s3VersionId?: string;
-  readonly workflowKind?: "secret.mutation" | "cluster.enrollment";
+  readonly workflowKind?: "secret.mutation" | "consumer.enrollment";
+}
+
+export interface StoredControlRevision extends StoredWorkflow {
+  readonly serialized: ControlRevision;
+}
+
+export interface RevisionHistoryPage {
+  readonly revisions: readonly StoredControlRevision[];
+  readonly truncated: boolean;
 }
 
 export interface PreparedMutation {
@@ -84,7 +93,7 @@ export interface PreparedEnrollment {
   readonly idempotencyKey: string;
   readonly actor: Actor;
   readonly requestDigest: string;
-  readonly clusterId: string;
+  readonly consumerId: string;
   readonly environment: string;
   readonly subjectUri: string;
   readonly rootFingerprint: string;
@@ -100,7 +109,11 @@ export interface TruststoreStateRecord {
   readonly sk: "STATE";
   readonly currentTruststoreKey?: string;
   readonly currentTruststoreVersionId?: string;
+  readonly currentTruststoreChecksumSha256?: string;
+  readonly currentRootFingerprints?: readonly string[];
 }
+
+const maximumRevisionHistory = 500;
 
 export class DynamoRepository {
   public constructor(
@@ -140,17 +153,17 @@ export class DynamoRepository {
     return response.Item as IdentityRecord | undefined;
   }
 
-  public async getCluster(
-    clusterId: string,
-  ): Promise<ClusterRecord | undefined> {
+  public async getConsumer(
+    consumerId: string,
+  ): Promise<ConsumerRecord | undefined> {
     const response = await this.dynamo.send(
       new GetCommand({
         TableName: this.config.controlTableName,
-        Key: { pk: `CLUSTER#${clusterId}`, sk: "PROFILE" },
+        Key: { pk: `CONSUMER#${consumerId}`, sk: "PROFILE" },
         ConsistentRead: true,
       }),
     );
-    return response.Item as ClusterRecord | undefined;
+    return response.Item as ConsumerRecord | undefined;
   }
 
   public async getTruststoreRoot(
@@ -190,7 +203,7 @@ export class DynamoRepository {
       pk: "TRUSTSTORE#ROOTS",
       sk: `ROOT#${issuer.fingerprint}`,
       fingerprint: issuer.fingerprint,
-      clusterId: "clavis",
+      consumerId: "hemlig",
       environment,
       certificatePem: issuer.rootCertificatePem,
       notBefore: issuer.notBefore,
@@ -224,7 +237,7 @@ export class DynamoRepository {
     } catch {
       const existing = await this.getIssuer();
       if (existing === undefined) {
-        throw conflict("Could not create the Clavis issuing root.");
+        throw conflict("Could not create the Hemlig issuing root.");
       }
       await this.ensureIssuerTruststoreRoot(existing, environment);
       return existing;
@@ -240,7 +253,7 @@ export class DynamoRepository {
       pk: "TRUSTSTORE#ROOTS",
       sk: `ROOT#${issuer.fingerprint}`,
       fingerprint: issuer.fingerprint,
-      clusterId: "clavis",
+      consumerId: "hemlig",
       environment,
       certificatePem: issuer.rootCertificatePem,
       notBefore: issuer.notBefore,
@@ -264,7 +277,7 @@ export class DynamoRepository {
         existing.certificatePem !== issuer.rootCertificatePem ||
         existing.status !== "ACTIVE"
       ) {
-        throw conflict("The Clavis issuing-root truststore record is invalid.");
+        throw conflict("The Hemlig issuing-root truststore record is invalid.");
       }
     }
   }
@@ -330,13 +343,13 @@ export class DynamoRepository {
   }
 
   public async getAccess(
-    clusterId: string,
+    consumerId: string,
     secretId: string,
   ): Promise<AccessRecord | undefined> {
     const response = await this.dynamo.send(
       new GetCommand({
         TableName: this.config.controlTableName,
-        Key: { pk: `CLUSTER#${clusterId}`, sk: `SECRET#${secretId}` },
+        Key: { pk: `CONSUMER#${consumerId}`, sk: `SECRET#${secretId}` },
         ConsistentRead: true,
       }),
     );
@@ -344,7 +357,7 @@ export class DynamoRepository {
   }
 
   public async getAccessAndHead(
-    clusterId: string,
+    consumerId: string,
     secretId: string,
   ): Promise<AccessAndHead> {
     const response = await this.dynamo.send(
@@ -353,7 +366,7 @@ export class DynamoRepository {
           {
             Get: {
               TableName: this.config.controlTableName,
-              Key: { pk: `CLUSTER#${clusterId}`, sk: `SECRET#${secretId}` },
+              Key: { pk: `CONSUMER#${consumerId}`, sk: `SECRET#${secretId}` },
             },
           },
           {
@@ -372,7 +385,7 @@ export class DynamoRepository {
   }
 
   public async listAccess(
-    clusterId: string,
+    consumerId: string,
     environment: string,
     exclusiveStartKey?: Record<string, string>,
   ): Promise<ChangePage> {
@@ -383,7 +396,7 @@ export class DynamoRepository {
         FilterExpression: "#environment = :environment",
         ExpressionAttributeNames: { "#environment": "environment" },
         ExpressionAttributeValues: {
-          ":pk": `CLUSTER#${clusterId}`,
+          ":pk": `CONSUMER#${consumerId}`,
           ":prefix": "SECRET#",
           ":environment": environment,
         },
@@ -445,6 +458,116 @@ export class DynamoRepository {
     };
   }
 
+  public async listConsumers(
+    environment: string,
+    exclusiveStartKey?: Record<string, string>,
+  ): Promise<{ readonly consumers: readonly ConsumerRecord[]; readonly nextCursor?: string }> {
+    const response = await this.dynamo.send(
+      new QueryCommand({
+        TableName: this.config.controlTableName,
+        IndexName: this.config.consumerDirectoryIndex,
+        KeyConditionExpression: "consumerDirectoryPk = :directory",
+        ExpressionAttributeValues: { ":directory": consumerDirectoryPk(environment) },
+        ExclusiveStartKey: exclusiveStartKey,
+        Limit: 100,
+      }),
+    );
+    return {
+      consumers: (response.Items ?? []) as ConsumerRecord[],
+      nextCursor:
+        response.LastEvaluatedKey === undefined
+          ? undefined
+          : JSON.stringify(response.LastEvaluatedKey),
+    };
+  }
+
+  public async listConsumerApiIdentities(
+    consumerId: string,
+    exclusiveStartKey?: Record<string, string>,
+  ): Promise<{ readonly identities: readonly IdentityRecord[]; readonly nextCursor?: string }> {
+    const response = await this.dynamo.send(
+      new QueryCommand({
+        TableName: this.config.controlTableName,
+        IndexName: this.config.consumerIdentityIndex,
+        KeyConditionExpression: "identityConsumerPk = :consumer",
+        FilterExpression: "kind = :api",
+        ExpressionAttributeValues: {
+          ":consumer": identityConsumerPk(consumerId),
+          ":api": "api",
+        },
+        ExclusiveStartKey: exclusiveStartKey,
+        Limit: 100,
+        ScanIndexForward: false,
+      }),
+    );
+    return {
+      identities: (response.Items ?? []) as IdentityRecord[],
+      nextCursor:
+        response.LastEvaluatedKey === undefined
+          ? undefined
+          : JSON.stringify(response.LastEvaluatedKey),
+    };
+  }
+
+  public async countActiveConsumerApiIdentities(consumerId: string): Promise<number> {
+    let count = 0;
+    let exclusiveStartKey: Record<string, unknown> | undefined;
+    const now = isoNow();
+    do {
+      const response = await this.dynamo.send(
+        new QueryCommand({
+          TableName: this.config.controlTableName,
+          IndexName: this.config.consumerIdentityIndex,
+          KeyConditionExpression: "identityConsumerPk = :consumer",
+          FilterExpression: "#status = :active AND kind = :api AND notAfter > :now",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: {
+            ":consumer": identityConsumerPk(consumerId),
+            ":active": "ACTIVE",
+            ":api": "api",
+            ":now": now,
+          },
+          Select: "COUNT",
+          ExclusiveStartKey: exclusiveStartKey as never,
+        }),
+      );
+      count += response.Count ?? 0;
+      exclusiveStartKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (exclusiveStartKey !== undefined);
+    return count;
+  }
+
+  /**
+   * The revision GSI is chronologically ordered, letting this fixed-size
+   * response contain the newest revisions rather than an arbitrary UUID slice.
+   */
+  public async listRecentControlRevisions(secretId: string): Promise<RevisionHistoryPage> {
+    const response = await this.dynamo.send(
+      new QueryCommand({
+        TableName: this.config.controlTableName,
+        IndexName: this.config.secretRevisionIndex,
+        KeyConditionExpression: "revisionPk = :secret",
+        ExpressionAttributeValues: { ":secret": secretPk(secretId) },
+        Limit: maximumRevisionHistory + 1,
+        ScanIndexForward: false,
+      }),
+    );
+    const revisions = (response.Items ?? [])
+      .slice(0, maximumRevisionHistory)
+      .filter((item): item is StoredControlRevision =>
+        typeof item === "object" &&
+        item !== null &&
+        "serialized" in item &&
+        typeof (item as { serialized?: unknown }).serialized === "object",
+      ) as StoredControlRevision[];
+    return {
+      revisions,
+      truncated:
+        (response.Items?.length ?? 0) > maximumRevisionHistory ||
+        response.LastEvaluatedKey !== undefined,
+    };
+  }
+
   public async getIdempotency(
     actor: Actor,
     idempotencyKey: string,
@@ -466,7 +589,7 @@ export class DynamoRepository {
       requestDigest: enrollment.requestDigest,
       operationId: enrollment.operationId,
       operationType: enrollment.operationType,
-      clusterId: enrollment.clusterId,
+      consumerId: enrollment.consumerId,
       environment: enrollment.environment,
       rootFingerprint: enrollment.rootFingerprint,
       apiFingerprint: enrollment.apiIdentity.fingerprint,
@@ -477,13 +600,18 @@ export class DynamoRepository {
       sk: "PROFILE",
       ...enrollment.apiIdentity,
       status: "PENDING",
+      identityConsumerPk: identityConsumerPk(enrollment.consumerId),
+      identityConsumerSk: identityConsumerSk(
+        enrollment.apiIdentity.notAfter,
+        enrollment.apiIdentity.fingerprint,
+      ),
     };
     const operationItem = {
       pk: `ENROLLMENT#${enrollment.operationId}`,
       sk: "STATE",
       operationId: enrollment.operationId,
       operationType: enrollment.operationType,
-      clusterId: enrollment.clusterId,
+      consumerId: enrollment.consumerId,
       environment: enrollment.environment,
       rootFingerprint: enrollment.rootFingerprint,
       apiFingerprint: enrollment.apiIdentity.fingerprint,
@@ -495,7 +623,7 @@ export class DynamoRepository {
       idempotencyKey: enrollment.idempotencyKey,
       workflowDuePk: "WORKFLOW#DUE",
       workflowDueSk: enrollment.expiresAt,
-      workflowKind: "cluster.enrollment",
+      workflowKind: "consumer.enrollment",
     } satisfies EnrollmentRecord & Record<string, unknown>;
     const transaction: Record<string, unknown>[] = [
       {
@@ -524,15 +652,17 @@ export class DynamoRepository {
       Put: {
         TableName: this.config.controlTableName,
         Item: {
-          pk: `CLUSTER#${enrollment.clusterId}`,
+          pk: `CONSUMER#${enrollment.consumerId}`,
           sk: "PROFILE",
-          clusterId: enrollment.clusterId,
+          consumerId: enrollment.consumerId,
           environment: enrollment.environment,
           subjectUri: enrollment.subjectUri,
           status: "PENDING",
           createdAt: enrollment.createdAt,
           createdBy: enrollment.actor,
-        } satisfies ClusterRecord,
+          consumerDirectoryPk: consumerDirectoryPk(enrollment.environment),
+          consumerDirectorySk: enrollment.consumerId,
+        } satisfies ConsumerRecord,
         ConditionExpression: "attribute_not_exists(pk)",
       },
     });
@@ -542,7 +672,7 @@ export class DynamoRepository {
       );
     } catch (error) {
       throw conflict(
-        `Could not prepare cluster enrollment: ${errorMessage(error)}`,
+        `Could not prepare consumer enrollment: ${errorMessage(error)}`,
       );
     }
   }
@@ -601,19 +731,19 @@ export class DynamoRepository {
     operation: EnrollmentRecord,
     truststore: ObjectReference,
     rootFingerprints: readonly string[],
-  ): Promise<ClusterProvisioningResult> {
+  ): Promise<ConsumerProvisioningResult> {
     const transaction: Record<string, unknown>[] = [
       {
         Update: {
           TableName: this.config.controlTableName,
           Key: { pk: `IDENTITY#${operation.apiFingerprint}`, sk: "PROFILE" },
           UpdateExpression: "SET #status = :active",
-          ConditionExpression: "#status = :pending AND clusterId = :clusterId",
+          ConditionExpression: "#status = :pending AND consumerId = :consumerId",
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: {
             ":active": "ACTIVE",
             ":pending": "PENDING",
-            ":clusterId": operation.clusterId,
+            ":consumerId": operation.consumerId,
           },
         },
       },
@@ -647,11 +777,11 @@ export class DynamoRepository {
         },
       },
     ];
-    if (operation.operationType === "cluster.enroll") {
+    if (operation.operationType === "consumer.enroll") {
       transaction.push({
         Update: {
           TableName: this.config.controlTableName,
-          Key: { pk: `CLUSTER#${operation.clusterId}`, sk: "PROFILE" },
+          Key: { pk: `CONSUMER#${operation.consumerId}`, sk: "PROFILE" },
           UpdateExpression: "SET #status = :active",
           ConditionExpression:
             "#status = :pending AND #environment = :environment",
@@ -671,7 +801,7 @@ export class DynamoRepository {
       new TransactWriteCommand({ TransactItems: transaction as never }),
     );
     return {
-      clusterId: operation.clusterId,
+      consumerId: operation.consumerId,
       environment: operation.environment,
       rootFingerprint: operation.rootFingerprint,
       apiFingerprint: operation.apiFingerprint,
@@ -687,12 +817,12 @@ export class DynamoRepository {
           TableName: this.config.controlTableName,
           Key: { pk: `IDENTITY#${operation.apiFingerprint}`, sk: "PROFILE" },
           UpdateExpression: "SET #status = :failed",
-          ConditionExpression: "#status = :pending AND clusterId = :clusterId",
+          ConditionExpression: "#status = :pending AND consumerId = :consumerId",
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: {
             ":failed": "FAILED",
             ":pending": "PENDING",
-            ":clusterId": operation.clusterId,
+            ":consumerId": operation.consumerId,
           },
         },
       },
@@ -720,11 +850,11 @@ export class DynamoRepository {
         },
       },
     ];
-    if (operation.operationType === "cluster.enroll") {
+    if (operation.operationType === "consumer.enroll") {
       transaction.push({
         Delete: {
           TableName: this.config.controlTableName,
-          Key: { pk: `CLUSTER#${operation.clusterId}`, sk: "PROFILE" },
+          Key: { pk: `CONSUMER#${operation.consumerId}`, sk: "PROFILE" },
           ConditionExpression: "#status = :pending",
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: { ":pending": "PENDING" },
@@ -754,8 +884,8 @@ export class DynamoRepository {
                   pk: idempotencyPk(actor),
                   sk: `REQUEST#${idempotencyKey}`,
                   requestDigest,
-                  operationType: "cluster.api.rotate",
-                  clusterId: identity.clusterId,
+                  operationType: "consumer.api.rotate",
+                  consumerId: identity.consumerId,
                   environment: identity.environment,
                   rootFingerprint,
                   apiFingerprint: identity.fingerprint,
@@ -772,6 +902,11 @@ export class DynamoRepository {
                   sk: "PROFILE",
                   ...identity,
                   status: "ACTIVE",
+                  identityConsumerPk: identityConsumerPk(identity.consumerId),
+                  identityConsumerSk: identityConsumerSk(
+                    identity.notAfter,
+                    identity.fingerprint,
+                  ),
                 } satisfies IdentityRecord,
                 ConditionExpression: "attribute_not_exists(pk)",
               },
@@ -781,7 +916,7 @@ export class DynamoRepository {
       );
     } catch (error) {
       throw conflict(
-        `Could not create cluster API identity: ${errorMessage(error)}`,
+        `Could not create consumer API identity: ${errorMessage(error)}`,
       );
     }
   }
@@ -790,7 +925,7 @@ export class DynamoRepository {
     actor: Actor,
     idempotencyKey: string,
     requestDigest: string,
-    clusterId: string,
+    consumerId: string,
     fingerprint: string,
   ): Promise<void> {
     try {
@@ -804,8 +939,8 @@ export class DynamoRepository {
                   pk: idempotencyPk(actor),
                   sk: `REQUEST#${idempotencyKey}`,
                   requestDigest,
-                  operationType: "cluster.api.revoke",
-                  clusterId,
+                  operationType: "consumer.api.revoke",
+                  consumerId,
                   apiFingerprint: fingerprint,
                   status: "READY",
                 },
@@ -818,11 +953,11 @@ export class DynamoRepository {
                 Key: { pk: `IDENTITY#${fingerprint}`, sk: "PROFILE" },
                 UpdateExpression: "SET #status = :revoked",
                 ConditionExpression:
-                  "clusterId = :clusterId AND kind = :kind AND #status = :active",
+                  "consumerId = :consumerId AND kind = :kind AND #status = :active",
                 ExpressionAttributeNames: { "#status": "status" },
                 ExpressionAttributeValues: {
                   ":revoked": "REVOKED",
-                  ":clusterId": clusterId,
+                  ":consumerId": consumerId,
                   ":kind": "api",
                   ":active": "ACTIVE",
                 },
@@ -833,7 +968,7 @@ export class DynamoRepository {
       );
     } catch (error) {
       throw conflict(
-        `Could not revoke cluster API identity: ${errorMessage(error)}`,
+        `Could not revoke consumer API identity: ${errorMessage(error)}`,
       );
     }
   }
@@ -848,6 +983,10 @@ export class DynamoRepository {
       mutation.controlChecksumSha256,
       mutation.expiresAt,
       mutation.control,
+      {
+        createdAt: mutation.control.createdAt,
+        controlVersionId: mutation.control.controlVersionId,
+      },
     );
     const idempotencyItem = {
       pk: idempotencyPk(mutation.actor),
@@ -900,6 +1039,7 @@ export class DynamoRepository {
             environment: mutation.environment,
             controlVersionId: mutation.control.controlVersionId,
             payloadVersionId: mutation.control.payloadVersionId,
+            payloadKeyCount: mutation.control.payloadKeyCount,
             state: mutation.control.state,
             metadata: mutation.control.metadata,
             updatedAt: mutation.control.createdAt,
@@ -996,6 +1136,12 @@ export class DynamoRepository {
     } else {
       removeClauses.push("payloadVersionId", "payloadObjectVersionId");
     }
+    if (prepared.control.payloadKeyCount !== undefined) {
+      setClauses.push("payloadKeyCount = :payloadKeyCount");
+      headValues[":payloadKeyCount"] = prepared.control.payloadKeyCount;
+    } else {
+      removeClauses.push("payloadKeyCount");
+    }
     const headUpdate = `SET ${setClauses.join(", ")} REMOVE ${removeClauses.join(", ")}`;
     const transaction: Record<string, unknown>[] = [
       {
@@ -1059,7 +1205,7 @@ export class DynamoRepository {
         },
       });
     }
-    if (transaction.length > 25) {
+    if (transaction.length > 100) {
       throw serviceUnavailable(
         "Mutation exceeds the DynamoDB transaction limit.",
       );
@@ -1223,6 +1369,15 @@ const idempotencyPk = (actor: Actor): string =>
 export const catalogPk = (environment: string): string =>
   `CATALOG#${environment}`;
 
+export const consumerDirectoryPk = (environment: string): string =>
+  `CONSUMERS#${environment}`;
+
+export const identityConsumerPk = (consumerId: string): string =>
+  `CONSUMER#${consumerId}`;
+
+export const identityConsumerSk = (notAfter: string, fingerprint: string): string =>
+  `${notAfter}#${fingerprint}`;
+
 export const catalogSk = (path: string | undefined, secretId: string): string =>
   `PATH#${path ?? "_"}\/SECRET#${secretId}`;
 
@@ -1237,6 +1392,7 @@ const workflowItem = (
   checksumSha256: string,
   expiresAt: string,
   serialized: object,
+  revisionIndex?: { readonly createdAt: string; readonly controlVersionId: string },
 ): Record<string, unknown> => ({
   pk: secretPk(secretId),
   sk,
@@ -1249,6 +1405,12 @@ const workflowItem = (
   workflowDuePk: "WORKFLOW#DUE",
   workflowDueSk: expiresAt,
   serialized,
+  ...(revisionIndex === undefined
+    ? {}
+    : {
+        revisionPk: secretPk(secretId),
+        revisionSk: `${revisionIndex.createdAt}#${revisionIndex.controlVersionId}`,
+      }),
 });
 
 const workflowReadyUpdate = (
@@ -1296,21 +1458,21 @@ const accessItemsFor = (
   control: ControlRevision,
   prior: readonly AccessRecord[],
 ): AccessRecord[] => {
-  const priorByCluster = new Map(prior.map((item) => [item.clusterId, item]));
-  const nextByCluster = new Map(
-    control.acl.map((grant) => [grant.clusterId, grant]),
+  const priorByConsumer = new Map(prior.map((item) => [item.consumerId, item]));
+  const nextByConsumer = new Map(
+    control.acl.map((grant) => [grant.consumerId, grant]),
   );
-  const clusterIds = new Set([
-    ...priorByCluster.keys(),
-    ...nextByCluster.keys(),
+  const consumerIds = new Set([
+    ...priorByConsumer.keys(),
+    ...nextByConsumer.keys(),
   ]);
-  return [...clusterIds].map((clusterId): AccessRecord => {
-    const grant = nextByCluster.get(clusterId);
+  return [...consumerIds].map((consumerId): AccessRecord => {
+    const grant = nextByConsumer.get(consumerId);
     const hasRead = grant?.permissions.includes("read") ?? false;
     return {
-      pk: `CLUSTER#${clusterId}`,
+      pk: `CONSUMER#${consumerId}`,
       sk: `SECRET#${control.secretId}`,
-      clusterId,
+      consumerId,
       secretId: control.secretId,
       environment: control.environment,
       permissions: hasRead ? ["read"] : [],

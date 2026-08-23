@@ -106,9 +106,11 @@ export class SecretService {
     const createdAt = isoNow();
     let payloadRevision = undefined;
     let payloadVersionId = currentControl.payloadVersionId;
+    let payloadKeyCount = currentControl.payloadKeyCount;
     let state: SecretState = currentControl.state;
     if (input.payload !== undefined) {
       payloadVersionId = `pay-${newId()}`;
+      payloadKeyCount = Object.keys(input.payload).length;
       state = "ACTIVE";
       payloadRevision = await this.crypto.encrypt(
         input.payload,
@@ -126,6 +128,7 @@ export class SecretService {
       secretId: input.secretId,
       controlVersionId: `ctl-${newId()}`,
       payloadVersionId,
+      payloadKeyCount,
       environment: head.environment,
       state,
       createdAt,
@@ -150,20 +153,20 @@ export class SecretService {
   }
 
   public async read(
-    clusterId: string,
-    clusterEnvironment: string,
+    consumerId: string,
+    consumerEnvironment: string,
     secretId: string,
     ifNoneMatch?: string,
     onAuthorized?: () => Promise<void>,
   ): Promise<SecretReadResult> {
     const authorization = await this.repository.getAccessAndHead(
-      clusterId,
+      consumerId,
       secretId,
     );
     const { access, head } = authorization;
     if (
       access === undefined ||
-      access.environment !== clusterEnvironment ||
+      access.environment !== consumerEnvironment ||
       !access.permissions.includes("read") ||
       access.state === "REVOKED"
     ) {
@@ -342,7 +345,7 @@ export class SecretService {
     secretId: string,
   ): Promise<readonly AccessRecord[]> {
     const reads = acl.map(async (grant) =>
-      this.repository.getAccess(grant.clusterId, secretId),
+      this.repository.getAccess(grant.consumerId, secretId),
     );
     const resolved = await Promise.all(reads);
     return resolved.filter((item): item is AccessRecord => item !== undefined);
@@ -353,18 +356,18 @@ export class SecretService {
     environment: string,
   ): Promise<void> {
     const records = await Promise.all(
-      acl.map(async (grant) => this.repository.getCluster(grant.clusterId)),
+      acl.map(async (grant) => this.repository.getConsumer(grant.consumerId)),
     );
-    for (const [index, cluster] of records.entries()) {
+    for (const [index, consumer] of records.entries()) {
       const grant = acl[index];
       if (
         grant === undefined ||
-        cluster === undefined ||
-        cluster.status !== "ACTIVE" ||
-        cluster.environment !== environment
+        consumer === undefined ||
+        consumer.status !== "ACTIVE" ||
+        consumer.environment !== environment
       ) {
         throw forbidden(
-          "Every ACL grant must name an active cluster in the secret environment.",
+          "Every ACL grant must name an active consumer in the secret environment.",
         );
       }
     }

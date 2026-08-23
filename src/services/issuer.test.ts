@@ -17,22 +17,25 @@ const config: AppConfig = {
   workflowDueIndex: "workflow-due",
   retentionDueIndex: "retention-due",
   catalogPathIndex: "catalog-path",
+  consumerDirectoryIndex: "consumer-directory",
+  consumerIdentityIndex: "consumer-identity",
+  secretRevisionIndex: "secret-revision",
   revisionBucketName: "revisions",
   truststoreBucketName: "truststores",
   truststoreKeyPrefix: "truststores",
   payloadKmsKeyArn: "arn:aws:kms:us-east-1:111122223333:key/test",
   auditBucketName: "audit",
   auditPrefix: "audit",
-  clusterCustomDomainName: "clusters.example.test",
-  clusterApiHostname: "clusters.example.test",
+    deliveryApiCustomDomainName: "api.example.test",
+    deliveryApiHostname: "api.example.test",
   cursorHmacKey: Buffer.alloc(32, 1),
   adminJwtIssuer: "https://issuer.example.test",
-  adminJwtAudience: "clavis",
+  adminJwtAudience: "hemlig",
   adminActorSubjectClaim: "sub",
   maxPayloadBytes: 768000,
 };
 
-describe("Clavis issuer", () => {
+describe("Hemlig issuer", () => {
   it("creates one KMS-wrapped root and issues a CSR-backed client leaf", async () => {
     let issuer: IssuerRecord | undefined;
     const repository = {
@@ -77,18 +80,18 @@ describe("Clavis issuer", () => {
     expect(leaf.checkIssued(root)).toBe(true);
     expect(leaf.verify(root.publicKey)).toBe(true);
     expect(leaf.keyUsage).toContain("1.3.6.1.5.5.7.3.2");
-    expect(leaf.subjectAltName).toContain("URI:spiffe://clavis/cluster/prod-east");
+    expect(leaf.subjectAltName).toContain("URI:spiffe://hemlig/consumer/prod-east");
     expect(Number.parseInt(forgeRoot.serialNumber.slice(0, 2), 16)).toBeLessThan(128);
     expect(Number.parseInt(forgeLeaf.serialNumber.slice(0, 2), 16)).toBeLessThan(128);
     expect(kms.send).toHaveBeenCalledTimes(2);
     const generate = (kms.send as jest.Mock).mock.calls[0]?.[0] as GenerateDataKeyCommand;
     const decrypt = (kms.send as jest.Mock).mock.calls[1]?.[0] as DecryptCommand;
     expect(generate.input.EncryptionContext).toEqual({
-      service: "clavis",
+      service: "hemlig",
       purpose: "issuer-ca",
     });
     expect(decrypt.input.EncryptionContext).toEqual({
-      service: "clavis",
+      service: "hemlig",
       purpose: "issuer-ca",
     });
     expect(repository.createIssuer).toHaveBeenCalledTimes(1);

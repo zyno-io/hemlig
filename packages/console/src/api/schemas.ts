@@ -1,0 +1,162 @@
+import { z } from "zod";
+
+/**
+ * Parsed at the boundary so a contract drift becomes a loud failure rather
+ * than an undefined field in a form that then submits a destructive payload.
+ */
+export const actor = z.object({
+  type: z.enum(["human", "consumer", "system"]),
+  id: z.string(),
+  tenantId: z.string().optional(),
+  consumerId: z.string().optional(),
+  environment: z.string().optional(),
+});
+
+export const metadata = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  path: z.string().optional(),
+  tags: z.record(z.string()).optional(),
+});
+
+export const grant = z.object({
+  consumerId: z.string(),
+  permissions: z.array(z.literal("read")),
+});
+
+export const secretState = z.enum(["PENDING_VALUE", "ACTIVE", "REVOKED"]);
+
+export const controlRevision = z.object({
+  schemaVersion: z.literal(1),
+  secretId: z.string(),
+  controlVersionId: z.string(),
+  payloadVersionId: z.string().optional(),
+  payloadKeyCount: z.number().int().nonnegative().optional(),
+  environment: z.string(),
+  state: secretState,
+  createdAt: z.string(),
+  createdBy: actor,
+  metadata,
+  acl: z.array(grant),
+});
+
+export const catalogEntry = z.object({
+  secretId: z.string(),
+  environment: z.string(),
+  controlVersionId: z.string(),
+  payloadVersionId: z.string().optional(),
+  payloadKeyCount: z.number().int().nonnegative().optional(),
+  state: secretState,
+  metadata,
+  updatedAt: z.string().optional(),
+});
+
+export const catalogPage = z.object({
+  secrets: z.array(catalogEntry),
+  nextCursor: z.string().optional(),
+  generatedAt: z.string(),
+});
+
+export const consumerSummary = z.object({
+  consumerId: z.string(),
+  environment: z.string(),
+  status: z.enum(["PENDING", "ACTIVE", "FAILED"]),
+  subjectUri: z.string(),
+  createdAt: z.string(),
+  activeApiIdentityCount: z.number().int().nonnegative().optional(),
+});
+
+export const consumerListPage = z.object({
+  consumers: z.array(consumerSummary),
+  nextCursor: z.string().optional(),
+  generatedAt: z.string(),
+});
+
+export const apiIdentity = z.object({
+  apiFingerprint: z.string(),
+  status: z.enum(["PENDING", "ACTIVE", "REVOKED", "EXPIRED", "FAILED"]),
+  kind: z.string().optional(),
+  notBefore: z.string(),
+  notAfter: z.string(),
+  apiCertificatePem: z.string().optional(),
+});
+
+export const consumerDetail = consumerSummary.extend({
+  createdBy: actor.optional(),
+  rootFingerprint: z.string().optional(),
+  apiIdentities: z.array(apiIdentity).optional(),
+});
+
+export const apiIdentityListPage = z.object({
+  consumerId: z.string(),
+  environment: z.string(),
+  rootFingerprint: z.string().optional(),
+  apiIdentities: z.array(apiIdentity),
+  nextCursor: z.string().optional(),
+  generatedAt: z.string(),
+});
+
+export const enrollmentResult = z.object({
+  consumerId: z.string(),
+  environment: z.string(),
+  rootFingerprint: z.string(),
+  apiFingerprint: z.string(),
+  apiCertificatePem: z.string(),
+  status: z.literal("ACTIVE"),
+});
+
+export const apiIdentityResult = z.object({
+  consumerId: z.string(),
+  environment: z.string(),
+  rootFingerprint: z.string().optional(),
+  apiFingerprint: z.string(),
+  apiCertificatePem: z.string().optional(),
+  status: z.enum(["ACTIVE", "REVOKED"]),
+});
+
+export const issuerStatus = z.object({
+  rootFingerprint: z.string(),
+  rootCertificatePem: z.string(),
+  notBefore: z.string(),
+  notAfter: z.string(),
+  createdAt: z.string(),
+  truststore: z
+    .object({
+      objectKey: z.string(),
+      versionId: z.string(),
+      anchorCount: z.number().int().nonnegative(),
+    })
+    .optional(),
+});
+
+export const secretRevision = z.object({
+  controlVersionId: z.string(),
+  payloadVersionId: z.string().optional(),
+  payloadKeyCount: z.number().int().nonnegative().optional(),
+  createdAt: z.string(),
+  createdBy: actor,
+  isCurrent: z.boolean(),
+  objectAvailable: z.boolean(),
+});
+
+export const secretRevisionPage = z.object({
+  secretId: z.string(),
+  revisions: z.array(secretRevision),
+  truncated: z.boolean(),
+  generatedAt: z.string(),
+});
+
+export type ControlRevision = z.infer<typeof controlRevision>;
+export type CatalogEntry = z.infer<typeof catalogEntry>;
+export type CatalogPage = z.infer<typeof catalogPage>;
+export type ConsumerSummary = z.infer<typeof consumerSummary>;
+export type ConsumerListPage = z.infer<typeof consumerListPage>;
+export type ConsumerDetail = z.infer<typeof consumerDetail>;
+export type ApiIdentity = z.infer<typeof apiIdentity>;
+export type ApiIdentityListPage = z.infer<typeof apiIdentityListPage>;
+export type EnrollmentResult = z.infer<typeof enrollmentResult>;
+export type ApiIdentityResult = z.infer<typeof apiIdentityResult>;
+export type IssuerStatus = z.infer<typeof issuerStatus>;
+export type SecretRevisionPage = z.infer<typeof secretRevisionPage>;
+export type Metadata = z.infer<typeof metadata>;
+export type Grant = z.infer<typeof grant>;

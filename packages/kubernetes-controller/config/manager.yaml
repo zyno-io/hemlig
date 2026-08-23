@@ -1,66 +1,66 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: clavis-controller
-  namespace: clavis-system
+  name: hemlig-controller
+  namespace: hemlig-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: clavis-controller
+  name: hemlig-controller
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "create", "update", "patch"]
-  - apiGroups: ["clavis.io"]
-    resources: ["clavissecretimports", "clavissecretexports"]
+  - apiGroups: ["hemlig.io"]
+    resources: ["hemligsecretimports", "hemligsecretexports"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["clavis.io"]
-    resources: ["clavissecretimports/status", "clavissecretexports/status"]
+  - apiGroups: ["hemlig.io"]
+    resources: ["hemligsecretimports/status", "hemligsecretexports/status"]
     verbs: ["get", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: clavis-controller
+  name: hemlig-controller
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: clavis-controller
+  name: hemlig-controller
 subjects:
   - kind: ServiceAccount
-    name: clavis-controller
-    namespace: clavis-system
+    name: hemlig-controller
+    namespace: hemlig-system
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: clavis-controller
-  namespace: clavis-system
+  name: hemlig-controller
+  namespace: hemlig-system
 spec:
   replicas: 1
-  selector: { matchLabels: { app.kubernetes.io/name: clavis-controller } }
+  selector: { matchLabels: { app.kubernetes.io/name: hemlig-controller } }
   template:
-    metadata: { labels: { app.kubernetes.io/name: clavis-controller } }
+    metadata: { labels: { app.kubernetes.io/name: hemlig-controller } }
     spec:
-      serviceAccountName: clavis-controller
+      serviceAccountName: hemlig-controller
       containers:
         - name: controller
-          image: ghcr.io/clavis/kubernetes-controller:REPLACE_WITH_VERSION
+          image: ghcr.io/hemlig/kubernetes-controller:REPLACE_WITH_VERSION
           env:
-            - name: CLAVIS_CLUSTER_URL
-              value: https://clusters.example.com
-            - name: CLAVIS_CLUSTER_TLS_SECRET
-              value: clavis-client-tls
-            - name: CLAVIS_ADMIN_URL
+            - name: HEMLIG_API_URL
+              value: https://api.example.com
+            - name: HEMLIG_CONSUMER_TLS_SECRET
+              value: hemlig-client-tls
+            - name: HEMLIG_ADMIN_URL
               value: https://admin.example.com
-            - name: CLAVIS_ADMIN_TOKEN_FILE
-              value: /var/run/secrets/clavis/admin-token
+            - name: HEMLIG_ADMIN_TOKEN_FILE
+              value: /var/run/secrets/hemlig/admin-token
           volumeMounts:
             - name: admin-token
-              mountPath: /var/run/secrets/clavis
+              mountPath: /var/run/secrets/hemlig
               readOnly: true
       volumes:
         - name: admin-token
           secret:
-            secretName: clavis-admin-token
+            secretName: hemlig-admin-token

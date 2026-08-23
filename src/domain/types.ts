@@ -8,15 +8,15 @@ export type WorkflowState = 'PREPARED' | 'READY' | 'RETRYABLE' | 'FAILED' | 'DEL
 
 export type IdentityStatus = 'PENDING' | 'ACTIVE' | 'REVOKED' | 'EXPIRED' | 'FAILED';
 
-export type ClusterStatus = 'PENDING' | 'ACTIVE' | 'FAILED';
+export type ConsumerStatus = 'PENDING' | 'ACTIVE' | 'FAILED';
 
-export type EnrollmentOperationType = 'cluster.enroll';
+export type EnrollmentOperationType = 'consumer.enroll';
 
 export interface Actor {
-    readonly type: 'human' | 'cluster' | 'system';
+    readonly type: 'human' | 'consumer' | 'system';
     readonly id: string;
     readonly tenantId?: string;
-    readonly clusterId?: string;
+    readonly consumerId?: string;
     readonly environment?: EnvironmentName;
 }
 
@@ -37,7 +37,7 @@ export interface SecretMetadata {
 }
 
 export interface Grant {
-    readonly clusterId: string;
+    readonly consumerId: string;
     readonly permissions: readonly Permission[];
 }
 
@@ -46,6 +46,8 @@ export interface ControlRevision {
     readonly secretId: string;
     readonly controlVersionId: string;
     readonly payloadVersionId?: string;
+    /** Number of entries in the current payload; plaintext names are never retained here. */
+    readonly payloadKeyCount?: number;
     readonly environment: EnvironmentName;
     readonly state: SecretState;
     readonly createdAt: string;
@@ -81,6 +83,7 @@ export interface HeadRecord {
     readonly controlObjectVersionId?: string;
     readonly payloadVersionId?: string;
     readonly payloadObjectVersionId?: string;
+    readonly payloadKeyCount?: number;
     readonly state: SecretState;
     readonly metadata?: SecretMetadata;
     readonly updatedAt?: string;
@@ -94,7 +97,7 @@ export interface HeadRecord {
 export interface AccessRecord {
     readonly pk: string;
     readonly sk: string;
-    readonly clusterId: string;
+    readonly consumerId: string;
     readonly secretId: string;
     readonly environment: EnvironmentName;
     readonly permissions: readonly Permission[];
@@ -108,13 +111,16 @@ export interface IdentityRecord {
     readonly pk: string;
     readonly sk: 'PROFILE';
     readonly fingerprint: string;
-    readonly clusterId: string;
+    readonly consumerId: string;
     readonly environment: EnvironmentName;
     readonly kind: 'api' | 'notify';
     readonly status: IdentityStatus;
     readonly notBefore: string;
     readonly notAfter: string;
     readonly certificatePem?: string;
+    /** Sparse GSI projection for administrative identity browsing. */
+    readonly identityConsumerPk?: string;
+    readonly identityConsumerSk?: string;
 }
 
 export interface IssuerKeyEnvelope {
@@ -136,22 +142,25 @@ export interface IssuerRecord {
     readonly createdAt: string;
 }
 
-export interface ClusterRecord {
+export interface ConsumerRecord {
     readonly pk: string;
     readonly sk: 'PROFILE';
-    readonly clusterId: string;
+    readonly consumerId: string;
     readonly environment: EnvironmentName;
     readonly subjectUri: string;
-    readonly status: ClusterStatus;
+    readonly status: ConsumerStatus;
     readonly createdAt: string;
     readonly createdBy: Actor;
+    /** Sparse GSI projection for administrative consumer browsing. */
+    readonly consumerDirectoryPk?: string;
+    readonly consumerDirectorySk?: string;
 }
 
 export interface TruststoreRootRecord {
     readonly pk: 'TRUSTSTORE#ROOTS';
     readonly sk: string;
     readonly fingerprint: string;
-    readonly clusterId: string;
+    readonly consumerId: string;
     readonly environment: EnvironmentName;
     readonly certificatePem: string;
     readonly notBefore: string;
@@ -166,11 +175,11 @@ export interface EnrollmentRecord {
     readonly sk: 'STATE';
     readonly operationId: string;
     readonly operationType: EnrollmentOperationType;
-    readonly clusterId: string;
+    readonly consumerId: string;
     readonly environment: EnvironmentName;
     readonly rootFingerprint: string;
     readonly apiFingerprint: string;
-    /** Public, Clavis-issued leaf returned when enrollment becomes active. */
+    /** Public, Hemlig-issued leaf returned when enrollment becomes active. */
     readonly apiCertificatePem: string;
     readonly createdAt: string;
     readonly workflowState: WorkflowState;
@@ -179,8 +188,8 @@ export interface EnrollmentRecord {
     readonly idempotencyKey: string;
 }
 
-export interface ClusterProvisioningResult {
-    readonly clusterId: string;
+export interface ConsumerProvisioningResult {
+    readonly consumerId: string;
     readonly environment: EnvironmentName;
     readonly rootFingerprint: string;
     readonly apiFingerprint: string;

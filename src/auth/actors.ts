@@ -16,7 +16,12 @@ export const humanActorFromEvent = (event: APIGatewayProxyEventV2WithJWTAuthoriz
     const issuer = claim(claims, 'iss');
     const audience = claim(claims, 'aud') ?? claim(claims, 'client_id');
     const subject = claim(claims, config.adminActorSubjectClaim);
-    if (issuer !== config.adminJwtIssuer || !audienceMatches(audience, config.adminJwtAudience) || subject === undefined) {
+    if (
+        issuer !== config.adminJwtIssuer ||
+        !audienceMatches(audience, config.adminJwtAudience) ||
+        subject === undefined ||
+        !hasRequiredScope(claims, config.adminJwtScope)
+    ) {
         throw forbidden('The administrator JWT does not satisfy this API configuration.');
     }
     const tenant = config.adminActorTenantClaim === undefined
@@ -30,7 +35,7 @@ export const humanActorFromEvent = (event: APIGatewayProxyEventV2WithJWTAuthoriz
         : { type: 'human', id: subject, tenantId: tenant };
 };
 
-export const clusterActorFromEvent = async (
+export const consumerActorFromEvent = async (
     event: APIGatewayProxyEventV2,
     identities: IdentityLookup,
     now: Date = new Date(),
@@ -54,12 +59,12 @@ export const clusterActorFromEvent = async (
         new Date(identity.notBefore).getTime() > now.getTime() ||
         new Date(identity.notAfter).getTime() <= now.getTime()
     ) {
-        throw forbidden('The client certificate is not an active cluster API identity.');
+        throw forbidden('The client certificate is not an active consumer API identity.');
     }
     return {
-        type: 'cluster',
+        type: 'consumer',
         id: fingerprint,
-        clusterId: identity.clusterId,
+        consumerId: identity.consumerId,
         environment: identity.environment,
     };
 };
@@ -71,3 +76,15 @@ const claim = (claims: Record<string, string | number | boolean | string[]>, nam
 
 const audienceMatches = (audience: string | undefined, expected: string): boolean =>
     audience !== undefined && audience.split(' ').includes(expected);
+
+const hasRequiredScope = (
+    claims: Record<string, string | number | boolean | string[]>,
+    requiredScope: string | undefined,
+): boolean => {
+    if (requiredScope === undefined) {
+        return true;
+    }
+    const declared = [claims.scope, claims.scp]
+        .flatMap((value) => Array.isArray(value) ? value : typeof value === 'string' ? value.split(' ') : []);
+    return declared.includes(requiredScope);
+};

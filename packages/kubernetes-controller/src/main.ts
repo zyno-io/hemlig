@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { ClavisKubernetesController, controllerConfigFromEnvironment } from "./index";
+import { HemligKubernetesController, controllerConfigFromEnvironment } from "./index";
 
-const controller = ClavisKubernetesController.fromDefaultConfig(
+const controller = HemligKubernetesController.fromDefaultConfig(
   controllerConfigFromEnvironment(),
 );
 const abort = new AbortController();

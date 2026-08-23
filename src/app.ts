@@ -4,7 +4,7 @@ import { EnvelopeCrypto } from './crypto/envelope';
 import { DynamoRepository } from './repositories/dynamo';
 import { ObjectStore } from './repositories/object-store';
 import { AuditWriter } from './services/audit';
-import { ClusterService } from './services/clusters';
+import { ConsumerService } from './services/consumers';
 import { CursorCodec } from './services/cursor';
 import { IssuerService } from './services/issuer';
 import { SecretService } from './services/secrets';
@@ -16,7 +16,7 @@ export interface Application {
     readonly audit: AuditWriter;
     readonly cursors: CursorCodec;
     readonly secrets: SecretService;
-    readonly clusters: ClusterService;
+    readonly consumers: ConsumerService;
     readonly clients: AwsClients;
 }
 
@@ -33,7 +33,7 @@ export const createApplication = (config: AppConfig): Application => {
         audit: new AuditWriter(objects, config),
         cursors: new CursorCodec(config.cursorHmacKey),
         secrets: new SecretService(repository, objects, crypto, config),
-        clusters: new ClusterService(repository, objects, clients.apiGateway, issuer, config),
+        consumers: new ConsumerService(repository, objects, clients.apiGateway, issuer, config),
         clients,
     };
 };

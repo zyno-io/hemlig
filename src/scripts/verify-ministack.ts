@@ -49,19 +49,51 @@ const run = async (): Promise<void> => {
             { AttributeName: 'sk', AttributeType: 'S' },
             { AttributeName: 'catalogPk', AttributeType: 'S' },
             { AttributeName: 'catalogSk', AttributeType: 'S' },
+            { AttributeName: 'consumerDirectoryPk', AttributeType: 'S' },
+            { AttributeName: 'consumerDirectorySk', AttributeType: 'S' },
+            { AttributeName: 'identityConsumerPk', AttributeType: 'S' },
+            { AttributeName: 'identityConsumerSk', AttributeType: 'S' },
+            { AttributeName: 'revisionPk', AttributeType: 'S' },
+            { AttributeName: 'revisionSk', AttributeType: 'S' },
         ],
         KeySchema: [
             { AttributeName: 'pk', KeyType: 'HASH' },
             { AttributeName: 'sk', KeyType: 'RANGE' },
         ],
-        GlobalSecondaryIndexes: [{
-            IndexName: 'catalog-path',
-            KeySchema: [
-                { AttributeName: 'catalogPk', KeyType: 'HASH' },
-                { AttributeName: 'catalogSk', KeyType: 'RANGE' },
-            ],
-            Projection: { ProjectionType: 'ALL' },
-        }],
+        GlobalSecondaryIndexes: [
+            {
+                IndexName: 'catalog-path',
+                KeySchema: [
+                    { AttributeName: 'catalogPk', KeyType: 'HASH' },
+                    { AttributeName: 'catalogSk', KeyType: 'RANGE' },
+                ],
+                Projection: { ProjectionType: 'ALL' },
+            },
+            {
+                IndexName: 'consumer-directory',
+                KeySchema: [
+                    { AttributeName: 'consumerDirectoryPk', KeyType: 'HASH' },
+                    { AttributeName: 'consumerDirectorySk', KeyType: 'RANGE' },
+                ],
+                Projection: { ProjectionType: 'ALL' },
+            },
+            {
+                IndexName: 'consumer-identity',
+                KeySchema: [
+                    { AttributeName: 'identityConsumerPk', KeyType: 'HASH' },
+                    { AttributeName: 'identityConsumerSk', KeyType: 'RANGE' },
+                ],
+                Projection: { ProjectionType: 'ALL' },
+            },
+            {
+                IndexName: 'secret-revision',
+                KeySchema: [
+                    { AttributeName: 'revisionPk', KeyType: 'HASH' },
+                    { AttributeName: 'revisionSk', KeyType: 'RANGE' },
+                ],
+                Projection: { ProjectionType: 'ALL' },
+            },
+        ],
     });
     await dynamo.send(createTable);
     const config = testConfig(keyId);
@@ -103,6 +135,62 @@ const run = async (): Promise<void> => {
                 },
                 ConditionExpression: 'attribute_not_exists(pk)',
             },
+        }, {
+            Put: {
+                TableName: table,
+                Item: {
+                    pk: 'CONSUMER#local-east',
+                    sk: 'PROFILE',
+                    consumerId: 'local-east',
+                    environment: 'local',
+                    subjectUri: 'spiffe://hemlig/consumer/local-east',
+                    status: 'ACTIVE',
+                    createdAt: '2026-08-22T00:00:00.000Z',
+                    createdBy: { type: 'human', id: 'ministack-verify' },
+                    consumerDirectoryPk: 'CONSUMERS#local',
+                    consumerDirectorySk: 'local-east',
+                },
+            },
+        }, {
+            Put: {
+                TableName: table,
+                Item: {
+                    pk: 'IDENTITY#local-fingerprint',
+                    sk: 'PROFILE',
+                    fingerprint: 'local-fingerprint',
+                    consumerId: 'local-east',
+                    environment: 'local',
+                    kind: 'api',
+                    status: 'ACTIVE',
+                    notBefore: '2026-08-22T00:00:00.000Z',
+                    notAfter: '2027-08-22T00:00:00.000Z',
+                    identityConsumerPk: 'CONSUMER#local-east',
+                    identityConsumerSk: '2027-08-22T00:00:00.000Z#local-fingerprint',
+                },
+            },
+        }, {
+            Put: {
+                TableName: table,
+                Item: {
+                    pk: 'SECRET#sec-local',
+                    sk: 'CONTROL#ctl-local',
+                    workflowState: 'READY',
+                    revisionPk: 'SECRET#sec-local',
+                    revisionSk: '2026-08-22T00:00:00.000Z#ctl-local',
+                    serialized: {
+                        schemaVersion: 1,
+                        secretId: 'sec-local',
+                        controlVersionId: 'ctl-local',
+                        payloadKeyCount: 1,
+                        environment: 'local',
+                        state: 'ACTIVE',
+                        createdAt: '2026-08-22T00:00:00.000Z',
+                        createdBy: { type: 'system', id: 'ministack-verify' },
+                        metadata: { name: 'local-secret' },
+                        acl: [],
+                    },
+                },
+            },
         }],
     });
     await document.send(transaction);
@@ -110,6 +198,18 @@ const run = async (): Promise<void> => {
     const catalog = await repository.listSecrets('local', 'testing', { owner: 'platform' });
     if (catalog.secrets.length !== 1 || catalog.secrets[0]?.secretId !== 'sec-local') {
         throw new Error('Catalog path/tag query did not return the expected secret.');
+    }
+    const consumers = await repository.listConsumers('local');
+    if (consumers.consumers[0]?.consumerId !== 'local-east') {
+        throw new Error('Consumer directory index did not return the expected consumer.');
+    }
+    const identities = await repository.listConsumerApiIdentities('local-east');
+    if (identities.identities[0]?.fingerprint !== 'local-fingerprint') {
+        throw new Error('Consumer identity index did not return the expected API leaf.');
+    }
+    const revisions = await repository.listRecentControlRevisions('sec-local');
+    if (revisions.revisions[0]?.serialized.controlVersionId !== 'ctl-local') {
+        throw new Error('Secret revision index did not return the expected control revision.');
     }
     let deleteDenied = false;
     try {
@@ -131,14 +231,17 @@ const testConfig = (payloadKmsKeyArn: string): AppConfig => ({
     workflowDueIndex: 'workflow-due',
     retentionDueIndex: 'retention-due',
     catalogPathIndex: 'catalog-path',
+    consumerDirectoryIndex: 'consumer-directory',
+    consumerIdentityIndex: 'consumer-identity',
+    secretRevisionIndex: 'secret-revision',
     revisionBucketName: bucket,
     truststoreBucketName: bucket,
     truststoreKeyPrefix: 'truststores',
     payloadKmsKeyArn,
     auditBucketName: bucket,
     auditPrefix: 'audit',
-    clusterCustomDomainName: 'clusters.local.test',
-    clusterApiHostname: 'clusters.local.test',
+    deliveryApiCustomDomainName: 'api.local.test',
+    deliveryApiHostname: 'api.local.test',
     cursorHmacKey: Buffer.alloc(32, 1),
     adminJwtIssuer: 'https://issuer.local.test',
     adminJwtAudience: 'local-audience',

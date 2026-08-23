@@ -96,7 +96,7 @@ export class EnvelopeCrypto {
 
     private context(binding: PayloadBinding): Record<string, string> {
         return {
-            service: 'clavis',
+            service: 'hemlig',
             purpose: 'secret-payload',
             environment: binding.environment,
             secretId: binding.secretId,

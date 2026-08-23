@@ -9,14 +9,17 @@ const config: AppConfig = {
     workflowDueIndex: 'workflow-due',
     retentionDueIndex: 'retention-due',
     catalogPathIndex: 'catalog-path',
+    consumerDirectoryIndex: 'consumer-directory',
+    consumerIdentityIndex: 'consumer-identity',
+    secretRevisionIndex: 'secret-revision',
     revisionBucketName: 'revisions',
     truststoreBucketName: 'truststores',
     truststoreKeyPrefix: 'truststores',
     payloadKmsKeyArn: 'arn:aws:kms:us-east-1:000000000000:key/test',
     auditBucketName: 'audit',
     auditPrefix: 'audit',
-    clusterCustomDomainName: 'clusters.example.test',
-    clusterApiHostname: 'clusters.example.test',
+    deliveryApiCustomDomainName: 'api.example.test',
+    deliveryApiHostname: 'api.example.test',
     cursorHmacKey: Buffer.alloc(32, 7),
     adminJwtIssuer: 'https://issuer.example.test',
     adminJwtAudience: 'audience',
@@ -45,11 +48,11 @@ describe('EnvelopeCrypto', () => {
         const generate = (kms.send as jest.Mock).mock.calls[0]?.[0] as GenerateDataKeyCommand;
         const decrypt = (kms.send as jest.Mock).mock.calls[1]?.[0] as DecryptCommand;
         expect(generate.input.EncryptionContext).toMatchObject({
-            service: 'clavis',
+            service: 'hemlig',
             purpose: 'secret-payload',
         });
         expect(decrypt.input.EncryptionContext).toMatchObject({
-            service: 'clavis',
+            service: 'hemlig',
             purpose: 'secret-payload',
         });
     });

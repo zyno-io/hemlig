@@ -1,6 +1,3 @@
-import { randomUUID } from "node:crypto";
-import * as https from "node:https";
-
 export interface SecretEntry {
   readonly encoding: "utf8" | "base64";
   readonly value: string;
@@ -16,7 +13,7 @@ export interface SecretMetadata {
 }
 
 export interface Grant {
-  readonly clusterId: string;
+  readonly consumerId: string;
   readonly permissions: readonly ["read"] | readonly "read"[];
 }
 
@@ -25,20 +22,124 @@ export interface ControlRevision {
   readonly environment: string;
   readonly controlVersionId: string;
   readonly payloadVersionId?: string;
+  readonly payloadKeyCount?: number;
   readonly state: "PENDING_VALUE" | "ACTIVE" | "REVOKED";
   readonly metadata: SecretMetadata;
   readonly acl?: readonly Grant[];
 }
 
-export interface ClusterSecretResponse {
+export interface ConsumerSecretResponse {
   readonly secretId: string;
   readonly controlVersionId: string;
   readonly payloadVersionId: string;
   readonly payload: SecretPayload;
 }
 
+export interface SecretCatalogEntry {
+  readonly secretId: string;
+  readonly environment: string;
+  readonly controlVersionId: string;
+  readonly payloadVersionId?: string;
+  readonly payloadKeyCount?: number;
+  readonly state: ControlRevision["state"];
+  readonly metadata: SecretMetadata;
+  readonly updatedAt?: string;
+}
+
+export interface SecretCatalogPage {
+  readonly secrets: readonly SecretCatalogEntry[];
+  readonly nextCursor?: string;
+  readonly generatedAt: string;
+}
+
+export interface SecretRevision {
+  readonly controlVersionId: string;
+  readonly payloadVersionId?: string;
+  readonly payloadKeyCount?: number;
+  readonly createdAt: string;
+  readonly createdBy: Record<string, unknown>;
+  readonly isCurrent: boolean;
+  readonly objectAvailable: boolean;
+}
+
+export interface SecretRevisionPage {
+  readonly secretId: string;
+  readonly revisions: readonly SecretRevision[];
+  readonly truncated: boolean;
+  readonly generatedAt: string;
+}
+
+export interface ConsumerSummary {
+  readonly consumerId: string;
+  readonly environment: string;
+  readonly status: "PENDING" | "ACTIVE" | "FAILED";
+  readonly subjectUri: string;
+  readonly createdAt: string;
+}
+
+export interface ConsumerListPage {
+  readonly consumers: readonly ConsumerSummary[];
+  readonly nextCursor?: string;
+  readonly generatedAt: string;
+}
+
+export interface ConsumerDetail extends ConsumerSummary {
+  readonly createdBy: Record<string, unknown>;
+  readonly activeApiIdentityCount: number;
+  readonly rootFingerprint?: string;
+}
+
+export interface ApiIdentityDetail {
+  readonly apiFingerprint: string;
+  readonly status: "PENDING" | "ACTIVE" | "REVOKED" | "EXPIRED" | "FAILED";
+  readonly kind: "api" | "notify";
+  readonly notBefore: string;
+  readonly notAfter: string;
+  readonly apiCertificatePem?: string;
+}
+
+export interface ApiIdentityListPage {
+  readonly consumerId: string;
+  readonly environment: string;
+  readonly rootFingerprint?: string;
+  readonly apiIdentities: readonly ApiIdentityDetail[];
+  readonly nextCursor?: string;
+  readonly generatedAt: string;
+}
+
+export interface IssuerStatus {
+  readonly rootFingerprint: string;
+  readonly rootCertificatePem: string;
+  readonly notBefore: string;
+  readonly notAfter: string;
+  readonly createdAt: string;
+  readonly truststore?: {
+    readonly objectKey: string;
+    readonly versionId: string;
+    readonly anchorCount: number;
+  };
+}
+
+export interface ConsumerProvisioningResult {
+  readonly consumerId: string;
+  readonly environment: string;
+  readonly rootFingerprint: string;
+  readonly apiFingerprint: string;
+  readonly apiCertificatePem: string;
+  readonly status: "ACTIVE";
+}
+
+export interface ApiIdentityResult {
+  readonly consumerId: string;
+  readonly environment: string;
+  readonly rootFingerprint?: string;
+  readonly apiFingerprint: string;
+  readonly apiCertificatePem?: string;
+  readonly status: "ACTIVE" | "REVOKED";
+}
+
 export interface TransportRequest {
-  readonly method: "GET" | "POST" | "PUT";
+  readonly method: "GET" | "POST" | "PUT" | "DELETE";
   readonly url: URL;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: unknown;
@@ -50,11 +151,11 @@ export interface TransportResponse {
   readonly body?: unknown;
 }
 
-export interface ClavisTransport {
+export interface HemligTransport {
   request(request: TransportRequest): Promise<TransportResponse>;
 }
 
-export class ClavisError extends Error {
+export class HemligError extends Error {
   public constructor(
     readonly status: number,
     message: string,
@@ -64,20 +165,20 @@ export class ClavisError extends Error {
   }
 }
 
-export class ClavisClient {
+export class HemligClient {
   public constructor(
     private readonly baseUrl: URL,
-    private readonly transport: ClavisTransport,
+    private readonly transport: HemligTransport,
   ) {}
 
   /**
    * Returns undefined for a conditional GET that received 304 Not Modified.
    */
-  public async getClusterSecret(
+  public async getConsumerSecret(
     secretId: string,
     ifNoneMatch?: string,
-  ): Promise<ClusterSecretResponse | undefined> {
-    return this.request<ClusterSecretResponse>(
+  ): Promise<ConsumerSecretResponse | undefined> {
+    return this.request<ConsumerSecretResponse>(
       "GET",
       `/v1/secrets/${encodeURIComponent(secretId)}`,
       undefined,
@@ -96,6 +197,60 @@ export class ClavisClient {
     return this.request("GET", `/v1/admin/secrets/${encodeURIComponent(secretId)}`, token);
   }
 
+  public async listSecrets(
+    token: string,
+    query: {
+      readonly environment: string;
+      readonly pathPrefix?: string;
+      readonly tags?: Readonly<Record<string, string>>;
+      readonly cursor?: string;
+    },
+  ): Promise<SecretCatalogPage> {
+    const tags = query.tags === undefined
+      ? undefined
+      : Object.entries(query.tags)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => `${key}:${value}`)
+        .join(",");
+    return this.request("GET", withQuery("/v1/admin/secrets", {
+      environment: query.environment,
+      pathPrefix: query.pathPrefix,
+      tags,
+      cursor: query.cursor,
+    }), token);
+  }
+
+  public async listSecretRevisions(token: string, secretId: string): Promise<SecretRevisionPage> {
+    return this.request("GET", `/v1/admin/secrets/${encodeURIComponent(secretId)}/revisions`, token);
+  }
+
+  public async listConsumers(
+    token: string,
+    query: { readonly environment: string; readonly cursor?: string },
+  ): Promise<ConsumerListPage> {
+    return this.request("GET", withQuery("/v1/admin/consumers", query), token);
+  }
+
+  public async getConsumer(token: string, consumerId: string): Promise<ConsumerDetail> {
+    return this.request("GET", `/v1/admin/consumers/${encodeURIComponent(consumerId)}`, token);
+  }
+
+  public async listApiIdentities(
+    token: string,
+    consumerId: string,
+    cursor?: string,
+  ): Promise<ApiIdentityListPage> {
+    return this.request(
+      "GET",
+      withQuery(`/v1/admin/consumers/${encodeURIComponent(consumerId)}/api-identities`, { cursor }),
+      token,
+    );
+  }
+
+  public async getIssuer(token: string): Promise<IssuerStatus> {
+    return this.request("GET", "/v1/admin/issuer", token);
+  }
+
   public async createAdminSecret(
     token: string,
     input: {
@@ -104,7 +259,7 @@ export class ClavisClient {
       readonly metadata: SecretMetadata;
       readonly acl: readonly Grant[];
     },
-    idempotencyKey: string = randomUUID(),
+    idempotencyKey: string,
   ): Promise<ControlRevision> {
     return this.request("POST", "/v1/admin/secrets", token, input, idempotencyKey);
   }
@@ -114,7 +269,7 @@ export class ClavisClient {
     secretId: string,
     controlVersionId: string,
     input: Pick<ControlRevision, "metadata" | "acl">,
-    idempotencyKey: string = randomUUID(),
+    idempotencyKey: string,
   ): Promise<ControlRevision> {
     return this.request(
       "PUT",
@@ -131,7 +286,7 @@ export class ClavisClient {
     secretId: string,
     controlVersionId: string,
     payload: SecretPayload,
-    idempotencyKey: string = randomUUID(),
+    idempotencyKey: string,
   ): Promise<ControlRevision> {
     return this.request(
       "PUT",
@@ -140,6 +295,48 @@ export class ClavisClient {
       { payload },
       idempotencyKey,
       controlVersionId,
+    );
+  }
+
+  public async enrollConsumer(
+    token: string,
+    input: {
+      readonly consumerId: string;
+      readonly environment: string;
+      readonly apiCertificateSigningRequestPem: string;
+    },
+    idempotencyKey: string,
+  ): Promise<ConsumerProvisioningResult> {
+    return this.request("POST", "/v1/admin/consumers", token, input, idempotencyKey);
+  }
+
+  public async rotateApiIdentity(
+    token: string,
+    consumerId: string,
+    apiCertificateSigningRequestPem: string,
+    idempotencyKey: string,
+  ): Promise<ApiIdentityResult> {
+    return this.request(
+      "POST",
+      `/v1/admin/consumers/${encodeURIComponent(consumerId)}/api-identities`,
+      token,
+      { apiCertificateSigningRequestPem },
+      idempotencyKey,
+    );
+  }
+
+  public async revokeApiIdentity(
+    token: string,
+    consumerId: string,
+    apiFingerprint: string,
+    idempotencyKey: string,
+  ): Promise<ApiIdentityResult> {
+    return this.request(
+      "DELETE",
+      `/v1/admin/consumers/${encodeURIComponent(consumerId)}/api-identities/${encodeURIComponent(apiFingerprint)}`,
+      token,
+      undefined,
+      idempotencyKey,
     );
   }
 
@@ -197,9 +394,9 @@ export class ClavisClient {
     }
     if (response.status < 200 || response.status >= 300) {
       const error = response.body as { error?: { code?: string; message?: string } } | undefined;
-      throw new ClavisError(
+      throw new HemligError(
         response.status,
-        error?.error?.message ?? `Clavis request failed with status ${response.status}.`,
+        error?.error?.message ?? `Hemlig request failed with status ${response.status}.`,
         error?.error?.code,
       );
     }
@@ -207,8 +404,11 @@ export class ClavisClient {
   }
 }
 
-export class NodeHttpsTransport implements ClavisTransport {
-  public constructor(private readonly options: https.AgentOptions = {}) {}
+/** Browser-safe transport built on the platform's global fetch implementation. */
+export class FetchTransport implements HemligTransport {
+  public constructor(
+    private readonly fetchImplementation: typeof globalThis.fetch = globalThis.fetch,
+  ) {}
 
   public async request(request: TransportRequest): Promise<TransportResponse> {
     const body = request.body === undefined ? undefined : JSON.stringify(request.body);
@@ -218,37 +418,33 @@ export class NodeHttpsTransport implements ClavisTransport {
     };
     if (body !== undefined) {
       headers["content-type"] = "application/json";
-      headers["content-length"] = String(Buffer.byteLength(body));
     }
-    return new Promise((resolve, reject) => {
-      const response = https.request(
-        request.url,
-        { method: request.method, headers, ...this.options },
-        (incoming) => {
-          const chunks: Buffer[] = [];
-          incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
-          incoming.on("error", reject);
-          incoming.on("end", () => {
-            const text = Buffer.concat(chunks).toString("utf8");
-            let parsed: unknown;
-            try {
-              parsed = text.length === 0 ? undefined : JSON.parse(text);
-            } catch {
-              parsed = undefined;
-            }
-            const responseHeaders: Record<string, string | undefined> = {};
-            for (const [name, value] of Object.entries(incoming.headers)) {
-              responseHeaders[name] = Array.isArray(value) ? value.join(",") : value;
-            }
-            resolve({ status: incoming.statusCode ?? 500, headers: responseHeaders, body: parsed });
-          });
-        },
-      );
-      response.on("error", reject);
-      if (body !== undefined) {
-        response.write(body);
-      }
-      response.end();
+    const response = await this.fetchImplementation(request.url, {
+      method: request.method,
+      headers,
+      body,
     });
+    const text = await response.text();
+    let parsed: unknown;
+    try {
+      parsed = text.length === 0 ? undefined : JSON.parse(text);
+    } catch {
+      parsed = undefined;
+    }
+    const responseHeaders: Record<string, string | undefined> = {};
+    response.headers.forEach((value, name) => {
+      responseHeaders[name] = value;
+    });
+    return { status: response.status, headers: responseHeaders, body: parsed };
   }
 }
+
+const withQuery = (
+  path: string,
+  query: Readonly<Record<string, string | undefined>>,
+): string => {
+  const pairs = Object.entries(query)
+    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+  return pairs.length === 0 ? path : `${path}?${pairs.join("&")}`;
+};

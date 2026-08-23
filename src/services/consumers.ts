@@ -7,12 +7,13 @@ import type { AppConfig } from "../aws/config";
 import {
   badRequest,
   conflict,
+  enrollmentFailed,
   notFound,
   serviceUnavailable,
 } from "../domain/errors";
 import type {
   Actor,
-  ClusterProvisioningResult,
+  ConsumerProvisioningResult,
   EnrollmentRecord,
 } from "../domain/types";
 import { assertIdentifier } from "../domain/validation";
@@ -29,7 +30,7 @@ const maximumTruststoreCertificates = 1_000;
 const maximumTruststoreBytes = 1_048_576;
 
 export interface EnrollmentInput {
-  readonly clusterId: string;
+  readonly consumerId: string;
   readonly environment: string;
   readonly apiCertificateSigningRequestPem: string;
   readonly actor: Actor;
@@ -37,26 +38,26 @@ export interface EnrollmentInput {
 }
 
 export interface ApiIdentityInput {
-  readonly clusterId: string;
+  readonly consumerId: string;
   readonly apiCertificateSigningRequestPem: string;
   readonly actor: Actor;
   readonly idempotencyKey: string;
 }
 
 export interface RevocationInput {
-  readonly clusterId: string;
+  readonly consumerId: string;
   readonly apiFingerprint: string;
   readonly actor: Actor;
   readonly idempotencyKey: string;
 }
 
-export interface ClusterOperationResult {
-  readonly result: ClusterProvisioningResult;
+export interface ConsumerOperationResult {
+  readonly result: ConsumerProvisioningResult;
   readonly shouldWriteTerminalAudit: boolean;
 }
 
 export interface ApiIdentityResult {
-  readonly clusterId: string;
+  readonly consumerId: string;
   readonly environment: string;
   readonly rootFingerprint: string;
   readonly apiFingerprint: string;
@@ -65,7 +66,7 @@ export interface ApiIdentityResult {
   readonly shouldWriteTerminalAudit: boolean;
 }
 
-export class ClusterService {
+export class ConsumerService {
   public constructor(
     private readonly repository: DynamoRepository,
     private readonly objects: ObjectStore,
@@ -74,18 +75,37 @@ export class ClusterService {
     private readonly config: AppConfig,
   ) {}
 
-  public async enroll(input: EnrollmentInput): Promise<ClusterOperationResult> {
-    assertIdentifier(input.clusterId, "clusterId");
+  public async enroll(input: EnrollmentInput): Promise<ConsumerOperationResult> {
+    assertIdentifier(input.consumerId, "consumerId");
     return this.startOrResume(input);
+  }
+
+  /**
+   * Reattaches the current version-pinned truststore after an API custom-domain
+   * replacement. It is a no-op before the first enrollment and when the domain
+   * already points at the recorded immutable bundle.
+   */
+  public async reconcileTruststore(): Promise<void> {
+    const state = await this.repository.getTruststoreState();
+    if (
+      state?.currentTruststoreKey === undefined ||
+      state.currentTruststoreVersionId === undefined
+    ) {
+      return;
+    }
+    await this.publishTruststore({
+      key: state.currentTruststoreKey,
+      versionId: state.currentTruststoreVersionId,
+    });
   }
 
   public async rotateApiIdentity(
     input: ApiIdentityInput,
   ): Promise<ApiIdentityResult> {
-    assertIdentifier(input.clusterId, "clusterId");
-    const cluster = await this.repository.getCluster(input.clusterId);
-    if (cluster === undefined || cluster.status !== "ACTIVE") {
-      throw notFound("The requested active cluster was not found.");
+    assertIdentifier(input.consumerId, "consumerId");
+    const consumer = await this.repository.getConsumer(input.consumerId);
+    if (consumer === undefined || consumer.status !== "ACTIVE") {
+      throw notFound("The requested active consumer was not found.");
     }
     const csrFingerprint = this.issuer.certificateRequestFingerprint(
       input.apiCertificateSigningRequestPem,
@@ -93,8 +113,8 @@ export class ClusterService {
     const rootFingerprint = await this.issuer.issuerFingerprint();
     const requestDigest = sha256Hex(
       stableJson({
-        operationType: "cluster.api.rotate",
-        clusterId: input.clusterId,
+        operationType: "consumer.api.rotate",
+        consumerId: input.consumerId,
         rootFingerprint,
         csrFingerprint,
       }),
@@ -107,13 +127,13 @@ export class ClusterService {
       return this.idempotentApiIdentityResult(
         prior,
         requestDigest,
-        input.clusterId,
-        cluster.environment,
+        input.consumerId,
+        consumer.environment,
       );
     }
     const issued = await this.issuer.issueApiIdentity(
-      input.clusterId,
-      cluster.environment,
+      input.consumerId,
+      consumer.environment,
       input.apiCertificateSigningRequestPem,
     );
     try {
@@ -135,13 +155,13 @@ export class ClusterService {
       return this.idempotentApiIdentityResult(
         winner,
         requestDigest,
-        input.clusterId,
-        cluster.environment,
+        input.consumerId,
+        consumer.environment,
       );
     }
     return {
-      clusterId: input.clusterId,
-      environment: cluster.environment,
+      consumerId: input.consumerId,
+      environment: consumer.environment,
       rootFingerprint: issued.rootFingerprint,
       apiFingerprint: issued.apiIdentity.fingerprint,
       apiCertificatePem: issued.apiIdentity.certificatePem,
@@ -153,20 +173,20 @@ export class ClusterService {
   public async revokeApiIdentity(
     input: RevocationInput,
   ): Promise<ApiIdentityResult> {
-    assertIdentifier(input.clusterId, "clusterId");
+    assertIdentifier(input.consumerId, "consumerId");
     assertFingerprint(input.apiFingerprint, "apiFingerprint");
     const identity = await this.repository.getIdentity(input.apiFingerprint);
     if (
       identity === undefined ||
-      identity.clusterId !== input.clusterId ||
+      identity.consumerId !== input.consumerId ||
       identity.kind !== "api"
     ) {
-      throw notFound("The requested cluster API identity was not found.");
+      throw notFound("The requested consumer API identity was not found.");
     }
     const requestDigest = sha256Hex(
       stableJson({
-        operationType: "cluster.api.revoke",
-        clusterId: input.clusterId,
+        operationType: "consumer.api.revoke",
+        consumerId: input.consumerId,
         apiFingerprint: input.apiFingerprint,
       }),
     );
@@ -175,9 +195,9 @@ export class ClusterService {
       input.idempotencyKey,
     );
     if (prior !== undefined) {
-      assertIdempotency(prior, requestDigest, "cluster.api.revoke");
+      assertIdempotency(prior, requestDigest, "consumer.api.revoke");
       return {
-        clusterId: input.clusterId,
+        consumerId: input.consumerId,
         environment: identity.environment,
         rootFingerprint: "",
         apiFingerprint: input.apiFingerprint,
@@ -189,11 +209,11 @@ export class ClusterService {
       input.actor,
       input.idempotencyKey,
       requestDigest,
-      input.clusterId,
+      input.consumerId,
       input.apiFingerprint,
     );
     return {
-      clusterId: input.clusterId,
+      consumerId: input.consumerId,
       environment: identity.environment,
       rootFingerprint: "",
       apiFingerprint: input.apiFingerprint,
@@ -202,7 +222,7 @@ export class ClusterService {
     };
   }
 
-  public async resume(operationId: string): Promise<ClusterProvisioningResult> {
+  public async resume(operationId: string): Promise<ConsumerProvisioningResult> {
     const operation = await this.repository.getEnrollment(operationId);
     if (operation === undefined) {
       throw notFound("The requested enrollment operation was not found.");
@@ -211,8 +231,8 @@ export class ClusterService {
       return activeResult(operation);
     }
     if (operation.workflowState === "FAILED") {
-      throw serviceUnavailable(
-        "The enrollment was rejected by API Gateway; submit a corrected bundle with a new idempotency key.",
+      throw enrollmentFailed(
+        "The enrollment truststore publication was rejected. Repair the issuer or truststore configuration before submitting a new enrollment.",
       );
     }
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -231,7 +251,7 @@ export class ClusterService {
       )
     ) {
       throw conflict(
-        "The Clavis issuing root is not available in the truststore.",
+        "The Hemlig issuing root is not available in the truststore.",
       );
     }
     const rootFingerprints = roots.map((root) => root.fingerprint).sort();
@@ -289,15 +309,15 @@ export class ClusterService {
 
   private async startOrResume(
     input: EnrollmentInput,
-  ): Promise<ClusterOperationResult> {
+  ): Promise<ConsumerOperationResult> {
     const csrFingerprint = this.issuer.certificateRequestFingerprint(
       input.apiCertificateSigningRequestPem,
     );
     const rootFingerprint = await this.issuer.issuerFingerprint();
     const requestDigest = sha256Hex(
       stableJson({
-        operationType: "cluster.enroll",
-        clusterId: input.clusterId,
+        operationType: "consumer.enroll",
+        consumerId: input.consumerId,
         environment: input.environment,
         rootFingerprint,
         csrFingerprint,
@@ -308,13 +328,13 @@ export class ClusterService {
       input.idempotencyKey,
     );
     if (prior !== undefined) {
-      assertIdempotency(prior, requestDigest, "cluster.enroll");
+      assertIdempotency(prior, requestDigest, "consumer.enroll");
       const operationId = stringField(prior, "operationId");
       const result = await this.resume(operationId);
       return { result, shouldWriteTerminalAudit: prior.status !== "SUCCEEDED" };
     }
     const issued = await this.issuer.issueApiIdentity(
-      input.clusterId,
+      input.consumerId,
       input.environment,
       input.apiCertificateSigningRequestPem,
     );
@@ -322,11 +342,11 @@ export class ClusterService {
     const operationId = newId();
     const prepared: PreparedEnrollment = {
       operationId,
-      operationType: "cluster.enroll",
+      operationType: "consumer.enroll",
       idempotencyKey: input.idempotencyKey,
       actor: input.actor,
       requestDigest,
-      clusterId: input.clusterId,
+      consumerId: input.consumerId,
       environment: input.environment,
       subjectUri: issued.subjectUri,
       rootFingerprint: issued.rootFingerprint,
@@ -344,7 +364,7 @@ export class ClusterService {
       if (winner === undefined) {
         throw error;
       }
-      assertIdempotency(winner, requestDigest, "cluster.enroll");
+      assertIdempotency(winner, requestDigest, "consumer.enroll");
       const winnerOperationId = stringField(winner, "operationId");
       const result = await this.resume(winnerOperationId);
       return {
@@ -359,10 +379,10 @@ export class ClusterService {
   private async idempotentApiIdentityResult(
     record: Record<string, unknown>,
     requestDigest: string,
-    clusterId: string,
+    consumerId: string,
     environment: string,
   ): Promise<ApiIdentityResult> {
-    assertIdempotency(record, requestDigest, "cluster.api.rotate");
+    assertIdempotency(record, requestDigest, "consumer.api.rotate");
     const apiFingerprint = stringField(record, "apiFingerprint");
     const rootFingerprint = stringField(record, "rootFingerprint");
     const identity = await this.repository.getIdentity(apiFingerprint);
@@ -370,7 +390,7 @@ export class ClusterService {
       throw conflict("The idempotent API identity record is incomplete.");
     }
     return {
-      clusterId,
+      consumerId,
       environment,
       rootFingerprint,
       apiFingerprint,
@@ -387,7 +407,7 @@ export class ClusterService {
     const uri = `s3://${this.config.truststoreBucketName}/${truststore.key}`;
     const current = await this.apiGateway.send(
       new GetDomainNameCommand({
-        DomainName: this.config.clusterCustomDomainName,
+        DomainName: this.config.deliveryApiCustomDomainName,
       }),
     );
     if (
@@ -396,7 +416,7 @@ export class ClusterService {
     ) {
       await this.apiGateway.send(
         new UpdateDomainNameCommand({
-          DomainName: this.config.clusterCustomDomainName,
+          DomainName: this.config.deliveryApiCustomDomainName,
           MutualTlsAuthentication: {
             TruststoreUri: uri,
             TruststoreVersion: truststore.versionId,
@@ -410,7 +430,7 @@ export class ClusterService {
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const observed = await this.apiGateway.send(
         new GetDomainNameCommand({
-          DomainName: this.config.clusterCustomDomainName,
+          DomainName: this.config.deliveryApiCustomDomainName,
         }),
       );
       if (
@@ -484,8 +504,8 @@ const assertFingerprint = (value: string, field: string): void => {
 
 const activeResult = (
   operation: EnrollmentRecord,
-): ClusterProvisioningResult => ({
-  clusterId: operation.clusterId,
+): ConsumerProvisioningResult => ({
+  consumerId: operation.consumerId,
   environment: operation.environment,
   rootFingerprint: operation.rootFingerprint,
   apiFingerprint: operation.apiFingerprint,
@@ -528,9 +548,13 @@ const truststoreMatches = (
   },
   uri: string,
   versionId: string,
-): boolean =>
-  domain.MutualTlsAuthentication?.TruststoreUri === uri &&
-  domain.MutualTlsAuthentication.TruststoreVersion === versionId;
+): boolean => {
+  const authentication = domain.MutualTlsAuthentication;
+  return (
+    authentication?.TruststoreUri === uri &&
+    authentication?.TruststoreVersion === versionId
+  );
+};
 
 const delay = async (milliseconds: number): Promise<void> =>
   new Promise((resolve) => {

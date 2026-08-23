@@ -22,6 +22,9 @@ export const notFound = (message = 'The requested resource was not found.'): Api
 
 export const conflict = (message: string): ApiError => new ApiError(409, 'conflict', message);
 
+export const enrollmentFailed = (message: string): ApiError =>
+    new ApiError(409, 'enrollment_failed', message);
+
 export const preconditionFailed = (message: string): ApiError =>
     new ApiError(412, 'precondition_failed', message);
 

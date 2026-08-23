@@ -1,13 +1,13 @@
 {
-  "name": "@clavis/kubernetes-controller",
+  "name": "@hemlig/kubernetes-controller",
   "version": "0.1.0",
-  "description": "Kubernetes import/export controller for Clavis secrets.",
+  "description": "Kubernetes import/export controller for Hemlig secrets.",
   "license": "Apache-2.0",
   "packageManager": "yarn@4.10.3",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "clavis-controller": "dist/main.js"
+    "hemlig-controller": "dist/main.js"
   },
   "files": [
     "dist",
@@ -22,7 +22,7 @@
     "test": "node --test dist/index.test.js"
   },
   "dependencies": {
-    "@clavis/client": "workspace:*",
+    "@hemlig/client": "workspace:*",
     "@kubernetes/client-node": "^1.3.0"
   },
   "devDependencies": {

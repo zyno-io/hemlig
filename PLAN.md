@@ -1,9 +1,9 @@
-# Clavis implementation plan
+# Hemlig implementation plan
 
 ## Scope and ownership
 
-This repository is a publishable open-source Yarn Berry monorepo for Clavis, a
-Cluster Secrets API. It owns:
+This repository is a publishable open-source Yarn Berry monorepo for Hemlig, a
+Consumer Secrets API. It owns:
 
 - Lambda handlers and recovery worker;
 - the OpenAPI contract, request/response validation, and AWS adapters;
@@ -13,45 +13,45 @@ Cluster Secrets API. It owns:
 - the reusable CDK construct, reference app, and AWS resource topology.
 
 It also contains a Kubernetes import/export controller and a Pulumi dynamic
-provider. Both consume the typed `@clavis/client` package; neither imports
+provider. Both consume the typed `@hemlig/client` package; neither imports
 Lambda code or provisions a parallel AWS service topology.
 
-Each Clavis installation consumes the `clavis/cdk` construct from its own CDK
-app and deployment pipeline. The construct accepts administrator and cluster
+Each Hemlig installation consumes the `hemlig/cdk` construct from its own CDK
+app and deployment pipeline. The construct accepts administrator and consumer
 API FQDNs, an environment name, a zone domain, and optionally an existing Route
 53 hosted-zone ID. It creates the hosted zone when no ID is supplied; users
 then delegate the resulting name servers. The consumer's stack provisions the
 account-local IAM, S3, DynamoDB, KMS, API Gateway, DNS, ACM, Lambda, and
-schedules using Clavis's resource definitions. It receives an
+schedules using Hemlig's resource definitions. It receives an
 organization-owned OIDC issuer, audience, and stable actor claim rather than
 provisioning an identity provider. Every physical resource it names starts with
-`clv-<environment>-`; it contains no organization-specific account IDs,
+`hml-<environment>-`; it contains no organization-specific account IDs,
 domains, or credentials.
-The Kubernetes `ClavisSecretImport`/`ClavisSecretExport` CRDs and their
+The Kubernetes `HemligSecretImport`/`HemligSecretExport` CRDs and their
 controller are a dedicated workspace. Import materializes an mTLS-authorized
-Clavis payload as a Kubernetes Secret; export reconciles a Kubernetes Secret
+Hemlig payload as a Kubernetes Secret; export reconciles a Kubernetes Secret
 through the administrator API. The Pulumi workspace declaratively manages
-Clavis secret control-plane resources and retains a secret on destroy because
+Hemlig secret control-plane resources and retains a secret on destroy because
 the service has no delete endpoint.
 
 V1 is the Lambda/S3/DynamoDB/KMS service only. MQTT notification, a
-cluster-side write/publication API, and hash-chained audit seals are excluded.
+consumer-side write/publication API, and hash-chained audit seals are excluded.
 
 ## Fixed design decisions
 
 1. Use TypeScript on the current supported Node Lambda runtime. Build two
-   deployable entry points from one domain library: `admin` and `cluster`.
+   deployable entry points from one domain library: `admin` and `consumer`.
    Add scheduled `recovery` and `retention` entry points. Ship `audit-query`
    only as an optional handler for deployment in a consumer's audit boundary;
    the normal secrets-service roles cannot read the audit archive.
-2. Use API Gateway HTTP API payload format 2.0. The cluster handler obtains
+2. Use API Gateway HTTP API payload format 2.0. The consumer handler obtains
    the peer leaf from `requestContext.authentication.clientCert.clientCertPem`,
    converts it to DER, and looks up its SHA-256 fingerprint with a strongly
-   consistent DynamoDB read. It never accepts a cluster ID from the request.
+   consistent DynamoDB read. It never accepts a consumer ID from the request.
 3. Payloads are a JSON object of Kubernetes Secret entries. Each entry is
    either a UTF-8 string or explicitly encoded binary bytes; schema validation
    rejects duplicate/invalid keys and caps the serialized plaintext at 750 KiB.
-   The cluster response contains only the payload and immutable ID/version
+   The consumer response contains only the payload and immutable ID/version
    metadata required by the operator.
 4. Encrypt each revision with a fresh 256-bit KMS data key and AES-256-GCM.
    Bind both KMS encryption context and GCM additional authenticated data to
@@ -84,18 +84,18 @@ cluster-side write/publication API, and hash-chained audit seals are excluded.
 ## Repository layout
 
 ```text
-openapi/cluster-secrets.yaml       # endpoint and JSON-schema source of truth
+openapi/consumer-secrets.yaml      # endpoint and JSON-schema source of truth
 src/
-  handlers/{admin,cluster,recovery,retention,audit-query}.ts
+  handlers/{admin,consumer,recovery,retention,audit-query}.ts
   domain/                          # commands, policies, state-machine types
   auth/                            # OIDC actor and mTLS identity extraction
   crypto/envelope.ts               # KMS + AES-GCM, no logging of material
   repositories/{dynamo,s3,audit}.ts
-  services/{secrets,clusters,truststore,changes}.ts
+  services/{secrets,consumers,truststore,changes}.ts
 cdk/                                  # published construct, reference app, stack tests
   aws/config.ts                    # validated deployment-supplied configuration
 test/{unit,integration,contract}/
-docs/cdk-integration.md            # Clavis CDK deployment guide
+docs/cdk-integration.md            # Hemlig CDK deployment guide
 docs/threat-model.md               # assumptions, residual risks, WORM semantics
 README.md                          # quick start and non-production safety notes
 SECURITY.md                         # supported versions and disclosure process
@@ -123,11 +123,11 @@ must never remove a `PREPARED` record that recovery still needs.
 | `SECRET#<id> / HEAD`                    | environment, current control/payload versions, state, write lease, and current path/tag catalog projection; the control version is the HTTP ETag |
 | `SECRET#<id> / CONTROL#<id>`            | immutable metadata/ACL/state/payload-pointer revision, S3 version/checksum, and retention state                                                  |
 | `SECRET#<id> / PAYLOAD#<id>`            | encrypted-envelope workflow metadata, S3 version/checksum, and retention state                                                                   |
-| `IDENTITY#<der-sha256> / PROFILE`       | cluster/environment, leaf type, validity, active/revoked state                                                                                   |
-| `CLUSTER#<id> / PROFILE`                | immutable environment, SPIFFE identity, and enrollment state                                                                                    |
-| `CLUSTER#<id> / SECRET#<id>`            | current permission/revision/state; a retained `REVOKED` tombstone is the change feed                                                             |
+| `IDENTITY#<der-sha256> / PROFILE`       | consumer/environment, leaf type, validity, active/revoked state                                                                                  |
+| `CONSUMER#<id> / PROFILE`               | immutable environment, SPIFFE identity, and enrollment state                                                                                    |
+| `CONSUMER#<id> / SECRET#<id>`           | current permission/revision/state; a retained `REVOKED` tombstone is the change feed                                                            |
 | `SYSTEM#ISSUER / PROFILE`               | one public issuing root, KMS-wrapped private-key envelope, fingerprint, and validity                                                            |
-| `TRUSTSTORE#ROOTS / ROOT#<fingerprint>` | public deployment-wide issuing root used by every cluster                                                                                       |
+| `TRUSTSTORE#ROOTS / ROOT#<fingerprint>` | public deployment-wide issuing root used by every consumer                                                                                      |
 | `ENROLLMENT#<operation> / STATE`        | recoverable pending enrollment/leaf-issuance workflow                                                                                            |
 | `SYSTEM#TRUSTSTORE / STATE`             | singleton publication lease plus current/pending root set and version-pinned bundle                                                              |
 | `IDEMPOTENCY#<actor>#<key> / REQUEST`   | request digest, operation/response state, terminal audit event key/status, terminal cleanup TTL                                                  |
@@ -139,7 +139,7 @@ expiry, `RETENTION#DUE` orders non-head revision candidates by the end of their
 by organizational path. Each worker re-reads the primary record and applies
 its conditional state transition before acting.
 
-The cluster/secret row replaces separate grant and access-projection rows. It
+The consumer/secret row replaces separate grant and access-projection rows. It
 keeps an ACL replacement from ten old readers to ten new readers within
 DynamoDB's 25-item transaction limit: 20 affected rows, one new control
 record, the previous-control retention update, and the head. The old control
@@ -147,7 +147,7 @@ revision supplies the old ACL for the union calculation. A payload change
 creates new payload/control records, updates prior control/payload retention,
 updates the head, and touches no more than ten reader rows. This corrects the
 separate-grant/projection shape, which can exceed the transaction limit even
-with a ten-cluster ACL cap.
+with a ten-consumer ACL cap.
 
 Secret revisions use:
 
@@ -206,12 +206,12 @@ failure cannot itself always be audited.
 
 1. Validate a signed, single RSA CSR (at least 2048-bit public key). Create the
    one self-signed issuing root on first use, and AES-GCM-envelope encrypt its
-   private key with the existing Clavis application CMK using
-   `{service: clavis, purpose: issuer-ca}`. Never accept a private key.
+   private key with the existing Hemlig application CMK using
+   `{service: hemlig, purpose: issuer-ca}`. Never accept a private key.
 2. Sign the CSR with a non-CA client leaf whose identity extensions are set by
-   Clavis, then transactionally create `PENDING` cluster and API-leaf identity
+   Hemlig, then transactionally create `PENDING` consumer and API-leaf identity
    records using an actor-scoped idempotency key. The root is a permanent,
-   active, deployment-wide truststore anchor rather than a per-cluster record.
+   active, deployment-wide truststore anchor rather than a per-consumer record.
 3. Acquire the conditional singleton truststore-publication lease. Query every
    page of active roots, sort and deduplicate by fingerprint, and preflight the
    1,000-certificate/1 MiB API Gateway truststore limits. Persist the exact root
@@ -232,7 +232,7 @@ with strongly consistent read enforcement before any slower truststore change.
 
 Issuer-root rotation remains deliberately unimplemented; it requires a
 separately reviewed overlap, migration, and retirement protocol. It is not a
-reason to create a root or KMS key per cluster.
+reason to create a root or KMS key per consumer.
 
 ### Secret creation and mutation
 
@@ -264,7 +264,7 @@ For every secret mutation:
    old head and leave the preparation recoverable. In a final DynamoDB
    transaction, finalise the records/head, record the applied retention time
    for replaced versions, and atomically update each affected current
-   cluster/secret row. ACL updates include revocation tombstones; payload
+   consumer/secret row. ACL updates include revocation tombstones; payload
    updates advance the payload pointer for existing readers.
 5. Write terminal audit success, persist its event ID in the idempotency state,
    and only then return the new control ETag and version references. These
@@ -283,14 +283,14 @@ an ambiguous failed request before submitting a new mutation. Enrollment
 recovery instead resumes the persisted version-pinned truststore publication
 and never activates an identity without confirmed API Gateway domain state.
 
-### Cluster reads and reconciliation
+### Consumer reads and reconciliation
 
-For every cluster request, parse the client PEM into DER, hash it, strongly
+For every consumer request, parse the client PEM into DER, hash it, strongly
 consistently read `IDENTITY#...`, require `ACTIVE` and unexpired `api` identity,
-then derive the cluster/environment from that record.
+then derive the consumer/environment from that record.
 
-`GET /v1/secrets/{id}` strongly reads the matching cluster/secret row, requires
-`read`, and checks its environment against both the resolved cluster and head.
+`GET /v1/secrets/{id}` strongly reads the matching consumer/secret row, requires
+`read`, and checks its environment against both the resolved consumer and head.
 Its HTTP `ETag` is the control version; a successful body includes both
 `controlVersionId` and `payloadVersionId`, and the operator records both
 annotations. This makes an ACL/metadata state change observable even when the
@@ -302,10 +302,10 @@ control/payload revisions, verifies their checksums and binding, calls KMS
 `Decrypt` with the exact context, GCM-decrypts, writes terminal audit success,
 and only then returns the payload over mTLS.
 
-`GET /v1/changes` queries the cluster's `SECRET#` rows in secret-ID order and
+`GET /v1/changes` queries the consumer's `SECRET#` rows in secret-ID order and
 returns `{secretId, controlVersionId, payloadVersionId, state, changeKind}`
 with an opaque, HMAC-signed, short-lived pagination cursor bound to that
-cluster. A reconciliation cycle starts without a cursor and completes when
+consumer. A reconciliation cycle starts without a cursor and completes when
 `nextCursor` is absent. An active row tells the operator what it should have;
 a tombstone tells it to delete the operator-managed Kubernetes Secret. The
 caller does not receive metadata, ACLs, or payloads from this endpoint. It also
@@ -314,19 +314,19 @@ page.
 
 ## CDK deployment contract
 
-The published `clavis/cdk` entry point bundles the four standard handler
+The published `hemlig/cdk` entry point bundles the four standard handler
 sources with the construct. A release publishes those sources, the construct,
 the reference CDK app, OpenAPI document, and deployment documentation together.
 The consumer owns `App`, stack ID, account/region, and deployment pipeline; the
-Clavis deployment input is intentionally small:
+Hemlig deployment input is intentionally small:
 
 ```text
 environment=dev
 adminFqdn=admin.dev.example.com
-clusterFqdn=clusters.dev.example.com
+apiFqdn=api.dev.example.com
 zoneDomain=dev.example.com
 oidcIssuer=https://login.example.com/tenant/v2.0
-oidcAudience=api://clavis
+oidcAudience=api://hemlig
 oidcSubjectClaim=sub                    # optional; default
 existingHostedZoneId=Z0123456789ABCDEF  # optional
 ```
@@ -336,7 +336,8 @@ name servers to delegate. Providing it makes the stack add all ACM validation
 and API alias records to that existing zone. The FQDNs must be distinct and
 within `zoneDomain`; validation fails before synthesis otherwise.
 
-The CDK app injects the following runtime configuration. It generates the
+The CDK app injects the following runtime configuration. `apiFqdn` is the
+generic mTLS delivery endpoint (not a Kubernetes-only hostname). It generates the
 cursor HMAC value in Secrets Manager and passes the installer-supplied external
 OIDC issuer/audience and stable actor claim to the administrator JWT authorizer:
 
@@ -350,11 +351,11 @@ REVISION_BUCKET_NAME
 TRUSTSTORE_BUCKET_NAME
 TRUSTSTORE_KEY_PREFIX
 PAYLOAD_KMS_KEY_ARN
-CLAVIS_ENVIRONMENT
+HEMLIG_ENVIRONMENT
 AUDIT_BUCKET_NAME
 AUDIT_PREFIX
-CLUSTER_CUSTOM_DOMAIN_NAME
-CLUSTER_API_HOSTNAME
+DELIVERY_API_CUSTOM_DOMAIN_NAME
+DELIVERY_API_HOSTNAME
 CURSOR_HMAC_KEY
 ADMIN_JWT_ISSUER
 ADMIN_JWT_AUDIENCE
@@ -371,7 +372,7 @@ provider's immutable `sub` claim. Function-specific IAM is split as follows:
   KMS `GenerateDataKey` and context-limited `Decrypt` only for
   `purpose=issuer-ca`; CSR signing; truststore writes plus `UpdateDomainName`;
   audit `PutObject`;
-- **cluster:** strongly consistent table reads; referenced control/payload
+- **consumer:** strongly consistent table reads; referenced control/payload
   `GetObject`; KMS `Decrypt`; audit `PutObject`; no truststore or table
   mutation;
 - **recovery:** prepared-record/head mutation; revision `HeadObject` and
@@ -398,11 +399,11 @@ and scheduled recovery and retention invocations. Both HTTP APIs disable their
 default execute-api endpoint. Stateful resources use `RemovalPolicy.RETAIN`,
 and no S3 auto-delete custom resource is permitted.
 
-The runtime role needs permission to update the cluster-domain truststore;
+The runtime role needs permission to update the consumer-domain truststore;
 that is application lifecycle behavior, not a deployment pipeline privilege.
-The deployment creates the cluster domain without a truststore. The enrollment
+The deployment creates the consumer domain without a truststore. The enrollment
 workflow publishes and pins the first versioned truststore before activating a
-cluster identity; until then, no cluster request can pass the application
+consumer identity; until then, no consumer request can pass the application
 identity check. The deployment never receives application payload plaintext.
 
 ## Validation plan
@@ -413,7 +414,7 @@ identity check. The deployment never receives application payload plaintext.
   opaque cursor binding/expiry, and idempotency request-digest conflicts.
 - CSR signature/key-size checks, issuer-envelope KMS context binding, issued
   CA/leaf/EKU/SAN validation, identity revocation, environment mismatch, and no
-  caller-supplied cluster ID.
+  caller-supplied consumer ID.
 - AES-GCM happy/incorrect-AAD/tampered-tag paths; KMS/GCM binding to the
   payload—not control—version; and no log serializer accepts payload/key/
   certificate fields.
@@ -461,12 +462,12 @@ and that the revision/audit bucket Object Lock defaults match the intended
 
 1. **Foundation:** repository/toolchain, OpenAPI, configuration validation,
    release manifest, interfaces, domain errors, test fixtures, MiniStack
-   Compose, and the self-contained Clavis CDK stack.
+   Compose, and the self-contained Hemlig CDK stack.
 2. **Identity:** OIDC actor extraction, CSR enrollment and issuance, serialized
    truststore publication/recovery, leaf rotation, and revocation.
 3. **Secrets:** envelope codec, prepared revision protocol, optimistic
    concurrency, ACL/tombstone projection, current-snapshot change endpoint,
-   cluster read endpoint, and idempotency.
+   consumer read endpoint, and idempotency.
 4. **Evidence/operations:** audit writer, recovery and retention workers,
    optional audit-boundary query handler, structured safe logs/metrics, alarms/
    runbook inputs, and failure-drill tests.
@@ -474,7 +475,7 @@ and that the revision/audit bucket Object Lock defaults match the intended
    `SECURITY.md`, compatibility matrix, chosen license, signed/tagged release
    bundle, and its checksum manifest. Make clear that MiniStack does not prove
    production IAM/mTLS/Object-Lock controls.
-6. **Installation acceptance:** the installer CDK-synths/asserts the Clavis
+6. **Installation acceptance:** the installer CDK-synths/asserts the Hemlig
    stack topology and least-privilege policies, deploys an isolated staging
    environment, and executes the AWS-only security suite. It then performs a
    limited initial credential migration with its separate operator project. No

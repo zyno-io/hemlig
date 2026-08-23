@@ -1,7 +1,7 @@
 {
-  "name": "@clavis/pulumi-provider",
+  "name": "@hemlig/pulumi-provider",
   "version": "0.1.0",
-  "description": "Pulumi dynamic provider for Clavis secret control-plane resources.",
+  "description": "Pulumi dynamic provider for Hemlig secret control-plane resources.",
   "license": "Apache-2.0",
   "packageManager": "yarn@4.10.3",
   "main": "dist/index.js",
@@ -19,7 +19,7 @@
     "test": "node --test dist/index.test.js"
   },
   "dependencies": {
-    "@clavis/client": "workspace:*",
+    "@hemlig/client": "workspace:*",
     "@pulumi/pulumi": "^3.166.0"
   },
   "devDependencies": {

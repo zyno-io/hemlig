@@ -1,16 +1,16 @@
-# Clavis
+# Hemlig
 
-Clavis is a standalone AWS Lambda implementation of a cluster secrets-delivery
-API. It keeps encrypted payload revisions in S3, authorizes cluster reads from
-DynamoDB, uses KMS envelope encryption, and writes application audit events to
-a separate immutable S3 prefix.
+Hemlig is a standalone AWS Lambda implementation of an mTLS secrets-delivery
+API. It keeps encrypted payload revisions in S3, authorizes enrolled workload
+reads from DynamoDB, uses KMS envelope encryption, and writes application audit
+events to a separate immutable S3 prefix.
 
-The repository owns the reusable CDK construct and its reference CDK app; a
-consumer owns the target account, stack instantiation, deployment pipeline, and
-OIDC-provider configuration. The first consumer may be the internal IaC repo,
-but any CDK app can import `clavis/cdk`. Given administrator and cluster API
+The repository owns the reusable CDK construct and its reference CDK app; an
+installer owns the target account, stack instantiation, deployment pipeline, and
+OIDC-provider configuration. The first installer may be the internal IaC repo,
+but any CDK app can import `hemlig/cdk`. Given administrator and delivery API
 FQDNs, an authoritative Route 53 zone, and an existing OIDC issuer/audience,
-the construct provisions `clv-`-prefixed resources. It creates a public hosted
+the construct provisions `hml-`-prefixed resources. It creates a public hosted
 zone when `existingHostedZoneId` is omitted; the deployer must delegate that
 new zone's name servers at its parent registrar/zone.
 
@@ -24,12 +24,12 @@ The current implementation provides the payload/control-revision workflow,
 KMS AES-256-GCM envelope codec, conditional immutable S3 writes, DynamoDB
 leases/idempotency records, mTLS fingerprint authorization, OIDC actor
 extraction, secret create/update/payload endpoints, organizational path/tag
-catalog browsing, cluster reads/changes, immutable audit writes, and scheduled
+catalog browsing, consumer reads/changes, immutable audit writes, and scheduled
 recovery/retention.
 
-It also supports CSR-based cluster enrollment: Clavis creates one online,
+It also supports CSR-based consumer enrollment: Hemlig creates one online,
 deployment-wide issuing root, KMS-wraps that root under the same application
-CMK used for payload envelopes, signs each cluster's client-certificate CSR,
+CMK used for payload envelopes, signs each consumer's client-certificate CSR,
 and publishes the one root as a version-pinned API Gateway truststore. It
 supports overlapping API-leaf rotation and immediate leaf revocation.
 Issuer-root rotation and audit querying remain deliberately out of scope. Do
@@ -40,10 +40,12 @@ isolated AWS acceptance test for your OIDC and mTLS configuration.
 
 - [Architecture and security model](docs/architecture.md)
 - [HTTP API reference](docs/api.md)
-- [OpenAPI 3.1 contract](openapi/cluster-secrets.yaml)
+- [OpenAPI 3.1 contract](openapi/consumer-secrets.yaml)
 - [CDK deployment guide](docs/cdk-integration.md)
 - [Threat model](docs/threat-model.md)
-- [Monorepo and consumer packages](docs/monorepo.md)
+- [Monorepo and integration packages](docs/monorepo.md)
+- [Management console plan](docs/console-plan.md)
+- [AWS acceptance runbook](docs/acceptance.md)
 
 ## Local development
 
@@ -59,25 +61,25 @@ yarn ministack:up
 
 Use the published construct from the CDK app that owns deployment. Build the
 package before packing or publishing it; the construct packages the Lambda
-sources included with Clavis. This example creates `dev.example.com`; use
+sources included with Hemlig. This example creates `dev.example.com`; use
 `existingHostedZoneId` instead to add records to an existing authoritative
 zone.
 
 ```ts
 import { App } from "aws-cdk-lib";
-import { ClavisStack, type DeploymentConfig } from "clavis/cdk";
+import { HemligStack, type DeploymentConfig } from "hemlig/cdk";
 
 const app = new App();
 const config: DeploymentConfig = {
   environmentName: "dev",
   adminFqdn: "admin.dev.example.com",
-  clusterFqdn: "clusters.dev.example.com",
+  apiFqdn: "api.dev.example.com",
   zoneDomain: "dev.example.com",
   oidcIssuer: "https://login.example.com/tenant/v2.0",
-  oidcAudience: "api://clavis",
+  oidcAudience: "api://hemlig",
   oidcSubjectClaim: "sub",
 };
-new ClavisStack(app, "clv-dev", config);
+new HemligStack(app, "hml-dev", config);
 ```
 
 The repository's CDK CLI is a reference app for direct provisioning. Bootstrap
@@ -89,10 +91,10 @@ yarn exec cdk bootstrap aws://ACCOUNT_ID/AWS_REGION
 yarn cdk:deploy \
   -c environment=dev \
   -c adminFqdn=admin.dev.example.com \
-  -c clusterFqdn=clusters.dev.example.com \
+  -c apiFqdn=api.dev.example.com \
   -c zoneDomain=dev.example.com \
   -c oidcIssuer=https://login.example.com/tenant/v2.0 \
-  -c oidcAudience=api://clavis
+  -c oidcAudience=api://hemlig
 ```
 
 For an existing zone:
@@ -101,10 +103,10 @@ For an existing zone:
 yarn cdk:deploy \
   -c environment=dev \
   -c adminFqdn=admin.dev.example.com \
-  -c clusterFqdn=clusters.dev.example.com \
+  -c apiFqdn=api.dev.example.com \
   -c zoneDomain=dev.example.com \
   -c oidcIssuer=https://login.example.com/tenant/v2.0 \
-  -c oidcAudience=api://clavis \
+  -c oidcAudience=api://hemlig \
   -c existingHostedZoneId=Z0123456789ABCDEF
 ```
 
@@ -114,7 +116,7 @@ state and sparse GSIs, an externally configured OIDC JWT authorizer,
 custom-domain HTTP APIs, Route 53 aliases, Lambda roles, and scheduled recovery
 and retention invocations. Both execute-api endpoints are disabled. The APIs
 are public DNS endpoints protected by OIDC or mTLS—not VPC-private APIs.
-Clavis does not create or manage administrator identities.
+Hemlig does not create or manage administrator identities.
 
 MiniStack exercises AWS SDK integrations locally. It does not validate API
 Gateway custom-domain mTLS, IAM policy enforcement, OIDC authorizers,
@@ -124,11 +126,11 @@ controls require an isolated AWS acceptance environment.
 ## Lambda entry points
 
 - `dist/handlers/admin.handler`
-- `dist/handlers/cluster.handler`
+- `dist/handlers/consumer.handler`
 - `dist/handlers/recovery.handler`
 - `dist/handlers/retention.handler`
 
-`audit-query` is intentionally not included in the normal Clavis deployment.
+`audit-query` is intentionally not included in the normal Hemlig deployment.
 It must live in an audit boundary with a separate archive-read role.
 
 ## Security posture

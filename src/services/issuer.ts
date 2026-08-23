@@ -22,7 +22,7 @@ import type { DynamoRepository } from "../repositories/dynamo";
 import { isoNow } from "../util/encoding";
 
 const issuerEncryptionContext = {
-  service: "clavis",
+  service: "hemlig",
   purpose: "issuer-ca",
 };
 const maximumCsrBytes = 32_768;
@@ -38,7 +38,7 @@ export interface IssuedApiIdentity {
 }
 
 /**
- * Owns the one online Clavis issuing root for a deployment. Its private key is
+ * Owns the one online Hemlig issuing root for a deployment. Its private key is
  * envelope encrypted with the application's existing CMK; the root's
  * public certificate is the sole API Gateway truststore entry.
  */
@@ -50,7 +50,7 @@ export class IssuerService {
   ) {}
 
   public async issueApiIdentity(
-    clusterId: string,
+    consumerId: string,
     environment: string,
     csrPem: string,
   ): Promise<IssuedApiIdentity> {
@@ -60,15 +60,15 @@ export class IssuerService {
     try {
       const root = forge.pki.certificateFromPem(issuer.rootCertificatePem);
       const privateKey = forge.pki.privateKeyFromPem(privateKeyPem.toString("utf8"));
-      const subjectUri = `spiffe://clavis/cluster/${clusterId}`;
-      const certificatePem = issueLeaf(root, privateKey, csr, clusterId, subjectUri);
+      const subjectUri = `spiffe://hemlig/consumer/${consumerId}`;
+      const certificatePem = issueLeaf(root, privateKey, csr, consumerId, subjectUri);
       const certificate = new X509Certificate(certificatePem);
       return {
         rootFingerprint: issuer.fingerprint,
         subjectUri,
         apiIdentity: {
           fingerprint: createHash("sha256").update(certificate.raw).digest("hex"),
-          clusterId,
+          consumerId,
           environment,
           kind: "api",
           notBefore: certificate.validFromDate.toISOString(),
@@ -77,7 +77,7 @@ export class IssuerService {
         },
       };
     } catch {
-      throw serviceUnavailable("Could not issue the cluster API certificate.");
+      throw serviceUnavailable("Could not issue the consumer API certificate.");
     } finally {
       privateKeyPem.fill(0);
     }
@@ -117,7 +117,7 @@ export class IssuerService {
     const subject = [
       {
         name: "commonName",
-        value: `Clavis ${this.config.environmentName} Issuing Root`,
+        value: `Hemlig ${this.config.environmentName} Issuing Root`,
       },
     ];
     root.setSubject(subject);
@@ -219,7 +219,7 @@ export class IssuerService {
         decipher.final(),
       ]);
     } catch {
-      throw serviceUnavailable("The encrypted Clavis issuing key is invalid.");
+      throw serviceUnavailable("The encrypted Hemlig issuing key is invalid.");
     } finally {
       key.fill(0);
     }
@@ -255,7 +255,7 @@ const issueLeaf = (
   root: forge.pki.Certificate,
   privateKey: forge.pki.rsa.PrivateKey,
   csr: forge.pki.CertificateSigningRequest,
-  clusterId: string,
+  consumerId: string,
   subjectUri: string,
 ): string => {
   if (csr.publicKey === null) {
@@ -270,7 +270,7 @@ const issueLeaf = (
   );
   certificate.validity.notAfter =
     root.validity.notAfter < desiredExpiry ? root.validity.notAfter : desiredExpiry;
-  certificate.setSubject([{ name: "commonName", value: `clavis-${clusterId}` }]);
+  certificate.setSubject([{ name: "commonName", value: `hemlig-${consumerId}` }]);
   certificate.setIssuer(root.subject.attributes);
   certificate.setExtensions([
     { name: "basicConstraints", critical: true, cA: false },

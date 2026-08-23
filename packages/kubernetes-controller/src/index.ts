@@ -1,19 +1,19 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as k8s from "@kubernetes/client-node";
 import {
-  ClavisClient,
-  ClavisError,
-  NodeHttpsTransport,
+  HemligClient,
+  HemligError,
   type Grant,
   type SecretMetadata,
   type SecretPayload,
-} from "@clavis/client";
+} from "@hemlig/client";
+import { NodeHttpsTransport } from "@hemlig/client/node";
 
-const group = "clavis.io";
+const group = "hemlig.io";
 const version = "v1alpha1";
-const importPlural = "clavissecretimports";
-const exportPlural = "clavissecretexports";
+const importPlural = "hemligsecretimports";
+const exportPlural = "hemligsecretexports";
 
 export interface ObjectMeta {
   readonly name?: string;
@@ -35,9 +35,9 @@ interface ReconciliationStatus {
   }[];
 }
 
-export interface ClavisSecretImport {
-  readonly apiVersion: "clavis.io/v1alpha1";
-  readonly kind: "ClavisSecretImport";
+export interface HemligSecretImport {
+  readonly apiVersion: "hemlig.io/v1alpha1";
+  readonly kind: "HemligSecretImport";
   readonly metadata: ObjectMeta;
   readonly spec: {
     readonly secretId: string;
@@ -46,9 +46,9 @@ export interface ClavisSecretImport {
   readonly status?: ReconciliationStatus;
 }
 
-export interface ClavisSecretExport {
-  readonly apiVersion: "clavis.io/v1alpha1";
-  readonly kind: "ClavisSecretExport";
+export interface HemligSecretExport {
+  readonly apiVersion: "hemlig.io/v1alpha1";
+  readonly kind: "HemligSecretExport";
   readonly metadata: ObjectMeta;
   readonly spec: {
     readonly secretId: string;
@@ -79,8 +79,8 @@ interface CustomApi {
 }
 
 export interface ControllerConfig {
-  readonly clusterUrl: string;
-  readonly clusterTlsSecretName: string;
+  readonly consumerUrl: string;
+  readonly consumerTlsSecretName: string;
   readonly adminUrl: string;
   readonly adminToken: () => Promise<string>;
   readonly intervalMilliseconds: number;
@@ -92,17 +92,17 @@ export interface ControllerConfig {
  * is resource-version aware. Watch-based triggering can be added later without
  * changing either CRD's reconciliation semantics.
  */
-export class ClavisKubernetesController {
+export class HemligKubernetesController {
   public constructor(
     private readonly core: CoreApi,
     private readonly custom: CustomApi,
     private readonly config: ControllerConfig,
   ) {}
 
-  public static fromDefaultConfig(config: ControllerConfig): ClavisKubernetesController {
+  public static fromDefaultConfig(config: ControllerConfig): HemligKubernetesController {
     const kubeConfig = new k8s.KubeConfig();
     kubeConfig.loadFromDefault();
-    return new ClavisKubernetesController(
+    return new HemligKubernetesController(
       kubeConfig.makeApiClient(k8s.CoreV1Api) as unknown as CoreApi,
       kubeConfig.makeApiClient(k8s.CustomObjectsApi) as unknown as CustomApi,
       config,
@@ -118,8 +118,8 @@ export class ClavisKubernetesController {
 
   public async reconcileAll(): Promise<void> {
     const [imports, exports] = await Promise.all([
-      this.list<ClavisSecretImport>(importPlural),
-      this.list<ClavisSecretExport>(exportPlural),
+      this.list<HemligSecretImport>(importPlural),
+      this.list<HemligSecretExport>(exportPlural),
     ]);
     for (const resource of imports) {
       await this.reconcileImport(resource);
@@ -129,11 +129,11 @@ export class ClavisKubernetesController {
     }
   }
 
-  public async reconcileImport(resource: ClavisSecretImport): Promise<void> {
+  public async reconcileImport(resource: HemligSecretImport): Promise<void> {
     const namespace = required(resource.metadata.namespace, "import namespace");
     const name = required(resource.metadata.name, "import name");
     try {
-      const client = await this.clusterClient(namespace);
+      const client = await this.consumerClient(namespace);
       const targetName = resource.spec.target?.name ?? name;
       const importOwner = `${namespace}/${name}`;
       const currentControlVersionId = await this.currentImportedControlVersion(
@@ -142,7 +142,7 @@ export class ClavisKubernetesController {
         importOwner,
         resource.status,
       );
-      const remote = await client.getClusterSecret(resource.spec.secretId, currentControlVersionId);
+      const remote = await client.getConsumerSecret(resource.spec.secretId, currentControlVersionId);
       if (remote === undefined) {
         return;
       }
@@ -153,13 +153,13 @@ export class ClavisKubernetesController {
         metadata: {
           name: targetName,
           namespace,
-          labels: { "clavis.io/managed-by": "import" },
+          labels: { "hemlig.io/managed-by": "import" },
           annotations: {
-            "clavis.io/import-owner": importOwner,
-            "clavis.io/secret-id": remote.secretId,
-            "clavis.io/control-version-id": remote.controlVersionId,
-            "clavis.io/payload-version-id": remote.payloadVersionId,
-            "clavis.io/data-checksum": stringMapChecksum(data),
+            "hemlig.io/import-owner": importOwner,
+            "hemlig.io/secret-id": remote.secretId,
+            "hemlig.io/control-version-id": remote.controlVersionId,
+            "hemlig.io/payload-version-id": remote.payloadVersionId,
+            "hemlig.io/data-checksum": stringMapChecksum(data),
           },
         },
         type: resource.spec.target?.type ?? "Opaque",
@@ -178,32 +178,32 @@ export class ClavisKubernetesController {
         observedGeneration: resource.metadata.generation,
         controlVersionId: remote.controlVersionId,
         payloadVersionId: remote.payloadVersionId,
-        conditions: [readyCondition("Imported", "Secret materialized from Clavis.")],
+        conditions: [readyCondition("Imported", "Secret materialized from Hemlig.")],
       });
     } catch (error) {
       await this.setFailure(namespace, importPlural, name, resource.metadata.generation, error);
     }
   }
 
-  public async reconcileExport(resource: ClavisSecretExport): Promise<void> {
+  public async reconcileExport(resource: HemligSecretExport): Promise<void> {
     const namespace = required(resource.metadata.namespace, "export namespace");
     const name = required(resource.metadata.name, "export name");
     try {
       const source = unwrapKubernetesResponse(
         await this.core.readNamespacedSecret({ name: resource.spec.source.name, namespace }),
       ) as { data?: Record<string, string>; binaryData?: Record<string, string>; metadata?: ObjectMeta };
-      if (source.metadata?.labels?.["clavis.io/managed-by"] === "import") {
-        throw new Error("An export cannot source a Secret managed by Clavis import.");
+      if (source.metadata?.labels?.["hemlig.io/managed-by"] === "import") {
+        throw new Error("An export cannot source a Secret managed by Hemlig import.");
       }
       const payload = kubernetesDataToPayload({ ...source.data, ...source.binaryData });
       const sourceChecksum = payloadChecksum(payload);
       const token = await this.config.adminToken();
-      const client = new ClavisClient(new URL(this.config.adminUrl), new NodeHttpsTransport());
+      const client = new HemligClient(new URL(this.config.adminUrl), new NodeHttpsTransport());
       let current;
       try {
         current = await client.getAdminSecret(token, resource.spec.secretId);
       } catch (error) {
-        if (!(error instanceof ClavisError) || error.status !== 404) {
+        if (!(error instanceof HemligError) || error.status !== 404) {
           throw error;
         }
         current = await client.createAdminSecret(token, {
@@ -211,10 +211,10 @@ export class ClavisKubernetesController {
           environment: resource.spec.environment,
           metadata: resource.spec.metadata,
           acl: resource.spec.acl,
-        });
+        }, randomUUID());
       }
       if (current.environment !== resource.spec.environment) {
-        throw new Error("The existing Clavis secret belongs to a different environment.");
+        throw new Error("The existing Hemlig secret belongs to a different environment.");
       }
       const metadataChanged = JSON.stringify(current.metadata) !== JSON.stringify(resource.spec.metadata);
       const aclChanged = JSON.stringify(current.acl ?? []) !== JSON.stringify(resource.spec.acl);
@@ -224,6 +224,7 @@ export class ClavisKubernetesController {
           resource.spec.secretId,
           current.controlVersionId,
           { metadata: resource.spec.metadata, acl: resource.spec.acl },
+          randomUUID(),
         );
       }
       if (statusIsReadyAtVersion(
@@ -240,33 +241,34 @@ export class ClavisKubernetesController {
         resource.spec.secretId,
         current.controlVersionId,
         payload,
+        randomUUID(),
       );
       await this.setStatus(namespace, exportPlural, name, {
         observedGeneration: resource.metadata.generation,
         controlVersionId: written.controlVersionId,
         payloadVersionId: written.payloadVersionId,
         sourceChecksum,
-        conditions: [readyCondition("Exported", "Secret payload written to Clavis.")],
+        conditions: [readyCondition("Exported", "Secret payload written to Hemlig.")],
       });
     } catch (error) {
       await this.setFailure(namespace, exportPlural, name, resource.metadata.generation, error);
     }
   }
 
-  private async clusterClient(namespace: string): Promise<ClavisClient> {
+  private async consumerClient(namespace: string): Promise<HemligClient> {
     const identity = unwrapKubernetesResponse(
       await this.core.readNamespacedSecret({
-        name: this.config.clusterTlsSecretName,
+        name: this.config.consumerTlsSecretName,
         namespace,
       }),
     ) as { data?: Record<string, string> };
     const certificate = identity.data?.["tls.crt"];
     const privateKey = identity.data?.["tls.key"];
     if (certificate === undefined || privateKey === undefined) {
-      throw new Error("The configured Clavis mTLS Secret must contain tls.crt and tls.key.");
+      throw new Error("The configured Hemlig mTLS Secret must contain tls.crt and tls.key.");
     }
-    return new ClavisClient(
-      new URL(this.config.clusterUrl),
+    return new HemligClient(
+      new URL(this.config.consumerUrl),
       new NodeHttpsTransport({
         cert: Buffer.from(certificate, "base64"),
         key: Buffer.from(privateKey, "base64"),
@@ -286,7 +288,7 @@ export class ClavisKubernetesController {
       ) as { metadata?: ObjectMeta; data?: Readonly<Record<string, string>>; type?: string };
       if (!isOwnedByImport(existing.metadata, importOwner)) {
         throw new Error(
-          "The import target exists but is not owned by this ClavisSecretImport.",
+          "The import target exists but is not owned by this HemligSecretImport.",
         );
       }
       const desired = body as {
@@ -295,10 +297,10 @@ export class ClavisKubernetesController {
         readonly type: string;
       };
       if (
-        existing.metadata?.annotations?.["clavis.io/control-version-id"] ===
-          desired.metadata.annotations["clavis.io/control-version-id"] &&
-        existing.metadata?.annotations?.["clavis.io/payload-version-id"] ===
-          desired.metadata.annotations["clavis.io/payload-version-id"] &&
+        existing.metadata?.annotations?.["hemlig.io/control-version-id"] ===
+          desired.metadata.annotations["hemlig.io/control-version-id"] &&
+        existing.metadata?.annotations?.["hemlig.io/payload-version-id"] ===
+          desired.metadata.annotations["hemlig.io/payload-version-id"] &&
         existing.type === desired.type &&
         stringMapsEqual(existing.data, desired.data)
       ) {
@@ -326,7 +328,7 @@ export class ClavisKubernetesController {
   }
 
   /**
-   * Uses the cluster API's conditional read only when the local Secret still
+   * Uses the consumer API's conditional read only when the local Secret still
    * reflects the last ready status. A missing, foreign, or tampered target
    * forces a full read so reconciliation can repair it.
    */
@@ -350,9 +352,9 @@ export class ClavisKubernetesController {
       const annotations = existing.metadata?.annotations;
       if (
         !isOwnedByImport(existing.metadata, importOwner) ||
-        annotations?.["clavis.io/control-version-id"] !== status.controlVersionId ||
-        annotations?.["clavis.io/payload-version-id"] !== status.payloadVersionId ||
-        annotations?.["clavis.io/data-checksum"] !== stringMapChecksum(existing.data ?? {})
+        annotations?.["hemlig.io/control-version-id"] !== status.controlVersionId ||
+        annotations?.["hemlig.io/payload-version-id"] !== status.payloadVersionId ||
+        annotations?.["hemlig.io/data-checksum"] !== stringMapChecksum(existing.data ?? {})
       ) {
         return undefined;
       }
@@ -409,18 +411,18 @@ export class ClavisKubernetesController {
 }
 
 export const controllerConfigFromEnvironment = (): ControllerConfig => ({
-  clusterUrl: required(process.env.CLAVIS_CLUSTER_URL, "CLAVIS_CLUSTER_URL"),
-  clusterTlsSecretName: process.env.CLAVIS_CLUSTER_TLS_SECRET ?? "clavis-client-tls",
-  adminUrl: required(process.env.CLAVIS_ADMIN_URL, "CLAVIS_ADMIN_URL"),
+  consumerUrl: required(process.env.HEMLIG_API_URL, "HEMLIG_API_URL"),
+  consumerTlsSecretName: process.env.HEMLIG_CONSUMER_TLS_SECRET ?? "hemlig-client-tls",
+  adminUrl: required(process.env.HEMLIG_ADMIN_URL, "HEMLIG_ADMIN_URL"),
   adminToken: async () => {
-    const inline = process.env.CLAVIS_ADMIN_TOKEN;
+    const inline = process.env.HEMLIG_ADMIN_TOKEN;
     if (inline !== undefined && inline.trim().length > 0) {
       return inline.trim();
     }
-    const file = required(process.env.CLAVIS_ADMIN_TOKEN_FILE, "CLAVIS_ADMIN_TOKEN_FILE");
+    const file = required(process.env.HEMLIG_ADMIN_TOKEN_FILE, "HEMLIG_ADMIN_TOKEN_FILE");
     return (await readFile(file, "utf8")).trim();
   },
-  intervalMilliseconds: Number.parseInt(process.env.CLAVIS_RECONCILE_INTERVAL_MS ?? "30000", 10),
+  intervalMilliseconds: Number.parseInt(process.env.HEMLIG_RECONCILE_INTERVAL_MS ?? "30000", 10),
 });
 
 export const payloadToKubernetesData = (payload: SecretPayload): Record<string, string> =>
@@ -447,8 +449,8 @@ export const payloadChecksum = (payload: SecretPayload): string =>
     .digest("hex");
 
 export const isOwnedByImport = (metadata: ObjectMeta | undefined, importOwner: string): boolean =>
-  metadata?.labels?.["clavis.io/managed-by"] === "import" &&
-  metadata.annotations?.["clavis.io/import-owner"] === importOwner;
+  metadata?.labels?.["hemlig.io/managed-by"] === "import" &&
+  metadata.annotations?.["hemlig.io/import-owner"] === importOwner;
 
 const unwrapKubernetesResponse = (value: unknown): unknown =>
   typeof value === "object" && value !== null && "body" in value

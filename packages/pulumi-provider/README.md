@@ -1,23 +1,23 @@
-# Clavis Pulumi provider
+# Hemlig Pulumi provider
 
-`@clavis/pulumi-provider` is a dynamic Pulumi provider for Clavis control-plane
+`@hemlig/pulumi-provider` is a dynamic Pulumi provider for Hemlig control-plane
 secrets. It uses the administrator API; AWS infrastructure remains owned by the
-`clavis/cdk` construct.
+`hemlig/cdk` construct.
 
 ```ts
 import * as pulumi from "@pulumi/pulumi";
-import { Provider } from "@clavis/pulumi-provider";
+import { Provider } from "@hemlig/pulumi-provider";
 
-const clavis = new Provider("clavis", {
+const hemlig = new Provider("hemlig", {
   adminUrl: "https://admin.example.com",
-  adminToken: pulumi.secret(process.env.CLAVIS_ADMIN_TOKEN!),
+  adminToken: pulumi.secret(process.env.HEMLIG_ADMIN_TOKEN!),
 });
 
-clavis.secret("payments", {
+hemlig.secret("payments", {
   secretId: "payments-api",
   environment: "prod",
   metadata: { name: "payments-api", path: "payments/production" },
-  acl: [{ clusterId: "prod-east", permissions: ["read"] }],
+  acl: [{ consumerId: "prod-east", permissions: ["read"] }],
   payload: pulumi.secret({ API_TOKEN: { encoding: "utf8", value: "value" } }),
 });
 ```

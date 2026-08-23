@@ -1,7 +1,7 @@
 {
-  "name": "clavis",
+  "name": "hemlig",
   "version": "0.1.0",
-  "description": "Clavis: a Lambda, S3, DynamoDB, and KMS backed secrets delivery API for non-AWS clusters.",
+  "description": "Hemlig: a Lambda, S3, DynamoDB, and KMS backed secrets delivery API for non-AWS workloads.",
   "license": "Apache-2.0",
   "packageManager": "yarn@4.10.3",
   "workspaces": [
@@ -30,27 +30,32 @@
     "README.md",
     "PLAN.md",
     "SECURITY.md",
-    "LICENSE"
+    "LICENSE",
+    "packages/console/dist"
   ],
   "engines": {
     "node": ">=22.0.0"
   },
   "scripts": {
+    "backfill:console-indexes": "yarn build && node dist/scripts/backfill-console-indexes.js",
     "build": "rm -rf dist && tsc -p tsconfig.json",
-    "build:cdk": "rm -rf dist-cdk && tsc -p tsconfig.cdk.json",
     "build:all": "yarn workspaces foreach -A --topological run build",
-    "test": "jest --runInBand",
-    "test:watch": "jest --watch",
-    "test:all": "yarn build:all && yarn workspaces foreach -A --topological run test",
+    "build:cdk": "yarn workspace @hemlig/console build && rm -rf dist-cdk && tsc -p tsconfig.cdk.json",
+    "cdk:deploy": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' deploy",
+    "cdk:diff": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' diff",
+    "cdk:synth": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' synth",
+    "console:api": "yarn build && node dist/scripts/dev-ministack.js",
+    "console:build": "yarn workspace @hemlig/console build",
+    "console:dev": "yarn workspace @hemlig/console dev",
+    "format": "prettier --write .",
     "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.cdk.json --noEmit",
     "lint:all": "yarn build:all && yarn workspaces foreach -A --topological run lint",
-    "format": "prettier --write .",
+    "ministack:down": "docker compose -f docker-compose.ministack.yml down -v",
     "ministack:up": "docker compose -f docker-compose.ministack.yml up -d",
     "ministack:verify": "yarn build && node dist/scripts/verify-ministack.js",
-    "ministack:down": "docker compose -f docker-compose.ministack.yml down -v",
-    "cdk:synth": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' synth",
-    "cdk:diff": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' diff",
-    "cdk:deploy": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' deploy"
+    "test": "jest --runInBand",
+    "test:all": "yarn build:all && yarn workspaces foreach -A --topological run test",
+    "test:watch": "jest --watch"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.152",
@@ -73,5 +78,8 @@
     "constructs": "^10.8.1",
     "esbuild": "^0.25.10",
     "node-forge": "^1.3.1"
+  },
+  "resolutions": {
+    "vite": "^6.4.3"
   }
 }

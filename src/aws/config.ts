@@ -2,24 +2,29 @@ import { badRequest } from '../domain/errors';
 
 export interface AppConfig {
     readonly region: string;
-    /** Stable deployment name used in the Clavis issuing-root subject. */
+    /** Stable deployment name used in the Hemlig issuing-root subject. */
     readonly environmentName: string;
     readonly controlTableName: string;
     readonly workflowDueIndex: string;
     readonly retentionDueIndex: string;
     readonly catalogPathIndex: string;
+    readonly consumerDirectoryIndex: string;
+    readonly consumerIdentityIndex: string;
+    readonly secretRevisionIndex: string;
     readonly revisionBucketName: string;
     readonly truststoreBucketName: string;
     readonly truststoreKeyPrefix: string;
     readonly payloadKmsKeyArn: string;
     readonly auditBucketName: string;
     readonly auditPrefix: string;
-    readonly clusterCustomDomainName: string;
-    readonly clusterApiHostname: string;
+    readonly deliveryApiCustomDomainName: string;
+    readonly deliveryApiHostname: string;
     readonly cursorHmacKey: Buffer;
     readonly adminJwtIssuer: string;
     readonly adminJwtAudience: string;
     readonly adminActorSubjectClaim: string;
+    /** Required only when the deployment enables a browser console origin. */
+    readonly adminJwtScope?: string;
     readonly adminActorTenantClaim?: string;
     readonly adminExpectedTenantId?: string;
     readonly maxPayloadBytes: number;
@@ -37,23 +42,27 @@ export const loadConfig = (environment: NodeJS.ProcessEnv = process.env): AppCon
     }
     return {
         region: environment.AWS_REGION ?? 'us-east-1',
-        environmentName: required(environment, 'CLAVIS_ENVIRONMENT'),
+        environmentName: required(environment, 'HEMLIG_ENVIRONMENT'),
         controlTableName: required(environment, 'CONTROL_TABLE_NAME'),
         workflowDueIndex: required(environment, 'WORKFLOW_DUE_INDEX'),
         retentionDueIndex: required(environment, 'RETENTION_DUE_INDEX'),
         catalogPathIndex: required(environment, 'CATALOG_PATH_INDEX'),
+        consumerDirectoryIndex: required(environment, 'CONSUMER_DIRECTORY_INDEX'),
+        consumerIdentityIndex: required(environment, 'CONSUMER_IDENTITY_INDEX'),
+        secretRevisionIndex: required(environment, 'SECRET_REVISION_INDEX'),
         revisionBucketName: required(environment, 'REVISION_BUCKET_NAME'),
         truststoreBucketName: required(environment, 'TRUSTSTORE_BUCKET_NAME'),
         truststoreKeyPrefix: required(environment, 'TRUSTSTORE_KEY_PREFIX'),
         payloadKmsKeyArn: required(environment, 'PAYLOAD_KMS_KEY_ARN'),
         auditBucketName: required(environment, 'AUDIT_BUCKET_NAME'),
         auditPrefix: required(environment, 'AUDIT_PREFIX'),
-        clusterCustomDomainName: required(environment, 'CLUSTER_CUSTOM_DOMAIN_NAME'),
-        clusterApiHostname: required(environment, 'CLUSTER_API_HOSTNAME'),
+        deliveryApiCustomDomainName: required(environment, 'DELIVERY_API_CUSTOM_DOMAIN_NAME'),
+        deliveryApiHostname: required(environment, 'DELIVERY_API_HOSTNAME'),
         cursorHmacKey,
         adminJwtIssuer: required(environment, 'ADMIN_JWT_ISSUER'),
         adminJwtAudience: required(environment, 'ADMIN_JWT_AUDIENCE'),
         adminActorSubjectClaim: required(environment, 'ADMIN_ACTOR_SUBJECT_CLAIM'),
+        adminJwtScope: optional(environment, 'ADMIN_JWT_SCOPE'),
         adminActorTenantClaim: optional(environment, 'ADMIN_ACTOR_TENANT_CLAIM'),
         adminExpectedTenantId: optional(environment, 'ADMIN_EXPECTED_TENANT_ID'),
         maxPayloadBytes,

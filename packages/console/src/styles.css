@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+@theme {
+  --color-surface: oklch(99% 0.003 260);
+  --color-surface-raised: oklch(100% 0 0);
+  --color-ink: oklch(24% 0.02 260);
+  --color-ink-muted: oklch(52% 0.02 260);
+  --color-line: oklch(91% 0.006 260);
+  --color-accent: oklch(52% 0.15 260);
+  --color-danger: oklch(52% 0.19 25);
+  --color-warn: oklch(62% 0.15 75);
+  --color-ok: oklch(55% 0.13 155);
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-surface: oklch(19% 0.012 260);
+    --color-surface-raised: oklch(23% 0.014 260);
+    --color-ink: oklch(94% 0.006 260);
+    --color-ink-muted: oklch(70% 0.014 260);
+    --color-line: oklch(32% 0.014 260);
+    --color-accent: oklch(72% 0.13 260);
+    --color-danger: oklch(70% 0.16 25);
+    --color-warn: oklch(78% 0.13 75);
+    --color-ok: oklch(72% 0.12 155);
+  }
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+code,
+pre,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}

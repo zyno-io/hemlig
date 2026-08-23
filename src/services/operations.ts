@@ -9,6 +9,7 @@ export const humanOperation = async (
     idempotencyKey: string,
     correlationId: string,
     operation: string,
+    sourceIp: string,
     target: Readonly<Record<string, string>>,
     response: () => APIGatewayProxyStructuredResultV2,
 ): Promise<APIGatewayProxyStructuredResultV2> => {
@@ -20,6 +21,7 @@ export const humanOperation = async (
         actor,
         operation,
         target,
+        sourceIp,
     });
     await app.repository.markAuditSucceeded(actor, idempotencyKey, auditEvent.eventId);
     return response();

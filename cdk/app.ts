@@ -1,10 +1,12 @@
 import { App, Tags } from 'aws-cdk-lib';
 import { deploymentConfigFromContext } from './config';
-import { ClavisStack } from './stack';
+import { HemligStack } from './stack';
 
 const app = new App();
 const config = deploymentConfigFromContext(app.node);
-const stack = new ClavisStack(app, `clv-${config.environmentName}`, config);
-Tags.of(stack).add('application', 'clavis');
-Tags.of(stack).add('managed-by', 'aws-cdk');
-Tags.of(stack).add('environment', config.environmentName);
+new HemligStack(app, `hml-${config.environmentName}`, config);
+// Tag the whole app, not just this stack: consoleFqdn can make HemligStack create a
+// sibling us-east-1 certificate stack, which would otherwise go untagged.
+Tags.of(app).add('application', 'hemlig');
+Tags.of(app).add('managed-by', 'aws-cdk');
+Tags.of(app).add('environment', config.environmentName);

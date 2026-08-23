@@ -16,9 +16,9 @@ export const handler: Handler = async (): Promise<void> => {
     if (workflow === undefined) {
       continue;
     }
-    if (workflow.workflowKind === "cluster.enrollment") {
+    if (workflow.workflowKind === "consumer.enrollment") {
       try {
-        const result = await app.clusters.resume(operationId);
+        const result = await app.consumers.resume(operationId);
         const enrollment = await app.repository.getEnrollment(operationId);
         if (enrollment !== undefined) {
           const idempotency = await app.repository.getIdempotency(
@@ -32,7 +32,7 @@ export const handler: Handler = async (): Promise<void> => {
               actor: enrollment.actor,
               operation: enrollment.operationType,
               target: {
-                clusterId: result.clusterId,
+                consumerId: result.consumerId,
                 rootFingerprint: result.rootFingerprint,
                 apiFingerprint: result.apiFingerprint,
               },
@@ -49,7 +49,7 @@ export const handler: Handler = async (): Promise<void> => {
           correlationId: operationId,
           outcome: "failed",
           actor: { type: "system", id: "recovery" },
-          operation: "cluster.enrollment.recovery",
+          operation: "consumer.enrollment.recovery",
           target: { operationId },
           reasonCode: "truststore_publication_pending",
         });
@@ -85,4 +85,9 @@ export const handler: Handler = async (): Promise<void> => {
       reasonCode: "prepared_workflow_expired",
     });
   }
+  // The delivery custom domain is replaceable (for example, when a deployment
+  // moves from an old delivery subdomain to api.<zone>). Its truststore setting is not a
+  // CloudFormation property, so reconcile the current immutable bundle after
+  // normal recovery work. This is a no-op before enrollment and in steady state.
+  await app.consumers.reconcileTruststore();
 };

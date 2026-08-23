@@ -3,7 +3,7 @@ import { badRequest } from '../domain/errors';
 import { stableJson } from '../util/encoding';
 
 interface CursorPayload {
-    readonly clusterId: string;
+    readonly scope: string;
     readonly lastEvaluatedKey?: Record<string, string>;
     readonly expiresAt: string;
 }
@@ -17,7 +17,7 @@ export class CursorCodec {
         return `${encoded}.${signature}`;
     }
 
-    public decode(cursor: string, clusterId: string, now: Date = new Date()): CursorPayload {
+    public decode(cursor: string, scope: string, now: Date = new Date()): CursorPayload {
         const [encoded, signature, extra] = cursor.split('.');
         if (encoded === undefined || signature === undefined || extra !== undefined) {
             throw badRequest('cursor is malformed.');
@@ -34,8 +34,8 @@ export class CursorCodec {
         } catch {
             throw badRequest('cursor payload is invalid.');
         }
-        if (parsed.clusterId !== clusterId || new Date(parsed.expiresAt).getTime() <= now.getTime()) {
-            throw badRequest('cursor is no longer valid for this cluster.');
+        if (parsed.scope !== scope || new Date(parsed.expiresAt).getTime() <= now.getTime()) {
+            throw badRequest('cursor is no longer valid for this scope.');
         }
         return parsed;
     }

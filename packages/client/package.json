@@ -1,11 +1,28 @@
 {
-  "name": "@clavis/client",
-  "version": "0.1.0",
-  "description": "Typed HTTP client and shared contracts for Clavis consumers.",
+  "name": "@hemlig/client",
+  "version": "0.2.0",
+  "description": "Typed HTTP client and shared contracts for Hemlig consumers.",
   "license": "Apache-2.0",
   "packageManager": "yarn@4.10.3",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "require": "./dist/node.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "node": [
+        "dist/node.d.ts"
+      ]
+    }
+  },
   "files": [
     "dist"
   ],

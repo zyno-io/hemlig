@@ -9,17 +9,20 @@ const config: AppConfig = {
     workflowDueIndex: 'workflow-due',
     retentionDueIndex: 'retention-due',
     catalogPathIndex: 'catalog-path',
+    consumerDirectoryIndex: 'consumer-directory',
+    consumerIdentityIndex: 'consumer-identity',
+    secretRevisionIndex: 'secret-revision',
     revisionBucketName: 'revisions',
     truststoreBucketName: 'truststores',
     truststoreKeyPrefix: 'truststores',
     payloadKmsKeyArn: 'arn:aws:kms:us-east-1:000000000000:key/test',
     auditBucketName: 'audit',
     auditPrefix: 'audit',
-    clusterCustomDomainName: 'clusters.example.test',
-    clusterApiHostname: 'clusters.example.test',
+    deliveryApiCustomDomainName: 'api.example.test',
+    deliveryApiHostname: 'api.example.test',
     cursorHmacKey: Buffer.alloc(32, 7),
     adminJwtIssuer: 'https://issuer.example.test',
-    adminJwtAudience: 'clavis-api',
+    adminJwtAudience: 'hemlig-api',
     adminActorSubjectClaim: 'sub',
     maxPayloadBytes: 768000,
 };
@@ -32,7 +35,7 @@ describe('humanActorFromEvent', () => {
     it('accepts client_id when aud is absent, matching HTTP API JWT authorizers', () => {
         const actor = humanActorFromEvent(jwtEvent({
             iss: 'https://issuer.example.test',
-            client_id: 'clavis-api',
+            client_id: 'hemlig-api',
             sub: 'external-subject',
         }), config);
         expect(actor).toEqual({ type: 'human', id: 'external-subject' });
@@ -42,8 +45,23 @@ describe('humanActorFromEvent', () => {
         expect(() => humanActorFromEvent(jwtEvent({
             iss: 'https://issuer.example.test',
             aud: 'another-api',
-            client_id: 'clavis-api',
+            client_id: 'hemlig-api',
             sub: 'external-subject',
         }), config)).toThrow('does not satisfy');
+    });
+
+    it('requires the configured administrator scope in either standard claim', () => {
+        const scoped = { ...config, adminJwtScope: 'hemlig.admin' };
+        expect(() => humanActorFromEvent(jwtEvent({
+            iss: 'https://issuer.example.test',
+            aud: 'hemlig-api',
+            sub: 'external-subject',
+        }), scoped)).toThrow('does not satisfy');
+        expect(humanActorFromEvent(jwtEvent({
+            iss: 'https://issuer.example.test',
+            aud: 'hemlig-api',
+            sub: 'external-subject',
+            scp: 'other hemlig.admin',
+        }), scoped)).toMatchObject({ id: 'external-subject' });
     });
 });

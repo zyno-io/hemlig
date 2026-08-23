@@ -70,18 +70,18 @@ export const parseGrants = (value: unknown): readonly Grant[] => {
     }
     const seen = new Set<string>();
     return value.map((grant): Grant => {
-        if (!isObject(grant) || typeof grant.clusterId !== 'string' || !Array.isArray(grant.permissions)) {
-            throw badRequest('Each ACL grant must contain clusterId and permissions.');
+        if (!isObject(grant) || typeof grant.consumerId !== 'string' || !Array.isArray(grant.permissions)) {
+            throw badRequest('Each ACL grant must contain consumerId and permissions.');
         }
-        assertIdentifier(grant.clusterId, 'acl.clusterId');
-        if (seen.has(grant.clusterId)) {
-            throw badRequest('acl contains a duplicate clusterId.');
+        assertIdentifier(grant.consumerId, 'acl.consumerId');
+        if (seen.has(grant.consumerId)) {
+            throw badRequest('acl contains a duplicate consumerId.');
         }
-        seen.add(grant.clusterId);
+        seen.add(grant.consumerId);
         if (grant.permissions.length !== 1 || grant.permissions[0] !== 'read') {
             throw badRequest('Only the read permission is supported.');
         }
-        return { clusterId: grant.clusterId, permissions: ['read'] };
+        return { consumerId: grant.consumerId, permissions: ['read'] };
     });
 };
 

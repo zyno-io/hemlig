@@ -14,17 +14,20 @@ const config: AppConfig = {
   workflowDueIndex: "workflow-due",
   retentionDueIndex: "retention-due",
   catalogPathIndex: "catalog-path",
+  consumerDirectoryIndex: "consumer-directory",
+  consumerIdentityIndex: "consumer-identity",
+  secretRevisionIndex: "secret-revision",
   revisionBucketName: "revisions",
   truststoreBucketName: "truststores",
   truststoreKeyPrefix: "truststores",
   payloadKmsKeyArn: "arn:aws:kms:us-east-1:111122223333:key/test",
   auditBucketName: "audit",
   auditPrefix: "audit",
-  clusterCustomDomainName: "clusters.example.test",
-  clusterApiHostname: "clusters.example.test",
+  deliveryApiCustomDomainName: "api.example.test",
+  deliveryApiHostname: "api.example.test",
   cursorHmacKey: Buffer.alloc(32, 1),
   adminJwtIssuer: "https://issuer.example.test",
-  adminJwtAudience: "clavis",
+  adminJwtAudience: "hemlig",
   adminActorSubjectClaim: "sub",
   maxPayloadBytes: 768000,
 };
@@ -37,14 +40,15 @@ const head: HeadRecord = {
   controlVersionId: "ctl-current",
   controlObjectVersionId: "ctl-object-version",
   payloadVersionId: "pay-current",
+  payloadKeyCount: 2,
   payloadObjectVersionId: "pay-object-version",
   state: "ACTIVE",
 };
 
 const access: AccessRecord = {
-  pk: "CLUSTER#prod-east",
+  pk: "CONSUMER#prod-east",
   sk: "SECRET#database-credentials",
-  clusterId: "prod-east",
+  consumerId: "prod-east",
   secretId: "database-credentials",
   environment: "prod",
   permissions: ["read"],
@@ -59,12 +63,13 @@ const control: ControlRevision = {
   secretId: "database-credentials",
   controlVersionId: "ctl-current",
   payloadVersionId: "pay-current",
+  payloadKeyCount: 2,
   environment: "prod",
   state: "ACTIVE",
   createdAt: "2026-08-22T00:00:00.000Z",
   createdBy: { type: "human", id: "admin" },
   metadata: { name: "database credentials" },
-  acl: [{ clusterId: "prod-east", permissions: ["read"] }],
+  acl: [{ consumerId: "prod-east", permissions: ["read"] }],
 };
 
 const payload: PayloadRevision = {
@@ -171,5 +176,50 @@ describe("SecretService.read", () => {
     ).rejects.toMatchObject({ code: "service_unavailable" });
 
     expect(crypto.decrypt).not.toHaveBeenCalled();
+  });
+});
+
+describe("SecretService.update", () => {
+  it("preserves the payload entry count across a metadata-only revision", async () => {
+    let preparedControl: ControlRevision | undefined;
+    const repository = {
+      requireHead: jest.fn().mockResolvedValue(head),
+      getConsumer: jest.fn().mockResolvedValue({
+        status: "ACTIVE",
+        environment: "prod",
+      }),
+      getAccess: jest.fn().mockResolvedValue(access),
+      getIdempotency: jest.fn().mockResolvedValue(undefined),
+      prepareMutation: jest.fn().mockImplementation(async (prepared: { readonly control: ControlRevision }) => {
+        preparedControl = prepared.control;
+      }),
+      completeMutation: jest.fn().mockResolvedValue(undefined),
+    };
+    const objects = {
+      getJson: jest.fn().mockResolvedValue(control),
+      putImmutable: jest.fn().mockResolvedValue({
+        bucket: "revisions",
+        key: "control",
+        versionId: "new-version",
+        checksumSha256: "checksum",
+      }),
+      extendComplianceRetention: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new SecretService(
+      repository as never,
+      objects as never,
+      {} as never,
+      config,
+    );
+
+    await service.update({
+      secretId: "database-credentials",
+      expectedControlVersionId: "ctl-current",
+      metadata: { name: "renamed database credentials" },
+      actor: { type: "human", id: "admin" },
+      idempotencyKey: "metadata-count-inheritance",
+    });
+
+    expect(preparedControl?.payloadKeyCount).toBe(2);
   });
 });

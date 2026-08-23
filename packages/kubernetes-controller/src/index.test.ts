@@ -7,7 +7,7 @@ import {
   payloadToKubernetesData,
 } from "./index";
 
-test("converts UTF-8 and base64 Clavis entries into Kubernetes Secret data", () => {
+test("converts UTF-8 and base64 Hemlig entries into Kubernetes Secret data", () => {
   const data = payloadToKubernetesData({
     USERNAME: { encoding: "utf8", value: "service" },
     TOKEN: { encoding: "base64", value: "AQID" },
@@ -33,8 +33,8 @@ test("uses a key-order-independent checksum for exported material", () => {
 
 test("recognizes only the exact import owner", () => {
   const metadata = {
-    labels: { "clavis.io/managed-by": "import" },
-    annotations: { "clavis.io/import-owner": "payments/payments-api" },
+    labels: { "hemlig.io/managed-by": "import" },
+    annotations: { "hemlig.io/import-owner": "payments/payments-api" },
   };
   assert.equal(isOwnedByImport(metadata, "payments/payments-api"), true);
   assert.equal(isOwnedByImport(metadata, "payments/other"), false);

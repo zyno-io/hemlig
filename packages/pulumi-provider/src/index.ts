@@ -1,14 +1,15 @@
+import { randomUUID } from "node:crypto";
 import * as pulumi from "@pulumi/pulumi";
 import {
-  ClavisClient,
-  ClavisError,
-  NodeHttpsTransport,
+  HemligClient,
+  HemligError,
   type Grant,
   type SecretMetadata,
   type SecretPayload,
-} from "@clavis/client";
+} from "@hemlig/client";
+import { NodeHttpsTransport } from "@hemlig/client/node";
 
-export interface ClavisProviderArgs {
+export interface HemligProviderArgs {
   /** Admin custom-domain URL, for example https://admin.example.com. */
   readonly adminUrl: pulumi.Input<string>;
   /** JWT/OAuth access token. Pass a Pulumi secret value. */
@@ -19,8 +20,8 @@ export class Provider extends pulumi.ComponentResource {
   private readonly adminUrl: pulumi.Output<string>;
   private readonly adminToken: pulumi.Output<string>;
 
-  public constructor(name: string, args: ClavisProviderArgs, opts?: pulumi.ComponentResourceOptions) {
-    super("clavis:index:Provider", name, {}, opts);
+  public constructor(name: string, args: HemligProviderArgs, opts?: pulumi.ComponentResourceOptions) {
+    super("hemlig:index:Provider", name, {}, opts);
     this.adminUrl = pulumi.output(args.adminUrl);
     this.adminToken = pulumi.secret(args.adminToken);
     this.registerOutputs({});
@@ -28,14 +29,14 @@ export class Provider extends pulumi.ComponentResource {
 
   public secret(
     name: string,
-    args: ClavisSecretArgs,
+    args: HemligSecretArgs,
     opts?: pulumi.CustomResourceOptions,
-  ): ClavisSecret {
-    return new ClavisSecret(name, args, this.adminUrl, this.adminToken, opts);
+  ): HemligSecret {
+    return new HemligSecret(name, args, this.adminUrl, this.adminToken, opts);
   }
 }
 
-export interface ClavisSecretArgs {
+export interface HemligSecretArgs {
   readonly secretId: pulumi.Input<string>;
   readonly environment: pulumi.Input<string>;
   readonly metadata: pulumi.Input<SecretMetadata>;
@@ -54,7 +55,7 @@ interface ResolvedSecretInputs {
   readonly payload: SecretPayload;
 }
 
-class ClavisSecretProvider implements pulumi.dynamic.ResourceProvider {
+class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
   public async create(inputs: ResolvedSecretInputs): Promise<pulumi.dynamic.CreateResult> {
     const client = clientFor(inputs);
     let control;
@@ -64,15 +65,15 @@ class ClavisSecretProvider implements pulumi.dynamic.ResourceProvider {
         environment: inputs.environment,
         metadata: inputs.metadata,
         acl: inputs.acl,
-      });
+      }, randomUUID());
     } catch (error) {
-      if (!(error instanceof ClavisError) || error.status !== 409) {
+      if (!(error instanceof HemligError) || error.status !== 409) {
         throw error;
       }
       control = await client.getAdminSecret(inputs.adminToken, inputs.secretId);
     }
     if (control.environment !== inputs.environment) {
-      throw new Error("The existing Clavis secret belongs to a different environment.");
+      throw new Error("The existing Hemlig secret belongs to a different environment.");
     }
     if (
       JSON.stringify(control.metadata) !== JSON.stringify(inputs.metadata) ||
@@ -83,6 +84,7 @@ class ClavisSecretProvider implements pulumi.dynamic.ResourceProvider {
         inputs.secretId,
         control.controlVersionId,
         { metadata: inputs.metadata, acl: inputs.acl },
+        randomUUID(),
       );
     }
     const written = await client.putAdminPayload(
@@ -90,6 +92,7 @@ class ClavisSecretProvider implements pulumi.dynamic.ResourceProvider {
       inputs.secretId,
       control.controlVersionId,
       inputs.payload,
+      randomUUID(),
     );
     return {
       id: inputs.secretId,
@@ -114,7 +117,7 @@ class ClavisSecretProvider implements pulumi.dynamic.ResourceProvider {
     const client = clientFor(news);
     const current = await client.getAdminSecret(news.adminToken, news.secretId);
     if (current.environment !== news.environment) {
-      throw new Error("The existing Clavis secret belongs to a different environment.");
+      throw new Error("The existing Hemlig secret belongs to a different environment.");
     }
     let control = current;
     if (
@@ -126,6 +129,7 @@ class ClavisSecretProvider implements pulumi.dynamic.ResourceProvider {
         news.secretId,
         current.controlVersionId,
         { metadata: news.metadata, acl: news.acl },
+        randomUUID(),
       );
     }
     const written = await client.putAdminPayload(
@@ -133,27 +137,28 @@ class ClavisSecretProvider implements pulumi.dynamic.ResourceProvider {
       news.secretId,
       control.controlVersionId,
       news.payload,
+      randomUUID(),
     );
     return { outs: withVersions(news, written.controlVersionId, written.payloadVersionId) };
   }
 
-  /** Clavis intentionally has no delete endpoint; dropping Pulumi state retains the secret. */
+  /** Hemlig intentionally has no delete endpoint; dropping Pulumi state retains the secret. */
   public async delete(): Promise<void> {}
 }
 
-export class ClavisSecret extends pulumi.dynamic.Resource {
+export class HemligSecret extends pulumi.dynamic.Resource {
   public readonly controlVersionId!: pulumi.Output<string>;
   public readonly payloadVersionId!: pulumi.Output<string>;
 
   public constructor(
     name: string,
-    args: ClavisSecretArgs,
+    args: HemligSecretArgs,
     adminUrl: pulumi.Input<string>,
     adminToken: pulumi.Input<string>,
     opts?: pulumi.CustomResourceOptions,
   ) {
     super(
-      new ClavisSecretProvider(),
+      new HemligSecretProvider(),
       name,
       {
         ...args,
@@ -168,8 +173,8 @@ export class ClavisSecret extends pulumi.dynamic.Resource {
   }
 }
 
-const clientFor = (inputs: ResolvedSecretInputs): ClavisClient =>
-  new ClavisClient(new URL(inputs.adminUrl), new NodeHttpsTransport());
+const clientFor = (inputs: ResolvedSecretInputs): HemligClient =>
+  new HemligClient(new URL(inputs.adminUrl), new NodeHttpsTransport());
 
 const withVersions = (
   inputs: ResolvedSecretInputs,

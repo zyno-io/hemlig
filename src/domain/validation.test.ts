@@ -9,9 +9,9 @@ describe('secret validation', () => {
         expect(payload.CERT).toEqual({ encoding: 'base64', value: 'Y2VydA==' });
     });
 
-    it('rejects an ACL with more than ten clusters', () => {
+    it('rejects an ACL with more than ten consumers', () => {
         const acl = Array.from({ length: 11 }, (_, index) => ({
-            clusterId: `cluster-${index}`,
+            consumerId: `consumer-${index}`,
             permissions: ['read'],
         }));
         expect(() => parseGrants(acl)).toThrow('zero and ten');

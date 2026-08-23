@@ -1,0 +1,23 @@
+// Pure by design: this has zero aws-cdk-lib imports so a test can call it directly
+// alongside packages/console/src/config.ts's parseRuntimeConfig and catch a shape
+// drift between the two at unit-test time instead of at browser boot.
+export interface ConsoleRuntimeConfigInput {
+  readonly deploymentName: string;
+  readonly adminFqdn: string;
+  readonly oidcIssuer: string;
+  readonly oidcClientId: string;
+  readonly oidcAdminScope: string;
+  readonly secretEnvironments: readonly string[];
+}
+
+export const consoleRuntimeConfig = (input: ConsoleRuntimeConfigInput) => ({
+  deploymentName: input.deploymentName,
+  adminApiUrl: `https://${input.adminFqdn}`,
+  environments: input.secretEnvironments,
+  auth: {
+    mode: "oidc" as const,
+    authority: input.oidcIssuer,
+    clientId: input.oidcClientId,
+    scopes: ["openid", "profile", input.oidcAdminScope],
+  },
+});

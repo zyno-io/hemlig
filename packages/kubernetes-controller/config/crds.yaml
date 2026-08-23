@@ -1,15 +1,15 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: clavissecretimports.clavis.io
+  name: hemligsecretimports.hemlig.io
 spec:
-  group: clavis.io
+  group: hemlig.io
   scope: Namespaced
   names:
-    plural: clavissecretimports
-    singular: clavissecretimport
-    kind: ClavisSecretImport
-    shortNames: [clvimport]
+    plural: hemligsecretimports
+    singular: hemligsecretimport
+    kind: HemligSecretImport
+    shortNames: [hmlimport]
   versions:
     - name: v1alpha1
       served: true
@@ -36,20 +36,28 @@ spec:
                 controlVersionId: { type: string }
                 payloadVersionId: { type: string }
                 observedGeneration: { type: integer, format: int64 }
-                conditions: { type: array, items: { type: object, x-kubernetes-preserve-unknown-fields: true } }
+                conditions:
+                  {
+                    type: array,
+                    items:
+                      {
+                        type: object,
+                        x-kubernetes-preserve-unknown-fields: true,
+                      },
+                  }
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: clavissecretexports.clavis.io
+  name: hemligsecretexports.hemlig.io
 spec:
-  group: clavis.io
+  group: hemlig.io
   scope: Namespaced
   names:
-    plural: clavissecretexports
-    singular: clavissecretexport
-    kind: ClavisSecretExport
-    shortNames: [clvexport]
+    plural: hemligsecretexports
+    singular: hemligsecretexport
+    kind: HemligSecretExport
+    shortNames: [hmlexport]
   versions:
     - name: v1alpha1
       served: true
@@ -70,8 +78,17 @@ spec:
                   required: [name]
                   properties: { name: { type: string } }
                 environment: { type: string, minLength: 1 }
-                metadata: { type: object, x-kubernetes-preserve-unknown-fields: true }
-                acl: { type: array, items: { type: object, x-kubernetes-preserve-unknown-fields: true } }
+                metadata:
+                  { type: object, x-kubernetes-preserve-unknown-fields: true }
+                acl:
+                  {
+                    type: array,
+                    items:
+                      {
+                        type: object,
+                        x-kubernetes-preserve-unknown-fields: true,
+                      },
+                  }
             status:
               type: object
               properties:
@@ -79,4 +96,12 @@ spec:
                 payloadVersionId: { type: string }
                 sourceChecksum: { type: string }
                 observedGeneration: { type: integer, format: int64 }
-                conditions: { type: array, items: { type: object, x-kubernetes-preserve-unknown-fields: true } }
+                conditions:
+                  {
+                    type: array,
+                    items:
+                      {
+                        type: object,
+                        x-kubernetes-preserve-unknown-fields: true,
+                      },
+                  }

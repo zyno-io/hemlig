@@ -2,7 +2,7 @@ import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
-import { clusterActorFromEvent } from "../auth/actors";
+import { consumerActorFromEvent } from "../auth/actors";
 import { badRequest, forbidden } from "../domain/errors";
 import { empty, json } from "../http/responses";
 import { isoNow } from "../util/encoding";
@@ -12,16 +12,16 @@ export const handler = async (
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyStructuredResultV2> =>
   withErrorResponse(event, async (app, correlationId, setAuditContext) => {
-    const actor = await clusterActorFromEvent(event, app.repository);
-    const clusterId = actor.clusterId;
-    if (clusterId === undefined) {
+    const actor = await consumerActorFromEvent(event, app.repository);
+    const consumerId = actor.consumerId;
+    if (consumerId === undefined) {
       throw forbidden();
     }
     const environment = actor.environment;
     if (environment === undefined) {
       throw forbidden();
     }
-    const operation = `cluster${event.requestContext.http.method.toLowerCase()}:${event.rawPath}`;
+    const operation = `consumer${event.requestContext.http.method.toLowerCase()}:${event.rawPath}`;
     setAuditContext({
       actor,
       operation,
@@ -48,7 +48,7 @@ export const handler = async (
         sourceIp: event.requestContext.http.sourceIp,
       });
       const result = await app.secrets.read(
-        clusterId,
+        consumerId,
         environment,
         secretId,
         ifNoneMatch,
@@ -103,9 +103,9 @@ export const handler = async (
       const decoded =
         rawCursor === undefined
           ? undefined
-          : app.cursors.decode(rawCursor, clusterId);
+          : app.cursors.decode(rawCursor, consumerId);
       const page = await app.repository.listAccess(
-        clusterId,
+        consumerId,
         environment,
         decoded?.lastEvaluatedKey,
       );
@@ -113,7 +113,7 @@ export const handler = async (
         page.nextCursor === undefined
           ? undefined
           : app.cursors.encode({
-              clusterId,
+              scope: consumerId,
               lastEvaluatedKey: JSON.parse(page.nextCursor) as Record<
                 string,
                 string
@@ -140,6 +140,6 @@ export const handler = async (
       });
     }
     throw badRequest(
-      "The requested cluster route is not supported by this handler.",
+      "The requested consumer route is not supported by this handler.",
     );
   });
