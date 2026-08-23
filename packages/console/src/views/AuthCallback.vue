@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { createAuthDriver } from "../auth/session";
 import { useAppStore } from "../stores/app";
 
 const store = useAppStore();
@@ -10,9 +9,10 @@ const error = ref<string | undefined>();
 
 onMounted(async () => {
   try {
-    const config = store.requireConfig();
-    const session = await createAuthDriver(config).completeSignIn();
-    store.adoptSession(session);
+    const session = await store.completeSignIn();
+    if (session === undefined) {
+      throw new Error("The identity provider did not return a session.");
+    }
     await router.replace({ name: "root" });
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : String(caught);

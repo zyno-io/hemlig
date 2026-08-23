@@ -61,9 +61,17 @@ the current version-pinned truststore to the new domain, then move each mTLS
 client to `https://<apiFqdn>`. Existing leaf certificates remain valid: the
 issuing root and fingerprint authorization do not depend on the hostname.
 
-To allow a separately hosted browser console, add `consoleFqdn` and the exact
-single-token `oidcAdminScope` (for example `hemlig.admin`). They must be used
-together. The stack then permits only `https://<consoleFqdn>` through the admin
+`oidcAudience` must be the exact access-token `aud` value expected by the API
+Gateway JWT authorizer. For Microsoft Entra v2 tokens, that is the API
+registration's bare application (client) ID, not its `api://` identifier URI.
+
+To allow a separately hosted browser console, add `consoleFqdn`, the exact
+single-token `oidcAdminScope` carried in the access token (for example
+`hemlig.admin`), and `oidcConsoleAccessScope`, the resource-qualified scope the
+browser requests (for example `api://<Entra API application ID>/hemlig.admin`).
+They must be used together. `oidcAdminRole` is optional but recommended for identity providers
+that issue application roles: Hemlig rechecks that token role in Lambda after
+API Gateway has validated issuer, audience, and scope. The stack then permits only `https://<consoleFqdn>` through the admin
 API CORS configuration, exposes `ETag`, creates an unauthenticated `OPTIONS
 /{proxy+}` route ahead of the JWT-protected `$default` route, and requires the
 scope at both API Gateway and Lambda. The preflight reaches Lambda only to
@@ -74,16 +82,24 @@ adds the configured CORS headers.
 const config: DeploymentConfig = {
   // ...required service fields...
   consoleFqdn: "dev.example.com",
+  // Entra v2 access-token audience (the API application's client ID).
+  oidcAudience: "00000000-0000-0000-0000-000000000000",
   oidcAdminScope: "hemlig.admin",
+  oidcConsoleAccessScope: "api://hemlig-api/hemlig.admin",
+  oidcAdminRole: "Hemlig.Administrator",
   oidcClientId: "00000000-0000-0000-0000-000000000000",
   consoleCertificateArn:
     "arn:aws:acm:us-east-1:123456789012:certificate/11111111-2222-3333-4444-555555555555",
-  secretEnvironments: ["dev", "staging", "prod"],
 };
 ```
 
 Existing machine-to-machine admin deployments remain audience-only unless these
 values are set.
+
+Secret and consumer environments are administrator-defined at runtime through
+`POST /v1/admin/environments`. A fresh deployment starts with none; an
+administrator creates the first one through the API. There is no deployment-time
+environment list to configure.
 
 ## Console hosting
 
@@ -118,6 +134,12 @@ provider redirects back to the console's own origin, so the console must be able
 to frame that one document. Without it every token renewal fails and each
 session degrades to a full redirect.
 
+If the installer configures a non-default CDK bootstrap qualifier, pass the
+same `bootstrapQualifier` in `DeploymentConfig` as well as its matching
+`DefaultStackSynthesizer`. Hemlig then constructs a fresh synthesizer with that
+qualifier for the sibling certificate stack; CDK synthesizer instances cannot
+be shared between two stacks.
+
 `connect-src` is built from your configuration and names exactly the admin API
 origin and the OIDC issuer origin. That assumes your provider serves its token
 and JWKS endpoints from the issuer's origin — true for Entra, Okta, and Auth0,
@@ -127,9 +149,9 @@ from `oauth2.googleapis.com`). A provider that splits them needs both origins in
 the admin API — see [the console plan](console-plan.md) for why CloudFront is
 kept out of the credential path.
 
-Built console assets are uploaded when `packages/console/dist` is present in the
-package, along with a generated `config.json` carrying the deployment name,
-admin API URL, environment list, and OIDC client settings. `index.html`,
+Built console assets are copied into `dist-cdk/console-dist` before packing and
+uploaded from there, along with a generated `config.json` carrying the deployment name,
+admin API URL, and OIDC client settings. `index.html`,
 `config.json`, and `silent.html` are served uncached; content-hashed assets are
 cached at the edge. If the build output is absent the stack still synthesises and
 emits a `ConsoleAssetsPending` output, so an installer can own publication in its
@@ -147,10 +169,53 @@ default, and the audit bucket uses seven years. It creates exactly one
 customer-managed **application CMK** (`alias/hml-<environment>-application`).
 Payload envelope generation, payload decryption, and the online issuer-root
 envelope all use that same key. The consumer Lambda has `kms:Decrypt` only when
-the context says `service=hemlig, purpose=secret-payload`.
-The admin Lambda can generate payload data keys and can decrypt only an issuer
-envelope whose KMS context is exactly `service=hemlig, purpose=issuer-ca`.
+the context says `service=hemlig, purpose=secret-payload`. The admin Lambda can
+generate payload data keys and decrypt issuer envelopes or current payloads only
+under their respective `issuer-ca` and `secret-payload` KMS contexts. The
+bootstrap Lambda can generate and decrypt only `issuer-ca` envelope material;
+all `kms:GenerateDataKey` grants are context-conditioned, not generic CMK
+grants.
 All application roles only have `PutObject` for the audit prefix.
+
+## Agent bootstrap and notifications
+
+The construct also creates a dedicated bootstrap Lambda and an exact
+unauthenticated `POST /v1/bootstrap/redeem` route on `adminFqdn`; it is more
+specific than the JWT-protected default route. The handler accepts only a
+hash-verified, one-use bootstrap capability plus CSR. It has the minimum
+enrollment/truststore/KMS permission needed to issue the agent's mTLS leaf and
+register its public certificate with AWS IoT; it does not receive an
+administrator OIDC credential from CDK or Kubernetes.
+
+The control table has a `NEW_IMAGE` stream. Secret mutations atomically add
+one or two bounded, payload-free notification outbox records with their
+recipient consumer IDs. An unchanged ACL is not rewritten for a payload-only
+update. CDK filters the stream to those records, sends them through a Node 24
+publisher Lambda for background fan-out, and grants that function
+`iot:Publish` only below `hemlig/<environment>/consumers/*`. It also creates
+the encrypted 14-day notification DLQ and a CloudWatch alarm for a non-empty
+queue.
+
+The stack resolves the account's AWS IoT Data-ATS endpoint during deployment
+and creates one policy. A bootstrap leaf is registered without AWS generating a
+private key, attached to a Thing named exactly for the assigned consumer ID,
+and attached to the policy. That policy permits only the matching attached Thing
+to connect as that exact client ID and subscribe/receive its one private topic.
+It contains no `iot:Publish`, wildcard topic, Shadow, Jobs, or AWS credential
+permission. The mTLS leaf is the same locally generated keypair used for
+Hemlig's `apiFqdn`; there is no second KMS key or second private key.
+
+`existingCursorHmacSecretArn` is normally omitted: Hemlig creates a retained
+`hml-<environment>/cursor-hmac` secret. Supply it only to adopt that exact
+secret after a failed first CloudFormation creation where an organization SCP
+retains the generated key and forbids deleting it. The imported secret remains
+outside the replacement stack's lifecycle; do not point it at a secret from a
+different Hemlig deployment.
+
+`existingApplicationKeyArn` follows the same narrowly scoped recovery rule for
+the one Hemlig application CMK. Hemlig imports that exact key and creates the
+normal `alias/hml-<environment>-application` alias; it never creates a second
+payload or issuer key.
 
 The stack binds the supplied issuer and audience to the admin HTTP API JWT
 authorizer. It creates custom domains and disables both default execute-api

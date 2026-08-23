@@ -12,24 +12,29 @@ import type { AppConfig } from "../aws/config";
 import { conflict, notFound, serviceUnavailable } from "../domain/errors";
 import type {
   AccessRecord,
+  AgentGrantRecord,
   Actor,
+  BootstrapCapabilityRecord,
   CatalogPage,
   ChangePage,
   ConsumerProvisioningResult,
   ConsumerRecord,
   ControlRevision,
+  EnvironmentRecord,
   EnrollmentOperationType,
   EnrollmentRecord,
+  FolderRecord,
   HeadRecord,
   IdentityRecord,
   IssuerRecord,
   ObjectReference,
+  NotificationOutboxRecord,
   PayloadRevision,
   SecretState,
   TruststoreRootRecord,
   WorkflowState,
 } from "../domain/types";
-import { isoNow } from "../util/encoding";
+import { isoNow, newId } from "../util/encoding";
 
 export interface StoredWorkflow {
   readonly pk: string;
@@ -50,6 +55,27 @@ export interface StoredControlRevision extends StoredWorkflow {
 
 export interface RevisionHistoryPage {
   readonly revisions: readonly StoredControlRevision[];
+  readonly truncated: boolean;
+}
+
+export interface SecretTreeFolder {
+  readonly segment: string;
+  readonly path: string;
+  readonly secretCount: number;
+  /**
+   * "explicit" -- an administrator created a folder record at exactly this
+   * path (POST /v1/admin/folders) and no secret currently implies it.
+   * "derived" -- no record exists at exactly this path; it appears only
+   * because a secret's metadata.path equals or nests beneath it, or because
+   * a deeper explicit record implies it. "both" -- an explicit record exists
+   * at exactly this path and secretCount is greater than zero.
+   */
+  readonly kind: "explicit" | "derived" | "both";
+}
+
+export interface SecretTreePage {
+  readonly folders: readonly SecretTreeFolder[];
+  readonly secrets: readonly HeadRecord[];
   readonly truncated: boolean;
 }
 
@@ -114,6 +140,9 @@ export interface TruststoreStateRecord {
 }
 
 const maximumRevisionHistory = 500;
+const maximumBoundedScan = 500;
+const maximumEnvironments = 100;
+const maximumFolders = 1000;
 
 export class DynamoRepository {
   public constructor(
@@ -130,6 +159,236 @@ export class DynamoRepository {
       }),
     );
     return response.Item as HeadRecord | undefined;
+  }
+
+  public async listEnvironments(): Promise<readonly EnvironmentRecord[]> {
+    const response = await this.dynamo.send(
+      new QueryCommand({
+        TableName: this.config.controlTableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues: {
+          ":pk": environmentsPk,
+          ":prefix": "ENVIRONMENT#",
+        },
+        Limit: maximumEnvironments + 1,
+        ConsistentRead: true,
+      }),
+    );
+    if (
+      response.LastEvaluatedKey !== undefined ||
+      (response.Items?.length ?? 0) > maximumEnvironments
+    ) {
+      throw serviceUnavailable("The environment registry exceeds its supported size.");
+    }
+    return (response.Items ?? []) as EnvironmentRecord[];
+  }
+
+  public async requireEnvironment(name: string): Promise<EnvironmentRecord> {
+    const response = await this.dynamo.send(
+      new GetCommand({
+        TableName: this.config.controlTableName,
+        Key: { pk: environmentsPk, sk: environmentSk(name) },
+        ConsistentRead: true,
+      }),
+    );
+    if (response.Item === undefined) {
+      throw notFound("The requested environment is not configured.");
+    }
+    return response.Item as EnvironmentRecord;
+  }
+
+  public async createEnvironment(environment: EnvironmentRecord): Promise<void> {
+    try {
+      await this.dynamo.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: this.config.controlTableName,
+                Item: environment,
+                ConditionExpression: "attribute_not_exists(pk)",
+              },
+            },
+            {
+              Update: {
+                TableName: this.config.controlTableName,
+                Key: { pk: environmentsPk, sk: "STATE" },
+                UpdateExpression:
+                  "SET environmentCount = if_not_exists(environmentCount, :zero) + :one",
+                ConditionExpression:
+                  "attribute_not_exists(environmentCount) OR environmentCount < :maximum",
+                ExpressionAttributeValues: {
+                  ":zero": 0,
+                  ":one": 1,
+                  ":maximum": maximumEnvironments,
+                },
+              },
+            },
+          ],
+        }),
+      );
+    } catch {
+      throw conflict("The environment already exists or the registry is full.");
+    }
+  }
+
+  public async getFolder(
+    environment: string,
+    path: string,
+  ): Promise<FolderRecord | undefined> {
+    const response = await this.dynamo.send(
+      new GetCommand({
+        TableName: this.config.controlTableName,
+        Key: { pk: folderPk(environment), sk: folderSk(path) },
+        ConsistentRead: true,
+      }),
+    );
+    return response.Item as FolderRecord | undefined;
+  }
+
+  /**
+   * Every folder record for an environment, newest STATE-counter row
+   * excluded. Bounded the same way listEnvironments is: a registry that
+   * somehow exceeded its own creation-time cap is a service error, not a
+   * silently truncated page.
+   */
+  public async listFolders(environment: string): Promise<readonly FolderRecord[]> {
+    const response = await this.dynamo.send(
+      new QueryCommand({
+        TableName: this.config.controlTableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues: {
+          ":pk": folderPk(environment),
+          ":prefix": "PATH#",
+        },
+        Limit: maximumFolders + 1,
+        ConsistentRead: true,
+      }),
+    );
+    if (
+      response.LastEvaluatedKey !== undefined ||
+      (response.Items?.length ?? 0) > maximumFolders
+    ) {
+      throw serviceUnavailable("The folder registry for this environment exceeds its supported size.");
+    }
+    return (response.Items ?? []) as FolderRecord[];
+  }
+
+  /**
+   * A duplicate path and an at-capacity registry collapse to the same
+   * conflict, exactly like createEnvironment: both mean "this call did not
+   * add the record you asked for" and neither needs a distinct code.
+   */
+  public async createFolder(folder: FolderRecord): Promise<void> {
+    try {
+      await this.dynamo.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: this.config.controlTableName,
+                Item: folder,
+                ConditionExpression: "attribute_not_exists(pk)",
+              },
+            },
+            {
+              Update: {
+                TableName: this.config.controlTableName,
+                Key: { pk: folderPk(folder.environment), sk: "STATE" },
+                UpdateExpression:
+                  "SET folderCount = if_not_exists(folderCount, :zero) + :one",
+                ConditionExpression:
+                  "attribute_not_exists(folderCount) OR folderCount < :maximum",
+                ExpressionAttributeValues: {
+                  ":zero": 0,
+                  ":one": 1,
+                  ":maximum": maximumFolders,
+                },
+              },
+            },
+          ],
+        }),
+      );
+    } catch {
+      throw conflict("The folder already exists or the registry is full.");
+    }
+  }
+
+  /**
+   * The caller (FolderService) has already confirmed the folder is empty and
+   * exists; this only guards against it having been deleted concurrently.
+   * Deleting the record never touches a secret -- it only ever removes the
+   * administrator-defined row, never anything under SECRET#.
+   */
+  public async deleteFolder(environment: string, path: string): Promise<void> {
+    try {
+      await this.dynamo.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Delete: {
+                TableName: this.config.controlTableName,
+                Key: { pk: folderPk(environment), sk: folderSk(path) },
+                ConditionExpression: "attribute_exists(pk)",
+              },
+            },
+            {
+              Update: {
+                TableName: this.config.controlTableName,
+                Key: { pk: folderPk(environment), sk: "STATE" },
+                UpdateExpression: "SET folderCount = folderCount - :one",
+                ConditionExpression:
+                  "attribute_exists(folderCount) AND folderCount > :zero",
+                ExpressionAttributeValues: { ":one": 1, ":zero": 0 },
+              },
+            },
+          ],
+        }),
+      );
+    } catch {
+      throw conflict("The folder record could not be deleted; it may already be gone.");
+    }
+  }
+
+  /**
+   * True when any READY secret's path equals `path` or is nested beneath it.
+   * Used only to refuse deleting a non-empty folder record. DynamoDB applies
+   * a FilterExpression after evaluating each queried item, so bounding this
+   * with a small Limit could mask a match that appears later in the index;
+   * this instead pages through to completion, which is safe because a
+   * folder's own subtree is expected to be small next to the whole
+   * environment catalog that listSecrets/listSecretTree bound.
+   */
+  public async hasSecretsAtOrBeneathPath(
+    environment: string,
+    path: string,
+  ): Promise<boolean> {
+    let exclusiveStartKey: Record<string, unknown> | undefined;
+    do {
+      const response = await this.dynamo.send(
+        new QueryCommand({
+          TableName: this.config.controlTableName,
+          IndexName: this.config.catalogPathIndex,
+          KeyConditionExpression:
+            "catalogPk = :catalogPk AND begins_with(catalogSk, :prefix)",
+          FilterExpression: "#workflowState = :ready",
+          ExpressionAttributeNames: { "#workflowState": "workflowState" },
+          ExpressionAttributeValues: {
+            ":catalogPk": catalogPk(environment),
+            ":prefix": catalogPathPrefix(path),
+            ":ready": "READY",
+          },
+          Select: "COUNT",
+          ExclusiveStartKey: exclusiveStartKey as never,
+        }),
+      );
+      if ((response.Count ?? 0) > 0) {
+        return true;
+      }
+      exclusiveStartKey = response.LastEvaluatedKey as
+        Record<string, unknown> | undefined;
+    } while (exclusiveStartKey !== undefined);
+    return false;
   }
 
   public async requireHead(secretId: string): Promise<HeadRecord> {
@@ -164,6 +423,182 @@ export class DynamoRepository {
       }),
     );
     return response.Item as ConsumerRecord | undefined;
+  }
+
+  public async getAgentGrant(
+    grantId: string,
+  ): Promise<AgentGrantRecord | undefined> {
+    const response = await this.dynamo.send(
+      new GetCommand({
+        TableName: this.config.controlTableName,
+        Key: { pk: agentGrantPk(grantId), sk: "PROFILE" },
+        ConsistentRead: true,
+      }),
+    );
+    return response.Item as AgentGrantRecord | undefined;
+  }
+
+  public async getAgentGrantForConsumer(
+    consumerId: string,
+  ): Promise<AgentGrantRecord | undefined> {
+    const mapping = await this.dynamo.send(
+      new GetCommand({
+        TableName: this.config.controlTableName,
+        Key: { pk: `CONSUMER#${consumerId}`, sk: "AGENT_GRANT" },
+        ConsistentRead: true,
+      }),
+    );
+    const grantId = mapping.Item?.grantId;
+    return typeof grantId === "string" ? this.getAgentGrant(grantId) : undefined;
+  }
+
+  public async createAgentGrant(grant: AgentGrantRecord): Promise<void> {
+    try {
+      await this.dynamo.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: this.config.controlTableName,
+                Item: grant,
+                ConditionExpression: "attribute_not_exists(pk)",
+              },
+            },
+            {
+              Put: {
+                TableName: this.config.controlTableName,
+                Item: {
+                  pk: `CONSUMER#${grant.consumerId}`,
+                  sk: "AGENT_GRANT",
+                  grantId: grant.grantId,
+                },
+                ConditionExpression: "attribute_not_exists(sk)",
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      throw conflict(`Could not create agent grant: ${errorMessage(error)}`);
+    }
+  }
+
+  public async createBootstrapCapability(
+    capability: BootstrapCapabilityRecord,
+  ): Promise<void> {
+    try {
+      await this.dynamo.send(
+        new PutCommand({
+          TableName: this.config.controlTableName,
+          Item: capability,
+          ConditionExpression: "attribute_not_exists(pk)",
+        }),
+      );
+    } catch (error) {
+      throw conflict(`Could not create bootstrap capability: ${errorMessage(error)}`);
+    }
+  }
+
+  public async getBootstrapCapability(
+    tokenHash: string,
+  ): Promise<BootstrapCapabilityRecord | undefined> {
+    const response = await this.dynamo.send(
+      new GetCommand({
+        TableName: this.config.controlTableName,
+        Key: { pk: bootstrapPk(tokenHash), sk: "STATE" },
+        ConsistentRead: true,
+      }),
+    );
+    return response.Item as BootstrapCapabilityRecord | undefined;
+  }
+
+  public async activateAgentGrant(
+    grantId: string,
+    fingerprint: string,
+  ): Promise<void> {
+    const grant = await this.getAgentGrant(grantId);
+    if (grant?.status === "ACTIVE" && grant.activatedFingerprint === fingerprint) {
+      return;
+    }
+    try {
+      await this.dynamo.send(
+        new UpdateCommand({
+          TableName: this.config.controlTableName,
+          Key: { pk: agentGrantPk(grantId), sk: "PROFILE" },
+          UpdateExpression:
+            "SET #status = :active, activatedAt = :activatedAt, activatedFingerprint = :fingerprint",
+          ConditionExpression: "#status = :pending",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: {
+            ":active": "ACTIVE",
+            ":pending": "PENDING",
+            ":activatedAt": isoNow(),
+            ":fingerprint": fingerprint,
+          },
+        }),
+      );
+    } catch (error) {
+      throw conflict(`Could not activate agent grant: ${errorMessage(error)}`);
+    }
+  }
+
+  public async consumeBootstrapCapability(
+    tokenHash: string,
+    fingerprint: string,
+  ): Promise<void> {
+    const record = await this.getBootstrapCapability(tokenHash);
+    if (record?.status === "CONSUMED" && record.consumedFingerprint === fingerprint) {
+      return;
+    }
+    try {
+      await this.dynamo.send(
+        new UpdateCommand({
+          TableName: this.config.controlTableName,
+          Key: { pk: bootstrapPk(tokenHash), sk: "STATE" },
+          UpdateExpression:
+            "SET #status = :consumed, consumedAt = :consumedAt, consumedFingerprint = :fingerprint",
+          ConditionExpression: "#status = :pending",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: {
+            ":consumed": "CONSUMED",
+            ":pending": "PENDING",
+            ":consumedAt": isoNow(),
+            ":fingerprint": fingerprint,
+          },
+        }),
+      );
+    } catch (error) {
+      throw conflict(`Could not consume bootstrap capability: ${errorMessage(error)}`);
+    }
+  }
+
+  /** Marks an at-least-once MQTT hint terminal only after the broker accepts it. */
+  public async markNotificationDelivered(eventId: string): Promise<boolean> {
+    try {
+      await this.dynamo.send(
+        new UpdateCommand({
+          TableName: this.config.controlTableName,
+          Key: { pk: notificationPk(eventId), sk: "EVENT" },
+          UpdateExpression: "SET #status = :delivered, deliveredAt = :deliveredAt, ttl = :ttl",
+          ConditionExpression: "#status = :pending",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: {
+            ":pending": "PENDING",
+            ":delivered": "DELIVERED",
+            ":deliveredAt": isoNow(),
+            // Event-source retries can arrive after a successful update. Keep
+            // only terminal records for a bounded troubleshooting window.
+            ":ttl": Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60,
+          },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (isConditionalCheckFailure(error)) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   public async getTruststoreRoot(
@@ -405,12 +840,48 @@ export class DynamoRepository {
         ConsistentRead: true,
       }),
     );
+    const stored = (response.Items ?? []) as AccessRecord[];
+    const changes = await Promise.all(
+      stored.map(async (access) => this.currentAccessSnapshot(access)),
+    );
     return {
-      changes: (response.Items ?? []) as AccessRecord[],
+      changes,
       nextCursor:
         response.LastEvaluatedKey === undefined
           ? undefined
           : JSON.stringify(response.LastEvaluatedKey),
+    };
+  }
+
+  /**
+   * Access records are grants, not a replicated secret HEAD. Hydrating each
+   * grant for the current snapshot lets payload writes advance one HEAD and
+   * one grouped outbox event instead of rewriting every authorized consumer.
+   */
+  private async currentAccessSnapshot(access: AccessRecord): Promise<AccessRecord> {
+    if (!access.permissions.includes("read") || access.state === "REVOKED") {
+      return access;
+    }
+    const head = await this.getHead(access.secretId);
+    if (
+      head === undefined ||
+      head.environment !== access.environment ||
+      head.state === "REVOKED"
+    ) {
+      return {
+        ...access,
+        permissions: [],
+        payloadVersionId: undefined,
+        state: "REVOKED",
+        changeKind: "secret.revoked",
+      };
+    }
+    return {
+      ...access,
+      controlVersionId: head.controlVersionId,
+      payloadVersionId: head.payloadVersionId,
+      state: head.state,
+      changeKind: "secret.changed",
     };
   }
 
@@ -420,31 +891,16 @@ export class DynamoRepository {
     tags: Readonly<Record<string, string>>,
     exclusiveStartKey?: Record<string, string>,
   ): Promise<CatalogPage> {
-    const expressionAttributeNames: Record<string, string> = {
-      "#workflowState": "workflowState",
-    };
-    const expressionAttributeValues: Record<string, unknown> = {
-      ":catalogPk": catalogPk(environment),
-      ":pathPrefix": catalogPathPrefix(pathPrefix),
-      ":ready": "READY",
-    };
-    const filters = ["#workflowState = :ready"];
-    for (const [index, [key, value]] of Object.entries(tags).entries()) {
-      const keyName = `#tagKey${index}`;
-      const valueName = `:tagValue${index}`;
-      expressionAttributeNames[keyName] = key;
-      expressionAttributeValues[valueName] = value;
-      filters.push(`catalogTags.${keyName} = ${valueName}`);
-    }
+    const filter = catalogFilter(environment, pathPrefix, tags);
     const response = await this.dynamo.send(
       new QueryCommand({
         TableName: this.config.controlTableName,
         IndexName: this.config.catalogPathIndex,
         KeyConditionExpression:
           "catalogPk = :catalogPk AND begins_with(catalogSk, :pathPrefix)",
-        FilterExpression: filters.join(" AND "),
-        ExpressionAttributeNames: expressionAttributeNames,
-        ExpressionAttributeValues: expressionAttributeValues,
+        FilterExpression: filter.filterExpression,
+        ExpressionAttributeNames: filter.expressionAttributeNames,
+        ExpressionAttributeValues: filter.expressionAttributeValues,
         ExclusiveStartKey: exclusiveStartKey,
         Limit: 100,
       }),
@@ -456,6 +912,156 @@ export class DynamoRepository {
           ? undefined
           : JSON.stringify(response.LastEvaluatedKey),
     };
+  }
+
+  /**
+   * Every admin request writes three audit objects into a seven-year Object
+   * Lock Compliance archive. The plain catalog page above applies its filters
+   * (workflowState, tags) after a bounded 100-record read, so a page can come
+   * back empty while nextCursor is still set -- a caller has to keep chasing
+   * cursors to learn whether there truly are no results. That is tolerable
+   * for browsing but wrong for search, where "no matches" must be trustworthy
+   * on the first response. So this scans up to the same bounded cap as
+   * listSecretTree in one request and returns one complete-or-truncated
+   * answer instead of a cursor. The `q` match is case-insensitive substring
+   * on secretId and metadata.description, applied in memory because DynamoDB
+   * FilterExpression's contains() is case-sensitive.
+   */
+  public async searchSecrets(
+    environment: string,
+    pathPrefix: string | undefined,
+    tags: Readonly<Record<string, string>>,
+    query: string,
+  ): Promise<{ readonly secrets: readonly HeadRecord[]; readonly truncated: boolean }> {
+    const filter = catalogFilter(environment, pathPrefix, tags);
+    const response = await this.dynamo.send(
+      new QueryCommand({
+        TableName: this.config.controlTableName,
+        IndexName: this.config.catalogPathIndex,
+        KeyConditionExpression:
+          "catalogPk = :catalogPk AND begins_with(catalogSk, :pathPrefix)",
+        FilterExpression: filter.filterExpression,
+        ExpressionAttributeNames: filter.expressionAttributeNames,
+        ExpressionAttributeValues: filter.expressionAttributeValues,
+        Limit: maximumBoundedScan + 1,
+      }),
+    );
+    const items = (response.Items ?? []) as HeadRecord[];
+    const truncated =
+      items.length > maximumBoundedScan || response.LastEvaluatedKey !== undefined;
+    const needle = query.toLowerCase();
+    const secrets = items.slice(0, maximumBoundedScan).filter((secret) =>
+      secret.secretId.toLowerCase().includes(needle) ||
+      (secret.metadata?.description ?? "").toLowerCase().includes(needle),
+    );
+    return { secrets, truncated };
+  }
+
+  /**
+   * Every admin request writes three audit objects into a seven-year Object
+   * Lock Compliance archive, so the console browsing a subtree folder by
+   * folder would multiply that archive write per directory opened for no
+   * operational benefit. This method paginates the catalog-path GSI
+   * internally, within this one request, and groups the result into
+   * immediate child folders (counted recursively) and exact-path secrets.
+   * It is bounded at maximumBoundedScan and reports `truncated` instead of
+   * returning a cursor: a partial tree with a cursor is worse than a
+   * bounded, complete-or-truncated one.
+   *
+   * `folders` is the union of segments implied by a secret's metadata.path
+   * and segments implied by an explicit folder record (POST
+   * /v1/admin/folders), deduplicated by path. That is a second internal
+   * DynamoDB query (listFolders), but still one HTTP request and therefore
+   * one audit triple -- `truncated` continues to reflect only the secret
+   * scan's bound, since the folder registry has its own, separate bound
+   * enforced at creation time.
+   */
+  public async listSecretTree(
+    environment: string,
+    pathPrefix: string | undefined,
+  ): Promise<SecretTreePage> {
+    const [response, folderRecords] = await Promise.all([
+      this.dynamo.send(
+        new QueryCommand({
+          TableName: this.config.controlTableName,
+          IndexName: this.config.catalogPathIndex,
+          KeyConditionExpression:
+            "catalogPk = :catalogPk AND begins_with(catalogSk, :prefix)",
+          FilterExpression: "#workflowState = :ready",
+          ExpressionAttributeNames: { "#workflowState": "workflowState" },
+          ExpressionAttributeValues: {
+            ":catalogPk": catalogPk(environment),
+            ":prefix": catalogPathPrefix(pathPrefix),
+            ":ready": "READY",
+          },
+          Limit: maximumBoundedScan + 1,
+        }),
+      ),
+      this.listFolders(environment),
+    ]);
+    const items = (response.Items ?? []) as HeadRecord[];
+    const truncated =
+      items.length > maximumBoundedScan ||
+      response.LastEvaluatedKey !== undefined;
+    const bounded = items.slice(0, maximumBoundedScan);
+
+    const secrets: HeadRecord[] = [];
+    const folderEntries = new Map<string, { secretCount: number }>();
+    for (const item of bounded) {
+      const path = item.metadata?.path;
+      // catalogSk encodes an unpathed secret with the literal "_" segment
+      // (`PATH#_/SECRET#<id>`) so the root of the tree can be queried with
+      // the same begins_with("PATH#") scan as everything else. parseMetadata's
+      // path pattern requires a leading [a-z0-9], so a real path can never be
+      // exactly "_" today -- but if that pattern ever allowed a leading
+      // underscore, a real top-level folder named "_" would become
+      // indistinguishable from "no path" here. Not fixed; only recorded.
+      //
+      // `path === pathPrefix` also covers the root case (both undefined) in
+      // one comparison: an unpathed secret at the root has path === undefined
+      // === pathPrefix.
+      if (path === pathPrefix) {
+        secrets.push(item);
+        continue;
+      }
+      const segment = childSegment(path as string, pathPrefix) as string;
+      const entry = folderEntries.get(segment) ?? { secretCount: 0 };
+      entry.secretCount += 1;
+      folderEntries.set(segment, entry);
+    }
+
+    // An explicit folder record contributes the same kind of immediate-child
+    // segment a secret's metadata.path can: a record for "a/b/c" is never
+    // materialised at "a" or "a/b" (see FolderService), so an ancestor
+    // segment implied only by a deeper record is folded in here exactly like
+    // an ancestor implied only by a deeper secret path -- it makes the
+    // intermediate segment appear, with no effect on secretCount, which
+    // counts only actual secrets.
+    for (const folder of folderRecords) {
+      const segment = childSegment(folder.path, pathPrefix);
+      if (segment !== undefined && !folderEntries.has(segment)) {
+        folderEntries.set(segment, { secretCount: 0 });
+      }
+    }
+
+    // A folder's `kind` is "explicit" only when a record exists at exactly
+    // this level's accumulated path -- not merely somewhere in its subtree,
+    // which is exactly the distinction the loop above already respects.
+    const explicitPaths = new Set(folderRecords.map((folder) => folder.path));
+    const folders = [...folderEntries.entries()]
+      .map(([segment, { secretCount }]): SecretTreeFolder => {
+        const path = pathPrefix === undefined ? segment : `${pathPrefix}/${segment}`;
+        return {
+          segment,
+          path,
+          secretCount,
+          kind: explicitPaths.has(path) ? (secretCount > 0 ? "both" : "explicit") : "derived",
+        };
+      })
+      .sort((left, right) => left.segment.localeCompare(right.segment));
+    secrets.sort((left, right) => left.secretId.localeCompare(right.secretId));
+
+    return { folders, secrets, truncated };
   }
 
   public async listConsumers(
@@ -1088,6 +1694,15 @@ export class DynamoRepository {
   public async completeMutation(completed: CompletedMutation): Promise<void> {
     const { prepared } = completed;
     const accessItems = accessItemsFor(prepared.control, completed.priorAccess);
+    const replaceAccess = accessProjectionChanged(
+      prepared.control,
+      completed.priorAccess,
+    );
+    const notificationItems = notificationItemsFor(
+      prepared.control,
+      accessItems,
+      replaceAccess,
+    );
     const payloadVersionId =
       prepared.payload === undefined
         ? completed.priorHead?.payloadVersionId
@@ -1197,11 +1812,22 @@ export class DynamoRepository {
         );
       }
     }
-    for (const item of accessItems) {
+    if (replaceAccess) {
+      for (const item of accessItems) {
+        transaction.push({
+          Put: {
+            TableName: this.config.controlTableName,
+            Item: item,
+          },
+        });
+      }
+    }
+    for (const item of notificationItems) {
       transaction.push({
         Put: {
           TableName: this.config.controlTableName,
           Item: item,
+          ConditionExpression: "attribute_not_exists(pk)",
         },
       });
     }
@@ -1363,6 +1989,18 @@ export class DynamoRepository {
 
 export const secretPk = (secretId: string): string => `SECRET#${secretId}`;
 
+const agentGrantPk = (grantId: string): string => `AGENT_GRANT#${grantId}`;
+
+const bootstrapPk = (tokenHash: string): string => `BOOTSTRAP#${tokenHash}`;
+
+const environmentsPk = "SYSTEM#ENVIRONMENTS";
+
+const environmentSk = (name: string): string => `ENVIRONMENT#${name}`;
+
+export const folderPk = (environment: string): string => `FOLDER#${environment}`;
+
+const folderSk = (path: string): string => `PATH#${path}`;
+
 const idempotencyPk = (actor: Actor): string =>
   `IDEMPOTENCY#${actor.type}#${actor.id}`;
 
@@ -1383,6 +2021,53 @@ export const catalogSk = (path: string | undefined, secretId: string): string =>
 
 const catalogPathPrefix = (path: string | undefined): string =>
   path === undefined ? "PATH#" : `PATH#${path}\/`;
+
+/**
+ * The immediate child segment of `path` below `pathPrefix`, or undefined
+ * when `path` is not nested beneath `pathPrefix` at all. Shared by the
+ * secret-derived and folder-record-derived halves of listSecretTree's
+ * merge so both compute "immediate child" the same way. Exact equality
+ * (`path === pathPrefix`) is handled by each caller before reaching here,
+ * since that case means "this level itself", not a child of it.
+ */
+const childSegment = (path: string, pathPrefix: string | undefined): string | undefined => {
+  if (pathPrefix === undefined) {
+    return path.split("/")[0];
+  }
+  if (!path.startsWith(`${pathPrefix}/`)) {
+    return undefined;
+  }
+  return path.slice(pathPrefix.length + 1).split("/")[0];
+};
+
+/** Shared READY + exact-tag filter used by both the plain and search catalog queries. */
+const catalogFilter = (
+  environment: string,
+  pathPrefix: string | undefined,
+  tags: Readonly<Record<string, string>>,
+): {
+  readonly expressionAttributeNames: Record<string, string>;
+  readonly expressionAttributeValues: Record<string, unknown>;
+  readonly filterExpression: string;
+} => {
+  const expressionAttributeNames: Record<string, string> = {
+    "#workflowState": "workflowState",
+  };
+  const expressionAttributeValues: Record<string, unknown> = {
+    ":catalogPk": catalogPk(environment),
+    ":pathPrefix": catalogPathPrefix(pathPrefix),
+    ":ready": "READY",
+  };
+  const filters = ["#workflowState = :ready"];
+  for (const [index, [key, value]] of Object.entries(tags).entries()) {
+    const keyName = `#tagKey${index}`;
+    const valueName = `:tagValue${index}`;
+    expressionAttributeNames[keyName] = key;
+    expressionAttributeValues[valueName] = value;
+    filters.push(`catalogTags.${keyName} = ${valueName}`);
+  }
+  return { expressionAttributeNames, expressionAttributeValues, filterExpression: filters.join(" AND ") };
+};
 
 const workflowItem = (
   secretId: string,
@@ -1483,6 +2168,81 @@ const accessItemsFor = (
     };
   });
 };
+
+const accessProjectionChanged = (
+  control: ControlRevision,
+  prior: readonly AccessRecord[],
+): boolean => {
+  const grants = new Map(
+    control.acl
+      .filter((grant) => grant.permissions.includes("read"))
+      .map((grant) => [grant.consumerId, grant]),
+  );
+  const activePrior = new Map(
+    prior
+      .filter(
+        (access) =>
+          access.permissions.includes("read") && access.state !== "REVOKED",
+      )
+      .map((access) => [access.consumerId, access]),
+  );
+  if (grants.size !== activePrior.size) {
+    return true;
+  }
+  return [...grants.keys()].some((consumerId) => !activePrior.has(consumerId));
+};
+
+const notificationItemsFor = (
+  control: ControlRevision,
+  accessItems: readonly AccessRecord[],
+  accessChanged: boolean,
+): NotificationOutboxRecord[] => {
+  const currentRecipients = accessChanged
+    ? accessItems
+      .filter((access) => access.permissions.includes("read") && access.state !== "REVOKED")
+      .map((access) => access.consumerId)
+    : control.acl
+      .filter((grant) => grant.permissions.includes("read"))
+      .map((grant) => grant.consumerId);
+  const revokedRecipients = accessChanged
+    ? accessItems
+      .filter((access) => !access.permissions.includes("read") || access.state === "REVOKED")
+      .map((access) => access.consumerId)
+    : [];
+  return [
+    notificationOutboxRecord(control, "secret.changed", currentRecipients),
+    notificationOutboxRecord(control, "secret.revoked", revokedRecipients),
+  ].filter(
+    (record): record is NotificationOutboxRecord => record !== undefined,
+  );
+};
+
+const notificationOutboxRecord = (
+  control: ControlRevision,
+  kind: NotificationOutboxRecord["kind"],
+  consumerIds: readonly string[],
+): NotificationOutboxRecord | undefined => {
+  if (consumerIds.length === 0) {
+    return undefined;
+  }
+  const eventId = newId();
+  return {
+    pk: notificationPk(eventId),
+    sk: "EVENT",
+    eventId,
+    consumerIds,
+    secretId: control.secretId,
+    controlVersionId: control.controlVersionId,
+    ...(kind === "secret.revoked" || control.payloadVersionId === undefined
+      ? {}
+      : { payloadVersionId: control.payloadVersionId }),
+    kind,
+    createdAt: control.createdAt,
+    status: "PENDING",
+  };
+};
+
+const notificationPk = (eventId: string): string => `NOTIFICATION#${eventId}`;
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : "unknown error";

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { useQuery } from "@tanstack/vue-query";
-import { computed } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import ErrorNotice from "../components/ErrorNotice.vue";
 import StateBadge from "../components/StateBadge.vue";
+import type { SecretReadResponse } from "../api/schemas";
 import { useAppStore } from "../stores/app";
 
 const props = defineProps<{ env: string; secretId: string }>();
@@ -11,6 +12,48 @@ const store = useAppStore();
 const { data, error, isFetching, refetch } = useQuery({
   queryKey: computed(() => ["secret", props.secretId]),
   queryFn: () => store.requireApi().getSecret(props.secretId),
+});
+
+/**
+ * Plaintext is deliberately component-local: it never enters vue-query, the
+ * application store, a URL, or browser storage. Fetching it is an explicit
+ * audited request, and leaving this detail view clears it.
+ */
+const payload = ref<SecretReadResponse | undefined>();
+const payloadError = ref<unknown>();
+const payloadLoading = ref(false);
+
+const revealPayload = async (): Promise<void> => {
+  payloadLoading.value = true;
+  payloadError.value = undefined;
+  try {
+    payload.value = await store.requireApi().getSecretPayload(props.secretId);
+  } catch (requestError) {
+    payloadError.value = requestError;
+  } finally {
+    payloadLoading.value = false;
+  }
+};
+
+const hidePayload = (): void => {
+  payload.value = undefined;
+  payloadError.value = undefined;
+};
+
+onUnmounted(hidePayload);
+watch(
+  () => props.secretId,
+  () => hidePayload(),
+);
+
+// Links the path to where it actually lives in the tree — the folder view
+// this secret would show up under — rather than leaving it as inert text
+// with no route out of this screen.
+const pathTo = computed(() => {
+  const path = data.value?.metadata.path;
+  return path !== undefined && path.length > 0
+    ? { name: "secrets-browse", params: { env: props.env, path: path.split("/") } }
+    : { name: "secrets", params: { env: props.env } };
 });
 </script>
 
@@ -21,8 +64,7 @@ const { data, error, isFetching, refetch } = useQuery({
         <RouterLink class="text-xs text-accent hover:underline" :to="{ name: 'secrets', params: { env } }">
           ← Secrets
         </RouterLink>
-        <h1 class="text-lg font-semibold">{{ data?.metadata.name ?? secretId }}</h1>
-        <p class="mono text-xs text-ink-muted">{{ secretId }}</p>
+        <h1 class="mono text-lg font-semibold">{{ secretId }}</h1>
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="rounded border border-line px-3 py-1" :disabled="isFetching" @click="refetch()">
@@ -70,12 +112,20 @@ const { data, error, isFetching, refetch } = useQuery({
       <section class="rounded border border-line bg-surface-raised p-4">
         <h2 class="font-medium">Metadata</h2>
         <dl class="mt-3 grid grid-cols-[10rem_1fr] gap-y-1 text-xs">
-          <dt class="text-ink-muted">Name</dt>
-          <dd>{{ data.metadata.name }}</dd>
           <dt class="text-ink-muted">Description</dt>
           <dd>{{ data.metadata.description ?? "—" }}</dd>
           <dt class="text-ink-muted">Path</dt>
-          <dd class="mono">{{ data.metadata.path ?? "—" }}</dd>
+          <dd class="flex items-center gap-2">
+            <RouterLink class="mono text-accent hover:underline" :to="pathTo">
+              {{ data.metadata.path ?? "Root" }}
+            </RouterLink>
+            <RouterLink
+              class="text-accent hover:underline"
+              :to="{ name: 'secret-metadata', params: { env, secretId } }"
+            >
+              Move
+            </RouterLink>
+          </dd>
         </dl>
         <div class="mt-2 text-xs">
           <span class="text-ink-muted">Tags</span>
@@ -95,7 +145,7 @@ const { data, error, isFetching, refetch } = useQuery({
       </section>
 
       <section class="rounded border border-line bg-surface-raised p-4 md:col-span-2">
-        <h2 class="font-medium">Access ({{ data.acl.length }} of 10)</h2>
+        <h2 class="font-medium">Access ({{ data.acl.length }} of 40)</h2>
         <ul v-if="data.acl.length > 0" class="mt-2 space-y-1">
           <li v-for="entry in data.acl" :key="entry.consumerId" class="flex items-center gap-2 text-xs">
             <RouterLink
@@ -109,14 +159,59 @@ const { data, error, isFetching, refetch } = useQuery({
       </section>
 
       <section class="rounded border border-line bg-surface-raised p-4 md:col-span-2">
-        <h2 class="font-medium">Payload</h2>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="font-medium">Payload</h2>
+          <button
+            v-if="payload !== undefined"
+            type="button"
+            class="rounded border border-line px-2 py-1 text-xs"
+            @click="hidePayload"
+          >
+            Hide
+          </button>
+          <button
+            v-else
+            type="button"
+            class="rounded border border-line px-2 py-1 text-xs"
+            :disabled="payloadLoading || data.payloadVersionId === undefined"
+            @click="revealPayload"
+          >
+            {{ payloadLoading ? "Revealing…" : "Reveal" }}
+          </button>
+        </div>
         <p class="mt-1 text-xs text-ink-muted">
-          Payload values are never readable through the administrator API, by design.
-          This console shows only how many entries exist
           <template v-if="data.payloadKeyCount !== undefined">
-            (currently {{ data.payloadKeyCount }})</template>. Replacing a payload
-          replaces every entry at once.
+            {{ data.payloadKeyCount }}
+            {{ data.payloadKeyCount === 1 ? "entry" : "entries" }}.
+          </template>
+          Revealing values is a deliberate, separately audited action. Values
+          remain only in this page until you hide them or leave it; replacing a
+          payload still replaces every entry at once.
         </p>
+        <ErrorNotice
+          v-if="payloadError"
+          class="mt-3"
+          :error="payloadError"
+          context="Could not reveal the current payload."
+        />
+        <div v-if="payload !== undefined" class="mt-3 overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="text-ink-muted">
+              <tr>
+                <th class="pb-1 pr-3 font-medium">Key</th>
+                <th class="pb-1 pr-3 font-medium">Encoding</th>
+                <th class="pb-1 font-medium">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(entry, key) in payload.payload" :key="key" class="border-t border-line">
+                <td class="mono py-2 pr-3 align-top">{{ key }}</td>
+                <td class="mono py-2 pr-3 align-top">{{ entry.encoding }}</td>
+                <td class="mono whitespace-pre-wrap break-all py-2">{{ entry.value }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
   </div>

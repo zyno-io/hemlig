@@ -6,18 +6,17 @@ export interface ConsoleRuntimeConfigInput {
   readonly adminFqdn: string;
   readonly oidcIssuer: string;
   readonly oidcClientId: string;
-  readonly oidcAdminScope: string;
-  readonly secretEnvironments: readonly string[];
+  /** Resource-qualified scope the browser requests from the identity provider. */
+  readonly oidcConsoleAccessScope: string;
 }
 
 export const consoleRuntimeConfig = (input: ConsoleRuntimeConfigInput) => ({
   deploymentName: input.deploymentName,
   adminApiUrl: `https://${input.adminFqdn}`,
-  environments: input.secretEnvironments,
   auth: {
     mode: "oidc" as const,
     authority: input.oidcIssuer,
     clientId: input.oidcClientId,
-    scopes: ["openid", "profile", input.oidcAdminScope],
+    scopes: ["openid", "profile", input.oidcConsoleAccessScope],
   },
 });

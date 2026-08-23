@@ -76,7 +76,9 @@ const config: DeploymentConfig = {
   apiFqdn: "api.dev.example.com",
   zoneDomain: "dev.example.com",
   oidcIssuer: "https://login.example.com/tenant/v2.0",
-  oidcAudience: "api://hemlig",
+  // The exact `aud` claim your issuer places in an API access token.
+  // For Microsoft Entra v2 tokens, this is the API application's client ID.
+  oidcAudience: "00000000-0000-0000-0000-000000000000",
   oidcSubjectClaim: "sub",
 };
 new HemligStack(app, "hml-dev", config);
@@ -94,7 +96,7 @@ yarn cdk:deploy \
   -c apiFqdn=api.dev.example.com \
   -c zoneDomain=dev.example.com \
   -c oidcIssuer=https://login.example.com/tenant/v2.0 \
-  -c oidcAudience=api://hemlig
+  -c oidcAudience=00000000-0000-0000-0000-000000000000
 ```
 
 For an existing zone:
@@ -106,7 +108,7 @@ yarn cdk:deploy \
   -c apiFqdn=api.dev.example.com \
   -c zoneDomain=dev.example.com \
   -c oidcIssuer=https://login.example.com/tenant/v2.0 \
-  -c oidcAudience=api://hemlig \
+  -c oidcAudience=00000000-0000-0000-0000-000000000000 \
   -c existingHostedZoneId=Z0123456789ABCDEF
 ```
 

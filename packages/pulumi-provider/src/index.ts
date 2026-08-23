@@ -12,18 +12,14 @@ import { NodeHttpsTransport } from "@hemlig/client/node";
 export interface HemligProviderArgs {
   /** Admin custom-domain URL, for example https://admin.example.com. */
   readonly adminUrl: pulumi.Input<string>;
-  /** JWT/OAuth access token. Pass a Pulumi secret value. */
-  readonly adminToken: pulumi.Input<string>;
 }
 
 export class Provider extends pulumi.ComponentResource {
   private readonly adminUrl: pulumi.Output<string>;
-  private readonly adminToken: pulumi.Output<string>;
 
   public constructor(name: string, args: HemligProviderArgs, opts?: pulumi.ComponentResourceOptions) {
     super("hemlig:index:Provider", name, {}, opts);
     this.adminUrl = pulumi.output(args.adminUrl);
-    this.adminToken = pulumi.secret(args.adminToken);
     this.registerOutputs({});
   }
 
@@ -32,7 +28,7 @@ export class Provider extends pulumi.ComponentResource {
     args: HemligSecretArgs,
     opts?: pulumi.CustomResourceOptions,
   ): HemligSecret {
-    return new HemligSecret(name, args, this.adminUrl, this.adminToken, opts);
+    return new HemligSecret(name, args, this.adminUrl, opts);
   }
 }
 
@@ -45,9 +41,9 @@ export interface HemligSecretArgs {
   readonly payload: pulumi.Input<SecretPayload>;
 }
 
-interface ResolvedSecretInputs {
+export interface ResolvedSecretInputs {
   readonly adminUrl: string;
-  readonly adminToken: string;
+  readonly providerSchemaVersion: string;
   readonly secretId: string;
   readonly environment: string;
   readonly metadata: SecretMetadata;
@@ -55,12 +51,26 @@ interface ResolvedSecretInputs {
   readonly payload: SecretPayload;
 }
 
-class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
+type HemligSecretClient = Pick<
+  HemligClient,
+  "createAdminSecret" | "getAdminSecret" | "putAdminPayload" | "updateAdminSecret"
+>;
+
+type HemligSecretClientFactory = (inputs: ResolvedSecretInputs) => HemligSecretClient;
+type AdminTokenSource = () => string;
+
+export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
+  public constructor(
+    private readonly createClient: HemligSecretClientFactory = clientFor,
+    private readonly adminTokenFor: AdminTokenSource = adminTokenFromEnvironment,
+  ) {}
+
   public async create(inputs: ResolvedSecretInputs): Promise<pulumi.dynamic.CreateResult> {
-    const client = clientFor(inputs);
+    const client = this.createClient(inputs);
+    const adminToken = this.adminTokenFor();
     let control;
     try {
-      control = await client.createAdminSecret(inputs.adminToken, {
+      control = await client.createAdminSecret(adminToken, {
         secretId: inputs.secretId,
         environment: inputs.environment,
         metadata: inputs.metadata,
@@ -70,7 +80,7 @@ class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
       if (!(error instanceof HemligError) || error.status !== 409) {
         throw error;
       }
-      control = await client.getAdminSecret(inputs.adminToken, inputs.secretId);
+      control = await client.getAdminSecret(adminToken, inputs.secretId);
     }
     if (control.environment !== inputs.environment) {
       throw new Error("The existing Hemlig secret belongs to a different environment.");
@@ -80,7 +90,7 @@ class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
       JSON.stringify(control.acl ?? []) !== JSON.stringify(inputs.acl)
     ) {
       control = await client.updateAdminSecret(
-        inputs.adminToken,
+        adminToken,
         inputs.secretId,
         control.controlVersionId,
         { metadata: inputs.metadata, acl: inputs.acl },
@@ -88,7 +98,7 @@ class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
       );
     }
     const written = await client.putAdminPayload(
-      inputs.adminToken,
+      adminToken,
       inputs.secretId,
       control.controlVersionId,
       inputs.payload,
@@ -105,7 +115,7 @@ class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
     olds: ResolvedSecretInputs,
     news: ResolvedSecretInputs,
   ): Promise<pulumi.dynamic.DiffResult> {
-    const changes = JSON.stringify(stripVersions(olds)) !== JSON.stringify(stripVersions(news));
+    const changes = JSON.stringify(desiredInputs(olds)) !== JSON.stringify(desiredInputs(news));
     return { changes, replaces: olds.secretId === news.secretId ? [] : ["secretId"] };
   }
 
@@ -114,8 +124,9 @@ class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
     olds: ResolvedSecretInputs,
     news: ResolvedSecretInputs,
   ): Promise<pulumi.dynamic.UpdateResult> {
-    const client = clientFor(news);
-    const current = await client.getAdminSecret(news.adminToken, news.secretId);
+    const client = this.createClient(news);
+    const adminToken = this.adminTokenFor();
+    const current = await client.getAdminSecret(adminToken, news.secretId);
     if (current.environment !== news.environment) {
       throw new Error("The existing Hemlig secret belongs to a different environment.");
     }
@@ -125,15 +136,20 @@ class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
       JSON.stringify(current.acl ?? []) !== JSON.stringify(news.acl)
     ) {
       control = await client.updateAdminSecret(
-        news.adminToken,
+        adminToken,
         news.secretId,
         current.controlVersionId,
         { metadata: news.metadata, acl: news.acl },
         randomUUID(),
       );
     }
+    const payloadChanged = JSON.stringify(olds.payload) !== JSON.stringify(news.payload);
+    if (!payloadChanged && control.payloadVersionId !== undefined) {
+      return { outs: withVersions(news, control.controlVersionId, control.payloadVersionId) };
+    }
+
     const written = await client.putAdminPayload(
-      news.adminToken,
+      adminToken,
       news.secretId,
       control.controlVersionId,
       news.payload,
@@ -154,7 +170,6 @@ export class HemligSecret extends pulumi.dynamic.Resource {
     name: string,
     args: HemligSecretArgs,
     adminUrl: pulumi.Input<string>,
-    adminToken: pulumi.Input<string>,
     opts?: pulumi.CustomResourceOptions,
   ) {
     super(
@@ -163,11 +178,11 @@ export class HemligSecret extends pulumi.dynamic.Resource {
       {
         ...args,
         adminUrl,
-        adminToken: pulumi.secret(adminToken),
+        providerSchemaVersion: "2",
       },
       {
         ...opts,
-        additionalSecretOutputs: ["payload", "adminToken"],
+        additionalSecretOutputs: ["payload"],
       },
     );
   }
@@ -175,6 +190,14 @@ export class HemligSecret extends pulumi.dynamic.Resource {
 
 const clientFor = (inputs: ResolvedSecretInputs): HemligClient =>
   new HemligClient(new URL(inputs.adminUrl), new NodeHttpsTransport());
+
+const adminTokenFromEnvironment = (): string => {
+  const token = process.env.HEMLIG_ADMIN_TOKEN;
+  if (!token) {
+    throw new Error("HEMLIG_ADMIN_TOKEN is required for Hemlig control-plane mutations.");
+  }
+  return token;
+};
 
 const withVersions = (
   inputs: ResolvedSecretInputs,
@@ -186,9 +209,21 @@ const stripVersions = (
   value: ResolvedSecretInputs,
 ): ResolvedSecretInputs => {
   const withVersions = value as ResolvedSecretInputs & {
+    readonly adminToken?: string;
     readonly controlVersionId?: string;
     readonly payloadVersionId?: string;
   };
-  const { controlVersionId: _controlVersionId, payloadVersionId: _payloadVersionId, ...inputs } = withVersions;
+  const {
+    adminToken: _adminToken,
+    controlVersionId: _controlVersionId,
+    payloadVersionId: _payloadVersionId,
+    ...inputs
+  } = withVersions;
   return inputs;
 };
+
+/**
+ * The bearer token was never desired state and is no longer an input. This
+ * compatibility filter ignores it in stacks created by provider schema v1.
+ */
+const desiredInputs = (value: ResolvedSecretInputs): ResolvedSecretInputs => stripVersions(value);

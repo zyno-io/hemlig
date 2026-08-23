@@ -4,7 +4,8 @@ import type {
 } from "aws-lambda";
 import { consumerActorFromEvent } from "../auth/actors";
 import { badRequest, forbidden } from "../domain/errors";
-import { empty, json } from "../http/responses";
+import { empty, json, parseJsonBody } from "../http/responses";
+import { isObject, parseMetadata, parsePayload } from "../domain/validation";
 import { isoNow } from "../util/encoding";
 import { withErrorResponse } from "./shared";
 
@@ -21,7 +22,11 @@ export const handler = async (
     if (environment === undefined) {
       throw forbidden();
     }
-    const operation = `consumer${event.requestContext.http.method.toLowerCase()}:${event.rawPath}`;
+    // An agent identity is deliberately unable to fall back to the generic
+    // delivery routes: doing so would let a compromised namespace bypass its
+    // remote AgentGrant path boundary by guessing a secret ID.
+    const isAgent = (await app.repository.getAgentGrantForConsumer(consumerId)) !== undefined;
+    const operation = `${isAgent ? "agent" : "consumer"}${event.requestContext.http.method.toLowerCase()}:${event.rawPath}`;
     setAuditContext({
       actor,
       operation,
@@ -37,9 +42,122 @@ export const handler = async (
     const secretMatch = /^\/v1\/secrets\/([a-z][a-z0-9-]{2,63})$/.exec(
       event.rawPath,
     );
-    if (event.requestContext.http.method === "GET" && secretMatch !== null) {
+    const agentSecretMatch = /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})$/.exec(
+      event.rawPath,
+    );
+    const agentPayloadMatch = /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})\/payload$/.exec(
+      event.rawPath,
+    );
+    const agentControlMatch = /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})\/control$/.exec(
+      event.rawPath,
+    );
+    if (event.requestContext.http.method === "GET" && event.rawPath === "/v1/agent/config") {
+      const grant = await app.agents.config(consumerId, environment);
+      await app.audit.write({
+        correlationId,
+        outcome: "authorized",
+        actor,
+        operation,
+        sourceIp: event.requestContext.http.sourceIp,
+      });
+      await app.audit.write({
+        correlationId,
+        outcome: "succeeded",
+        actor,
+        operation,
+        target: { grantId: grant.grantId },
+        sourceIp: event.requestContext.http.sourceIp,
+      });
+      return json(200, {
+        consumerId: grant.consumerId,
+        environment: grant.environment,
+        grant: {
+          grantId: grant.grantId,
+          capabilities: grant.capabilities,
+          readPathPrefixes: grant.readPathPrefixes,
+          writePathPrefixes: grant.writePathPrefixes,
+        },
+        mqtt: {
+          endpoint: app.config.iotEndpoint,
+          clientId: grant.consumerId,
+          topic: `${app.config.iotNotificationTopicPrefix}/${grant.consumerId}`,
+        },
+      });
+    }
+    if (event.requestContext.http.method === "POST" && event.rawPath === "/v1/agent/secrets") {
+      const key = requireIdempotencyKey(event.headers["idempotency-key"]);
+      const body = parseObjectBody(event.body);
+      const control = await app.agents.create({
+        consumerId,
+        environment,
+        secretId: requiredString(body, "secretId"),
+        metadata: parseMetadata(body.metadata),
+        actor,
+        idempotencyKey: key,
+      });
+      await agentMutationAudit(app, correlationId, actor, operation, event, control.secretId, control.controlVersionId);
+      return json(201, control, { etag: control.controlVersionId });
+    }
+    if (event.requestContext.http.method === "GET" && agentControlMatch !== null) {
+      const control = await app.agents.control(
+        consumerId,
+        environment,
+        agentControlMatch[1] as string,
+      );
+      await app.audit.write({
+        correlationId,
+        outcome: "authorized",
+        actor,
+        operation,
+        target: { secretId: control.secretId },
+        sourceIp: event.requestContext.http.sourceIp,
+      });
+      await app.audit.write({
+        correlationId,
+        outcome: "succeeded",
+        actor,
+        operation,
+        target: { secretId: control.secretId, controlVersionId: control.controlVersionId },
+        sourceIp: event.requestContext.http.sourceIp,
+      });
+      return json(200, agentControlResponse(control), { etag: control.controlVersionId });
+    }
+    if (event.requestContext.http.method === "PUT" && agentSecretMatch !== null) {
+      const key = requireIdempotencyKey(event.headers["idempotency-key"]);
+      const body = parseObjectBody(event.body);
+      const control = await app.agents.update({
+        consumerId,
+        environment,
+        secretId: agentSecretMatch[1] as string,
+        expectedControlVersionId: requireIfMatch(event.headers["if-match"]),
+        ...(body.metadata === undefined ? {} : { metadata: parseMetadata(body.metadata) }),
+        actor,
+        idempotencyKey: key,
+      });
+      await agentMutationAudit(app, correlationId, actor, operation, event, control.secretId, control.controlVersionId);
+      return json(200, control, { etag: control.controlVersionId });
+    }
+    if (event.requestContext.http.method === "PUT" && agentPayloadMatch !== null) {
+      const key = requireIdempotencyKey(event.headers["idempotency-key"]);
+      const body = parseObjectBody(event.body);
+      const control = await app.agents.update({
+        consumerId,
+        environment,
+        secretId: agentPayloadMatch[1] as string,
+        expectedControlVersionId: requireIfMatch(event.headers["if-match"]),
+        payload: parsePayload(body.payload, app.config.maxPayloadBytes),
+        actor,
+        idempotencyKey: key,
+      });
+      await agentMutationAudit(app, correlationId, actor, operation, event, control.secretId, control.controlVersionId);
+      return json(200, control, { etag: control.controlVersionId });
+    }
+    if (
+      event.requestContext.http.method === "GET" &&
+      (secretMatch !== null || agentSecretMatch !== null)
+    ) {
       const ifNoneMatch = event.headers["if-none-match"]?.replaceAll('"', "");
-      const secretId = secretMatch[1] as string;
+      const secretId = (agentSecretMatch?.[1] ?? secretMatch?.[1]) as string;
       setAuditContext({
         actor,
         operation,
@@ -47,7 +165,25 @@ export const handler = async (
         permission: "read",
         sourceIp: event.requestContext.http.sourceIp,
       });
-      const result = await app.secrets.read(
+      const result = (isAgent || agentSecretMatch !== null)
+        ? await app.agents.read(
+          consumerId,
+          environment,
+          secretId,
+          ifNoneMatch,
+          async () => {
+            await app.audit.write({
+              correlationId,
+              outcome: "authorized",
+              actor,
+              operation,
+              target: { secretId },
+              permission: "read",
+              sourceIp: event.requestContext.http.sourceIp,
+            });
+          },
+        )
+        : await app.secrets.read(
         consumerId,
         environment,
         secretId,
@@ -63,7 +199,7 @@ export const handler = async (
             sourceIp: event.requestContext.http.sourceIp,
           });
         },
-      );
+        );
       await app.audit.write({
         correlationId,
         outcome: "succeeded",
@@ -80,7 +216,7 @@ export const handler = async (
       return json(
         200,
         {
-          secretId: secretMatch[1] as string,
+          secretId,
           controlVersionId: result.controlVersionId,
           payloadVersionId: result.payloadVersionId,
           payload: result.payload,
@@ -104,11 +240,17 @@ export const handler = async (
         rawCursor === undefined
           ? undefined
           : app.cursors.decode(rawCursor, consumerId);
-      const page = await app.repository.listAccess(
-        consumerId,
-        environment,
-        decoded?.lastEvaluatedKey,
-      );
+      const page = isAgent
+        ? await app.agents.listChanges(
+          consumerId,
+          environment,
+          decoded?.lastEvaluatedKey,
+        )
+        : await app.repository.listAccess(
+          consumerId,
+          environment,
+          decoded?.lastEvaluatedKey,
+        );
       const nextCursor =
         page.nextCursor === undefined
           ? undefined
@@ -143,3 +285,70 @@ export const handler = async (
       "The requested consumer route is not supported by this handler.",
     );
   });
+
+const parseObjectBody = (body: string | undefined): Record<string, unknown> => {
+  const parsed = parseJsonBody(body);
+  if (!isObject(parsed)) {
+    throw badRequest("The request body must be a JSON object.");
+  }
+  return parsed;
+};
+
+const requiredString = (body: Record<string, unknown>, name: string): string => {
+  const value = body[name];
+  if (typeof value !== "string" || value.length === 0) {
+    throw badRequest(`${name} is required.`);
+  }
+  return value;
+};
+
+const requireIdempotencyKey = (value: string | undefined): string => {
+  if (value === undefined || value.length < 8 || value.length > 128) {
+    throw badRequest("Idempotency-Key is required and must be 8-128 characters.");
+  }
+  return value;
+};
+
+const requireIfMatch = (value: string | undefined): string => {
+  if (value === undefined || value.length === 0) {
+    throw badRequest("If-Match is required.");
+  }
+  return value.replaceAll('"', "");
+};
+
+const agentMutationAudit = async (
+  app: Parameters<Parameters<typeof withErrorResponse>[1]>[0],
+  correlationId: string,
+  actor: Awaited<ReturnType<typeof consumerActorFromEvent>>,
+  operation: string,
+  event: APIGatewayProxyEventV2,
+  secretId: string,
+  controlVersionId: string,
+): Promise<void> => {
+  await app.audit.write({
+    correlationId,
+    outcome: "authorized",
+    actor,
+    operation,
+    target: { secretId },
+    sourceIp: event.requestContext.http.sourceIp,
+  });
+  await app.audit.write({
+    correlationId,
+    outcome: "succeeded",
+    actor,
+    operation,
+    target: { secretId, controlVersionId },
+    sourceIp: event.requestContext.http.sourceIp,
+  });
+};
+
+const agentControlResponse = (control: import("../domain/types").ControlRevision): Record<string, unknown> => ({
+  secretId: control.secretId,
+  environment: control.environment,
+  controlVersionId: control.controlVersionId,
+  ...(control.payloadVersionId === undefined ? {} : { payloadVersionId: control.payloadVersionId }),
+  ...(control.payloadKeyCount === undefined ? {} : { payloadKeyCount: control.payloadKeyCount }),
+  state: control.state,
+  metadata: control.metadata,
+});

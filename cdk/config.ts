@@ -13,11 +13,31 @@ export interface DeploymentConfig {
     readonly oidcSubjectClaim: string;
     /** Required administrator OAuth scope when the console origin is enabled. */
     readonly oidcAdminScope?: string;
+    /**
+     * Resource-qualified OAuth scope requested by the console SPA, for example
+     * `api://<application-id>/hemlig.admin` on Microsoft Entra. This differs
+     * from oidcAdminScope, the short value enforced from the access token's
+     * `scp` claim by API Gateway.
+     */
+    readonly oidcConsoleAccessScope?: string;
+    /** Optional external IdP role required by the Lambda after JWT validation. */
+    readonly oidcAdminRole?: string;
     /** OAuth client id the console SPA authenticates as; required when consoleFqdn is configured. */
     readonly oidcClientId?: string;
-    /** Secret environment names surfaced to the console; defaults to [environmentName]. Parsed from the comma-separated `secretEnvironments` context key. */
-    readonly secretEnvironments?: readonly string[];
     readonly existingHostedZoneId?: string;
+    /**
+     * Existing cursor HMAC secret to adopt instead of creating a new one. This
+     * is useful when a prior retained CloudFormation creation must be recovered
+     * under an organization SCP that forbids direct secret deletion.
+     */
+    readonly existingCursorHmacSecretArn?: string;
+    /** Existing Hemlig application CMK to adopt after a retained failed creation. */
+    readonly existingApplicationKeyArn?: string;
+    /**
+     * CDK bootstrap qualifier to reuse for the optional sibling console-certificate
+     * stack. Supply this whenever the parent stack uses a non-default synthesizer.
+     */
+    readonly bootstrapQualifier?: string;
 }
 
 export const deploymentConfigFromContext = (context: {
@@ -33,12 +53,13 @@ export const deploymentConfigFromContext = (context: {
     const oidcAudience = requiredContext(context, 'oidcAudience');
     const oidcSubjectClaim = optionalContext(context, 'oidcSubjectClaim') ?? 'sub';
     const oidcAdminScope = optionalContext(context, 'oidcAdminScope');
+    const oidcConsoleAccessScope = optionalContext(context, 'oidcConsoleAccessScope');
+    const oidcAdminRole = optionalContext(context, 'oidcAdminRole');
     const oidcClientId = optionalContext(context, 'oidcClientId');
-    const secretEnvironmentsRaw = optionalContext(context, 'secretEnvironments');
-    const secretEnvironments = secretEnvironmentsRaw === undefined
-        ? undefined
-        : secretEnvironmentsRaw.split(',').map((entry) => entry.trim());
     const existingHostedZoneId = optionalContext(context, 'existingHostedZoneId');
+    const existingCursorHmacSecretArn = optionalContext(context, 'existingCursorHmacSecretArn');
+    const existingApplicationKeyArn = optionalContext(context, 'existingApplicationKeyArn');
+    const bootstrapQualifier = optionalContext(context, 'bootstrapQualifier');
     if (!/^[a-z][a-z0-9-]{1,31}$/.test(environmentName)) {
         throw new Error('context environment must match ^[a-z][a-z0-9-]{1,31}$');
     }
@@ -72,8 +93,17 @@ export const deploymentConfigFromContext = (context: {
     if (consoleFqdn !== undefined && oidcAdminScope === undefined) {
         throw new Error('context oidcAdminScope is required when consoleFqdn is configured.');
     }
+    if (consoleFqdn !== undefined && oidcConsoleAccessScope === undefined) {
+        throw new Error('context oidcConsoleAccessScope is required when consoleFqdn is configured.');
+    }
     if (oidcAdminScope !== undefined && !/^[A-Za-z0-9._:/-]{1,256}$/.test(oidcAdminScope)) {
         throw new Error('context oidcAdminScope must be one OAuth scope token.');
+    }
+    if (oidcConsoleAccessScope !== undefined && !/^[A-Za-z0-9._:/-]{1,256}$/.test(oidcConsoleAccessScope)) {
+        throw new Error('context oidcConsoleAccessScope must be one OAuth scope token.');
+    }
+    if (oidcAdminRole !== undefined && !/^[A-Za-z0-9._:/-]{1,256}$/.test(oidcAdminRole)) {
+        throw new Error('context oidcAdminRole must be one role token.');
     }
     if (consoleFqdn !== undefined && oidcClientId === undefined) {
         throw new Error('context oidcClientId is required when consoleFqdn is configured.');
@@ -81,22 +111,27 @@ export const deploymentConfigFromContext = (context: {
     if (consoleCertificateArn !== undefined && consoleFqdn === undefined) {
         throw new Error('context consoleCertificateArn must not be supplied unless consoleFqdn is configured.');
     }
+    if (bootstrapQualifier !== undefined && !/^[a-z0-9]{1,10}$/.test(bootstrapQualifier)) {
+        throw new Error('context bootstrapQualifier must contain 1-10 lowercase letters or digits.');
+    }
+    if (
+        existingCursorHmacSecretArn !== undefined &&
+        !/^arn:aws[a-zA-Z-]*:secretsmanager:[a-z0-9-]+:\d{12}:secret:[^\s]+$/.test(existingCursorHmacSecretArn)
+    ) {
+        throw new Error('context existingCursorHmacSecretArn must be a complete Secrets Manager ARN.');
+    }
+    if (
+        existingApplicationKeyArn !== undefined &&
+        !/^arn:aws[a-zA-Z-]*:kms:[a-z0-9-]+:\d{12}:key\/[0-9a-f-]{36}$/.test(existingApplicationKeyArn)
+    ) {
+        throw new Error('context existingApplicationKeyArn must be a complete KMS key ARN.');
+    }
     // CloudFront only accepts certificates issued in us-east-1, regardless of which
     // region the rest of the stack deploys to.
     if (consoleCertificateArn !== undefined && !isUsEast1CertificateArn(consoleCertificateArn)) {
         throw new Error(
             'context consoleCertificateArn must be an ACM certificate ARN in us-east-1, because CloudFront only accepts certificates from that region.',
         );
-    }
-    if (secretEnvironments !== undefined) {
-        if (secretEnvironments.length === 0) {
-            throw new Error('context secretEnvironments must not be empty.');
-        }
-        for (const entry of secretEnvironments) {
-            if (!/^[a-z][a-z0-9-]{0,63}$/.test(entry)) {
-                throw new Error('context secretEnvironments entries must match ^[a-z][a-z0-9-]{0,63}$');
-            }
-        }
     }
     return {
         environmentName,
@@ -109,9 +144,13 @@ export const deploymentConfigFromContext = (context: {
         oidcAudience,
         oidcSubjectClaim,
         ...(oidcAdminScope === undefined ? {} : { oidcAdminScope }),
+        ...(oidcConsoleAccessScope === undefined ? {} : { oidcConsoleAccessScope }),
+        ...(oidcAdminRole === undefined ? {} : { oidcAdminRole }),
         ...(oidcClientId === undefined ? {} : { oidcClientId }),
-        ...(secretEnvironments === undefined ? {} : { secretEnvironments }),
         ...(existingHostedZoneId === undefined ? {} : { existingHostedZoneId }),
+        ...(existingCursorHmacSecretArn === undefined ? {} : { existingCursorHmacSecretArn }),
+        ...(existingApplicationKeyArn === undefined ? {} : { existingApplicationKeyArn }),
+        ...(bootstrapQualifier === undefined ? {} : { bootstrapQualifier }),
     };
 };
 

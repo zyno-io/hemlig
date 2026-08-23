@@ -30,23 +30,22 @@
     "README.md",
     "PLAN.md",
     "SECURITY.md",
-    "LICENSE",
-    "packages/console/dist"
+    "LICENSE"
   ],
   "engines": {
-    "node": ">=22.0.0"
+    "node": "24.x"
   },
   "scripts": {
     "backfill:console-indexes": "yarn build && node dist/scripts/backfill-console-indexes.js",
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "build:all": "yarn workspaces foreach -A --topological run build",
-    "build:cdk": "yarn workspace @hemlig/console build && rm -rf dist-cdk && tsc -p tsconfig.cdk.json",
+    "build:cdk": "yarn workspace @hemlig/console build && rm -rf dist-cdk && tsc -p tsconfig.cdk.json && cp -R packages/console/dist dist-cdk/console-dist",
     "cdk:deploy": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' deploy",
     "cdk:diff": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' diff",
     "cdk:synth": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' synth",
-    "console:api": "yarn build && node dist/scripts/dev-ministack.js",
+    "dev:api": "yarn build && node dist/scripts/dev-ministack.js",
     "console:build": "yarn workspace @hemlig/console build",
-    "console:dev": "yarn workspace @hemlig/console dev",
+    "dev:ui": "yarn workspace @hemlig/console dev",
     "format": "prettier --write .",
     "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.cdk.json --noEmit",
     "lint:all": "yarn build:all && yarn workspaces foreach -A --topological run lint",
@@ -71,6 +70,8 @@
   "dependencies": {
     "@aws-sdk/client-apigatewayv2": "^3.1012.0",
     "@aws-sdk/client-dynamodb": "^3.1012.0",
+    "@aws-sdk/client-iot": "^3.1116.0",
+    "@aws-sdk/client-iot-data-plane": "^3.1116.0",
     "@aws-sdk/client-kms": "^3.1012.0",
     "@aws-sdk/client-s3": "^3.1012.0",
     "@aws-sdk/lib-dynamodb": "^3.1012.0",

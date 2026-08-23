@@ -11,18 +11,21 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22.0.0"
+    "node": "24.x"
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "node --test dist/index.test.js"
   },
-  "dependencies": {
-    "@hemlig/client": "workspace:*",
+  "peerDependencies": {
     "@pulumi/pulumi": "^3.166.0"
   },
+  "dependencies": {
+    "@hemlig/client": "workspace:*"
+  },
   "devDependencies": {
+    "@pulumi/pulumi": "^3.166.0",
     "@types/node": "^24.0.0",
     "typescript": "^5.8.3"
   }

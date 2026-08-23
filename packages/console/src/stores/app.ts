@@ -24,6 +24,13 @@ export const useAppStore = defineStore("app", () => {
     session.value = await driver.initialize();
   };
 
+  const requireAuth = (): AuthDriver => {
+    if (auth.value === undefined) {
+      throw new Error("The console is not initialised.");
+    }
+    return auth.value;
+  };
+
   const requireApi = (): HemligApi => {
     if (api.value === undefined) {
       throw new Error("The console is not initialised.");
@@ -39,12 +46,21 @@ export const useAppStore = defineStore("app", () => {
   };
 
   const signIn = async (): Promise<void> => {
-    await auth.value?.signIn();
+    const driver = requireAuth();
+    await driver.signIn();
+  };
+
+  const completeSignIn = async (): Promise<Session | undefined> => {
+    const driver = requireAuth();
+    const completed = await driver.completeSignIn();
+    session.value = completed;
+    return completed;
   };
 
   const signOut = async (): Promise<void> => {
     session.value = undefined;
-    await auth.value?.signOut();
+    const driver = requireAuth();
+    await driver.signOut();
   };
 
   const adoptSession = (value: Session | undefined): void => {
@@ -60,6 +76,7 @@ export const useAppStore = defineStore("app", () => {
     requireApi,
     requireConfig,
     signIn,
+    completeSignIn,
     signOut,
     adoptSession,
   };

@@ -28,6 +28,7 @@ describe("HemligStack", () => {
       oidcAudience: "hemlig-api",
       oidcSubjectClaim: "sub",
       oidcAdminScope: "hemlig.admin",
+      oidcConsoleAccessScope: "api://hemlig-api/hemlig.admin",
       oidcClientId: "console-client",
     });
     const template = Template.fromStack(stack);
@@ -96,6 +97,32 @@ describe("HemligStack", () => {
       RouteKey: "$default",
       AuthorizationScopes: ["hemlig.admin"],
     });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "POST /v1/bootstrap/redeem",
+      AuthorizationType: "NONE",
+    });
+    template.hasResourceProperties("AWS::IoT::Policy", {
+      PolicyName: "hml-test-agent-notifications",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({ Action: ["iot:Connect"] }),
+          Match.objectLike({ Action: ["iot:Subscribe"] }),
+          Match.objectLike({ Action: ["iot:Receive"] }),
+        ]),
+      }),
+    });
+    template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      StartingPosition: "TRIM_HORIZON",
+      FilterCriteria: Match.objectLike({
+        Filters: Match.arrayWith([
+          Match.objectLike({ Pattern: Match.stringLikeRegexp("NOTIFICATION") }),
+        ]),
+      }),
+    });
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      QueueName: "hml-test-notification-dlq",
+      SqsManagedSseEnabled: true,
+    });
     template.hasResourceProperties("AWS::Events::Rule", {
       Name: "hml-test-recovery",
     });
@@ -108,6 +135,11 @@ describe("HemligStack", () => {
       RetentionInDays: 365,
     });
     template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
+      AutoDeploy: true,
+      DefaultRouteSettings: {
+        ThrottlingBurstLimit: 100,
+        ThrottlingRateLimit: 50,
+      },
       AccessLogSettings: Match.objectLike({
         DestinationArn: Match.anyValue(),
         Format: Match.anyValue(),
@@ -125,6 +157,21 @@ describe("HemligStack", () => {
               "apigateway:PATCH",
               "apigateway:AddCertificateToDomain",
             ]),
+          }),
+        ]),
+      }),
+    });
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "kms:GenerateDataKey",
+            Condition: {
+              StringEquals: {
+                "kms:EncryptionContext:service": "hemlig",
+                "kms:EncryptionContext:purpose": Match.arrayWith(["secret-payload"]),
+              },
+            },
           }),
         ]),
       }),
@@ -370,6 +417,40 @@ describe("HemligStack", () => {
     });
   });
 
+  it("adopts an explicitly supplied retained cursor key without creating a second secret", () => {
+    const app = new App();
+    const stack = new HemligStack(app, "hml-adopted-cursor", {
+      environmentName: "prod",
+      adminFqdn: "admin.example.com",
+      apiFqdn: "api.example.com",
+      zoneDomain: "example.com",
+      oidcIssuer: "https://login.example.com/tenant/v2.0",
+      oidcAudience: "hemlig-api",
+      oidcSubjectClaim: "sub",
+      existingCursorHmacSecretArn:
+        "arn:aws:secretsmanager:us-east-1:123456789012:secret:hml-prod/cursor-hmac-abc123",
+    });
+    Template.fromStack(stack).resourceCountIs("AWS::SecretsManager::Secret", 0);
+  });
+
+  it("adopts an explicitly supplied application key while still creating its alias", () => {
+    const app = new App();
+    const stack = new HemligStack(app, "hml-adopted-key", {
+      environmentName: "prod",
+      adminFqdn: "admin.example.com",
+      apiFqdn: "api.example.com",
+      zoneDomain: "example.com",
+      oidcIssuer: "https://login.example.com/tenant/v2.0",
+      oidcAudience: "hemlig-api",
+      oidcSubjectClaim: "sub",
+      existingApplicationKeyArn:
+        "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+    });
+    const template = Template.fromStack(stack);
+    template.resourceCountIs("AWS::KMS::Key", 0);
+    template.resourceCountIs("AWS::KMS::Alias", 1);
+  });
+
   it("skips console hosting entirely when consoleFqdn is not configured", () => {
     const app = new App();
     const stack = new HemligStack(app, "hml-test-no-console", {
@@ -398,6 +479,7 @@ describe("HemligStack", () => {
       oidcAudience: "hemlig-api",
       oidcSubjectClaim: "sub",
       oidcAdminScope: "hemlig.admin",
+      oidcConsoleAccessScope: "api://hemlig-api/hemlig.admin",
       oidcClientId: "console-client",
     };
 

@@ -3,7 +3,6 @@ import { parseRuntimeConfig } from "./config";
 
 const base = {
   deploymentName: "hml-dev",
-  environments: ["dev"],
 };
 
 describe("runtime configuration", () => {
@@ -60,5 +59,27 @@ describe("runtime configuration", () => {
     expect(() =>
       parseRuntimeConfig({ ...base, adminApiUrl: "not-a-url", auth: { mode: "dev-bridge", subject: "l" } }),
     ).toThrow();
+  });
+
+  it("no longer requires a static environments list", () => {
+    const config = parseRuntimeConfig({
+      ...base,
+      adminApiUrl: "http://127.0.0.1:5274",
+      auth: { mode: "dev-bridge", subject: "local" },
+    });
+    expect(config).not.toHaveProperty("environments");
+  });
+
+  it("ignores a stray environments field from a config document a rolling deploy has not caught up with yet", () => {
+    const config = parseRuntimeConfig({
+      ...base,
+      // Environments are now administrator-defined API state, not a build-time
+      // constant; the CDK stops writing this field, but a document from a CDK
+      // version still writing it must not fail to parse mid-rollout.
+      environments: ["dev", "staging"],
+      adminApiUrl: "http://127.0.0.1:5274",
+      auth: { mode: "dev-bridge", subject: "local" },
+    });
+    expect(config).not.toHaveProperty("environments");
   });
 });

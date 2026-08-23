@@ -1,8 +1,12 @@
+# Broad, cluster-operator installation profile. The Helm chart's namespace
+# profile is the least-privilege default; this raw manifest is for platforms
+# that deliberately centralize Hemlig reconciliation in hemlig-system.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: hemlig-controller
   namespace: hemlig-system
+automountServiceAccountToken: true
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -11,12 +15,18 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "create", "update", "patch"]
-  - apiGroups: ["hemlig.io"]
-    resources: ["hemligsecretimports", "hemligsecretexports"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["hemlig.io"]
-    resources: ["hemligsecretimports/status", "hemligsecretexports/status"]
+    resources: ["hemligproviders"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["hemlig.io"]
+    resources: ["hemligconsumers", "hemligsecretimports", "hemligsecretexports"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["hemlig.io"]
+    resources: ["hemligconsumers/status", "hemligsecretimports/status", "hemligsecretexports/status"]
     verbs: ["get", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -44,23 +54,18 @@ spec:
     metadata: { labels: { app.kubernetes.io/name: hemlig-controller } }
     spec:
       serviceAccountName: hemlig-controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: controller
           image: ghcr.io/hemlig/kubernetes-controller:REPLACE_WITH_VERSION
           env:
-            - name: HEMLIG_API_URL
-              value: https://api.example.com
-            - name: HEMLIG_CONSUMER_TLS_SECRET
-              value: hemlig-client-tls
-            - name: HEMLIG_ADMIN_URL
-              value: https://admin.example.com
-            - name: HEMLIG_ADMIN_TOKEN_FILE
-              value: /var/run/secrets/hemlig/admin-token
-          volumeMounts:
-            - name: admin-token
-              mountPath: /var/run/secrets/hemlig
-              readOnly: true
-      volumes:
-        - name: admin-token
-          secret:
-            secretName: hemlig-admin-token
+            - name: HEMLIG_RECONCILE_INTERVAL_MS
+              value: "600000"
+            - name: HEMLIG_SOURCE_DEBOUNCE_MS
+              value: "250"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

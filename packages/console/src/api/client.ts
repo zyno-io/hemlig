@@ -32,10 +32,18 @@ export class HemligApi {
     this.fetchImpl = fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
+  /**
+   * `q` (1-128 chars) matches case-insensitively against `secretId` and
+   * `metadata.description` and composes with `pathPrefix`/`tags`. Its
+   * presence changes the response shape: a search page is bounded-complete
+   * (`truncated`, no `nextCursor`) rather than cursor-paginated, so callers
+   * should not pass both `q` and `cursor` — see `CatalogPage`.
+   */
   public listSecrets(input: {
     environment: string;
     pathPrefix?: string;
     tags?: string;
+    q?: string;
     cursor?: string;
   }): Promise<s.CatalogPage> {
     return this.request(s.catalogPage, "/v1/admin/secrets", {
@@ -43,13 +51,68 @@ export class HemligApi {
         environment: input.environment,
         pathPrefix: input.pathPrefix,
         tags: input.tags,
+        q: input.q,
         cursor: input.cursor,
       },
     });
   }
 
+  /**
+   * One bounded, complete level of the path tree: folders directly under
+   * `pathPrefix` plus secrets whose path equals it exactly (or, at the root,
+   * secrets with no path at all). There is no cursor; a level that would not
+   * fit comes back with `truncated: true` instead of a next page.
+   */
+  public getSecretsTree(input: {
+    environment: string;
+    pathPrefix?: string;
+  }): Promise<s.SecretTreePage> {
+    return this.request(s.secretTreePage, "/v1/admin/secrets/tree", {
+      query: { environment: input.environment, pathPrefix: input.pathPrefix },
+    });
+  }
+
+  /**
+   * Creates exactly one explicit, empty folder record at `path`. Unlike
+   * every other admin mutation, this route takes no `Idempotency-Key`, the
+   * same as `createEnvironment`: there is nothing here that needs
+   * replay-on-retry semantics, since a path already recorded (or implied by
+   * a secret) simply reports the conflict it already would. Callers should
+   * treat a `conflict` as "this folder already exists" rather than a failed
+   * mutation.
+   */
+  public createFolder(environment: string, path: string): Promise<s.FolderDefinition> {
+    return this.request(s.folderDefinition, "/v1/admin/folders", {
+      method: "POST",
+      body: { environment, path },
+    });
+  }
+
+  /**
+   * Deletes the explicit folder record at exactly `path`, never a secret.
+   * The service returns 409 when a secret's path equals or nests beneath
+   * `path` -- the folder would still be derived from that secret, so
+   * deleting the record would not remove it from the tree -- and 404 when
+   * no explicit record exists there, even if the tree still shows it as a
+   * derived folder. Both are refusals to surface as a plain explanation,
+   * not a generic failure.
+   */
+  public deleteFolder(environment: string, path: string): Promise<void> {
+    return this.requestEmpty("/v1/admin/folders", {
+      method: "DELETE",
+      query: { environment, path },
+    });
+  }
+
   public getSecret(secretId: string): Promise<s.ControlRevision> {
     return this.request(s.controlRevision, `/v1/admin/secrets/${encode(secretId)}`);
+  }
+
+  public getSecretPayload(secretId: string): Promise<s.SecretReadResponse> {
+    return this.request(
+      s.secretReadResponse,
+      `/v1/admin/secrets/${encode(secretId)}/payload`,
+    );
   }
 
   public listRevisions(secretId: string): Promise<s.SecretRevisionPage> {
@@ -61,7 +124,7 @@ export class HemligApi {
 
   public createSecret(
     input: {
-      secretId?: string;
+      secretId: string;
       environment: string;
       metadata: s.Metadata;
       acl: readonly s.Grant[];
@@ -165,8 +228,43 @@ export class HemligApi {
     );
   }
 
+  /**
+   * Environments are administrator-defined records, bounded to 100, not a
+   * deployment constant — a fresh deployment starts with none.
+   */
+  public listEnvironments(): Promise<s.EnvironmentListResponse> {
+    return this.request(s.environmentListResponse, "/v1/admin/environments");
+  }
+
+  /**
+   * Unlike every other admin mutation, this route takes no `Idempotency-Key`:
+   * there is nothing here that needs replay-on-retry semantics, since a
+   * reused name simply reports the conflict it already would. A duplicate
+   * name fails an `attribute_not_exists` condition server-side and comes
+   * back as a plain `conflict`, which callers should treat as "this name is
+   * already taken" rather than as a failed mutation.
+   */
+  public createEnvironment(name: string): Promise<s.EnvironmentDefinition> {
+    return this.request(s.environmentDefinition, "/v1/admin/environments", {
+      method: "POST",
+      body: { name },
+    });
+  }
+
   public getIssuer(): Promise<s.IssuerStatus> {
     return this.request(s.issuerStatus, "/v1/admin/issuer");
+  }
+
+  /**
+   * Creates the issuing root if it is absent (201) or returns the existing
+   * one (200) — safe to call as an explicit action instead of waiting for the
+   * lazy creation an enrollment would otherwise trigger.
+   */
+  public createIssuer(idempotencyKey: string): Promise<s.IssuerStatus> {
+    return this.request(s.issuerStatus, "/v1/admin/issuer", {
+      method: "POST",
+      idempotencyKey,
+    });
   }
 
   private async request<T>(
@@ -174,6 +272,16 @@ export class HemligApi {
     path: string,
     options: RequestOptions = {},
   ): Promise<T> {
+    const response = await this.fetchResponse(path, options);
+    return schema.parse(await response.json());
+  }
+
+  /** For routes with no response body, such as the folder DELETE's 204. */
+  private async requestEmpty(path: string, options: RequestOptions = {}): Promise<void> {
+    await this.fetchResponse(path, options);
+  }
+
+  private async fetchResponse(path: string, options: RequestOptions = {}): Promise<Response> {
     const url = new URL(path, this.config.adminApiUrl);
     for (const [name, value] of Object.entries(options.query ?? {})) {
       if (value !== undefined && value.length > 0) {
@@ -224,7 +332,7 @@ export class HemligApi {
     if (!response.ok) {
       throw await errorFromResponse(response);
     }
-    return schema.parse(await response.json());
+    return response;
   }
 }
 

@@ -1,6 +1,8 @@
 {
-  "deploymentName": "hml-local",
+  "deploymentName": "hml-tabs",
   "adminApiUrl": "http://127.0.0.1:5274",
-  "environments": ["dev", "staging", "prod"],
-  "auth": { "mode": "dev-bridge", "subject": "local-administrator" }
+  "auth": {
+    "mode": "dev-bridge",
+    "subject": "local-administrator"
+  }
 }

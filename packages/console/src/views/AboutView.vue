@@ -6,7 +6,6 @@ const store = useAppStore();
 const excluded = [
   ["Audit log", "There is no audit-query endpoint. The archive lives in a separate audit boundary with its own read role."],
   ["Deleting a secret", "No delete route exists. Retirement is removing the consumer from the ACL, which leaves a REVOKED tombstone the operator acts on."],
-  ["Viewing a payload", "The administrator API never returns a decrypted payload, and this console will not grow a path to one."],
   ["Rotating the issuer root", "Deliberately excluded until an overlap and migration protocol is reviewed."],
 ];
 </script>
@@ -16,7 +15,7 @@ const excluded = [
     <section>
       <h1 class="text-lg font-semibold">About this console</h1>
       <dl class="mt-3 grid max-w-lg grid-cols-[10rem_1fr] gap-y-2">
-        <dt class="text-ink-muted">Deployment</dt>
+        <dt class="text-ink-muted">Deployment (CDK stack)</dt>
         <dd class="mono">{{ store.config?.deploymentName }}</dd>
         <dt class="text-ink-muted">Administrator API</dt>
         <dd class="mono break-all">{{ store.config?.adminApiUrl }}</dd>
@@ -30,9 +29,9 @@ const excluded = [
     <section>
       <h2 class="font-medium">Who is an administrator</h2>
       <p class="mt-1 max-w-2xl text-ink-muted">
-        Hemlig has no roles. Any token satisfying the configured issuer, audience, and
-        scope is a full administrator, so access is decided entirely by application
-        assignment in your identity provider. This console cannot grant or restrict it.
+        Hemlig has no internal user directory. The identity provider controls administrator
+        assignment; the API requires its configured issuer, audience, scope, and optional role.
+        This console cannot grant or restrict that access.
       </p>
     </section>
 

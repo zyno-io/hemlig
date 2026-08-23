@@ -26,7 +26,6 @@ const devBridgeConfig = z.object({
 const runtimeConfig = z.object({
   deploymentName: z.string().min(1),
   adminApiUrl: z.string().url(),
-  environments: z.array(z.string().min(1)).min(1),
   auth: z.discriminatedUnion("mode", [oidcConfig, devBridgeConfig]),
 });
 

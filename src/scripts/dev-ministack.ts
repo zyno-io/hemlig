@@ -32,6 +32,7 @@ const endpoint = process.env.AWS_ENDPOINT_URL ?? "http://127.0.0.1:4566";
 const region = process.env.AWS_REGION ?? "us-east-1";
 const credentials = { accessKeyId: "test", secretAccessKey: "test" };
 const prefix = process.env.DEV_PREFIX ?? "hml-local";
+const localEnvironment = process.env.HEMLIG_ENVIRONMENT ?? "dev";
 
 const table = `${prefix}-control`;
 const revisionBucket = `${prefix}-revision`;
@@ -193,7 +194,7 @@ const run = async (): Promise<void> => {
     PAYLOAD_KMS_KEY_ARN: keyArn,
     AUDIT_BUCKET_NAME: auditBucket,
     AUDIT_PREFIX: "audit",
-    HEMLIG_ENVIRONMENT: process.env.HEMLIG_ENVIRONMENT ?? "dev",
+    HEMLIG_ENVIRONMENT: localEnvironment,
     DELIVERY_API_CUSTOM_DOMAIN_NAME: "api.local.test",
     DELIVERY_API_HOSTNAME: "api.local.test",
     CURSOR_HMAC_KEY:

@@ -44,7 +44,12 @@ const bootstrap = async (): Promise<void> => {
     store.bootError = error instanceof Error ? error.message : String(error);
   }
 
-  app.use(createAppRouter());
+  const router = createAppRouter();
+  app.use(router);
+  // Resolve `/auth/callback` before App.vue decides whether an unauthenticated
+  // boot should start a new redirect. Otherwise a callback reload could race
+  // the router and discard the authorization response.
+  await router.isReady();
   app.mount("#app");
 };
 

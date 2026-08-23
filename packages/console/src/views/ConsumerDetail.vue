@@ -2,6 +2,7 @@
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, ref } from "vue";
 import CopyField from "../components/CopyField.vue";
+import CsrGeneratorModal from "../components/CsrGeneratorModal.vue";
 import ErrorNotice from "../components/ErrorNotice.vue";
 import MutationState from "../components/MutationState.vue";
 import StateBadge from "../components/StateBadge.vue";
@@ -45,7 +46,15 @@ const activeCount = computed(
 const csr = ref("");
 const csrProblem = ref<string | undefined>();
 const rotating = ref(false);
+const showGenerator = ref(false);
 const revokeTarget = ref<ApiIdentity | undefined>();
+
+// Pasting an operator-generated CSR remains the default, primary path; this
+// only fills the same textarea the paste/upload flow already validates.
+const onGenerated = (csrPem: string): void => {
+  csr.value = csrPem;
+  csrProblem.value = undefined;
+};
 
 const rotation = useGuardedMutation<string, ApiIdentityResult>({
   family: "consumer",
@@ -161,6 +170,13 @@ const confirmRevoke = async (): Promise<void> => {
           placeholder="-----BEGIN CERTIFICATE REQUEST-----"
           class="mono mt-2 w-full rounded border border-line bg-surface px-2 py-1 text-xs"
         />
+        <button
+          type="button"
+          class="mt-2 rounded border border-line px-2 py-1 text-xs"
+          @click="showGenerator = true"
+        >
+          Generate key and CSR
+        </button>
         <p v-if="csrProblem" class="mt-1 text-xs text-danger">{{ csrProblem }}</p>
         <button
           class="mt-2 rounded bg-accent px-3 py-1 text-white disabled:opacity-50"
@@ -238,5 +254,12 @@ const confirmRevoke = async (): Promise<void> => {
         </div>
       </div>
     </div>
+
+    <CsrGeneratorModal
+      v-if="showGenerator"
+      :common-name="consumerId"
+      @generated="onGenerated"
+      @close="showGenerator = false"
+    />
   </div>
 </template>

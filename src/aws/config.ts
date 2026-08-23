@@ -19,12 +19,20 @@ export interface AppConfig {
     readonly auditPrefix: string;
     readonly deliveryApiCustomDomainName: string;
     readonly deliveryApiHostname: string;
+    /** Account-specific AWS IoT Data-ATS endpoint for agent change hints. */
+    readonly iotEndpoint: string;
+    /** Shared IoT policy attached only to Hemlig agent certificates. */
+    readonly iotNotificationPolicyName: string;
+    /** Prefix below which each agent receives its own private topic. */
+    readonly iotNotificationTopicPrefix: string;
     readonly cursorHmacKey: Buffer;
     readonly adminJwtIssuer: string;
     readonly adminJwtAudience: string;
     readonly adminActorSubjectClaim: string;
     /** Required only when the deployment enables a browser console origin. */
     readonly adminJwtScope?: string;
+    /** Optional IdP application role required in addition to the OAuth scope. */
+    readonly adminJwtRole?: string;
     readonly adminActorTenantClaim?: string;
     readonly adminExpectedTenantId?: string;
     readonly maxPayloadBytes: number;
@@ -58,11 +66,15 @@ export const loadConfig = (environment: NodeJS.ProcessEnv = process.env): AppCon
         auditPrefix: required(environment, 'AUDIT_PREFIX'),
         deliveryApiCustomDomainName: required(environment, 'DELIVERY_API_CUSTOM_DOMAIN_NAME'),
         deliveryApiHostname: required(environment, 'DELIVERY_API_HOSTNAME'),
+        iotEndpoint: required(environment, 'IOT_ENDPOINT'),
+        iotNotificationPolicyName: required(environment, 'IOT_NOTIFICATION_POLICY_NAME'),
+        iotNotificationTopicPrefix: required(environment, 'IOT_NOTIFICATION_TOPIC_PREFIX'),
         cursorHmacKey,
         adminJwtIssuer: required(environment, 'ADMIN_JWT_ISSUER'),
         adminJwtAudience: required(environment, 'ADMIN_JWT_AUDIENCE'),
         adminActorSubjectClaim: required(environment, 'ADMIN_ACTOR_SUBJECT_CLAIM'),
         adminJwtScope: optional(environment, 'ADMIN_JWT_SCOPE'),
+        adminJwtRole: optional(environment, 'ADMIN_JWT_ROLE'),
         adminActorTenantClaim: optional(environment, 'ADMIN_ACTOR_TENANT_CLAIM'),
         adminExpectedTenantId: optional(environment, 'ADMIN_EXPECTED_TENANT_ID'),
         maxPayloadBytes,

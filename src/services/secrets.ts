@@ -30,9 +30,10 @@ import type {
 } from "../repositories/dynamo";
 import type { ObjectStore } from "../repositories/object-store";
 import { assertIdentifier } from "../domain/validation";
+import type { EnvironmentService } from "./environments";
 
 export interface CreateSecretInput {
-  readonly secretId?: string;
+  readonly secretId: string;
   readonly environment: string;
   readonly metadata: SecretMetadata;
   readonly acl: readonly Grant[];
@@ -57,16 +58,24 @@ export interface SecretReadResult {
   readonly payload?: SecretPayload;
 }
 
+export interface ActiveSecretPayload {
+  readonly controlVersionId: string;
+  readonly payloadVersionId: string;
+  readonly payload: SecretPayload;
+}
+
 export class SecretService {
   public constructor(
     private readonly repository: DynamoRepository,
     private readonly objects: ObjectStore,
     private readonly crypto: EnvelopeCrypto,
     private readonly config: AppConfig,
+    private readonly environments: EnvironmentService,
   ) {}
 
   public async create(input: CreateSecretInput): Promise<ControlRevision> {
-    const secretId = input.secretId ?? `sec-${newId()}`;
+    await this.environments.require(input.environment);
+    const secretId = input.secretId;
     assertIdentifier(secretId, "secretId");
     await this.assertAclEnvironment(input.acl, input.environment);
     const now = isoNow();
@@ -174,18 +183,9 @@ export class SecretService {
     }
     if (
       head === undefined ||
-      access.controlVersionId !== head.controlVersionId ||
       head.environment !== access.environment ||
       head.state !== "ACTIVE"
     ) {
-      if (
-        head !== undefined &&
-        access.controlVersionId !== head.controlVersionId
-      ) {
-        throw serviceUnavailable(
-          "The secret authorization snapshot is being updated.",
-        );
-      }
       throw forbidden();
     }
     if (onAuthorized !== undefined) {
@@ -198,6 +198,28 @@ export class SecretService {
         payloadVersionId: head.payloadVersionId,
       };
     }
+    const activePayload = await this.readActivePayload(secretId, head);
+    return { notModified: false, ...activePayload };
+  }
+
+  /**
+   * Returns an active payload to an already-authenticated administrator. The
+   * handler is responsible for its administrator authorization and audit trail;
+   * this method keeps the same immutable-head and envelope binding checks used
+   * for consumer delivery.
+   */
+  public async readAdminPayload(secretId: string): Promise<ActiveSecretPayload> {
+    const head = await this.repository.requireHead(secretId);
+    if (head.state !== "ACTIVE") {
+      throw notFound("The secret has no active payload.");
+    }
+    return this.readActivePayload(secretId, head);
+  }
+
+  private async readActivePayload(
+    secretId: string,
+    head: HeadRecord,
+  ): Promise<ActiveSecretPayload> {
     if (head.payloadVersionId === undefined) {
       throw notFound("The secret has no active payload.");
     }
@@ -239,7 +261,6 @@ export class SecretService {
     }
     const plaintext = await this.crypto.decrypt(payload);
     return {
-      notModified: false,
       controlVersionId: head.controlVersionId,
       payloadVersionId: head.payloadVersionId,
       payload: plaintext,

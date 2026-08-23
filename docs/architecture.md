@@ -4,7 +4,7 @@ Hemlig delivers Kubernetes Secret payloads to non-AWS workloads without giving
 those consumers AWS credentials. Administrators define encrypted secrets and
 consumer read ACLs; enrolled consumers receive only the payloads they may read.
 
-This document describes the v0.3 implementation. It includes organizational
+This document describes the v0.4 implementation. It includes organizational
 metadata/catalog browsing and the enrollment/truststore workflow. Issuer-root
 rotation and audit query remain intentionally excluded. See
 [API reference](api.md) for the HTTP contract and
@@ -24,8 +24,10 @@ rotation and audit query remain intentionally excluded. See
 ```mermaid
 flowchart LR
   administrator[Administrator] -->|OIDC JWT| adminApi[Admin HTTP API]
+  bootstrap[Namespace bootstrap Secret] -->|one-use token + CSR| bootstrapApi[Bootstrap route]
   operator[Consumer operator] -->|mTLS leaf| consumerApi[Consumer HTTP API]
   adminApi --> adminLambda[Admin Lambda]
+  bootstrapApi --> bootstrapLambda[Bootstrap Lambda]
   consumerApi --> consumerLambda[Consumer Lambda]
   adminLambda --> table[(DynamoDB control table)]
   consumerLambda --> table
@@ -35,6 +37,9 @@ flowchart LR
   consumerLambda --> revisions
   adminLambda --> audit[(S3 Object Lock audit archive)]
   consumerLambda --> audit
+  bootstrapLambda --> iot[AWS IoT Core]
+  table -->|DynamoDB Stream| notificationLambda[Notification Lambda]
+  notificationLambda -->|QoS 1 payload-free hint| iot
   recovery[Recovery Lambda] --> table
   adminLambda --> truststore[(S3 versioned truststore)]
   recovery --> truststore
@@ -60,6 +65,7 @@ identity row.
 | ---------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- |
 | Administrator    | External OIDC JWT, immutable configured actor claim (`sub` by default) | Secret mutation                                             |
 | Consumer operator | Client certificate DER SHA-256 fingerprint in DynamoDB                | Its allowed active secret reads and current access snapshot |
+| Namespace agent | One-use bootstrap capability, then the same mTLS leaf plus AgentGrant | Only its configured read/write path prefixes and MQTT topic |
 | Worker           | EventBridge/Lambda execution role                                      | Recovery or retention only                                  |
 
 API Gateway verifies the administrator JWT, and the handler verifies its issuer
@@ -76,6 +82,32 @@ environment into every authorization query. A caller never supplies a consumer
 ID or environment: secret reads and change snapshots exclude rows outside that
 identity's environment.
 
+### AgentGrant and bootstrap boundary
+
+An AgentGrant is created by the administrator API before the namespace gets a
+credential. It names exactly one as-yet unused consumer ID, environment,
+capabilities, and canonical read/write path prefixes. Its mapping is stored
+beside the consumer identity, so any identity that has ever been an agent is
+forced through AgentGrant checks even if it calls an ordinary consumer route.
+This prevents a compromised controller from bypassing prefix enforcement by
+guessing a known secret ID.
+
+The bootstrap capability is a random 256-bit `hmlb_` value, stored only as a
+SHA-256 digest with a thirty-minute expiry. It accepts one CSR and no caller
+chosen identity/policy fields. The durable consumer-enrollment idempotency key
+is derived from that digest, allowing the exact same CSR to recover its issued
+leaf after a lost response while rejecting a different CSR. Before the grant is
+marked active, the bootstrap Lambda registers the public leaf with AWS IoT,
+attaches it to the consumer-named Thing and the CDK-created receive-only policy.
+The cluster retains the private key; neither Hemlig nor IoT creates one.
+
+Agent reads need both current ACL read access and an in-scope metadata path.
+Agent writes must be in the write path scope and cannot change ACLs. An
+unpathed secret is never agent-visible. A secret moved outside an existing
+read prefix appears in the agent's access snapshot as `secret.revoked`, so an
+already materialized Kubernetes Secret is removed without disclosing the new
+path or payload.
+
 ### Enrollment trust boundary
 
 Each Hemlig deployment has exactly one online, self-signed issuing root. The
@@ -84,8 +116,9 @@ an AES-256-GCM envelope under the existing **single Hemlig application CMK**.
 The envelope's KMS encryption context is
 `{service: hemlig, purpose: issuer-ca}`. This is a logical separation from
 payload envelopes, which bind their own secret/version context—not a second
-KMS key. The admin Lambda alone has `kms:Decrypt` subject to that issuer
-context; consumer Lambdas never receive that permission.
+KMS key. The admin Lambda has `kms:Decrypt` subject to that issuer context and,
+separately, the payload context for authenticated administrator reads; consumer
+Lambdas never receive issuer-envelope access.
 
 `POST /v1/admin/consumers` accepts a signed RSA CSR, not a CA certificate or a
 private key. Hemlig verifies the CSR signature and requires a 2048-bit-or-
@@ -168,12 +201,19 @@ object; it never decrypts or re-encrypts the payload.
 4. Conditionally write each unique S3 object with `If-None-Match: *` and a
    SHA-256 checksum.
 5. Extend retention on exact old object versions before replacing the head.
-6. Transactionally mark workflows ready, switch the head, and replace access
-   projection/tombstone rows.
+6. Transactionally mark workflows ready and switch the head. When the ACL
+   changed, replace its access projection/tombstone rows. Add one or two
+   payload-free, grouped notification-outbox records that capture the affected
+   consumer IDs.
 7. Write terminal audit evidence before returning success.
 
-An ACL has at most ten consumers, which keeps access-row replacement comfortably
-within DynamoDB's 100-action / 4 MiB transaction limit.
+An unchanged ACL is not rewritten when a payload changes: consumer delivery
+checks the current secret head and the current grant transactionally, and the
+background publisher fans the grouped outbox event out to recipients. An ACL
+has at most 40 consumers. A complete ACL replacement can affect 80 grants
+(40 additions plus 40 revocations); with the fixed mutation actions and at
+most two grouped outbox records, that remains below DynamoDB's 100-action /
+4 MiB transaction limit.
 
 ## Organization and catalog browsing
 
@@ -213,11 +253,13 @@ closed.
 
 The same CMK also wraps the issuer's private-key envelope. A CMK is a key
 management boundary, not an application-purpose boundary, so Hemlig uses both
-encryption-context binding and a context-conditioned IAM `Decrypt` grant for
-the issuer. The payload flow and issuer flow never accept each other's context.
+encryption-context binding and context-conditioned IAM `Decrypt` **and
+`GenerateDataKey`** grants for the issuer. The payload flow and issuer flow
+never accept each other's context.
 This deliberately keeps the application to one customer-managed KMS key while
-preventing the admin handler from using its issuer `Decrypt` allowance to
-unwrap an existing payload data key.
+keeping issuer and payload decrypt permissions independently conditioned. The
+administrator route may use the payload allowance only after JWT authorization
+and records its plaintext read in the immutable audit archive.
 
 The revision and audit buckets are versioned and Object-Lock enabled at
 creation. Their CDK defaults are 90-day and seven-year Compliance retention,
@@ -242,6 +284,10 @@ GSIs for scheduled work.
 | `ENROLLMENT#<operation> / STATE`      | Recoverable enrollment state and truststore publication due time       |
 | `SYSTEM#TRUSTSTORE / STATE`           | Singleton publication lease and current/pending version-pinned bundle  |
 | `IDEMPOTENCY#<actor> / REQUEST#<key>` | Mutation state and terminal-audit marker                               |
+| `AGENT_GRANT#<id> / PROFILE`          | Administrator-owned path/capability boundary and activation state       |
+| `CONSUMER#<id> / AGENT_GRANT`         | Prevents an agent identity from falling back to unscoped delivery       |
+| `BOOTSTRAP#<sha256> / STATE`          | Hash-only, expiring, one-use CSR redemption capability                  |
+| `NOTIFICATION#<id> / EVENT`           | Pending/delivered MQTT hint; TTL begins only after terminal delivery    |
 | `WORKFLOW#DUE` GSI                    | Expired prepared workflow discovery                                    |
 | `RETENTION#DUE` GSI                   | Eligible non-head revision discovery                                   |
 | `CATALOG#<environment>` GSI           | Current `HEAD` records in path/secret order                            |
@@ -251,6 +297,25 @@ GSIs for scheduled work.
 
 `GET /v1/changes` is a paginated _current access snapshot_, not an event log.
 The cursor is HMAC-signed, bound to one consumer, and expires after 15 minutes.
+
+## Immediate notification path
+
+The CDK stack enables `NEW_IMAGE` streams on the control table and filters the
+publisher Lambda to `NOTIFICATION#` records in `PENDING` state. One grouped
+record captures the recipient consumer IDs for a secret change; the background
+publisher fans it out as a QoS 1 message to each
+`hemlig/<deployment>/consumers/<consumerId>` topic. The MQTT message contains
+only secret ID, event kind, and revision IDs—never a payload, organizational
+metadata, ACL, token, certificate, or presigned URL. A failed record is retried
+by the stream mapping and then sent to an encrypted 14-day SQS DLQ with a
+CloudWatch alarm.
+
+The IoT policy allows an attached Thing to connect only as its exact consumer
+ID and only subscribe/receive its exact topic. It permits no IoT publish,
+wildcards, shadow, Jobs, or AWS credentials. MQTT is intentionally only a
+prompt: controllers refetch mTLS state after every hint, reconstruct snapshots
+on connect/reconnect, and resync every ten minutes. Duplicate, delayed, or
+lost broker messages cannot change authorization or inject data.
 
 ## Audit evidence
 
@@ -305,9 +370,9 @@ created directly in that zone.
 
 Stateful resources use `RemovalPolicy.RETAIN`; the stack never uses an S3
 auto-delete custom resource. Roles are separated: admin can generate payload
-data keys and decrypt only issuer envelopes with the required context; consumer
-can decrypt referenced payloads; application roles only receive `PutObject`
-access to the audit prefix.
+data keys and decrypt issuer envelopes and current payloads only with their
+respective required contexts; consumer can decrypt referenced payloads;
+application roles only receive `PutObject` access to the audit prefix.
 
 ## Implementation status
 

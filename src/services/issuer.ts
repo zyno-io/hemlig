@@ -55,7 +55,7 @@ export class IssuerService {
     csrPem: string,
   ): Promise<IssuedApiIdentity> {
     const csr = parseAndVerifyCsr(csrPem);
-    const issuer = await this.getOrCreateIssuer();
+    const { issuer } = await this.getOrCreateIssuer();
     const privateKeyPem = await this.decryptPrivateKey(issuer.encryptedPrivateKey);
     try {
       const root = forge.pki.certificateFromPem(issuer.rootCertificatePem);
@@ -84,8 +84,20 @@ export class IssuerService {
   }
 
   public async issuerFingerprint(): Promise<string> {
-    const issuer = await this.getOrCreateIssuer();
+    const { issuer } = await this.getOrCreateIssuer();
     return issuer.fingerprint;
+  }
+
+  /**
+   * Lets an operator provision the issuing root deliberately, ahead of the
+   * first enrollment, so the truststore anchor exists and can be distributed
+   * in advance. This is a thin wrapper over the same getOrCreateIssuer() the
+   * lazy enrollment path uses, so the two can never diverge; `created` is
+   * false whenever this call observed an issuer that already existed,
+   * including one a concurrent caller just created.
+   */
+  public async ensureIssuer(): Promise<{ readonly issuer: IssuerRecord; readonly created: boolean }> {
+    return this.getOrCreateIssuer();
   }
 
   public certificateRequestFingerprint(csrPem: string): string {
@@ -96,14 +108,14 @@ export class IssuerService {
     return createHash("sha256").update(Buffer.from(der, "latin1")).digest("hex");
   }
 
-  private async getOrCreateIssuer(): Promise<IssuerRecord> {
+  private async getOrCreateIssuer(): Promise<{ readonly issuer: IssuerRecord; readonly created: boolean }> {
     const existing = await this.repository.getIssuer();
     if (existing !== undefined) {
       await this.repository.ensureIssuerTruststoreRoot(
         existing,
         this.config.environmentName,
       );
-      return existing;
+      return { issuer: existing, created: false };
     }
     const now = isoNow();
     const keys = forge.pki.rsa.generateKeyPair({ bits: 3072, e: 0x10001 });
@@ -156,7 +168,11 @@ export class IssuerService {
       notAfter: certificate.validToDate.toISOString(),
       createdAt: now,
     };
-    return this.repository.createIssuer(issuer, this.config.environmentName);
+    const created = await this.repository.createIssuer(issuer, this.config.environmentName);
+    // createIssuer returns the already-created issuer instead of throwing when
+    // a concurrent caller won the create race, so a fingerprint mismatch here
+    // means this call lost that race rather than created anything.
+    return { issuer: created, created: created.fingerprint === issuer.fingerprint };
   }
 
   private async encryptPrivateKey(privateKeyPem: Buffer): Promise<IssuerKeyEnvelope> {

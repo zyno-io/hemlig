@@ -6,7 +6,6 @@ export interface SecretEntry {
 export type SecretPayload = Readonly<Record<string, SecretEntry>>;
 
 export interface SecretMetadata {
-  readonly name: string;
   readonly description?: string;
   readonly path?: string;
   readonly tags?: Readonly<Record<string, string>>;
@@ -29,6 +28,13 @@ export interface ControlRevision {
 }
 
 export interface ConsumerSecretResponse {
+  readonly secretId: string;
+  readonly controlVersionId: string;
+  readonly payloadVersionId: string;
+  readonly payload: SecretPayload;
+}
+
+export interface AdminSecretPayloadResponse {
   readonly secretId: string;
   readonly controlVersionId: string;
   readonly payloadVersionId: string;
@@ -129,6 +135,72 @@ export interface ConsumerProvisioningResult {
   readonly status: "ACTIVE";
 }
 
+export interface AgentGrant {
+  readonly grantId: string;
+  readonly consumerId: string;
+  readonly environment: string;
+  readonly capabilities: readonly ("read" | "write")[];
+  readonly readPathPrefixes: readonly string[];
+  readonly writePathPrefixes: readonly string[];
+  readonly displayName?: string;
+  readonly status: "PENDING" | "ACTIVE";
+  readonly createdAt: string;
+}
+
+export interface BootstrapCapability {
+  readonly grantId: string;
+  /** Revealed once. Store only in the intended bootstrap Secret. */
+  readonly token: string;
+  readonly expiresAt: string;
+}
+
+export interface AgentMqttConfig {
+  readonly endpoint: string;
+  readonly clientId: string;
+  readonly topic: string;
+}
+
+export interface AgentConfig {
+  readonly consumerId: string;
+  readonly environment: string;
+  readonly grant: Pick<
+    AgentGrant,
+    "grantId" | "capabilities" | "readPathPrefixes" | "writePathPrefixes"
+  >;
+  readonly mqtt: AgentMqttConfig;
+}
+
+export interface AgentBootstrapResult extends ConsumerProvisioningResult {
+  readonly grant: Pick<
+    AgentGrant,
+    "grantId" | "consumerId" | "environment" | "capabilities" | "readPathPrefixes" | "writePathPrefixes"
+  >;
+}
+
+export interface ConsumerChange {
+  readonly secretId: string;
+  readonly controlVersionId: string;
+  readonly payloadVersionId?: string;
+  readonly state: "PENDING_VALUE" | "ACTIVE" | "REVOKED";
+  readonly changeKind: "secret.changed" | "secret.revoked";
+}
+
+export interface ConsumerChangePage {
+  readonly changes: readonly ConsumerChange[];
+  readonly nextCursor?: string;
+  readonly generatedAt: string;
+}
+
+export interface AgentControl {
+  readonly secretId: string;
+  readonly environment: string;
+  readonly controlVersionId: string;
+  readonly payloadVersionId?: string;
+  readonly payloadKeyCount?: number;
+  readonly state: "PENDING_VALUE" | "ACTIVE" | "REVOKED";
+  readonly metadata: SecretMetadata;
+}
+
 export interface ApiIdentityResult {
   readonly consumerId: string;
   readonly environment: string;
@@ -190,11 +262,109 @@ export class HemligClient {
     );
   }
 
+  /** Redeems the one-time bootstrap capability on the administrator origin. */
+  public async redeemBootstrap(
+    bootstrapToken: string,
+    apiCertificateSigningRequestPem: string,
+  ): Promise<AgentBootstrapResult> {
+    const response = await this.transport.request({
+      method: "POST",
+      url: new URL("/v1/bootstrap/redeem", this.baseUrl),
+      headers: { authorization: `Bootstrap ${bootstrapToken}` },
+      body: { apiCertificateSigningRequestPem },
+    });
+    return this.responseBody<AgentBootstrapResult>(response);
+  }
+
+  public async getAgentConfig(): Promise<AgentConfig> {
+    return this.request("GET", "/v1/agent/config");
+  }
+
+  public async getAgentSecret(
+    secretId: string,
+    ifNoneMatch?: string,
+  ): Promise<ConsumerSecretResponse | undefined> {
+    return this.request<ConsumerSecretResponse>(
+      "GET",
+      `/v1/agent/secrets/${encodeURIComponent(secretId)}`,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      ifNoneMatch,
+      true,
+    );
+  }
+
+  public async getAgentControl(secretId: string): Promise<AgentControl> {
+    return this.request(
+      "GET",
+      `/v1/agent/secrets/${encodeURIComponent(secretId)}/control`,
+    );
+  }
+
+  public async listAgentChanges(cursor?: string): Promise<ConsumerChangePage> {
+    return this.request("GET", withQuery("/v1/changes", { cursor }));
+  }
+
+  public async createAgentSecret(
+    input: {
+      readonly secretId: string;
+      readonly metadata: SecretMetadata;
+    },
+    idempotencyKey: string,
+  ): Promise<ControlRevision> {
+    return this.request("POST", "/v1/agent/secrets", undefined, input, idempotencyKey);
+  }
+
+  public async updateAgentSecret(
+    secretId: string,
+    controlVersionId: string,
+    metadata: SecretMetadata,
+    idempotencyKey: string,
+  ): Promise<ControlRevision> {
+    return this.request(
+      "PUT",
+      `/v1/agent/secrets/${encodeURIComponent(secretId)}`,
+      undefined,
+      { metadata },
+      idempotencyKey,
+      controlVersionId,
+    );
+  }
+
+  public async putAgentPayload(
+    secretId: string,
+    controlVersionId: string,
+    payload: SecretPayload,
+    idempotencyKey: string,
+  ): Promise<ControlRevision> {
+    return this.request(
+      "PUT",
+      `/v1/agent/secrets/${encodeURIComponent(secretId)}/payload`,
+      undefined,
+      { payload },
+      idempotencyKey,
+      controlVersionId,
+    );
+  }
+
   public async getAdminSecret(
     token: string,
     secretId: string,
   ): Promise<ControlRevision> {
     return this.request("GET", `/v1/admin/secrets/${encodeURIComponent(secretId)}`, token);
+  }
+
+  public async getAdminSecretPayload(
+    token: string,
+    secretId: string,
+  ): Promise<AdminSecretPayloadResponse> {
+    return this.request(
+      "GET",
+      `/v1/admin/secrets/${encodeURIComponent(secretId)}/payload`,
+      token,
+    );
   }
 
   public async listSecrets(
@@ -262,6 +432,31 @@ export class HemligClient {
     idempotencyKey: string,
   ): Promise<ControlRevision> {
     return this.request("POST", "/v1/admin/secrets", token, input, idempotencyKey);
+  }
+
+  public async createAgentGrant(
+    token: string,
+    input: {
+      readonly consumerId: string;
+      readonly environment: string;
+      readonly capabilities: readonly ("read" | "write")[];
+      readonly readPathPrefixes?: readonly string[];
+      readonly writePathPrefixes?: readonly string[];
+      readonly displayName?: string;
+    },
+  ): Promise<AgentGrant> {
+    return this.request("POST", "/v1/admin/agent-grants", token, input);
+  }
+
+  public async issueBootstrapCapability(
+    token: string,
+    grantId: string,
+  ): Promise<BootstrapCapability> {
+    return this.request(
+      "POST",
+      `/v1/admin/agent-grants/${encodeURIComponent(grantId)}/bootstrap-capabilities`,
+      token,
+    );
   }
 
   public async updateAdminSecret(
@@ -392,6 +587,10 @@ export class HemligClient {
     if (response.status === 304 && acceptNotModified) {
       return undefined;
     }
+    return this.responseBody<T>(response);
+  }
+
+  private responseBody<T>(response: TransportResponse): T {
     if (response.status < 200 || response.status >= 300) {
       const error = response.body as { error?: { code?: string; message?: string } } | undefined;
       throw new HemligError(

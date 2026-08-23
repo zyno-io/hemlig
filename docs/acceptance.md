@@ -55,8 +55,7 @@ yarn cdk:deploy \
   -c oidcAudience=api://hemlig \
   -c oidcAdminScope=hemlig.admin \
   -c oidcClientId=<client-id> \
-  -c consoleCertificateArn=arn:aws:acm:us-east-1:<account>:certificate/<id> \
-  -c secretEnvironments=dev,staging,prod
+  -c consoleCertificateArn=arn:aws:acm:us-east-1:<account>:certificate/<id>
 ```
 
 **Pass:** the stack completes and outputs `ConsoleUrl`, `AdminUrl`,
@@ -120,8 +119,11 @@ python3 -c "import base64,json,sys;p=sys.argv[1].split('.')[1];print(json.dumps(
 `oidcIssuer` exactly, and `scp` or `scope` contains `oidcAdminScope`.
 
 **Fail — `aud` is the client ID, or the token is an ID token:** you requested
-the wrong thing. Ask for a resource-scoped access token: `api://hemlig/.default`
-on Entra, an `audience` parameter on Auth0, a custom API scope on Okta.
+the wrong thing. Ask for a resource-scoped access token: on Entra request the
+API registration's delegated scope, for example
+`api://<application-id>/hemlig.admin`; use an `audience` parameter on Auth0 or
+a custom API scope on Okta. Entra returns the short `hemlig.admin` value in
+`scp`, which is the value Hemlig enforces.
 
 **Fail — `iss` differs by a trailing slash or a `/v2.0` suffix:** the handler
 compares issuers exactly. Match the string the provider actually emits.

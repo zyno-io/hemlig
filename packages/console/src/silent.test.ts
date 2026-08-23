@@ -38,7 +38,6 @@ describe("silent renew entry", () => {
       jsonResponse({
         deploymentName: "hml-local",
         adminApiUrl: "http://127.0.0.1:5274",
-        environments: ["dev"],
         auth: { mode: "dev-bridge", subject: "local" },
       }),
     );
@@ -54,7 +53,6 @@ describe("silent renew entry", () => {
       jsonResponse({
         deploymentName: "hml-test",
         adminApiUrl: "https://admin.example.com",
-        environments: ["dev"],
         auth: {
           mode: "oidc",
           authority: "https://idp.example.com",
@@ -95,7 +93,6 @@ describe("silent renew entry", () => {
       jsonResponse({
         deploymentName: "hml-test",
         adminApiUrl: "https://admin.example.com",
-        environments: ["dev"],
         auth: {
           mode: "oidc",
           authority: "https://idp.example.com",

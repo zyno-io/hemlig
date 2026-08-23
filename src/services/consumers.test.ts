@@ -8,10 +8,36 @@ import type { ConsumerRecord, IdentityRecord } from "../domain/types";
 import type { DynamoRepository } from "../repositories/dynamo";
 import type { ObjectStore } from "../repositories/object-store";
 import type { IssuerService } from "./issuer";
+import type { EnvironmentService } from "./environments";
 import { ConsumerService } from "./consumers";
 import { sha256Hex, stableJson } from "../util/encoding";
 
 describe("consumer certificate lifecycle idempotency", () => {
+  it("rejects enrollment into an environment that an administrator has not defined", async () => {
+    const environments = {
+      require: jest.fn().mockRejectedValue({ code: "not_found" }),
+    };
+    const service = new ConsumerService(
+      {} as DynamoRepository,
+      {} as ObjectStore,
+      {} as ApiGatewayV2Client,
+      {} as IssuerService,
+      {} as AppConfig,
+      environments as unknown as EnvironmentService,
+    );
+
+    await expect(
+      service.enroll({
+        consumerId: "staging-east",
+        environment: "staging",
+        apiCertificateSigningRequestPem: "CSR",
+        actor: { type: "human", id: "admin" },
+        idempotencyKey: "defined-environments-only",
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(environments.require).toHaveBeenCalledWith("staging");
+  });
+
   it("reconciles an existing truststore onto the configured delivery API domain", async () => {
     const repository = {
       getTruststoreState: jest.fn(async () => ({
@@ -49,6 +75,7 @@ describe("consumer certificate lifecycle idempotency", () => {
         deliveryApiCustomDomainName: "api.example.test",
         truststoreBucketName: "truststores",
       } as AppConfig,
+      {} as EnvironmentService,
     );
 
     await service.reconcileTruststore();
@@ -137,6 +164,7 @@ describe("consumer certificate lifecycle idempotency", () => {
       {} as ApiGatewayV2Client,
       issuer,
       {} as AppConfig,
+      {} as EnvironmentService,
     );
 
     const result = await service.rotateApiIdentity({

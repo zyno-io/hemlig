@@ -9,21 +9,19 @@ describe('secret validation', () => {
         expect(payload.CERT).toEqual({ encoding: 'base64', value: 'Y2VydA==' });
     });
 
-    it('rejects an ACL with more than ten consumers', () => {
-        const acl = Array.from({ length: 11 }, (_, index) => ({
+    it('rejects an ACL with more than twenty consumers', () => {
+        const acl = Array.from({ length: 21 }, (_, index) => ({
             consumerId: `consumer-${index}`,
             permissions: ['read'],
         }));
-        expect(() => parseGrants(acl)).toThrow('zero and ten');
+        expect(() => parseGrants(acl)).toThrow('zero and 20');
     });
 
     it('accepts bounded organizational paths and tags', () => {
         expect(parseMetadata({
-            name: 'payment-api',
             path: 'payments/stripe/production',
             tags: { owner: 'payments', system: 'billing' },
         })).toEqual({
-            name: 'payment-api',
             path: 'payments/stripe/production',
             tags: { owner: 'payments', system: 'billing' },
         });
@@ -34,7 +32,7 @@ describe('secret validation', () => {
     });
 
     it('rejects ambiguous organizational tags', () => {
-        expect(() => parseMetadata({ name: 'payment-api', tags: { Owner: 'payments' } })).toThrow('metadata.tags');
+        expect(() => parseMetadata({ tags: { Owner: 'payments' } })).toThrow('metadata.tags');
         expect(() => parseCatalogTagFilters('owner:payments,owner:platform')).toThrow('unique');
     });
 });

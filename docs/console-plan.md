@@ -103,7 +103,7 @@ know.
 | Catalog pages are post-filtered after a `Limit: 100` read (`src/repositories/dynamo.ts:418-436`) | A page may be empty and still have a cursor; never render "no results" before the cursor is absent |
 | Cursors are HMAC-bound to actor and filters, and expire in 15 minutes | Any filter change resets pagination |
 | Every request writes audit objects into a seven-year Compliance archive (`src/handlers/admin.ts:24-38`) | No polling, no background refetch, no N+1 |
-| The admin API never returns payload plaintext | The payload editor is write-only by construction |
+| Administrator payload reads are explicit, audited requests | Keep plaintext component-local; never cache or auto-load it |
 | The gateway rejects bad tokens with a bare `401` before Lambda | `401` and `403` mean different things and get different handling |
 | No delete route exists | Retirement is ACL removal plus a tombstone, and the UI must say so |
 
@@ -116,7 +116,6 @@ Neither side builds these, because the API excludes them by design.
 | Audit log viewer | No audit-query endpoint; the archive lives in a separate audit boundary with its own read role. |
 | Secret deletion | No delete route. Retirement is ACL removal plus the `REVOKED` tombstone. |
 | Issuer-root rotation | Excluded from v0.2; needs a reviewed overlap protocol. |
-| Payload viewing | The API never returns a decrypted payload. |
 | Consumer-side operations | The consumer API is mTLS-only and has no write surface. |
 
 Each gets an explicit empty state that explains the absence, not a disabled
@@ -128,7 +127,7 @@ button that implies a missing permission.
 | --- | --- | --- |
 | Frontend stack | Vue 3 + Vite | First-party Vite support, small dependency surface, strong TypeScript story. |
 | Entry topology | Separate origins with CORS | Keeps the real client IP in audit events and no proxy in the bearer-token path. |
-| CSR handling | Paste or upload only | Consumer private keys never exist in the admin console. |
+| CSR handling | Paste or upload, plus an opt-in in-browser generator | Reversed after the original paste-only decision. See [the record](#in-browser-csr-generation). |
 | Console origin | Explicit `consoleFqdn` within the deployment zone | Enables one exact CORS origin; it does not provision static hosting. |
 | Payload key visibility | Count only | Provides destructive-replacement warning without disclosing key names. |
 
@@ -154,7 +153,7 @@ The following v0.3 backend work resolves the console-facing API gaps.
 | 1 | Exact-origin CORS plus explicit unauthenticated `OPTIONS /{proxy+}` when `consoleFqdn` is configured | Every browser request |
 | 2 | Consumer directory, detail, and identity-list routes backed by sparse GSIs | Consumer screens, ACL picker |
 | 3 | `payloadKeyCount` on control revisions and catalog entries | Non-destructive payload editing |
-| 4 | Environment remains deployment configuration, not an API | Environment switcher |
+| 4 | Environments are administrator-defined via `GET`/`POST /v1/admin/environments`, not deployment configuration — see [the record](#environment-enumeration) | Environment switcher |
 | 5 | Public issuer and truststore status route | Trust status page |
 | 6 | Bounded newest-first revision history route | "What changed, when, by whom" |
 | 7 | Terminal enrollment failure is `409 enrollment_failed` | Enrollment retry logic |
@@ -560,16 +559,14 @@ Found while planning, unrelated to the console but in the same code paths:
   `src/services/secrets.ts:76` emits `ctl-${randomUUID()}`. Correct the
   examples, and let nothing assume revision IDs sort by time.
 
-## B9. Environment enumeration — explicitly not an API
+## B9. Environment enumeration
 
-Secret `environment` is a free-form per-secret field, not the deployment's
-`HEMLIG_ENVIRONMENT`, and the set is a deployment fact the installer already
-knows. It ships in the console's runtime configuration as `environments`,
-sourced from `DeploymentConfig.secretEnvironments`. No route.
-
-This is recorded here rather than in Part II because it is a boundary decision:
-the frontend is not permitted to discover environments by probing, and the
-backend is not obliged to enumerate them.
+Secret `environment` is an administrator-defined per-secret field, not the
+deployment's `HEMLIG_ENVIRONMENT`. The backend exposes
+`GET /v1/admin/environments` and `POST /v1/admin/environments`; secret
+creation, consumer enrollment, and environment-scoped browsing reject an
+unknown environment. The console should source its environment switcher from
+that API rather than from deployment runtime configuration.
 
 ## B10. Publish the contract
 
@@ -645,9 +642,8 @@ mounting:
   "oidc": {
     "authority": "https://login.example.com/tenant/v2.0",
     "clientId": "00000000-0000-0000-0000-000000000000",
-    "scopes": ["openid", "profile", "hemlig.admin"]
-  },
-  "environments": ["dev", "staging", "prod"]
+    "scopes": ["openid", "profile", "api://hemlig-api/hemlig.admin"]
+  }
 }
 ```
 
@@ -662,10 +658,14 @@ Authorization Code with PKCE. Public client, no secret.
 The gateway validates the **access token**, and `humanActorFromEvent`
 independently re-checks `iss` and `aud`, accepting `client_id` only when `aud`
 is absent. So the console must request a scope that makes the provider mint an
-access token whose audience equals the configured `oidcAudience` —
-`api://hemlig/.default` on Entra, an `audience` parameter on Auth0, a custom
-API scope on Okta, a client scope on Keycloak. Once [B3](#b3-require-an-administrator-scope)
-lands, that scope must also be the required `hemlig.admin`.
+access token whose audience equals the configured `oidcAudience`. The requested
+scope and the short claim value can differ: on Entra, request
+`api://<application-id>/hemlig.admin` and require `hemlig.admin` in `scp`.
+For an Entra v2 token, configure Hemlig's `oidcAudience` with the API
+application's bare client ID, because that is the token's `aud` value.
+Other providers use their resource-qualified custom API scope, an `audience`
+parameter, or a client scope. Once [B3](#b3-require-an-administrator-scope)
+lands, the resulting claim must contain the required `hemlig.admin`.
 
 This is the most likely first-run failure and needs a per-provider section in
 the docs.
@@ -696,7 +696,7 @@ access.
 | `/e/:env/secrets/new` | Create wizard | `POST /v1/admin/secrets`, then payload `PUT` |
 | `/e/:env/secrets/:secretId` | Secret detail | `GET /v1/admin/secrets/{id}` |
 | `/e/:env/secrets/:secretId/metadata` | Metadata and ACL editor | `PUT /v1/admin/secrets/{id}` |
-| `/e/:env/secrets/:secretId/payload` | Payload editor | `PUT /v1/admin/secrets/{id}/payload` |
+| `/e/:env/secrets/:secretId/payload` | Payload editor | `GET`, then `PUT /v1/admin/secrets/{id}/payload` |
 | `/e/:env/secrets/:secretId/revisions` | History | `GET .../revisions` |
 | `/e/:env/consumers` | Consumer list | `GET /v1/admin/consumers` |
 | `/e/:env/consumers/new` | Enroll | `POST /v1/admin/consumers` |
@@ -717,15 +717,15 @@ material in any form.
 error surface with a copyable `correlationId`, and an explicit refresh control.
 Nothing live-updates.
 
-**Secrets catalog.** Table over the catalog route: secret ID, name, path, tags,
+**Secrets catalog.** Table over the catalog route: secret ID, path, tags,
 state, payload key count, last updated. Path-prefix navigation and exact tag
 filters map to the query parameters. Sorted by path then secret ID, matching
 the index order. Rendered entirely from the page response — never per-row
 detail fetches.
 
 **Secret detail.** The control revision in full, plus payload key information
-when present, plus a persistent notice that payload values are never readable
-through the API by design. Actions: edit metadata, edit ACL, replace payload.
+when present. Actions: edit metadata, edit ACL, and edit or explicitly load the
+current payload. Plaintext never enters shared console state or query caches.
 
 **Create secret.** Two API calls presented as one guided flow, because a secret
 created without a payload is `PENDING_VALUE` and undeliverable. If step two
@@ -751,7 +751,7 @@ A `.env` paste import is worth building. A payload export is not, and will not
 be added.
 
 **ACL editor.** Consumer picker sourced from the consumer list filtered to the
-secret's environment, capped at ten grants, `read` the only permission.
+secret's environment, capped at forty grants, `read` the only permission.
 Removing a consumer warns that the consumer receives a `REVOKED` tombstone
 through `GET /v1/changes` and that the operator must delete the corresponding
 Kubernetes Secret — removal here deletes nothing on the consumer.
@@ -902,7 +902,7 @@ from the core entry point:
 - Add the missing methods: `listSecrets`, `listSecretRevisions`,
   `listConsumers`, `getConsumer`, `listApiIdentities`, `enrollConsumer`,
   `rotateApiIdentity`, `revokeApiIdentity`, `getIssuer`.
-- Keep `lib` free of `DOM`; Node 22 and modern browsers both provide `fetch`.
+- Keep `lib` free of `DOM`; Node 24 and modern browsers both provide `fetch`.
 - Version 0.2.0. Pre-1.0, so the subpath split is acceptable churn.
 
 The console adds no API surface of its own. If it needs a method, the method
@@ -1072,7 +1072,7 @@ Two places the implementation deliberately diverged, both improvements:
 ### Local development
 
 MiniStack has no API Gateway and no identity provider, so the console cannot
-obtain a token or reach a deployed route locally. `yarn console:api` provisions
+obtain a token or reach a deployed route locally. `yarn dev:api` provisions
 a stable MiniStack environment and invokes `src/handlers/admin.ts` in process
 behind a loopback HTTP bridge, fabricating the JWT claims API Gateway would
 have validated. It refuses to run against a non-local `AWS_ENDPOINT_URL`,
@@ -1113,6 +1113,61 @@ secret or certificate material.
 
 ## Decision record
 
+### In-browser CSR generation
+
+**Originally settled as paste-only; later reversed to add an opt-in generator.**
+
+The first decision was that the console would accept a pasted or uploaded CSR
+and nothing else, so that a consumer's private key never existed in an
+administrator's browser. That remains the stronger option and stays the default
+path in the UI.
+
+The reversal was a deliberate usability call: bootstrapping a consumer required
+an operator to have OpenSSL to hand and to get the key parameters right, and the
+friction was pushing people toward worse workarounds. The generator is
+therefore additive and clearly marked, not a replacement.
+
+What keeps the weaker path honest:
+
+- The key is generated with WebCrypto, held only in component state, and offered
+  once for download. It is never transmitted, never written to any browser
+  storage, and cleared on unmount.
+- Closing the modal requires an explicit acknowledgement that the key was saved,
+  so nobody walks away having copied only the CSR.
+- The UI says plainly that generating on the consumer host is stronger.
+
+### Why the CSR is assembled by hand rather than with a library
+
+WebCrypto can generate an RSA key but cannot build a PKCS#10 CSR — the platform
+has no ASN.1 — so something has to write the DER. The console writes it
+directly instead of taking `@peculiar/x509` (8+ transitive packages), `pkijs`
+(6), or in-browser `node-forge` (zero-dep but pure-JS, so keygen takes seconds).
+
+The decisive argument is that **a DER writer whose output is verified fails
+closed.** A bug in an ASN.1 *parser* is dangerous, because malformed input can
+be coerced into something that wrongly validates. A bug in a *writer* can only
+produce bytes that fail to parse — and this output is checked twice, by a unit
+test using the same node-forge parser `src/services/issuer.ts` runs
+server-side, and by the service itself on submit. No DER bug can yield a weaker
+but accepted CSR.
+
+All the actual cryptography is WebCrypto in either design; the DER is only
+framing around a key WebCrypto produced. A library would be replacing
+envelope-writing code, not crypto code. And this is the one code path where an
+administrator's browser holds a consumer private key, so keeping third-party
+code out of it is worth more here than it would be in an ordinary application.
+
+The scope stays small because the CSR is deliberately minimal — version 0, one
+CN, the SPKI verbatim from WebCrypto, empty attributes. Hemlig sets the SPIFFE
+URI SAN and the clientAuth EKU itself and ignores caller-supplied subjects, so
+general-purpose ASN.1 is never needed.
+
+**When to revisit:** if the CSR ever has to carry real extensions — SANs, key
+usage, challenge attributes — hand-rolling stops being proportionate and
+`@peculiar/x509` is the right swap. Everything sits behind the single
+`generateCsr()` boundary, so that change touches one module and the tests carry
+over unchanged.
+
 ### Payload key names
 
 **Settled: do not store or return them.**
@@ -1127,7 +1182,7 @@ bucket-wide object read, and the delivery path loads the control document
 (`src/services/secrets.ts:201`). A compromised consumer role can read the control
 revision of secrets it holds no grant for.
 
-That is already true for `metadata.name`, `description`, `path`, `tags`, and the
+That is already true for `description`, `path`, `tags`, and the
 full ACL, so the control revision is already a broad metadata disclosure
 surface and `payloadKeys` extends an existing exposure rather than opening a new
 one. But key names are more likely than a description to name a system or a
@@ -1142,6 +1197,34 @@ credential, and the field is immutable and retained.
 Count-only carries most of the safety value — it stops the destructive edit — at
 a fraction of the disclosure. Names buy editing convenience, not safety, so
 the v0.3 contract stores and returns only `payloadKeyCount`.
+
+### Environment enumeration
+
+**Originally settled as a deployment constant shipped in `config.json`; later
+reversed to an administrator-defined runtime API.**
+
+[B9](#b9-environment-enumeration) originally argued the opposite of what it says
+today: the set of secret environments was a deployment fact the installer
+already knew, so it was threaded through `DeploymentConfig.secretEnvironments`,
+baked into the Lambda environment, and copied into the console's `config.json`
+at synth time. No route existed to list or create one, and the section was
+titled "explicitly not an API" for exactly that reason.
+
+That argument was wrong. An environment turned out to be operator data with a
+lifecycle and an author — created after the deployment already exists, by a
+specific administrator, through the running system — not a constant fixed at
+synth time alongside FQDNs and OIDC settings. Treating it as deployment
+configuration meant every new environment required a CDK change and a
+redeploy, and the copy baked into `config.json` could silently drift from
+whatever the handlers actually accepted.
+
+The reversal replaces all of that with `GET`/`POST /v1/admin/environments`,
+backed by DynamoDB records the handlers themselves validate against. A fresh
+deployment now starts with no environments at all; an administrator creates the
+first one at runtime. `cdk/config.ts`, `cdk/stack.ts`, and
+`cdk/console-runtime-config.ts` no longer carry `secretEnvironments` in any
+form, and the console sources its environment switcher from the API instead of
+`config.json`.
 
 ## Risks
 

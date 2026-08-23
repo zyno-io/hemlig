@@ -20,17 +20,19 @@ const { data, error, refetch } = useQuery({
 });
 
 const acl = ref<string[]>([]);
-const metadata = reactive<MetadataDraft>({ name: "", description: "", path: "", tags: [] });
+const metadata = reactive<MetadataDraft>({ description: "", path: "", tags: [] });
 const loadedVersion = ref<string | undefined>();
+/** The path as last loaded from the server, to detect a move-in-progress against. */
+const loadedPath = ref("");
 
 const adopt = (revision: ControlRevision | undefined): void => {
   if (revision === undefined) {
     return;
   }
   loadedVersion.value = revision.controlVersionId;
-  metadata.name = revision.metadata.name;
   metadata.description = revision.metadata.description ?? "";
   metadata.path = revision.metadata.path ?? "";
+  loadedPath.value = metadata.path;
   metadata.tags = Object.entries(revision.metadata.tags ?? {}).map(([key, value]) => ({
     id: crypto.randomUUID(),
     key,
@@ -46,6 +48,15 @@ const removed = computed(() =>
     .map((grant) => grant.consumerId)
     .filter((consumerId) => !acl.value.includes(consumerId)),
 );
+
+// PUT already moves the secret whenever metadata.path differs from what is
+// stored — the head write recomputes the catalog sort key — but nothing
+// about the form said so, so an edited folder read as a passive label rather
+// than the thing that determines where the secret lives. This surfaces the
+// consequence before submit, next to the button that will trigger it, rather
+// than as an interrupting dialog.
+const pathMoved = computed(() => metadata.path.trim() !== loadedPath.value);
+const pathLabel = (path: string): string => (path.length > 0 ? path : "the root");
 
 interface UpdateInput {
   readonly controlVersionId: string;
@@ -79,7 +90,6 @@ const submit = async (): Promise<void> => {
   const result = await update.submit({
     controlVersionId: loadedVersion.value,
     metadata: {
-      name: metadata.name.trim(),
       ...(metadata.description.trim() ? { description: metadata.description.trim() } : {}),
       ...(metadata.path.trim() ? { path: metadata.path.trim() } : {}),
       ...(metadata.tags.filter((t) => t.key).length > 0
@@ -124,10 +134,16 @@ const reload = async (): Promise<void> => {
     <form v-if="data" class="space-y-4 rounded border border-line bg-surface-raised p-4" @submit.prevent="submit">
       <MetadataFields v-model="metadata" />
       <AclEditor v-model="acl" :environment="env" :removed="removed" />
+      <p v-if="pathMoved" class="text-xs text-ink-muted">
+        Moving from
+        <span :class="loadedPath.length > 0 ? 'mono' : undefined">{{ pathLabel(loadedPath) }}</span>
+        to
+        <span :class="metadata.path.trim().length > 0 ? 'mono' : undefined">{{ pathLabel(metadata.path.trim()) }}</span>.
+      </p>
       <div class="flex items-center gap-3">
         <button
           class="rounded bg-accent px-4 py-1.5 text-white disabled:opacity-50"
-          :disabled="metadata.name.trim().length === 0 || update.phase.value.kind === 'submitting'"
+        :disabled="update.phase.value.kind === 'submitting'"
           type="submit"
         >
           {{ update.phase.value.kind === "submitting" ? "Saving…" : "Save" }}

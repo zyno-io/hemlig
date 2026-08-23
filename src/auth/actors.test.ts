@@ -20,6 +20,9 @@ const config: AppConfig = {
     auditPrefix: 'audit',
     deliveryApiCustomDomainName: 'api.example.test',
     deliveryApiHostname: 'api.example.test',
+    iotEndpoint: 'iot.example.test',
+    iotNotificationPolicyName: 'test-agent-notifications',
+    iotNotificationTopicPrefix: 'hemlig/test/consumers',
     cursorHmacKey: Buffer.alloc(32, 7),
     adminJwtIssuer: 'https://issuer.example.test',
     adminJwtAudience: 'hemlig-api',
@@ -27,11 +30,19 @@ const config: AppConfig = {
     maxPayloadBytes: 768000,
 };
 
-const jwtEvent = (claims: Record<string, string>): APIGatewayProxyEventV2WithJWTAuthorizer => ({
+const jwtEvent = (claims: Record<string, string | string[]>): APIGatewayProxyEventV2WithJWTAuthorizer => ({
     requestContext: { authorizer: { jwt: { claims, scopes: [] } } },
 } as unknown as APIGatewayProxyEventV2WithJWTAuthorizer);
 
 describe('humanActorFromEvent', () => {
+    beforeEach(() => {
+        jest.spyOn(console, 'warn').mockImplementation();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
     it('accepts client_id when aud is absent, matching HTTP API JWT authorizers', () => {
         const actor = humanActorFromEvent(jwtEvent({
             iss: 'https://issuer.example.test',
@@ -63,5 +74,40 @@ describe('humanActorFromEvent', () => {
             sub: 'external-subject',
             scp: 'other hemlig.admin',
         }), scoped)).toMatchObject({ id: 'external-subject' });
+    });
+
+    it('requires the configured administrator role when one is set', () => {
+        const roleScoped = { ...config, adminJwtRole: 'Hemlig.Administrator' };
+        expect(() => humanActorFromEvent(jwtEvent({
+            iss: 'https://issuer.example.test',
+            aud: 'hemlig-api',
+            sub: 'external-subject',
+        }), roleScoped)).toThrow('does not satisfy');
+        expect(humanActorFromEvent(jwtEvent({
+            iss: 'https://issuer.example.test',
+            aud: 'hemlig-api',
+            sub: 'external-subject',
+            roles: ['Reader', 'Hemlig.Administrator'],
+        }), roleScoped)).toMatchObject({ id: 'external-subject' });
+    });
+
+    it('accepts a JSON-encoded role array from an HTTP API JWT integration', () => {
+        const roleScoped = { ...config, adminJwtRole: 'Hemlig.Administrator' };
+        expect(humanActorFromEvent(jwtEvent({
+            iss: 'https://issuer.example.test',
+            aud: 'hemlig-api',
+            sub: 'external-subject',
+            roles: '["Hemlig.Administrator"]',
+        }), roleScoped)).toMatchObject({ id: 'external-subject' });
+    });
+
+    it('accepts a delimiter-encoded role array from an HTTP API JWT integration', () => {
+        const roleScoped = { ...config, adminJwtRole: 'Hemlig.Administrator' };
+        expect(humanActorFromEvent(jwtEvent({
+            iss: 'https://issuer.example.test',
+            aud: 'hemlig-api',
+            sub: 'external-subject',
+            roles: '[Hemlig.Administrator]',
+        }), roleScoped)).toMatchObject({ id: 'external-subject' });
     });
 });

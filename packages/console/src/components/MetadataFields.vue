@@ -3,7 +3,6 @@ import { computed } from "vue";
 import { metadataPath, tagKey, tagValue } from "../api/payload";
 
 export interface MetadataDraft {
-  name: string;
   description: string;
   path: string;
   tags: { id: string; key: string; value: string }[];
@@ -38,14 +37,19 @@ const addTag = (): void => {
 <template>
   <div class="space-y-3">
     <label class="block">
-      <span class="text-xs text-ink-muted">Name (required)</span>
+      <span class="text-xs text-ink-muted">Folder</span>
       <input
-        v-model="model.name"
-        maxlength="128"
-        required
-        class="mt-1 w-full rounded border border-line bg-surface px-2 py-1"
+        v-model="model.path"
+        maxlength="256"
+        placeholder="payments/stripe/production"
+        class="mono mt-1 w-full rounded border border-line bg-surface px-2 py-1"
       />
+      <span v-if="pathError" class="text-xs text-danger">{{ pathError }}</span>
+      <span v-else class="text-xs text-ink-muted">
+        Changing this moves the secret to a different folder in the tree.
+      </span>
     </label>
+    <slot name="after-path" />
     <label class="block">
       <span class="text-xs text-ink-muted">Description</span>
       <textarea
@@ -55,22 +59,12 @@ const addTag = (): void => {
         class="mt-1 w-full rounded border border-line bg-surface px-2 py-1"
       />
     </label>
-    <label class="block">
-      <span class="text-xs text-ink-muted">Path</span>
-      <input
-        v-model="model.path"
-        maxlength="256"
-        placeholder="payments/stripe/production"
-        class="mono mt-1 w-full rounded border border-line bg-surface px-2 py-1"
-      />
-      <span v-if="pathError" class="text-xs text-danger">{{ pathError }}</span>
-    </label>
     <div>
       <span class="text-xs text-ink-muted">Tags ({{ model.tags.length }} of 20)</span>
       <div v-for="tag in model.tags" :key="tag.id" class="mt-1 flex items-start gap-2">
-        <input v-model="tag.key" placeholder="owner" class="mono w-40 rounded border border-line bg-surface px-2 py-1" />
+        <input v-model="tag.key" placeholder="key" class="mono w-40 rounded border border-line bg-surface px-2 py-1" />
         <div class="flex-1">
-          <input v-model="tag.value" placeholder="payments" class="mono w-full rounded border border-line bg-surface px-2 py-1" />
+          <input v-model="tag.value" placeholder="value" class="mono w-full rounded border border-line bg-surface px-2 py-1" />
           <span v-if="tagError(tag)" class="text-xs text-danger">{{ tagError(tag) }}</span>
         </div>
         <button

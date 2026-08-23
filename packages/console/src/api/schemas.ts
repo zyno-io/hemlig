@@ -13,7 +13,6 @@ export const actor = z.object({
 });
 
 export const metadata = z.object({
-  name: z.string(),
   description: z.string().optional(),
   path: z.string().optional(),
   tags: z.record(z.string()).optional(),
@@ -40,6 +39,16 @@ export const controlRevision = z.object({
   acl: z.array(grant),
 });
 
+export const secretReadResponse = z.object({
+  secretId: z.string(),
+  controlVersionId: z.string(),
+  payloadVersionId: z.string(),
+  payload: z.record(
+    z.string(),
+    z.object({ encoding: z.enum(["utf8", "base64"]), value: z.string() }),
+  ),
+});
+
 export const catalogEntry = z.object({
   secretId: z.string(),
   environment: z.string(),
@@ -53,7 +62,46 @@ export const catalogEntry = z.object({
 
 export const catalogPage = z.object({
   secrets: z.array(catalogEntry),
+  // Only ever set together: `nextCursor` for an ordinary browse page,
+  // `truncated` for a `q` search page, which is bounded-complete instead of
+  // cursor-paginated. Both optional because a plain page (no `q`) that
+  // happens to be the last one carries neither.
   nextCursor: z.string().optional(),
+  truncated: z.boolean().optional(),
+  generatedAt: z.string(),
+});
+
+/**
+ * `explicit` -- an administrator created a folder record (POST
+ * /v1/admin/folders) at exactly this path and no secret currently implies
+ * it; secretCount is then 0. `derived` -- no folder record exists at exactly
+ * this path; it appears only because a secret's metadata.path equals or
+ * nests beneath it, or because a deeper explicit record implies it. `both`
+ * -- an explicit record exists at exactly this path and secretCount is
+ * greater than zero. An empty folder is `explicit` with secretCount 0, not
+ * an absence -- it must render like any other folder.
+ */
+export const folderKind = z.enum(["explicit", "derived", "both"]);
+
+export const secretTreeFolder = z.object({
+  segment: z.string(),
+  path: z.string(),
+  secretCount: z.number().int().nonnegative(),
+  kind: folderKind,
+});
+
+/**
+ * One bounded, complete level of the path tree. Unlike `catalogPage` there is
+ * no cursor: the server caps the level and sets `truncated` instead of
+ * paginating it, so a level either fits or is honestly reported as
+ * incomplete. `pathPrefix` is absent at the root.
+ */
+export const secretTreePage = z.object({
+  environment: z.string(),
+  pathPrefix: z.string().optional(),
+  folders: z.array(secretTreeFolder),
+  secrets: z.array(catalogEntry),
+  truncated: z.boolean(),
   generatedAt: z.string(),
 });
 
@@ -146,9 +194,40 @@ export const secretRevisionPage = z.object({
   generatedAt: z.string(),
 });
 
+/**
+ * Environments are administrator-defined records, not a deployment constant:
+ * a fresh deployment starts with none, bounded to 100, and every record
+ * remembers who created it.
+ */
+export const environmentDefinition = z.object({
+  name: z.string(),
+  createdAt: z.string(),
+  createdBy: actor,
+});
+
+export const environmentListResponse = z.object({
+  environments: z.array(environmentDefinition),
+  generatedAt: z.string(),
+});
+
+/**
+ * An explicit, empty folder record — never a secret. Creating one has no
+ * effect on any secret's path, and deleting one never touches a secret
+ * either (see HemligApi.deleteFolder).
+ */
+export const folderDefinition = z.object({
+  environment: z.string(),
+  path: z.string(),
+  createdAt: z.string(),
+  createdBy: actor,
+});
+
 export type ControlRevision = z.infer<typeof controlRevision>;
 export type CatalogEntry = z.infer<typeof catalogEntry>;
 export type CatalogPage = z.infer<typeof catalogPage>;
+export type FolderKind = z.infer<typeof folderKind>;
+export type SecretTreeFolder = z.infer<typeof secretTreeFolder>;
+export type SecretTreePage = z.infer<typeof secretTreePage>;
 export type ConsumerSummary = z.infer<typeof consumerSummary>;
 export type ConsumerListPage = z.infer<typeof consumerListPage>;
 export type ConsumerDetail = z.infer<typeof consumerDetail>;
@@ -158,5 +237,9 @@ export type EnrollmentResult = z.infer<typeof enrollmentResult>;
 export type ApiIdentityResult = z.infer<typeof apiIdentityResult>;
 export type IssuerStatus = z.infer<typeof issuerStatus>;
 export type SecretRevisionPage = z.infer<typeof secretRevisionPage>;
+export type EnvironmentDefinition = z.infer<typeof environmentDefinition>;
+export type EnvironmentListResponse = z.infer<typeof environmentListResponse>;
+export type FolderDefinition = z.infer<typeof folderDefinition>;
+export type SecretReadResponse = z.infer<typeof secretReadResponse>;
 export type Metadata = z.infer<typeof metadata>;
 export type Grant = z.infer<typeof grant>;

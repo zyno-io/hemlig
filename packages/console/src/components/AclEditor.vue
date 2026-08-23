@@ -31,7 +31,7 @@ const toggle = (consumerId: string): void => {
 <template>
   <div>
     <div class="flex items-baseline justify-between">
-      <span class="text-xs text-ink-muted">Consumers with read access ({{ model.length }} of 10)</span>
+      <span class="text-xs text-ink-muted">Consumers with read access ({{ model.length }} of 40)</span>
     </div>
 
     <p v-if="error" class="mt-2 text-xs text-danger">
@@ -47,7 +47,7 @@ const toggle = (consumerId: string): void => {
           <input
             type="checkbox"
             :checked="model.includes(consumer.consumerId)"
-            :disabled="!model.includes(consumer.consumerId) && model.length >= 10"
+            :disabled="!model.includes(consumer.consumerId) && model.length >= 40"
             @change="toggle(consumer.consumerId)"
           />
           <span class="mono">{{ consumer.consumerId }}</span>

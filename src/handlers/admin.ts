@@ -1,17 +1,20 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
 import { humanActorFromEvent } from '../auth/actors';
 import { badRequest, notFound } from '../domain/errors';
-import type { ConsumerRecord, IdentityRecord } from '../domain/types';
+import type { AgentGrantRecord, ConsumerRecord, EnvironmentRecord, FolderRecord, HeadRecord, IdentityRecord, IssuerRecord } from '../domain/types';
 import {
     isObject,
     parseCatalogPathPrefix,
+    parseCatalogSearchQuery,
     parseCatalogTagFilters,
     parseGrants,
     parseMetadata,
     parsePayload,
 } from '../domain/validation';
 import { empty, errorResponse, json, parseJsonBody } from '../http/responses';
+import type { TruststoreStateRecord } from '../repositories/dynamo';
 import { humanOperation } from '../services/operations';
+import { IssuerService } from '../services/issuer';
 import { isoNow, sha256Hex, stableJson } from '../util/encoding';
 import { withErrorResponse } from './shared';
 
@@ -41,10 +44,65 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
             operation,
             sourceIp: event.requestContext.http.sourceIp,
         });
+        if (event.requestContext.http.method === 'GET' && event.rawPath === '/v1/admin/environments') {
+            const environments = await app.environments.list();
+            await app.audit.write({
+                correlationId,
+                outcome: 'succeeded',
+                actor,
+                operation,
+                sourceIp: event.requestContext.http.sourceIp,
+            });
+            return json(200, {
+                environments: environments.map((environment) => environmentResponse(environment)),
+                generatedAt: isoNow(),
+            });
+        }
+        if (event.requestContext.http.method === 'POST' && event.rawPath === '/v1/admin/environments') {
+            const body = parseObjectBody(event.body);
+            const environment = await app.environments.create({
+                name: requiredString(body, 'name'),
+                actor,
+            });
+            await app.audit.write({
+                correlationId,
+                outcome: 'succeeded',
+                actor,
+                operation,
+                target: { environment: environment.name },
+                sourceIp: event.requestContext.http.sourceIp,
+            });
+            return json(201, environmentResponse(environment));
+        }
         if (event.requestContext.http.method === 'GET' && event.rawPath === '/v1/admin/secrets') {
             const environment = requireQueryString(event, 'environment');
+            await app.environments.require(environment);
             const pathPrefix = parseCatalogPathPrefix(event.queryStringParameters?.pathPrefix);
             const tags = parseCatalogTagFilters(event.queryStringParameters?.tags);
+            const q = parseCatalogSearchQuery(event.queryStringParameters?.q);
+            if (q !== undefined) {
+                // The plain catalog page below applies its filters (workflowState,
+                // tags) after a bounded read, so a page can come back empty while
+                // nextCursor is still set -- the caller has to keep chasing cursors
+                // to learn whether there are really no results. That is tolerable
+                // for browsing but wrong for search, where "no matches" must be
+                // trustworthy on the first response. So a search paginates
+                // internally up to the same bounded cap as the tree route and
+                // returns one complete-or-truncated answer instead of a cursor.
+                const results = await app.repository.searchSecrets(environment, pathPrefix, tags, q);
+                await app.audit.write({
+                    correlationId,
+                    outcome: 'succeeded',
+                    actor,
+                    operation,
+                    sourceIp: event.requestContext.http.sourceIp,
+                });
+                return json(200, {
+                    secrets: results.secrets.map((secret) => secretCatalogEntry(secret)),
+                    truncated: results.truncated,
+                    generatedAt: isoNow(),
+                });
+            }
             const rawCursor = event.queryStringParameters?.cursor;
             const cursorScope = `admin:${actor.id}:${sha256Hex(stableJson({ environment, pathPrefix, tags }))}`;
             const decoded = rawCursor === undefined ? undefined : app.cursors.decode(rawCursor, cursorScope);
@@ -64,16 +122,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
                 sourceIp: event.requestContext.http.sourceIp,
             });
             return json(200, {
-                secrets: page.secrets.map((secret) => ({
-                    secretId: secret.secretId,
-                    environment: secret.environment,
-                    controlVersionId: secret.controlVersionId,
-                    payloadVersionId: secret.payloadVersionId,
-                    payloadKeyCount: secret.payloadKeyCount,
-                    state: secret.state,
-                    metadata: secret.metadata,
-                    updatedAt: secret.updatedAt,
-                })),
+                secrets: page.secrets.map((secret) => secretCatalogEntry(secret)),
                 nextCursor,
                 generatedAt: isoNow(),
             });
@@ -82,7 +131,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
             const key = requireIdempotencyKey(event.headers['idempotency-key']);
             const body = parseObjectBody(event.body);
             const control = await app.secrets.create({
-                secretId: optionalString(body, 'secretId'),
+                secretId: requiredString(body, 'secretId'),
                 environment: requiredString(body, 'environment'),
                 metadata: parseMetadata(body.metadata),
                 acl: parseGrants(body.acl),
@@ -94,8 +143,110 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
                 controlVersionId: control.controlVersionId,
             }, () => json(201, control, { etag: control.controlVersionId }));
         }
+        // Every admin request writes three audit objects into a seven-year Object
+        // Lock Compliance archive, so letting the console browse a subtree one
+        // folder at a time -- one request per folder opened -- would multiply
+        // that archive write for no operational benefit. This route paginates
+        // the catalog-path GSI internally instead and returns one bounded,
+        // complete-or-truncated tree page.
+        if (event.requestContext.http.method === 'GET' && event.rawPath === '/v1/admin/secrets/tree') {
+            const environment = requireQueryString(event, 'environment');
+            await app.environments.require(environment);
+            const pathPrefix = parseCatalogPathPrefix(event.queryStringParameters?.pathPrefix);
+            const tree = await app.repository.listSecretTree(environment, pathPrefix);
+            await app.audit.write({
+                correlationId,
+                outcome: 'succeeded',
+                actor,
+                operation,
+                sourceIp: event.requestContext.http.sourceIp,
+            });
+            return json(200, {
+                environment,
+                ...(pathPrefix === undefined ? {} : { pathPrefix }),
+                folders: tree.folders,
+                secrets: tree.secrets.map((secret) => secretCatalogEntry(secret)),
+                truncated: tree.truncated,
+                generatedAt: isoNow(),
+            });
+        }
+        if (event.requestContext.http.method === 'POST' && event.rawPath === '/v1/admin/folders') {
+            const body = parseObjectBody(event.body);
+            const folder = await app.folders.create({
+                environment: requiredString(body, 'environment'),
+                path: body.path,
+                actor,
+            });
+            await app.audit.write({
+                correlationId,
+                outcome: 'succeeded',
+                actor,
+                operation,
+                target: { environment: folder.environment, path: folder.path },
+                sourceIp: event.requestContext.http.sourceIp,
+            });
+            return json(201, folderResponse(folder));
+        }
+        // Like environments (its closest analogue), folder mutations skip
+        // Idempotency-Key: creation fails deterministically with a conflict
+        // on retry rather than risking a duplicate side effect, and deletion
+        // is naturally idempotent from the caller's point of view, so there
+        // is nothing here for a dedup key to protect.
+        if (event.requestContext.http.method === 'DELETE' && event.rawPath === '/v1/admin/folders') {
+            const environment = requireQueryString(event, 'environment');
+            const path = event.queryStringParameters?.path;
+            await app.folders.remove({ environment, path });
+            await app.audit.write({
+                correlationId,
+                outcome: 'succeeded',
+                actor,
+                operation,
+                target: { environment, path: path ?? '' },
+                sourceIp: event.requestContext.http.sourceIp,
+            });
+            return empty(204);
+        }
+        if (event.requestContext.http.method === 'POST' && event.rawPath === '/v1/admin/agent-grants') {
+            const body = parseObjectBody(event.body);
+            const grant = await app.agentGrants.create({
+                consumerId: requiredString(body, 'consumerId'),
+                environment: requiredString(body, 'environment'),
+                capabilities: body.capabilities,
+                readPathPrefixes: body.readPathPrefixes,
+                writePathPrefixes: body.writePathPrefixes,
+                ...(body.displayName === undefined ? {} : { displayName: body.displayName }),
+                actor,
+            });
+            await app.audit.write({
+                correlationId,
+                outcome: 'succeeded',
+                actor,
+                operation,
+                target: { grantId: grant.grantId, consumerId: grant.consumerId },
+                sourceIp: event.requestContext.http.sourceIp,
+            });
+            return json(201, agentGrantResponse(grant));
+        }
+        const bootstrapCapabilityMatch = /^\/v1\/admin\/agent-grants\/(grant-[a-z0-9-]{3,80})\/bootstrap-capabilities$/.exec(event.rawPath);
+        if (event.requestContext.http.method === 'POST' && bootstrapCapabilityMatch !== null) {
+            const capability = await app.agentGrants.issueBootstrapCapability(
+                bootstrapCapabilityMatch[1] as string,
+                actor,
+            );
+            await app.audit.write({
+                correlationId,
+                outcome: 'succeeded',
+                actor,
+                operation,
+                target: { grantId: capability.grantId },
+                sourceIp: event.requestContext.http.sourceIp,
+            });
+            // This is the only response that contains the bootstrap capability.
+            return json(201, capability);
+        }
         if (event.requestContext.http.method === 'GET' && event.rawPath === '/v1/admin/consumers') {
             const environment = requireQueryString(event, 'environment');
+            await app.environments.require(environment);
             const rawCursor = event.queryStringParameters?.cursor;
             const cursorScope = `admin:consumers:${actor.id}:${sha256Hex(stableJson({ environment }))}`;
             const decoded = rawCursor === undefined ? undefined : app.cursors.decode(rawCursor, cursorScope);
@@ -155,22 +306,25 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
                 target: { rootFingerprint: issuer.fingerprint },
                 sourceIp: event.requestContext.http.sourceIp,
             });
-            return json(200, {
+            return json(200, issuerStatusResponse(issuer, truststore));
+        }
+        if (event.requestContext.http.method === 'POST' && event.rawPath === '/v1/admin/issuer') {
+            const key = requireIdempotencyKey(event.headers['idempotency-key']);
+            // The issuing root is otherwise created lazily inside the first
+            // enrollment. Operators need to provision it deliberately so the
+            // truststore anchor exists and can be distributed before anyone
+            // enrolls. ensureIssuer() shares getOrCreateIssuer() with that lazy
+            // path, so the two can never diverge, and creation is already
+            // race-safe -- no additional lock is needed to call this repeatedly
+            // or concurrently.
+            const issuerService = new IssuerService(app.repository, app.clients.kms, app.config);
+            const [{ issuer, created }, truststore] = await Promise.all([
+                issuerService.ensureIssuer(),
+                app.repository.getTruststoreState(),
+            ]);
+            return await humanOperation(app, actor, key, correlationId, operation, event.requestContext.http.sourceIp, {
                 rootFingerprint: issuer.fingerprint,
-                rootCertificatePem: issuer.rootCertificatePem,
-                notBefore: issuer.notBefore,
-                notAfter: issuer.notAfter,
-                createdAt: issuer.createdAt,
-                ...(truststore?.currentTruststoreKey === undefined || truststore.currentTruststoreVersionId === undefined
-                    ? {}
-                    : {
-                        truststore: {
-                            objectKey: truststore.currentTruststoreKey,
-                            versionId: truststore.currentTruststoreVersionId,
-                            anchorCount: truststore.currentRootFingerprints?.length ?? 0,
-                        },
-                    }),
-            });
+            }, () => json(created ? 201 : 200, issuerStatusResponse(issuer, truststore)));
         }
         const consumerMatch = /^\/v1\/admin\/consumers\/([a-z][a-z0-9-]{2,63})$/.exec(event.rawPath);
         if (event.requestContext.http.method === 'GET' && consumerMatch !== null) {
@@ -272,6 +426,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         }
         const secretMatch = /^\/v1\/admin\/secrets\/([a-z][a-z0-9-]{2,63})$/.exec(event.rawPath);
         const revisionMatch = /^\/v1\/admin\/secrets\/([a-z][a-z0-9-]{2,63})\/revisions$/.exec(event.rawPath);
+        const payloadMatch = /^\/v1\/admin\/secrets\/([a-z][a-z0-9-]{2,63})\/payload$/.exec(event.rawPath);
         if (event.requestContext.http.method === 'GET' && revisionMatch !== null) {
             const secretId = revisionMatch[1] as string;
             const current = await app.secrets.getControlRevision(secretId);
@@ -314,6 +469,36 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
             });
             return json(200, control, { etag: control.controlVersionId });
         }
+        if (event.requestContext.http.method === 'GET' && payloadMatch !== null) {
+            const secretId = payloadMatch[1] as string;
+            setAuditContext({
+                actor,
+                operation,
+                target: { secretId },
+                permission: 'read',
+                sourceIp: event.requestContext.http.sourceIp,
+            });
+            const payload = await app.secrets.readAdminPayload(secretId);
+            await app.audit.write({
+                correlationId,
+                outcome: 'succeeded',
+                actor,
+                operation,
+                target: {
+                    secretId,
+                    controlVersionId: payload.controlVersionId,
+                    payloadVersionId: payload.payloadVersionId,
+                },
+                permission: 'read',
+                sourceIp: event.requestContext.http.sourceIp,
+            });
+            return json(200, {
+                secretId,
+                controlVersionId: payload.controlVersionId,
+                payloadVersionId: payload.payloadVersionId,
+                payload: payload.payload,
+            }, { etag: payload.controlVersionId });
+        }
         if (event.requestContext.http.method === 'PUT' && secretMatch !== null) {
             const key = requireIdempotencyKey(event.headers['idempotency-key']);
             const body = parseObjectBody(event.body);
@@ -330,7 +515,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
                 controlVersionId: control.controlVersionId,
             }, () => json(200, control, { etag: control.controlVersionId }));
         }
-        const payloadMatch = /^\/v1\/admin\/secrets\/([a-z][a-z0-9-]{2,63})\/payload$/.exec(event.rawPath);
         if (event.requestContext.http.method === 'PUT' && payloadMatch !== null) {
             const key = requireIdempotencyKey(event.headers['idempotency-key']);
             const body = parseObjectBody(event.body);
@@ -363,17 +547,6 @@ const requiredString = (body: Record<string, unknown>, name: string): string => 
     const value = body[name];
     if (typeof value !== 'string' || value.length === 0) {
         throw badRequest(`${name} is required.`);
-    }
-    return value;
-};
-
-const optionalString = (body: Record<string, unknown>, name: string): string | undefined => {
-    const value = body[name];
-    if (value === undefined) {
-        return undefined;
-    }
-    if (typeof value !== 'string' || value.length === 0) {
-        throw badRequest(`${name} must be a non-empty string.`);
     }
     return value;
 };
@@ -431,4 +604,67 @@ const apiIdentityDetail = (identity: IdentityRecord): Record<string, string> => 
     notBefore: identity.notBefore,
     notAfter: identity.notAfter,
     ...(identity.certificatePem === undefined ? {} : { apiCertificatePem: identity.certificatePem }),
+});
+
+const secretCatalogEntry = (secret: HeadRecord): Record<string, unknown> => ({
+    secretId: secret.secretId,
+    environment: secret.environment,
+    controlVersionId: secret.controlVersionId,
+    payloadVersionId: secret.payloadVersionId,
+    payloadKeyCount: secret.payloadKeyCount,
+    state: secret.state,
+    metadata: secret.metadata,
+    updatedAt: secret.updatedAt,
+});
+
+const environmentResponse = (environment: EnvironmentRecord): Record<string, unknown> => ({
+    name: environment.name,
+    createdAt: environment.createdAt,
+    createdBy: environment.createdBy,
+});
+
+const folderResponse = (folder: FolderRecord): Record<string, unknown> => ({
+    environment: folder.environment,
+    path: folder.path,
+    createdAt: folder.createdAt,
+    createdBy: folder.createdBy,
+});
+
+const agentGrantResponse = (grant: AgentGrantRecord): Record<string, unknown> => ({
+    grantId: grant.grantId,
+    consumerId: grant.consumerId,
+    environment: grant.environment,
+    capabilities: grant.capabilities,
+    readPathPrefixes: grant.readPathPrefixes,
+    writePathPrefixes: grant.writePathPrefixes,
+    ...(grant.displayName === undefined ? {} : { displayName: grant.displayName }),
+    status: grant.status,
+    createdAt: grant.createdAt,
+    createdBy: grant.createdBy,
+    ...(grant.activatedAt === undefined ? {} : { activatedAt: grant.activatedAt }),
+    ...(grant.activatedFingerprint === undefined ? {} : { activatedFingerprint: grant.activatedFingerprint }),
+});
+
+// An explicit field allowlist -- not a delete-key -- is what keeps
+// encryptedPrivateKey out of every issuer response. The lazy GET and the
+// deliberate POST both funnel through this one mapping so they can never
+// diverge on what is safe to return.
+const issuerStatusResponse = (
+    issuer: IssuerRecord,
+    truststore: TruststoreStateRecord | undefined,
+): Record<string, unknown> => ({
+    rootFingerprint: issuer.fingerprint,
+    rootCertificatePem: issuer.rootCertificatePem,
+    notBefore: issuer.notBefore,
+    notAfter: issuer.notAfter,
+    createdAt: issuer.createdAt,
+    ...(truststore?.currentTruststoreKey === undefined || truststore.currentTruststoreVersionId === undefined
+        ? {}
+        : {
+            truststore: {
+                objectKey: truststore.currentTruststoreKey,
+                versionId: truststore.currentTruststoreVersionId,
+                anchorCount: truststore.currentRootFingerprints?.length ?? 0,
+            },
+        }),
 });

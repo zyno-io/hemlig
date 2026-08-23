@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import CopyField from "../components/CopyField.vue";
+import CsrGeneratorModal from "../components/CsrGeneratorModal.vue";
 import MutationState from "../components/MutationState.vue";
 import { inspectCsr } from "../api/csr";
 import { identifier } from "../api/payload";
@@ -14,6 +15,7 @@ const store = useAppStore();
 const consumerId = ref("");
 const csr = ref("");
 const csrProblem = ref<string | undefined>();
+const showGenerator = ref(false);
 
 const idError = computed(() =>
   consumerId.value.length > 0 && !identifier.test(consumerId.value)
@@ -47,6 +49,13 @@ const readFile = async (event: Event): Promise<void> => {
   if (file !== undefined) {
     csr.value = await file.text();
   }
+};
+
+// Pasting an operator-generated CSR remains the default, primary path; this
+// only fills the same textarea the paste/upload flow already validates.
+const onGenerated = (csrPem: string): void => {
+  csr.value = csrPem;
+  csrProblem.value = undefined;
 };
 
 const submit = async (): Promise<void> => {
@@ -136,7 +145,16 @@ const result = computed(() => enrollment.result.value);
             placeholder="-----BEGIN CERTIFICATE REQUEST-----"
             class="mono mt-1 w-full rounded border border-line bg-surface px-2 py-1 text-xs"
           />
-          <input type="file" accept=".pem,.csr,.txt" class="mt-2 text-xs" @change="readFile" />
+          <div class="mt-2 flex flex-wrap items-center gap-3">
+            <input type="file" accept=".pem,.csr,.txt" class="text-xs" @change="readFile" />
+            <button
+              type="button"
+              class="rounded border border-line px-2 py-1 text-xs"
+              @click="showGenerator = true"
+            >
+              Generate key and CSR
+            </button>
+          </div>
           <p v-if="csrProblem" class="mt-1 text-xs text-danger">{{ csrProblem }}</p>
           <p class="mt-1 text-xs text-ink-muted">
             The operator generates the key pair and keeps the private key. Hemlig signs
@@ -158,5 +176,12 @@ const result = computed(() => enrollment.result.value);
         </p>
       </form>
     </template>
+
+    <CsrGeneratorModal
+      v-if="showGenerator"
+      :common-name="consumerId"
+      @generated="onGenerated"
+      @close="showGenerator = false"
+    />
   </div>
 </template>

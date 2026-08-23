@@ -18,8 +18,8 @@ A dev bridge invokes the admin handler in process instead.
 
 ```sh
 yarn ministack:up      # once
-yarn console:api       # provisions hml-local resources, serves the handler on :5274
-yarn console:dev       # serves the console on :5273
+yarn dev:api           # provisions hml-local resources, serves the handler on :5274
+yarn dev:ui            # serves the console on :5273
 ```
 
 The bridge fabricates the JWT claims API Gateway would normally have validated.
@@ -36,6 +36,20 @@ isolated AWS acceptance environment.
 
 These come from properties of the service. Changing them will break correctness
 in ways that are hard to see. Each is enforced by a test.
+
+**Environments are administrator-defined, not configuration.** They used to be a
+static list baked into `config.json`; they are now `GET`/`POST
+/v1/admin/environments` records in DynamoDB, bounded to 100, each recording
+who created it. A fresh deployment starts with **none**. Because every screen
+is scoped to one environment, `/` is a resolver (`RootResolver.vue`), not a
+redirect: it waits for a session, loads the list once through the shared
+`useEnvironmentsQuery` cache entry, and either sends the operator to their
+remembered environment (falling back to the first one if that name no longer
+exists), renders a first-run panel prompting them to create one, or shows the
+load failure with its correlation ID and a retry — it never guesses a name to
+redirect into. Do not fetch the list inside `store.initialize()`: that runs
+before sign-in, and in OIDC mode there is no session yet to authenticate the
+call with.
 
 **Nothing auto-refreshes.** Every administrator request writes attempted,
 authorized, and terminal audit objects into an Object Lock Compliance archive
@@ -64,8 +78,36 @@ within a hop budget. Never render "no results" before `exhausted`.
 
 **Payload values never leave the editor component.** Not the store, the query
 cache, the URL, router state, browser storage, or an error message. They are
-cleared on unmount. The API cannot return them, and this console will not grow
-a path to one.
+cleared on unmount.
+
+Reading a payload is possible — `GET /v1/admin/secrets/{id}/payload` decrypts
+and returns it — but it is a deliberate, separately audited action, so the
+editor loads values only when the operator explicitly asks. Do not fetch a
+payload to render a list, a preview, or a diff: each read writes permanent
+audit evidence naming the administrator who did it.
+
+**The in-browser CSR generator's private key never leaves the modal, either.**
+`CsrGeneratorModal.vue` generates the key pair with WebCrypto and builds the
+PKCS#10 CSR itself (`src/api/csr-generate.ts`), since Hemlig only ever wants
+the public key. The private key is held in local component state for a
+one-time copy/download, cleared on close and on unmount, and is never written
+to the store, the query cache, the URL, or localStorage/sessionStorage/
+IndexedDB/cookies — the same rule as payload values above, for the same
+reason. Pasting a CSR generated on the consumer host remains the stronger
+option: it means a consumer's private key never exists in an administrator's
+browser at all, which the in-browser generator cannot claim. That is why
+pasting stays the default path in both the enrollment and rotation flows, and
+generation is one deliberate click away rather than the other way around.
+
+`csr-generate.ts` writes the CSR's DER by hand rather than pulling in
+`@peculiar/x509` or `pkijs`: a bug in an ASN.1 *parser* can be dangerous
+(malformed input coerced into wrongly validating), but a bug in a *writer*
+can only produce bytes that fail to parse, and this output is verified twice
+— once by the test suite against node-forge, the same library the service
+uses server-side, and again by the service itself on submit. See the header
+comment in `csr-generate.ts` for the full reasoning, including the point
+where hand-rolling stops being proportionate (real certificate extensions)
+and `@peculiar/x509` becomes the right swap.
 
 **`401` and `403` are different.** API Gateway rejects a bad token itself with
 a bare `401` and no error envelope — re-authenticate. A `403` can only come

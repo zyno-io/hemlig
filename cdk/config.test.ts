@@ -48,6 +48,19 @@ describe('deploymentConfigFromContext', () => {
         }))).toThrow('oidcAdminScope is required');
     });
 
+    it('requires the browser access scope when a console origin is configured', () => {
+        expect(() => deploymentConfigFromContext(context({
+            adminFqdn: 'admin.example.com',
+            apiFqdn: 'api.example.com',
+            consoleFqdn: 'console.example.com',
+            zoneDomain: 'example.com',
+            oidcIssuer: 'https://login.example.com/tenant/v2.0',
+            oidcAudience: 'hemlig-api',
+            oidcAdminScope: 'hemlig.admin',
+            oidcClientId: 'console-client',
+        }))).toThrow('oidcConsoleAccessScope is required');
+    });
+
     it('accepts a scoped console origin in the deployment zone', () => {
         const config = deploymentConfigFromContext(context({
             adminFqdn: 'admin.example.com',
@@ -57,11 +70,62 @@ describe('deploymentConfigFromContext', () => {
             oidcIssuer: 'https://login.example.com/tenant/v2.0',
             oidcAudience: 'hemlig-api',
             oidcAdminScope: 'hemlig.admin',
+            oidcConsoleAccessScope: 'api://hemlig-api/hemlig.admin',
+            oidcAdminRole: 'Hemlig.Administrator',
             oidcClientId: 'console-client',
         }));
         expect(config.consoleFqdn).toBe('console.example.com');
         expect(config.oidcAdminScope).toBe('hemlig.admin');
+        expect(config.oidcConsoleAccessScope).toBe('api://hemlig-api/hemlig.admin');
+        expect(config.oidcAdminRole).toBe('Hemlig.Administrator');
         expect(config.oidcClientId).toBe('console-client');
+    });
+
+    it('rejects a malformed optional administrator role', () => {
+        expect(() => deploymentConfigFromContext(context({
+            adminFqdn: 'admin.example.com',
+            apiFqdn: 'api.example.com',
+            zoneDomain: 'example.com',
+            oidcIssuer: 'https://login.example.com/tenant/v2.0',
+            oidcAudience: 'hemlig-api',
+            oidcAdminRole: 'not a role',
+        }))).toThrow('oidcAdminRole');
+    });
+
+    it('accepts a bootstrap qualifier for a separately bootstrapped account', () => {
+        const config = deploymentConfigFromContext(context({
+            adminFqdn: 'admin.example.com',
+            apiFqdn: 'api.example.com',
+            zoneDomain: 'example.com',
+            oidcIssuer: 'https://login.example.com/tenant/v2.0',
+            oidcAudience: 'hemlig-api',
+            bootstrapQualifier: 'hmlsec01',
+        }));
+        expect(config.bootstrapQualifier).toBe('hmlsec01');
+    });
+
+    it('accepts an existing cursor HMAC secret ARN for a retained-resource recovery', () => {
+        const config = deploymentConfigFromContext(context({
+            adminFqdn: 'admin.example.com',
+            apiFqdn: 'api.example.com',
+            zoneDomain: 'example.com',
+            oidcIssuer: 'https://login.example.com/tenant/v2.0',
+            oidcAudience: 'hemlig-api',
+            existingCursorHmacSecretArn: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:hml-prod/cursor-hmac-abc123',
+        }));
+        expect(config.existingCursorHmacSecretArn).toContain('cursor-hmac');
+    });
+
+    it('accepts an existing application key ARN for a retained-resource recovery', () => {
+        const config = deploymentConfigFromContext(context({
+            adminFqdn: 'admin.example.com',
+            apiFqdn: 'api.example.com',
+            zoneDomain: 'example.com',
+            oidcIssuer: 'https://login.example.com/tenant/v2.0',
+            oidcAudience: 'hemlig-api',
+            existingApplicationKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012',
+        }));
+        expect(config.existingApplicationKeyArn).toContain(':key/');
     });
 
     it('requires oidcClientId when a console origin is configured', () => {
@@ -73,6 +137,7 @@ describe('deploymentConfigFromContext', () => {
             oidcIssuer: 'https://login.example.com/tenant/v2.0',
             oidcAudience: 'hemlig-api',
             oidcAdminScope: 'hemlig.admin',
+            oidcConsoleAccessScope: 'api://hemlig-api/hemlig.admin',
         }))).toThrow('oidcClientId is required');
     });
 
@@ -86,6 +151,7 @@ describe('deploymentConfigFromContext', () => {
             oidcIssuer: 'https://login.example.com/tenant/v2.0',
             oidcAudience: 'hemlig-api',
             oidcAdminScope: 'hemlig.admin',
+            oidcConsoleAccessScope: 'api://hemlig-api/hemlig.admin',
             oidcClientId: 'console-client',
         }));
         expect(config.consoleCertificateArn).toBe(
@@ -103,6 +169,7 @@ describe('deploymentConfigFromContext', () => {
             oidcIssuer: 'https://login.example.com/tenant/v2.0',
             oidcAudience: 'hemlig-api',
             oidcAdminScope: 'hemlig.admin',
+            oidcConsoleAccessScope: 'api://hemlig-api/hemlig.admin',
             oidcClientId: 'console-client',
         }))).toThrow('ACM certificate ARN in us-east-1');
     });
@@ -117,6 +184,7 @@ describe('deploymentConfigFromContext', () => {
             oidcIssuer: 'https://login.example.com/tenant/v2.0',
             oidcAudience: 'hemlig-api',
             oidcAdminScope: 'hemlig.admin',
+            oidcConsoleAccessScope: 'api://hemlig-api/hemlig.admin',
             oidcClientId: 'console-client',
         }))).toThrow('ACM certificate ARN in us-east-1');
     });
@@ -130,39 +198,5 @@ describe('deploymentConfigFromContext', () => {
             oidcIssuer: 'https://login.example.com/tenant/v2.0',
             oidcAudience: 'hemlig-api',
         }))).toThrow('must not be supplied unless consoleFqdn');
-    });
-
-    it('parses a comma-separated secretEnvironments context value', () => {
-        const config = deploymentConfigFromContext(context({
-            adminFqdn: 'admin.example.com',
-            apiFqdn: 'api.example.com',
-            zoneDomain: 'example.com',
-            oidcIssuer: 'https://login.example.com/tenant/v2.0',
-            oidcAudience: 'hemlig-api',
-            secretEnvironments: 'dev, staging, prod',
-        }));
-        expect(config.secretEnvironments).toEqual(['dev', 'staging', 'prod']);
-    });
-
-    it('rejects a secretEnvironments entry with an invalid name', () => {
-        expect(() => deploymentConfigFromContext(context({
-            adminFqdn: 'admin.example.com',
-            apiFqdn: 'api.example.com',
-            zoneDomain: 'example.com',
-            oidcIssuer: 'https://login.example.com/tenant/v2.0',
-            oidcAudience: 'hemlig-api',
-            secretEnvironments: 'dev,Prod',
-        }))).toThrow('context secretEnvironments entries must match');
-    });
-
-    it('rejects an empty entry produced by a trailing comma in secretEnvironments', () => {
-        expect(() => deploymentConfigFromContext(context({
-            adminFqdn: 'admin.example.com',
-            apiFqdn: 'api.example.com',
-            zoneDomain: 'example.com',
-            oidcIssuer: 'https://login.example.com/tenant/v2.0',
-            oidcAudience: 'hemlig-api',
-            secretEnvironments: 'dev,',
-        }))).toThrow('context secretEnvironments entries must match');
     });
 });

@@ -1,9 +1,9 @@
-FROM node:22-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /workspace
 COPY . .
 RUN corepack enable && yarn install --immutable && yarn workspaces foreach -A --topological run build
 
-FROM node:22-alpine
+FROM node:24-alpine
 WORKDIR /workspace
 ENV NODE_ENV=production
 COPY --from=build /workspace/node_modules ./node_modules

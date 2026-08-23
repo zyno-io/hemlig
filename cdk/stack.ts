@@ -6,6 +6,7 @@ import {
   Duration,
   Fn,
   RemovalPolicy,
+  DefaultStackSynthesizer,
   Stack,
   type StackProps,
   Token,
@@ -16,13 +17,16 @@ import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as events from "aws-cdk-lib/aws-events";
 import * as eventTargets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as iot from "aws-cdk-lib/aws-iot";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
@@ -30,6 +34,12 @@ import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as sqs from "aws-cdk-lib/aws-sqs";
+import {
+  AwsCustomResource,
+  AwsCustomResourcePolicy,
+  PhysicalResourceId,
+} from "aws-cdk-lib/custom-resources";
 import type { Construct } from "constructs";
 import { isUsEast1CertificateArn, type DeploymentConfig } from "./config";
 import { consoleRuntimeConfig } from "./console-runtime-config";
@@ -62,6 +72,14 @@ export class HemligStack extends Stack {
     if (props.consoleFqdn !== undefined && props.oidcAdminScope === undefined) {
       throw new Error(
         "oidcAdminScope is required when consoleFqdn enables browser access.",
+      );
+    }
+    if (
+      props.consoleFqdn !== undefined &&
+      props.oidcConsoleAccessScope === undefined
+    ) {
+      throw new Error(
+        "oidcConsoleAccessScope is required when consoleFqdn enables browser access.",
       );
     }
     if (props.consoleFqdn !== undefined && props.oidcClientId === undefined) {
@@ -121,6 +139,7 @@ export class HemligStack extends Stack {
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: RemovalPolicy.RETAIN,
       timeToLiveAttribute: "ttl",
+      stream: dynamodb.StreamViewType.NEW_IMAGE,
     });
     table.addGlobalSecondaryIndex({
       indexName: workflowDueIndex,
@@ -185,21 +204,83 @@ export class HemligStack extends Stack {
     // One customer-managed key for all Hemlig envelope material. Payloads and
     // the online issuer key remain cryptographically separated by their KMS
     // encryption contexts; this is intentionally not a second issuer CMK.
-    const applicationKey = new kms.Key(this, "ApplicationKey", {
-      alias: `alias/${prefix}-application`,
-      description: `Application envelope key for ${prefix}`,
-      enableKeyRotation: true,
-      removalPolicy: RemovalPolicy.RETAIN,
-    });
-    const cursorKey = new secretsmanager.Secret(this, "CursorKey", {
-      secretName: `${prefix}/cursor-hmac`,
-      description: "Opaque cursor integrity key for Hemlig.",
-      generateSecretString: {
-        excludePunctuation: true,
-        passwordLength: 64,
+    const applicationKey =
+      props.existingApplicationKeyArn === undefined
+        ? new kms.Key(this, "ApplicationKey", {
+            description: `Application envelope key for ${prefix}`,
+            enableKeyRotation: true,
+            removalPolicy: RemovalPolicy.RETAIN,
+          })
+        : kms.Key.fromKeyArn(
+            this,
+            "ApplicationKey",
+            props.existingApplicationKeyArn,
+          );
+    const notificationTopicPrefix = `hemlig/${props.environmentName}/consumers`;
+    const notificationPolicyName = `${prefix}-agent-notifications`;
+    const iotEndpoint = new AwsCustomResource(this, "IotDataEndpoint", {
+      onCreate: {
+        service: "Iot",
+        action: "describeEndpoint",
+        parameters: { endpointType: "iot:Data-ATS" },
+        physicalResourceId: PhysicalResourceId.of(`${prefix}-iot-data-ats`),
       },
-      removalPolicy: RemovalPolicy.RETAIN,
+      onUpdate: {
+        service: "Iot",
+        action: "describeEndpoint",
+        parameters: { endpointType: "iot:Data-ATS" },
+        physicalResourceId: PhysicalResourceId.of(`${prefix}-iot-data-ats`),
+      },
+      policy: AwsCustomResourcePolicy.fromSdkCalls({
+        resources: AwsCustomResourcePolicy.ANY_RESOURCE,
+      }),
+    }).getResponseField("endpointAddress");
+    const iotArnPrefix = `arn:${this.partition}:iot:${this.region}:${this.account}`;
+    const attachedThingName = "${iot:Connection.Thing.ThingName}";
+    const notificationPolicy = new iot.CfnPolicy(this, "AgentNotificationPolicy", {
+      policyName: notificationPolicyName,
+      policyDocument: {
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: ["iot:Connect"],
+            Resource: [`${iotArnPrefix}:client/${attachedThingName}`],
+            Condition: { Bool: { "iot:Connection.Thing.IsAttached": "true" } },
+          },
+          {
+            Effect: "Allow",
+            Action: ["iot:Subscribe"],
+            Resource: [`${iotArnPrefix}:topicfilter/${notificationTopicPrefix}/${attachedThingName}`],
+          },
+          {
+            Effect: "Allow",
+            Action: ["iot:Receive"],
+            Resource: [`${iotArnPrefix}:topic/${notificationTopicPrefix}/${attachedThingName}`],
+          },
+        ],
+      },
     });
+    new kms.Alias(this, "ApplicationKeyAlias", {
+      aliasName: `alias/${prefix}-application`,
+      targetKey: applicationKey,
+    });
+    const cursorKey =
+      props.existingCursorHmacSecretArn === undefined
+        ? new secretsmanager.Secret(this, "CursorKey", {
+            secretName: `${prefix}/cursor-hmac`,
+            description: "Opaque cursor integrity key for Hemlig.",
+            generateSecretString: {
+              excludePunctuation: true,
+              passwordLength: 64,
+            },
+            removalPolicy: RemovalPolicy.RETAIN,
+          })
+        : secretsmanager.Secret.fromSecretCompleteArn(
+            this,
+            "CursorKey",
+            props.existingCursorHmacSecretArn,
+          );
     const certificate = new acm.Certificate(this, "ApiCertificate", {
       domainName: props.adminFqdn,
       subjectAlternativeNames: [props.apiFqdn],
@@ -237,6 +318,9 @@ export class HemligStack extends Stack {
       AUDIT_PREFIX: auditPrefix,
       DELIVERY_API_CUSTOM_DOMAIN_NAME: props.apiFqdn,
       DELIVERY_API_HOSTNAME: props.apiFqdn,
+      IOT_ENDPOINT: iotEndpoint,
+      IOT_NOTIFICATION_POLICY_NAME: notificationPolicyName,
+      IOT_NOTIFICATION_TOPIC_PREFIX: notificationTopicPrefix,
       CURSOR_HMAC_KEY: cursorKey.secretValue.unsafeUnwrap(),
       ADMIN_JWT_ISSUER: props.oidcIssuer,
       ADMIN_JWT_AUDIENCE: props.oidcAudience,
@@ -244,6 +328,9 @@ export class HemligStack extends Stack {
       ...(props.oidcAdminScope === undefined
         ? {}
         : { ADMIN_JWT_SCOPE: props.oidcAdminScope }),
+      ...(props.oidcAdminRole === undefined
+        ? {}
+        : { ADMIN_JWT_ROLE: props.oidcAdminRole }),
       MAX_PAYLOAD_BYTES: "768000",
     };
     const adminFunction = this.function(
@@ -256,6 +343,18 @@ export class HemligStack extends Stack {
       "ConsumerFunction",
       `${prefix}-consumer`,
       "src/handlers/consumer.ts",
+      environment,
+    );
+    const bootstrapFunction = this.function(
+      "BootstrapFunction",
+      `${prefix}-bootstrap`,
+      "src/handlers/bootstrap.ts",
+      environment,
+    );
+    const notificationPublisherFunction = this.function(
+      "NotificationPublisherFunction",
+      `${prefix}-notification-publisher`,
+      "src/handlers/notifications.ts",
       environment,
     );
     const recoveryFunction = this.function(
@@ -272,10 +371,13 @@ export class HemligStack extends Stack {
     );
 
     table.grantReadWriteData(adminFunction);
-    table.grantReadData(consumerFunction);
+    table.grantReadWriteData(consumerFunction);
+    table.grantReadWriteData(bootstrapFunction);
+    table.grantReadWriteData(notificationPublisherFunction);
     table.grantReadWriteData(recoveryFunction);
     table.grantReadWriteData(retentionFunction);
     grantRevisionMutation(adminFunction, revisionBucket);
+    grantRevisionMutation(consumerFunction, revisionBucket);
     revisionBucket.grantRead(consumerFunction);
     grantRevisionMutation(recoveryFunction, revisionBucket);
     grantTruststorePublisher(recoveryFunction, truststoreBucket, props.apiFqdn);
@@ -285,11 +387,17 @@ export class HemligStack extends Stack {
         resources: [revisionBucket.arnForObjects("*")],
       }),
     );
-    applicationKey.grant(
-      adminFunction,
-      "kms:GenerateDataKey",
-      "kms:DescribeKey",
-    );
+    // Do not use Key.grant() here: it would allow a function to mint data
+    // keys for any encryption context.  The one shared CMK is safe only if
+    // each caller is still constrained to its explicit application purpose.
+    grantEnvelopeDataKey(adminFunction, applicationKey, [
+      "issuer-ca",
+      "secret-payload",
+    ]);
+    grantEnvelopeDataKey(consumerFunction, applicationKey, [
+      "secret-payload",
+    ]);
+    grantEnvelopeDataKey(bootstrapFunction, applicationKey, ["issuer-ca"]);
     // The admin Lambda uses this same application CMK to unwrap only the
     // issuing-root envelope. Consumer functions remain decrypt-only for
     // payload envelopes and cannot use the issuer encryption context.
@@ -301,6 +409,33 @@ export class HemligStack extends Stack {
           StringEquals: {
             "kms:EncryptionContext:service": "hemlig",
             "kms:EncryptionContext:purpose": "issuer-ca",
+          },
+        },
+      }),
+    );
+    bootstrapFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["kms:Decrypt"],
+        resources: [applicationKey.keyArn],
+        conditions: {
+          StringEquals: {
+            "kms:EncryptionContext:service": "hemlig",
+            "kms:EncryptionContext:purpose": "issuer-ca",
+          },
+        },
+      }),
+    );
+    // Administrators may read the current plaintext payload through the
+    // administrator API. Keep that decryption limited to payload envelopes;
+    // it does not broaden access to the issuer's private-key envelope.
+    adminFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["kms:Decrypt"],
+        resources: [applicationKey.keyArn],
+        conditions: {
+          StringEquals: {
+            "kms:EncryptionContext:service": "hemlig",
+            "kms:EncryptionContext:purpose": "secret-payload",
           },
         },
       }),
@@ -319,9 +454,67 @@ export class HemligStack extends Stack {
     );
     auditBucket.grantPut(adminFunction, `${auditPrefix}/*`);
     auditBucket.grantPut(consumerFunction, `${auditPrefix}/*`);
+    auditBucket.grantPut(bootstrapFunction, `${auditPrefix}/*`);
     auditBucket.grantPut(recoveryFunction, `${auditPrefix}/*`);
     auditBucket.grantPut(retentionFunction, `${auditPrefix}/*`);
     grantTruststorePublisher(adminFunction, truststoreBucket, props.apiFqdn);
+    grantTruststorePublisher(bootstrapFunction, truststoreBucket, props.apiFqdn);
+    bootstrapFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "iot:AttachPolicy",
+          "iot:AttachThingPrincipal",
+          "iot:CreateThing",
+          "iot:DescribeCertificate",
+          "iot:RegisterCertificateWithoutCA",
+          "iot:UpdateCertificate",
+        ],
+        resources: ["*"],
+      }),
+    );
+    const notificationDeadLetterQueue = new sqs.Queue(this, "NotificationDeadLetterQueue", {
+      queueName: `${prefix}-notification-dlq`,
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      retentionPeriod: Duration.days(14),
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    new cloudwatch.Alarm(this, "NotificationDeadLetterAlarm", {
+      alarmName: `${prefix}-notification-dlq-not-empty`,
+      metric: notificationDeadLetterQueue.metricApproximateNumberOfMessagesVisible({
+        period: Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    notificationPublisherFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["iot:Publish"],
+        resources: [`${iotArnPrefix}:topic/${notificationTopicPrefix}/*`],
+      }),
+    );
+    notificationPublisherFunction.addEventSource(
+      new lambdaEventSources.DynamoEventSource(table, {
+        startingPosition: lambda.StartingPosition.TRIM_HORIZON,
+        batchSize: 10,
+        bisectBatchOnError: true,
+        retryAttempts: 5,
+        onFailure: new lambdaEventSources.SqsDlq(notificationDeadLetterQueue),
+        filters: [
+          lambda.FilterCriteria.filter({
+            eventName: ["INSERT"],
+            dynamodb: {
+              NewImage: {
+                pk: { S: [{ prefix: "NOTIFICATION#" }] },
+                status: { S: ["PENDING"] },
+              },
+            },
+          }),
+        ],
+      }),
+    );
     truststoreBucket.addToResourcePolicy(
       new iam.PolicyStatement({
         principals: [new iam.ServicePrincipal("apigateway.amazonaws.com")],
@@ -342,6 +535,10 @@ export class HemligStack extends Stack {
     const adminIntegration = new HttpLambdaIntegration(
       "AdminIntegration",
       adminFunction,
+    );
+    const bootstrapIntegration = new HttpLambdaIntegration(
+      "BootstrapIntegration",
+      bootstrapFunction,
     );
     const adminApi = new apigatewayv2.HttpApi(this, "AdminApi", {
       apiName: `${prefix}-admin`,
@@ -385,6 +582,13 @@ export class HemligStack extends Stack {
         authorizationScopes: [],
       });
     }
+    adminApi.addRoutes({
+      path: "/v1/bootstrap/redeem",
+      methods: [apigatewayv2.HttpMethod.POST],
+      integration: bootstrapIntegration,
+      authorizer: new apigatewayv2.HttpNoneAuthorizer(),
+      authorizationScopes: [],
+    });
     const consumerApi = new apigatewayv2.HttpApi(this, "ConsumerApi", {
       apiName: `${prefix}-consumer`,
       defaultIntegration: new HttpLambdaIntegration(
@@ -406,10 +610,23 @@ export class HemligStack extends Stack {
     );
     const adminStage = new apigatewayv2.HttpStage(this, "AdminStage", {
       httpApi: adminApi,
+      // HttpStage does not auto-deploy unless explicitly requested. Without
+      // this, API Gateway retains the routes in its control plane but the
+      // custom domain serves only 404s from an empty stage.
+      autoDeploy: true,
       accessLogSettings: accessLogSettings(adminAccessLogs),
     });
+    // Includes the bootstrap route. Its capability is already high entropy and
+    // short lived, but a modest stage limit also bounds unauthenticated Lambda
+    // work without giving the bootstrap endpoint a less protected path.
+    const adminCfnStage = adminStage.node.defaultChild as apigatewayv2.CfnStage;
+    adminCfnStage.defaultRouteSettings = {
+      throttlingBurstLimit: 100,
+      throttlingRateLimit: 50,
+    };
     const consumerStage = new apigatewayv2.HttpStage(this, "ConsumerStage", {
       httpApi: consumerApi,
+      autoDeploy: true,
       accessLogSettings: accessLogSettings(consumerAccessLogs),
     });
     new apigatewayv2.ApiMapping(this, "AdminMapping", {
@@ -453,10 +670,14 @@ export class HemligStack extends Stack {
     new CfnOutput(this, "ApiUrl", {
       value: `https://${props.apiFqdn}`,
     });
+    new CfnOutput(this, "IotEndpoint", { value: iotEndpoint });
     new CfnOutput(this, "AdminOidcIssuer", { value: props.oidcIssuer });
     new CfnOutput(this, "AdminOidcAudience", { value: props.oidcAudience });
     if (props.oidcAdminScope !== undefined) {
       new CfnOutput(this, "AdminOidcScope", { value: props.oidcAdminScope });
+    }
+    if (props.oidcAdminRole !== undefined) {
+      new CfnOutput(this, "AdminOidcRole", { value: props.oidcAdminRole });
     }
     new CfnOutput(this, "RevisionBucketName", {
       value: revisionBucket.bucketName,
@@ -488,27 +709,39 @@ export class HemligStack extends Stack {
     if (consoleFqdn === undefined) {
       return;
     }
-    // oidcAdminScope and oidcClientId are already required by the constructor
-    // whenever consoleFqdn is set; narrow them here once so every read below
-    // (in particular the config.json payload) is compiler-checked as a string
-    // rather than relying on a runtime guard deep in Source.jsonData.
-    const { oidcAdminScope, oidcClientId } = props;
-    if (oidcAdminScope === undefined || oidcClientId === undefined) {
+    // These OIDC console values are already required by the constructor whenever
+    // consoleFqdn is set; narrow them here once so every read below (in particular
+    // the config.json payload) is compiler-checked as a string rather than relying
+    // on a runtime guard deep in Source.jsonData.
+    const { oidcAdminScope, oidcConsoleAccessScope, oidcClientId } = props;
+    if (
+      oidcAdminScope === undefined ||
+      oidcConsoleAccessScope === undefined ||
+      oidcClientId === undefined
+    ) {
       throw new Error(
-        "oidcAdminScope and oidcClientId are required when consoleFqdn is configured.",
+        "oidcAdminScope, oidcConsoleAccessScope, and oidcClientId are required when consoleFqdn is configured.",
       );
     }
     const consoleProps: DeploymentConfig & {
       consoleFqdn: string;
       oidcAdminScope: string;
+      oidcConsoleAccessScope: string;
       oidcClientId: string;
-    } = { ...props, consoleFqdn, oidcAdminScope, oidcClientId };
+    } = {
+      ...props,
+      consoleFqdn,
+      oidcAdminScope,
+      oidcConsoleAccessScope,
+      oidcClientId,
+    };
 
     const certificate = this.resolveConsoleCertificate(
       zone,
       consoleFqdn,
       consoleProps.consoleCertificateArn,
       consoleProps.existingHostedZoneId !== undefined,
+      consoleProps.bootstrapQualifier,
     );
     const consoleBucket = new s3.Bucket(this, "ConsoleBucket", {
       bucketNamePrefix: `${prefix}-console`,
@@ -698,8 +931,7 @@ export class HemligStack extends Stack {
     const consoleDistPackagedEntry = path.resolve(
       __dirname,
       "..",
-      "..",
-      "packages/console/dist",
+      "console-dist",
     );
     const consoleDist = existsSync(consoleDistSourceEntry)
       ? consoleDistSourceEntry
@@ -711,10 +943,7 @@ export class HemligStack extends Stack {
       adminFqdn: consoleProps.adminFqdn,
       oidcIssuer: consoleProps.oidcIssuer,
       oidcClientId: consoleProps.oidcClientId,
-      oidcAdminScope: consoleProps.oidcAdminScope,
-      secretEnvironments: consoleProps.secretEnvironments ?? [
-        consoleProps.environmentName,
-      ],
+      oidcConsoleAccessScope: consoleProps.oidcConsoleAccessScope,
     });
     if (consoleDist === undefined) {
       // An installer may build and publish the console output as a separate pipeline
@@ -752,6 +981,7 @@ export class HemligStack extends Stack {
     consoleFqdn: string,
     certificateArn: string | undefined,
     hostedZoneIsImported: boolean,
+    bootstrapQualifier: string | undefined,
   ): acm.ICertificate {
     if (certificateArn !== undefined) {
       return acm.Certificate.fromCertificateArn(
@@ -793,6 +1023,12 @@ export class HemligStack extends Stack {
       {
         env: { account: this.account, region: "us-east-1" },
         crossRegionReferences: true,
+        // Synthesizers cannot be shared by two Stack instances. Make a new
+        // instance with the supplied qualifier so this sibling publishes to
+        // the same deliberately scoped bootstrap roles and asset bucket.
+        ...(bootstrapQualifier === undefined
+          ? {}
+          : { synthesizer: new DefaultStackSynthesizer({ qualifier: bootstrapQualifier }) }),
       },
     );
     const certificateZone = route53.HostedZone.fromHostedZoneAttributes(
@@ -818,13 +1054,13 @@ export class HemligStack extends Stack {
       functionName,
       description: `Hemlig ${id}`,
       entry: existsSync(sourceEntry) ? sourceEntry : packagedEntry,
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: "handler",
       memorySize: 512,
       timeout: Duration.seconds(29),
       tracing: lambda.Tracing.ACTIVE,
       environment,
-      bundling: { minify: true, sourceMap: true, target: "node22" },
+      bundling: { minify: true, sourceMap: true, target: "node24" },
     });
   }
 }
@@ -861,6 +1097,25 @@ const grantRevisionMutation = (
         "s3:PutObjectRetention",
       ],
       resources: [bucket.arnForObjects("*")],
+    }),
+  );
+};
+
+const grantEnvelopeDataKey = (
+  function_: lambda.Function,
+  key: kms.IKey,
+  purposes: readonly string[],
+): void => {
+  function_.addToRolePolicy(
+    new iam.PolicyStatement({
+      actions: ["kms:GenerateDataKey"],
+      resources: [key.keyArn],
+      conditions: {
+        StringEquals: {
+          "kms:EncryptionContext:service": "hemlig",
+          "kms:EncryptionContext:purpose": purposes,
+        },
+      },
     }),
   );
 };

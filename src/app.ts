@@ -4,8 +4,13 @@ import { EnvelopeCrypto } from './crypto/envelope';
 import { DynamoRepository } from './repositories/dynamo';
 import { ObjectStore } from './repositories/object-store';
 import { AuditWriter } from './services/audit';
+import { AgentGrantService } from './services/agent-grants';
+import { AgentNotificationService } from './services/agent-notifications';
+import { AgentService } from './services/agents';
 import { ConsumerService } from './services/consumers';
 import { CursorCodec } from './services/cursor';
+import { EnvironmentService } from './services/environments';
+import { FolderService } from './services/folders';
 import { IssuerService } from './services/issuer';
 import { SecretService } from './services/secrets';
 
@@ -14,7 +19,11 @@ export interface Application {
     readonly repository: DynamoRepository;
     readonly objects: ObjectStore;
     readonly audit: AuditWriter;
+    readonly agentGrants: AgentGrantService;
+    readonly agents: AgentService;
     readonly cursors: CursorCodec;
+    readonly environments: EnvironmentService;
+    readonly folders: FolderService;
     readonly secrets: SecretService;
     readonly consumers: ConsumerService;
     readonly clients: AwsClients;
@@ -26,14 +35,25 @@ export const createApplication = (config: AppConfig): Application => {
     const objects = new ObjectStore(clients.s3);
     const crypto = new EnvelopeCrypto(clients.kms, config);
     const issuer = new IssuerService(repository, clients.kms, config);
+    const environments = new EnvironmentService(repository);
+    const secrets = new SecretService(repository, objects, crypto, config, environments);
+    const consumers = new ConsumerService(repository, objects, clients.apiGateway, issuer, config, environments);
+    const agentNotifications = new AgentNotificationService(
+        clients.iot,
+        config.iotNotificationPolicyName,
+    );
     return {
         config,
         repository,
         objects,
         audit: new AuditWriter(objects, config),
         cursors: new CursorCodec(config.cursorHmacKey),
-        secrets: new SecretService(repository, objects, crypto, config),
-        consumers: new ConsumerService(repository, objects, clients.apiGateway, issuer, config),
+        environments,
+        folders: new FolderService(repository, environments),
+        secrets,
+        consumers,
+        agents: new AgentService(repository, secrets),
+        agentGrants: new AgentGrantService(repository, consumers, environments, agentNotifications),
         clients,
     };
 };

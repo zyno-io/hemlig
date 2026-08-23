@@ -9,34 +9,37 @@ import type { ControlRevision } from "../api/schemas";
 import { useGuardedMutation } from "../composables/useGuardedMutation";
 import { useAppStore } from "../stores/app";
 
-const props = defineProps<{ env: string }>();
+// `path` is the folder the operator was browsing when they clicked "New
+// secret" (see the `?path=` query param on this route). It only seeds the
+// initial draft — the field stays editable, and creating from the root
+// leaves it blank rather than prefilling anything.
+const props = defineProps<{ env: string; path?: string }>();
 const store = useAppStore();
 const router = useRouter();
 
 const secretId = ref("");
 const acl = ref<string[]>([]);
 const metadata = reactive<MetadataDraft>({
-  name: "",
   description: "",
-  path: "",
+  path: props.path ?? "",
   tags: [],
 });
 
-const idError = computed(() =>
-  secretId.value.length > 0 && !identifier.test(secretId.value)
+const idError = computed(() => {
+  if (secretId.value.length === 0) {
+    return "Secret ID is required.";
+  }
+  return !identifier.test(secretId.value)
     ? "3–64 characters: lowercase letters, digits, or hyphens, starting with a letter."
-    : undefined,
-);
+    : undefined;
+});
 
-const canSubmit = computed(
-  () => metadata.name.trim().length > 0 && idError.value === undefined,
-);
+const canSubmit = computed(() => idError.value === undefined);
 
 const buildInput = () => ({
-  ...(secretId.value.length > 0 ? { secretId: secretId.value } : {}),
+  secretId: secretId.value,
   environment: props.env,
   metadata: {
-    name: metadata.name.trim(),
     ...(metadata.description.trim() ? { description: metadata.description.trim() } : {}),
     ...(metadata.path.trim() ? { path: metadata.path.trim() } : {}),
     ...(metadata.tags.filter((t) => t.key).length > 0
@@ -56,11 +59,8 @@ const creation = useGuardedMutation<CreateInput, ControlRevision>({
   family: "secret",
   mutate: (input, key) => store.requireApi().createSecret(input, key),
   // A create cannot be retried with the same key and must not be retried with a
-  // fresh one, so the only safe recovery is to look for the secret.
+  // fresh one, so the only safe recovery is to look for the named secret.
   reconcile: async (input) => {
-    if (input.secretId === undefined) {
-      return undefined;
-    }
     try {
       return await store.requireApi().getSecret(input.secretId);
     } catch {
@@ -102,21 +102,23 @@ const submit = async (): Promise<void> => {
     />
 
     <form class="space-y-4 rounded border border-line bg-surface-raised p-4" @submit.prevent="submit">
-      <label class="block">
-        <span class="text-xs text-ink-muted">Secret ID (optional)</span>
-        <input
-          v-model="secretId"
-          placeholder="database-credentials"
-          class="mono mt-1 w-full rounded border border-line bg-surface px-2 py-1"
-        />
-        <span v-if="idError" class="text-xs text-danger">{{ idError }}</span>
-        <span v-else class="text-xs text-ink-muted">
-          Leave blank to generate one, though a generated ID is an opaque UUID. A readable
-          ID is easier to grant and audit.
-        </span>
-      </label>
-
-      <MetadataFields v-model="metadata" />
+      <MetadataFields v-model="metadata">
+        <template #after-path>
+          <label class="block">
+            <span class="text-xs text-ink-muted">Secret ID</span>
+            <input
+              v-model="secretId"
+              required
+              placeholder="database-credentials"
+              class="mono mt-1 w-full rounded border border-line bg-surface px-2 py-1"
+            />
+            <span v-if="idError" class="text-xs text-danger">{{ idError }}</span>
+            <span v-else class="text-xs text-ink-muted">
+              A stable, readable ID is used for grants and audit records.
+            </span>
+          </label>
+        </template>
+      </MetadataFields>
       <AclEditor v-model="acl" :environment="env" />
 
       <button

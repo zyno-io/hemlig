@@ -1,6 +1,6 @@
 # Hemlig API reference
 
-This is the public reference for the **implemented v0.3 HTTP API**. Its
+This is the public reference for the **implemented v0.4 HTTP API**. Its
 machine-readable contract is [openapi/consumer-secrets.yaml](../openapi/consumer-secrets.yaml).
 It includes organizational browsing and the safe CSR enrollment/certificate
 routes. Audit querying and issuer-root rotation are intentionally excluded.
@@ -28,17 +28,18 @@ the configured `client_id` only when `aud` is absent.
 
 When the deployment configures a browser console origin, it also configures an
 exact administrator OAuth scope. API Gateway and Hemlig both require that scope
-in `scope` or `scp`; this is opt-in only to preserve existing non-browser
+in `scope` or `scp`. When `oidcAdminRole` is configured, Hemlig also requires
+that exact value in the token's `roles` (or `role`) claim. This is opt-in only to preserve existing non-browser
 automation until its identity-provider configuration is ready.
 
 ```http
 Authorization: Bearer <JWT>
 ```
 
-Every administrator mutation also needs an `Idempotency-Key` of 8–128
-characters. Use one durable random value per intended operation. Reusing a key
-returns `409 conflict`; retain the initial response instead of treating a retry
-as a new operation.
+Secret and consumer mutations need an `Idempotency-Key` of 8–128 characters.
+Use one durable random value per intended operation. Reusing a key returns
+`409 conflict`; retain the initial response instead of treating a retry as a
+new operation.
 
 ### Delivery API
 
@@ -58,6 +59,36 @@ material. If API Gateway rejects the bundle with warnings, Hemlig rolls back to
 the last known bundle when one exists, marks the operation failed, and releases
 the publication lease.
 
+### Namespace-agent bootstrap
+
+Kubernetes and other constrained automation must not hold an administrator
+OIDC token. An administrator first creates an **AgentGrant** with a new
+consumer ID, one environment, `read` and/or `write` capability, and explicit
+canonical path prefixes. It then issues a single-use, 30-minute bootstrap
+capability. Hemlig stores only its SHA-256 digest.
+
+```http
+POST /v1/bootstrap/redeem
+Authorization: Bootstrap hmlb_<256-bit-random-value>
+Content-Type: application/json
+
+{ "apiCertificateSigningRequestPem": "-----BEGIN CERTIFICATE REQUEST-----…" }
+```
+
+The route receives no desired consumer ID, environment, ACL, path, or endpoint
+from the caller. Those values come only from the pre-created AgentGrant. It
+returns the public mTLS leaf and the fixed grant scope. A retry with the same
+CSR returns the same enrollment result after a lost response; a different CSR
+is rejected. After successful redemption, the leaf is also registered with AWS
+IoT Core for its private notification topic. The bootstrap value can never be
+used as a general API token.
+
+An active agent identity cannot bypass its grant by calling ordinary delivery
+endpoints: Hemlig applies its AgentGrant prefix check there too. A prefix
+matches only the exact path or a child segment (`payments` matches
+`payments/api`, never `payments-prod`). Missing paths and empty/root prefixes
+are never agent-authorized.
+
 ## Common behavior
 
 ### Headers
@@ -65,6 +96,7 @@ the publication lease.
 | Header            | Routes                    | Meaning                                |
 | ----------------- | ------------------------- | -------------------------------------- |
 | `Authorization`   | Admin routes              | Administrator JWT                      |
+| `Authorization`   | Bootstrap redemption      | One-use `Bootstrap hmlb_…` capability  |
 | `Idempotency-Key` | Admin mutations           | 8–128-character operation key          |
 | `If-Match`        | `PUT` secret routes       | Required current control-revision ETag |
 | `If-None-Match`   | Consumer secret read      | Optional current control-revision ETag |
@@ -106,33 +138,60 @@ Secret IDs and consumer IDs must match:
 ^[a-z][a-z0-9-]{2,63}$
 ```
 
-`POST /v1/admin/secrets` generates an ID beginning with `sec-` when `secretId`
-is omitted.
+`POST /v1/admin/secrets` requires a caller-supplied `secretId`.
+
+### Environments
+
+Administrators define logical secret/consumer environments at runtime with
+`POST /v1/admin/environments`, then discover them with
+`GET /v1/admin/environments`. A name must match
+`^[a-z][a-z0-9-]{0,63}$`. New secret creation, consumer enrollment, and
+environment-scoped catalog browsing require an existing definition; a fresh
+deployment intentionally starts with none. The registry supports up to 100
+environments.
+
+### Folders
+
+A folder is otherwise only a path prefix derived from `metadata.path` on the
+secrets `GET /v1/admin/secrets/tree` finds beneath it, so an empty one cannot
+exist on its own. Administrators lay out an organizational structure ahead of
+filling it with `POST /v1/admin/folders`, keyed by `environment` (which must
+already be defined) and `path`, using the same canonical, lowercase,
+slash-delimited grammar as `metadata.path` and `pathPrefix`. Creating
+`payments/stripe/production` creates a record only for that exact path;
+Hemlig never materializes `payments` or `payments/stripe` as separate
+records, because the tree route already derives every intermediate segment
+from the paths it observes -- a second, explicit record for the same
+intermediate folder would be a second source of truth for it. The registry
+supports up to 1,000 folder records per environment. `DELETE
+/v1/admin/folders` removes a record without ever touching a secret; see
+below.
 
 ### Metadata and ACL
 
 ```json
 {
   "metadata": {
-    "name": "database-credentials",
     "description": "Optional human-readable description"
   },
   "acl": [{ "consumerId": "prod-east", "permissions": ["read"] }]
 }
 ```
 
-`metadata.name` is required (maximum 128 characters). `description` is optional
-and at most 1,024 characters. `path` is an optional canonical, lowercase,
+`description` is optional and at most 1,024 characters. `path` is an optional canonical, lowercase,
 slash-delimited organizational location (up to 256 characters), for example
 `payments/stripe/production`. `tags` is an optional map of up to 20 lowercase
 keys to short exact-match values, for example `owner: payments` and
 `system: billing`. Paths and tags are returned only to administrators; they
 never select a delivery target, grant access, or appear in the consumer API.
 
-An ACL has zero to ten unique consumers and only supports the `read` permission.
+An ACL has zero to forty unique consumers and only supports the `read` permission.
 Every grant must identify an already-enrolled, active consumer in the same
 environment as the secret. Removing a consumer keeps a `REVOKED` tombstone in
 its snapshot so the operator removes the corresponding Kubernetes Secret.
+The environment must first be defined by an administrator. Hemlig stores that
+definition in the control table and rejects secret creation and consumer
+enrollment for an unknown environment.
 
 ### Payload
 
@@ -168,7 +227,7 @@ the optimistic-concurrency ETag for subsequent updates.
   "state": "ACTIVE",
   "createdAt": "2026-08-22T19:37:12.441Z",
   "createdBy": { "type": "human", "id": "external-oidc-subject" },
-  "metadata": { "name": "database-credentials" },
+  "metadata": { "description": "Database credentials" },
   "acl": [{ "consumerId": "prod-east", "permissions": ["read"] }]
 }
 ```
@@ -188,6 +247,19 @@ ETag and is the value required by a subsequent update. This route is intended
 for declarative consumers such as the Kubernetes export controller and Pulumi
 provider to converge against the current control-plane state.
 
+### `GET /v1/admin/secrets/{secretId}/payload`
+
+Decrypts and returns the current `ACTIVE` payload to an authenticated
+administrator. It returns the same `secretId`, `controlVersionId`,
+`payloadVersionId`, and payload shape as consumer delivery, with the current
+control version as the `ETag`. It reads only the current immutable payload
+version, performs the same envelope and revision-binding checks as consumer
+delivery, and writes attempted, authorized, and terminal audit evidence without
+including plaintext in that evidence.
+
+The route does not support historical payload reads or `If-None-Match`. A
+secret without an active payload returns `404`.
+
 ### `GET /v1/admin/secrets`
 
 Browses organizational metadata without returning payloads, ACLs, encryption
@@ -206,6 +278,81 @@ page of the environment catalog before finding matches; callers must continue
 until `nextCursor` is absent when they need exhaustive results.
 Each result may include `payloadKeyCount`; it never includes plaintext, key
 names, ACLs, or encryption material.
+
+#### Search with `q`
+
+`q` is an optional case-insensitive substring match against `secretId` and
+`metadata.description`, composed with `environment`, `pathPrefix`, and `tags`.
+It must be 1–128 characters and not only whitespace.
+
+```http
+GET /v1/admin/secrets?environment=prod&pathPrefix=payments&q=stripe HTTP/1.1
+Authorization: Bearer <JWT>
+```
+
+Adding `q` switches the response from cursor-paginated to bounded-complete:
+the page never includes `nextCursor`, and includes `truncated` instead. This
+is deliberate. The plain page above applies its filters after a bounded read,
+so it can come back empty while `nextCursor` is still set — a caller has to
+keep chasing cursors to learn whether there truly are no results. That is
+tolerable for browsing but wrong for search, where "no matches" must be
+trustworthy on the first response, and every admin request already writes
+three audit objects into a seven-year Object Lock Compliance archive, so a
+client-side, paginated substring walk is exactly the cost this route exists
+to avoid. `q` instead paginates the same catalog index internally, up to the
+same bounded scan the folder-tree route uses, and returns one
+complete-or-truncated answer: `truncated: true` means the scan hit that bound
+and some matches beyond it were not considered.
+
+### `GET /v1/admin/secrets/tree`
+
+Browses the organizational catalog as a folder tree instead of a flat page.
+Every admin request writes three audit objects into a seven-year Object Lock
+Compliance archive, so a console that browsed folder-by-folder would multiply
+that archive write for every directory it opened; this route paginates the
+underlying catalog-path index internally and returns one bounded page
+instead. `environment` is required; `pathPrefix` is an optional canonical
+path prefix, identical in format to `GET /v1/admin/secrets`.
+
+```http
+GET /v1/admin/secrets/tree?environment=prod&pathPrefix=payments HTTP/1.1
+Authorization: Bearer <JWT>
+```
+
+```json
+{
+  "environment": "prod",
+  "pathPrefix": "payments",
+  "folders": [
+    { "segment": "stripe", "path": "payments/stripe", "secretCount": 12, "kind": "both" },
+    { "segment": "adyen", "path": "payments/adyen", "secretCount": 0, "kind": "explicit" }
+  ],
+  "secrets": [],
+  "truncated": false,
+  "generatedAt": "2026-08-22T19:37:12.441Z"
+}
+```
+
+`folders` is the union of every immediate child segment below `pathPrefix`
+implied by a secret's `metadata.path` and every explicit folder record
+(`POST /v1/admin/folders`), deduplicated by path, each with `secretCount`
+computed recursively over its whole subtree. `kind` says which source(s)
+produced it: `explicit` means an administrator created a folder record at
+exactly that path and no secret currently implies it (`secretCount` is then
+`0` -- an empty folder an administrator laid out ahead of filling it);
+`derived` means no record exists at exactly that path and it appears only
+because a secret's path equals or nests beneath it, or because a deeper
+explicit record implies it; `both` means a record exists at exactly that
+path and `secretCount` is greater than zero. `secretCount` counts only
+actual `READY` secrets; folder records are never counted as secrets.
+`secrets` lists only secrets whose path equals `pathPrefix` exactly; at the
+root (no `pathPrefix`), that means secrets with no path at all. This route
+scans an internally bounded number of catalog records rather than exposing a
+cursor: `truncated: true` means the page stopped early and the tree below it
+is incomplete, not that more pages are available to fetch. The folder-record
+union adds a second, separately bounded internal query (up to 1,000 records
+per environment); it does not affect `truncated`, which continues to reflect
+only the secret scan's bound.
 
 ### `GET /v1/admin/secrets/{secretId}/revisions`
 
@@ -232,7 +379,7 @@ Idempotency-Key: 4b395a16-d19a-4ced-b5c8-d93bbd0f4dc9
 {
   "secretId": "database-credentials",
   "environment": "prod",
-  "metadata": { "name": "database-credentials" },
+  "metadata": { "description": "Database credentials" },
   "acl": [{ "consumerId": "prod-east", "permissions": ["read"] }]
 }
 ```
@@ -254,7 +401,6 @@ Content-Type: application/json
 
 {
   "metadata": {
-    "name": "database-credentials",
     "description": "rotated by platform team"
   },
   "acl": [{ "consumerId": "prod-east", "permissions": ["read"] }]
@@ -287,6 +433,38 @@ Content-Type: application/json
 
 Returns `200 OK`, a new `controlVersionId`, a new `payloadVersionId`,
 `state: ACTIVE`, and the new ETag. Hemlig never echoes the plaintext payload.
+
+### `POST /v1/admin/folders`
+
+Creates one explicit, empty folder record. `environment` must already be
+defined; `path` uses the same grammar as `metadata.path`. See
+[Folders](#folders) for why creating a nested path never materializes its
+intermediate segments as separate records.
+
+```http
+POST /v1/admin/folders HTTP/1.1
+Content-Type: application/json
+
+{ "environment": "prod", "path": "payments/adyen" }
+```
+
+Returns `201 Created` with the folder record. A duplicate path in the same
+environment, or an at-capacity registry, is `409 conflict`, consistent with
+`POST /v1/admin/environments`. Unlike secret and consumer mutations, this
+route does not require `Idempotency-Key`: like environment creation, a
+retried call fails deterministically with `409` instead of risking a
+duplicate side effect, so there is nothing here for a dedup key to protect.
+
+### `DELETE /v1/admin/folders?environment=<env>&path=<path>`
+
+Deletes an explicit folder record. It never touches a secret. It returns
+`409 conflict` when any secret's path equals `path` exactly or is nested
+beneath it: deleting the record would not remove the folder from the tree,
+since `GET /v1/admin/secrets/tree` would still derive it from that secret.
+It returns `404 not_found` when no folder record exists at exactly `path`,
+even if the tree still shows it as a derived folder -- there is nothing to
+delete. Success is `204 No Content`. Like folder creation, this route does
+not require `Idempotency-Key`.
 
 ### Consumer enrollment and certificates
 
@@ -321,6 +499,19 @@ Returns the public deployment-wide issuer root and, after the first successful
 publication, the current truststore object key, exact S3 version, and anchor
 count. Before the first enrollment it returns `404`. It never returns the
 KMS-wrapped issuer private key.
+
+#### `POST /v1/admin/issuer`
+
+Deliberately provisions the deployment-wide issuing root instead of waiting
+for the first enrollment to create it lazily. Use it to distribute the
+truststore anchor before any consumer enrolls. It shares its creation logic
+with that lazy path, so the two can never diverge, and creation is
+race-safe: calling this repeatedly or concurrently is safe without an
+additional lock. Returns the same body as `GET /v1/admin/issuer` and never
+the KMS-wrapped issuer private key. `201 Created` only when this call created
+the root; `200 OK` when one already existed.
+
+Required headers: `Authorization`, `Idempotency-Key`
 
 #### `POST /v1/admin/consumers`
 
@@ -366,6 +557,35 @@ Immediately changes the API identity to `REVOKED`. The consumer Lambda performs
 a strongly consistent identity lookup on every request, so application-level
 access stops without waiting for a truststore change. Revoke only after a new
 active leaf has been distributed if continuity matters.
+
+### Agent grants and bootstrap capabilities
+
+`POST /v1/admin/agent-grants` creates the one remote policy that a namespace
+agent can ever use. It requires the ordinary administrator JWT, but does not
+enroll a consumer yet. `consumerId` must be unused; `environment` must exist.
+
+```json
+{
+  "consumerId": "prod-payments",
+  "environment": "prod",
+  "capabilities": ["read", "write"],
+  "readPathPrefixes": ["payments/production"],
+  "writePathPrefixes": ["payments/production"],
+  "displayName": "Payments namespace"
+}
+```
+
+Path lists have one to twenty unique canonical paths and are required exactly
+when their matching capability is present. They are an authorization boundary,
+unlike normal organizational paths/tags. A grant is `PENDING` until bootstrap
+completes, then becomes `ACTIVE`; it cannot silently fall back to a broad
+consumer identity.
+
+`POST /v1/admin/agent-grants/{grantId}/bootstrap-capabilities` returns the
+only plaintext bootstrap token. It may be issued only for a pending grant and
+is not stored by Hemlig in plaintext. Put that value in a Kubernetes Secret in
+the target namespace; it is not a bearer token for administration or normal
+secret delivery.
 
 ## Consumer routes
 
@@ -432,6 +652,31 @@ The cursor is bound to the caller's consumer identity and expires in 15 minutes.
 For `secret.changed`, fetch the secret when the recorded version differs from
 the operator's local annotation. For `secret.revoked`, delete the
 operator-managed Kubernetes Secret. This endpoint is not a durable event log.
+
+## Agent routes
+
+These are mTLS delivery routes for an active AgentGrant only. A normal consumer
+may not use them, and an agent cannot use normal consumer routes to escape its
+prefix scope. All secret reads still require the agent's regular per-secret
+read ACL in addition to its path scope; agent writes can only affect their
+write path scope and can never modify an ACL.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /v1/agent/config` | Returns the active grant's safe scope and the exact AWS IoT endpoint/client/topic. |
+| `GET /v1/agent/secrets/{secretId}` | Conditional payload read within read scope. |
+| `GET /v1/agent/secrets/{secretId}/control` | Returns only agent-visible metadata and ETag, including for a write-only exporter. |
+| `POST /v1/agent/secrets` | Creates a path-scoped empty secret with the caller's initial read ACL. |
+| `PUT /v1/agent/secrets/{secretId}` | Updates agent-allowed metadata with `If-Match`. |
+| `PUT /v1/agent/secrets/{secretId}/payload` | Replaces payload with `If-Match`. |
+| `GET /v1/changes` | Returns the path-filtered current snapshot; an out-of-scope move is represented as `secret.revoked` so the local target is removed. |
+
+Agent payload/control writes require `Idempotency-Key`; updates also require
+`If-Match`. The MQTT topic carries only `schemaVersion`, kind, secret ID, and
+revision IDs with QoS 1. It has no payload, data key, path, ACL, token, or
+certificate. Treat it solely as a trigger to fetch authoritative mTLS state;
+duplicates and missed hints are expected, so reconnect and periodic snapshot
+reconciliation remain required.
 
 ## Audit behavior
 

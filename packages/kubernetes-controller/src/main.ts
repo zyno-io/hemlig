@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-import { HemligKubernetesController, controllerConfigFromEnvironment } from "./index";
+import {
+  HemligV1BetaController,
+  v1BetaControllerConfigFromEnvironment,
+} from "./v1beta";
 
-const controller = HemligKubernetesController.fromDefaultConfig(
-  controllerConfigFromEnvironment(),
+const controller = HemligV1BetaController.fromDefaultConfig(
+  v1BetaControllerConfigFromEnvironment(),
 );
 const abort = new AbortController();
 process.once("SIGTERM", () => abort.abort());

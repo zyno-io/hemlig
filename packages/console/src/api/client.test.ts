@@ -5,7 +5,6 @@ import type { RuntimeConfig } from "../config";
 const config: RuntimeConfig = {
   deploymentName: "hml-test",
   adminApiUrl: "https://admin.example.com",
-  environments: ["dev"],
   auth: { mode: "oidc", authority: "https://idp.example.com", clientId: "c", scopes: ["s"] },
 };
 
@@ -50,13 +49,13 @@ describe("HemligApi transport", () => {
         state: "ACTIVE",
         createdAt: "2026-08-23T00:00:00.000Z",
         createdBy: { type: "human", id: "a" },
-        metadata: { name: "s" },
+        metadata: { description: "test secret" },
         acl: [],
       });
     }) as unknown as typeof fetch;
 
     const api = new HemligApi(config, tokens, fetchImpl);
-    await api.updateSecret("s", "ctl-1", { metadata: { name: "s" } }, "key-123");
+    await api.updateSecret("s", "ctl-1", { metadata: { description: "test secret" } }, "key-123");
 
     const headers = calls[0]?.headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer token");
@@ -65,6 +64,26 @@ describe("HemligApi transport", () => {
     expect(headers["if-match"]).toBe('"ctl-1"');
     expect(calls[0]?.credentials).toBe("omit");
     expect(calls[0]?.cache).toBe("no-store");
+  });
+
+  it("reads the current payload through the authenticated administrator route", async () => {
+    const fetchMock = vi.fn(async (_url: URL, _options?: RequestInit) =>
+      jsonOk({
+        secretId: "payments-api",
+        controlVersionId: "ctl-2",
+        payloadVersionId: "pay-2",
+        payload: { PASSWORD: { encoding: "utf8", value: "value" } },
+      }),
+    );
+    const api = new HemligApi(config, tokens, fetchMock as unknown as typeof fetch);
+
+    await expect(api.getSecretPayload("payments-api")).resolves.toMatchObject({
+      payloadVersionId: "pay-2",
+    });
+    const request = fetchMock.mock.calls[0]?.[0];
+    expect(request?.pathname).toBe(
+      "/v1/admin/secrets/payments-api/payload",
+    );
   });
 
   it("reports a transport failure as an unknown outcome and keeps the cause", async () => {
@@ -78,5 +97,24 @@ describe("HemligApi transport", () => {
       outcomeUnknown: true,
       transportDetail: "TypeError: Failed to fetch",
     });
+  });
+
+  it("creates an environment without an Idempotency-Key, unlike every other admin mutation", async () => {
+    const calls: RequestInit[] = [];
+    const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      calls.push(init ?? {});
+      return jsonOk({
+        name: "staging",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        createdBy: { type: "human", id: "a" },
+      });
+    }) as unknown as typeof fetch;
+
+    const api = new HemligApi(config, tokens, fetchImpl);
+    await expect(api.createEnvironment("staging")).resolves.toMatchObject({ name: "staging" });
+
+    const headers = calls[0]?.headers as Record<string, string>;
+    expect(headers["idempotency-key"]).toBeUndefined();
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({ name: "staging" });
   });
 });

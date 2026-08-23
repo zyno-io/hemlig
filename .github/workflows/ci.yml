@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, build, and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: yarn
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Install dependencies
+        run: yarn install --immutable
+      - name: Lint all workspaces
+        run: yarn lint:all
+      - name: Test root service and CDK construct
+        run: yarn test
+      - name: Test workspace packages
+        run: yarn test:all
+      - name: Package the CDK reference app
+        run: yarn build:cdk
+
+  ministack:
+    name: MiniStack verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: yarn
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Install dependencies
+        run: yarn install --immutable
+      - name: Start MiniStack
+        run: docker compose -f docker-compose.ministack.yml up -d --wait
+      - name: Verify DynamoDB, S3, and KMS integration
+        run: yarn ministack:verify
+      - name: Stop MiniStack
+        if: always()
+        run: docker compose -f docker-compose.ministack.yml down -v
+
+  controller-image:
+    name: Controller image build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Node 24 controller image
+        run: docker build --pull --file packages/kubernetes-controller/Dockerfile --tag hemlig-controller:ci .

@@ -1,11 +1,16 @@
 import { badRequest } from './errors';
-import type { Grant, SecretEntry, SecretMetadata, SecretPayload } from './types';
+import type { AgentCapability, Grant, SecretEntry, SecretMetadata, SecretPayload } from './types';
 
 const secretEntryKey = /^[A-Za-z0-9._-]+$/;
 const identifier = /^[a-z][a-z0-9-]{2,63}$/;
+const environmentName = /^[a-z][a-z0-9-]{0,63}$/;
 const metadataPath = /^[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*$/;
 const tagKey = /^[a-z][a-z0-9-]{0,31}$/;
 const tagValue = /^[A-Za-z0-9][A-Za-z0-9._@+\/-]{0,127}$/;
+// A mutation writes one access row and one transactional notification row for
+// each member of the old/new ACL union. Twenty grants leaves safe headroom
+// below DynamoDB's 100-item transaction maximum even when every grant changes.
+const maximumAclGrants = 20;
 
 export const assertIdentifier = (value: string, field: string): void => {
     if (!identifier.test(value)) {
@@ -13,9 +18,15 @@ export const assertIdentifier = (value: string, field: string): void => {
     }
 };
 
+export const assertEnvironmentName = (value: string): void => {
+    if (!environmentName.test(value)) {
+        throw badRequest('environment must be 1-64 lowercase letters, numbers, or hyphens and start with a letter.');
+    }
+};
+
 export const parseMetadata = (value: unknown): SecretMetadata => {
-    if (!isObject(value) || typeof value.name !== 'string' || value.name.trim().length === 0 || value.name.length > 128) {
-        throw badRequest('metadata.name is required and must be at most 128 characters.');
+    if (!isObject(value)) {
+        throw badRequest('metadata must be an object.');
     }
     if (value.description !== undefined && (typeof value.description !== 'string' || value.description.length > 1024)) {
         throw badRequest('metadata.description must be a string of at most 1024 characters.');
@@ -25,7 +36,6 @@ export const parseMetadata = (value: unknown): SecretMetadata => {
     }
     const tags = parseTags(value.tags);
     return {
-        name: value.name,
         ...(value.description === undefined ? {} : { description: value.description }),
         ...(value.path === undefined ? {} : { path: value.path }),
         ...(tags === undefined ? {} : { tags }),
@@ -38,6 +48,80 @@ export const parseCatalogPathPrefix = (value: string | undefined): string | unde
     }
     if (value.length === 0 || value.length > 256 || !metadataPath.test(value)) {
         throw badRequest('pathPrefix must be a lowercase slash-delimited path of at most 256 characters.');
+    }
+    return value;
+};
+
+/**
+ * A namespace-agent boundary is always explicit: an omitted or root prefix
+ * would make the capability effectively administrative.  Prefix matching is
+ * segment-aware so `payments` never authorizes `payments-prod`.
+ */
+export const parseAgentPathPrefixes = (value: unknown, field: string): readonly string[] => {
+    if (!Array.isArray(value) || value.length === 0 || value.length > 20) {
+        throw badRequest(`${field} must contain between one and twenty canonical paths.`);
+    }
+    const prefixes = value.map((entry) => {
+        if (typeof entry !== 'string' || entry.length > 256 || !metadataPath.test(entry)) {
+            throw badRequest(`${field} must contain canonical lowercase slash-delimited paths.`);
+        }
+        return entry;
+    });
+    if (new Set(prefixes).size !== prefixes.length) {
+        throw badRequest(`${field} must not contain duplicate paths.`);
+    }
+    return [...prefixes].sort((left, right) => left.localeCompare(right));
+};
+
+export const parseAgentCapabilities = (value: unknown): readonly AgentCapability[] => {
+    if (!Array.isArray(value) || value.length === 0 || value.length > 2) {
+        throw badRequest('capabilities must contain read and/or write.');
+    }
+    const capabilities = value.map((entry): AgentCapability => {
+        if (entry !== 'read' && entry !== 'write') {
+            throw badRequest('capabilities must contain read and/or write.');
+        }
+        return entry;
+    });
+    if (new Set(capabilities).size !== capabilities.length) {
+        throw badRequest('capabilities must not contain duplicates.');
+    }
+    return [...capabilities].sort();
+};
+
+export const pathIsWithinPrefixes = (
+    path: string | undefined,
+    prefixes: readonly string[],
+): boolean => path !== undefined && prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+
+/**
+ * A folder's path is a real, administrator-defined location, not merely a
+ * filter prefix -- so unlike parseCatalogPathPrefix's caller-facing prefix,
+ * undefined/missing is rejected rather than treated as "no prefix". This
+ * still delegates the grammar itself to parseCatalogPathPrefix so folders
+ * and secrets share exactly one path grammar instead of two that could
+ * drift apart.
+ */
+export const assertFolderPath = (value: unknown): string => {
+    if (typeof value !== 'string') {
+        throw badRequest('path is required and must be a lowercase slash-delimited path of at most 256 characters.');
+    }
+    const parsed = parseCatalogPathPrefix(value);
+    if (parsed === undefined) {
+        // Unreachable in practice: parseCatalogPathPrefix only returns
+        // undefined for literal `undefined`, already excluded above. Kept
+        // explicit so the return type is `string` without an unsafe cast.
+        throw badRequest('path is required and must be a lowercase slash-delimited path of at most 256 characters.');
+    }
+    return parsed;
+};
+
+export const parseCatalogSearchQuery = (value: string | undefined): string | undefined => {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (value.length === 0 || value.length > 128 || value.trim().length === 0) {
+        throw badRequest('q must be 1-128 characters and not only whitespace.');
     }
     return value;
 };
@@ -65,8 +149,8 @@ export const parseCatalogTagFilters = (value: string | undefined): Readonly<Reco
 };
 
 export const parseGrants = (value: unknown): readonly Grant[] => {
-    if (!Array.isArray(value) || value.length > 10) {
-        throw badRequest('acl must contain between zero and ten grants.');
+    if (!Array.isArray(value) || value.length > maximumAclGrants) {
+        throw badRequest(`acl must contain between zero and ${maximumAclGrants} grants.`);
     }
     const seen = new Set<string>();
     return value.map((grant): Grant => {

@@ -12,35 +12,24 @@ describe("consoleRuntimeConfig", () => {
       adminFqdn: "admin.test.example.com",
       oidcIssuer: "https://login.example.com/tenant/v2.0",
       oidcClientId: "console-client",
-      oidcAdminScope: "hemlig.admin",
-      secretEnvironments: ["dev", "staging"],
+      oidcConsoleAccessScope: "api://hemlig-api/hemlig.admin",
     });
 
     const parsed = parseRuntimeConfig(config);
 
     expect(parsed.deploymentName).toBe("hml-test");
     expect(parsed.adminApiUrl).toBe("https://admin.test.example.com");
-    expect(parsed.environments).toEqual(["dev", "staging"]);
     expect(parsed.auth.mode).toBe("oidc");
     if (parsed.auth.mode === "oidc") {
       expect(parsed.auth.authority).toBe(
         "https://login.example.com/tenant/v2.0",
       );
       expect(parsed.auth.clientId).toBe("console-client");
-      expect(parsed.auth.scopes).toEqual(["openid", "profile", "hemlig.admin"]);
+      expect(parsed.auth.scopes).toEqual([
+        "openid",
+        "profile",
+        "api://hemlig-api/hemlig.admin",
+      ]);
     }
-  });
-
-  it("rejects an empty secretEnvironments list, matching the console's non-empty requirement", () => {
-    const config = consoleRuntimeConfig({
-      deploymentName: "hml-test",
-      adminFqdn: "admin.test.example.com",
-      oidcIssuer: "https://login.example.com/tenant/v2.0",
-      oidcClientId: "console-client",
-      oidcAdminScope: "hemlig.admin",
-      secretEnvironments: [],
-    });
-
-    expect(() => parseRuntimeConfig(config)).toThrow();
   });
 });

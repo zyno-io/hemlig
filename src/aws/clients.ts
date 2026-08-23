@@ -1,6 +1,7 @@
 import { ApiGatewayV2Client } from '@aws-sdk/client-apigatewayv2';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { KMSClient } from '@aws-sdk/client-kms';
+import { IoTClient } from '@aws-sdk/client-iot';
 import { S3Client } from '@aws-sdk/client-s3';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { AppConfig } from './config';
@@ -10,6 +11,7 @@ export interface AwsClients {
     readonly kms: KMSClient;
     readonly s3: S3Client;
     readonly apiGateway: ApiGatewayV2Client;
+    readonly iot: IoTClient;
 }
 
 export const createAwsClients = (config: AppConfig): AwsClients => {
@@ -24,5 +26,6 @@ export const createAwsClients = (config: AppConfig): AwsClients => {
         kms: new KMSClient(common),
         s3: new S3Client(common),
         apiGateway: new ApiGatewayV2Client(common),
+        iot: new IoTClient(common),
     };
 };

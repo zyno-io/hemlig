@@ -10,13 +10,12 @@ import { Provider } from "@hemlig/pulumi-provider";
 
 const hemlig = new Provider("hemlig", {
   adminUrl: "https://admin.example.com",
-  adminToken: pulumi.secret(process.env.HEMLIG_ADMIN_TOKEN!),
 });
 
 hemlig.secret("payments", {
   secretId: "payments-api",
   environment: "prod",
-  metadata: { name: "payments-api", path: "payments/production" },
+  metadata: { description: "Payments API", path: "payments/production" },
   acl: [{ consumerId: "prod-east", permissions: ["read"] }],
   payload: pulumi.secret({ API_TOKEN: { encoding: "utf8", value: "value" } }),
 });
@@ -24,3 +23,9 @@ hemlig.secret("payments", {
 
 The service has no public secret deletion endpoint. Destroying this resource
 removes it from Pulumi state but intentionally leaves the remote secret intact.
+
+Set a short-lived OIDC token in `HEMLIG_ADMIN_TOKEN` for each invocation. The
+provider reads it only while performing a Hemlig API mutation; it is not a
+Pulumi resource input or output. A payload revision is written only when the
+declared payload changes. Metadata or ACL-only changes create a new control
+revision while retaining the current payload revision.

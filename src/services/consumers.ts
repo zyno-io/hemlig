@@ -23,6 +23,7 @@ import type {
 } from "../repositories/dynamo";
 import type { ObjectStore } from "../repositories/object-store";
 import { IssuerService } from "./issuer";
+import type { EnvironmentService } from "./environments";
 import { isoNow, newId, sha256Hex, stableJson } from "../util/encoding";
 
 const fingerprint = /^[a-f0-9]{64}$/;
@@ -73,10 +74,12 @@ export class ConsumerService {
     private readonly apiGateway: ApiGatewayV2Client,
     private readonly issuer: IssuerService,
     private readonly config: AppConfig,
+    private readonly environments: EnvironmentService,
   ) {}
 
   public async enroll(input: EnrollmentInput): Promise<ConsumerOperationResult> {
     assertIdentifier(input.consumerId, "consumerId");
+    await this.environments.require(input.environment);
     return this.startOrResume(input);
   }
 
