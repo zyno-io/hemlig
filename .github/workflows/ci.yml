@@ -25,9 +25,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: yarn
       - name: Enable Corepack
         run: corepack enable
+      - name: Resolve Yarn cache directory
+        id: yarn-cache
+        run: echo "path=$(yarn config get cacheFolder)" >> "$GITHUB_OUTPUT"
+      - name: Restore Yarn cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.yarn-cache.outputs.path }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('yarn.lock') }}
       - name: Install dependencies
         run: yarn install --immutable
       - name: Lint all workspaces
@@ -50,9 +57,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: yarn
       - name: Enable Corepack
         run: corepack enable
+      - name: Resolve Yarn cache directory
+        id: yarn-cache
+        run: echo "path=$(yarn config get cacheFolder)" >> "$GITHUB_OUTPUT"
+      - name: Restore Yarn cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.yarn-cache.outputs.path }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('yarn.lock') }}
       - name: Install dependencies
         run: yarn install --immutable
       - name: Start MiniStack
