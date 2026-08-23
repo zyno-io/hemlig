@@ -1,0 +1,77 @@
+{
+  "name": "clavis",
+  "version": "0.1.0",
+  "description": "Clavis: a Lambda, S3, DynamoDB, and KMS backed secrets delivery API for non-AWS clusters.",
+  "license": "Apache-2.0",
+  "packageManager": "yarn@4.10.3",
+  "workspaces": [
+    "packages/*"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js"
+    },
+    "./cdk": {
+      "types": "./dist-cdk/cdk/index.d.ts",
+      "require": "./dist-cdk/cdk/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "dist-cdk",
+    "src",
+    "cdk.json",
+    "tsconfig.cdk.json",
+    "openapi",
+    "docs",
+    "README.md",
+    "PLAN.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "build:cdk": "rm -rf dist-cdk && tsc -p tsconfig.cdk.json",
+    "build:all": "yarn workspaces foreach -A --topological run build",
+    "test": "jest --runInBand",
+    "test:watch": "jest --watch",
+    "test:all": "yarn build:all && yarn workspaces foreach -A --topological run test",
+    "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.cdk.json --noEmit",
+    "lint:all": "yarn build:all && yarn workspaces foreach -A --topological run lint",
+    "format": "prettier --write .",
+    "ministack:up": "docker compose -f docker-compose.ministack.yml up -d",
+    "ministack:verify": "yarn build && node dist/scripts/verify-ministack.js",
+    "ministack:down": "docker compose -f docker-compose.ministack.yml down -v",
+    "cdk:synth": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' synth",
+    "cdk:diff": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' diff",
+    "cdk:deploy": "yarn build:cdk && cdk --app 'node dist-cdk/cdk/app.js' deploy"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.152",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.0.0",
+    "@types/node-forge": "^1.3.11",
+    "aws-cdk": "^2.1033.0",
+    "jest": "^30.0.5",
+    "prettier": "^3.5.3",
+    "ts-jest": "^29.4.1",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@aws-sdk/client-apigatewayv2": "^3.1012.0",
+    "@aws-sdk/client-dynamodb": "^3.1012.0",
+    "@aws-sdk/client-kms": "^3.1012.0",
+    "@aws-sdk/client-s3": "^3.1012.0",
+    "@aws-sdk/lib-dynamodb": "^3.1012.0",
+    "aws-cdk-lib": "^2.266.0",
+    "constructs": "^10.8.1",
+    "esbuild": "^0.25.10",
+    "node-forge": "^1.3.1"
+  }
+}

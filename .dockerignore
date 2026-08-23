@@ -1,0 +1,9 @@
+.git
+.DS_Store
+node_modules
+dist
+dist-cdk
+cdk.out
+coverage
+packages/*/dist
+*.log

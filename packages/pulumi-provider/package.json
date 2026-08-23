@@ -1,0 +1,29 @@
+{
+  "name": "@clavis/pulumi-provider",
+  "version": "0.1.0",
+  "description": "Pulumi dynamic provider for Clavis secret control-plane resources.",
+  "license": "Apache-2.0",
+  "packageManager": "yarn@4.10.3",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test dist/index.test.js"
+  },
+  "dependencies": {
+    "@clavis/client": "workspace:*",
+    "@pulumi/pulumi": "^3.166.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.3"
+  }
+}

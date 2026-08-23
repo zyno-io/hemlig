@@ -1,0 +1,82 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clavissecretimports.clavis.io
+spec:
+  group: clavis.io
+  scope: Namespaced
+  names:
+    plural: clavissecretimports
+    singular: clavissecretimport
+    kind: ClavisSecretImport
+    shortNames: [clvimport]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources: { status: {} }
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [secretId]
+              properties:
+                secretId: { type: string, pattern: "^[a-z][a-z0-9-]{2,63}$" }
+                target:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    type: { type: string }
+            status:
+              type: object
+              properties:
+                controlVersionId: { type: string }
+                payloadVersionId: { type: string }
+                observedGeneration: { type: integer, format: int64 }
+                conditions: { type: array, items: { type: object, x-kubernetes-preserve-unknown-fields: true } }
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clavissecretexports.clavis.io
+spec:
+  group: clavis.io
+  scope: Namespaced
+  names:
+    plural: clavissecretexports
+    singular: clavissecretexport
+    kind: ClavisSecretExport
+    shortNames: [clvexport]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources: { status: {} }
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [secretId, source, environment, metadata, acl]
+              properties:
+                secretId: { type: string, pattern: "^[a-z][a-z0-9-]{2,63}$" }
+                source:
+                  type: object
+                  required: [name]
+                  properties: { name: { type: string } }
+                environment: { type: string, minLength: 1 }
+                metadata: { type: object, x-kubernetes-preserve-unknown-fields: true }
+                acl: { type: array, items: { type: object, x-kubernetes-preserve-unknown-fields: true } }
+            status:
+              type: object
+              properties:
+                controlVersionId: { type: string }
+                payloadVersionId: { type: string }
+                sourceChecksum: { type: string }
+                observedGeneration: { type: integer, format: int64 }
+                conditions: { type: array, items: { type: object, x-kubernetes-preserve-unknown-fields: true } }
