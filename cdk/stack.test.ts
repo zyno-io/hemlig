@@ -179,6 +179,17 @@ describe("HemligStack", () => {
         ]),
       }),
     });
+    template.hasResourceProperties("AWS::S3::BucketPolicy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Principal: { Service: "apigateway.amazonaws.com" },
+            Action: ["s3:GetObject", "s3:GetObjectVersion"],
+            Condition: Match.absent(),
+          }),
+        ]),
+      }),
+    });
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([

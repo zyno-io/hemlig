@@ -564,7 +564,10 @@ export class HemligStack extends Stack {
         principals: [new iam.ServicePrincipal("apigateway.amazonaws.com")],
         actions: ["s3:GetObject", "s3:GetObjectVersion"],
         resources: [truststoreBucket.arnForObjects(`${truststoreKeyPrefix}/*`)],
-        conditions: { StringEquals: { "aws:SourceAccount": this.account } },
+        // API Gateway's mTLS truststore retrieval does not propagate
+        // aws:SourceAccount to S3. The service principal and exact immutable
+        // truststore prefix therefore provide the effective least-privilege
+        // boundary here.
       }),
     );
 
