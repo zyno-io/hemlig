@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as pulumi from "@pulumi/pulumi";
 import {
+  HemligAgentGrant,
   HemligAgentGrantProvider,
   HemligSecretProvider,
   Provider,
@@ -219,4 +221,22 @@ test("only reissues the bootstrap capability when its generation changes", async
   assert.equal(capabilityIssues, 1);
   assert.equal(result.outs.grantId, "grant-staging-hemlig-sentinel");
   assert.equal(result.outs.bootstrapToken, "hmlb_reissued");
+});
+
+test("binds agent grant dynamic outputs onto the resource instance", async () => {
+  pulumi.runtime.setMocks({
+    call: (args) => args.inputs,
+    newResource: (args) => ({ id: `${args.name}-id`, state: args.inputs }),
+  });
+
+  await pulumi.runtime.runInPulumiStack(async () => {
+    const grant = new HemligAgentGrant(
+      "sentinel-agent",
+      agentGrantInputs(),
+      "https://admin.example.com",
+    );
+    assert.equal(pulumi.Output.isInstance(grant.grantId), true);
+    assert.equal(pulumi.Output.isInstance(grant.bootstrapToken), true);
+    assert.equal(pulumi.Output.isInstance(grant.bootstrapExpiresAt), true);
+  });
 });

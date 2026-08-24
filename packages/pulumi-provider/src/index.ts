@@ -290,8 +290,8 @@ export class HemligAgentGrantProvider implements pulumi.dynamic.ResourceProvider
 }
 
 export class HemligSecret extends pulumi.dynamic.Resource {
-  public readonly controlVersionId!: pulumi.Output<string>;
-  public readonly payloadVersionId!: pulumi.Output<string>;
+  public declare readonly controlVersionId: pulumi.Output<string>;
+  public declare readonly payloadVersionId: pulumi.Output<string>;
 
   public constructor(
     name: string,
@@ -306,6 +306,10 @@ export class HemligSecret extends pulumi.dynamic.Resource {
         ...args,
         adminUrl,
         providerSchemaVersion: "2",
+        // Dynamic-provider outputs need placeholders so Pulumi transfers them
+        // onto the resource instance after registration.
+        controlVersionId: undefined,
+        payloadVersionId: undefined,
       },
       {
         ...opts,
@@ -316,9 +320,9 @@ export class HemligSecret extends pulumi.dynamic.Resource {
 }
 
 export class HemligAgentGrant extends pulumi.dynamic.Resource {
-  public readonly grantId!: pulumi.Output<string>;
-  public readonly bootstrapToken!: pulumi.Output<string>;
-  public readonly bootstrapExpiresAt!: pulumi.Output<string>;
+  public declare readonly grantId: pulumi.Output<string>;
+  public declare readonly bootstrapToken: pulumi.Output<string>;
+  public declare readonly bootstrapExpiresAt: pulumi.Output<string>;
 
   public constructor(
     name: string,
@@ -333,6 +337,11 @@ export class HemligAgentGrant extends pulumi.dynamic.Resource {
         ...args,
         adminUrl,
         providerSchemaVersion: "1",
+        // Dynamic-provider outputs need placeholders so Pulumi transfers them
+        // onto the resource instance after registration.
+        grantId: undefined,
+        bootstrapToken: undefined,
+        bootstrapExpiresAt: undefined,
       },
       {
         ...opts,
