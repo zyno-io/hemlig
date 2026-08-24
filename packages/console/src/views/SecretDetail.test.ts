@@ -34,6 +34,7 @@ const buildRouter = (): Router =>
   createRouter({
     history: createMemoryHistory(),
     routes: [
+      { path: "/audit", name: "audit", component: { template: "<div/>" } },
       { path: "/e/:env/secrets", name: "secrets", component: { template: "<div/>" } },
       { path: "/e/:env/secrets/browse/:path*", name: "secrets-browse", component: { template: "<div/>" } },
       { path: "/e/:env/secrets/:secretId", name: "secret", component: { template: "<div/>" } },
