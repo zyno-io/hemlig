@@ -6,7 +6,11 @@ import {
   payloadChecksum,
   payloadToKubernetesData,
 } from "./index";
-import { HemligV1BetaController } from "./v1beta";
+import {
+  allowsConsumerReference,
+  consumerReferenceKey,
+  HemligV1BetaController,
+} from "./v1beta";
 
 test("converts UTF-8 and base64 Hemlig entries into Kubernetes Secret data", () => {
   const data = payloadToKubernetesData({
@@ -39,6 +43,22 @@ test("recognizes only the exact import owner", () => {
   };
   assert.equal(isOwnedByImport(metadata, "payments/payments-api"), true);
   assert.equal(isOwnedByImport(metadata, "payments/other"), false);
+});
+
+test("requires an explicit consumer opt-in for a cross-namespace reference", () => {
+  assert.equal(consumerReferenceKey("payments", "cluster", "hemlig-system"), "hemlig-system/cluster");
+  assert.equal(allowsConsumerReference("payments", "hemlig-system", undefined), false);
+  assert.equal(allowsConsumerReference("payments", "hemlig-system", {
+    apiVersion: "hemlig.io/v1beta1",
+    kind: "HemligConsumer",
+    metadata: { name: "cluster", namespace: "hemlig-system" },
+    spec: {
+      allowCrossNamespaceReferences: true,
+      bootstrapTokenRef: { key: "token", name: "bootstrap" },
+      identity: { secretName: "identity" },
+      providerRef: "staging",
+    },
+  }), true);
 });
 
 test("writes reconciliation status as JSON Patch", async () => {

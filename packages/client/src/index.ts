@@ -448,6 +448,24 @@ export class HemligClient {
     return this.request("POST", "/v1/admin/agent-grants", token, input);
   }
 
+  public async updateAgentGrant(
+    token: string,
+    grantId: string,
+    input: {
+      readonly capabilities: readonly ("read" | "write")[];
+      readonly readPathPrefixes?: readonly string[];
+      readonly writePathPrefixes?: readonly string[];
+      readonly displayName?: string;
+    },
+  ): Promise<AgentGrant> {
+    return this.request(
+      "PUT",
+      `/v1/admin/agent-grants/${encodeURIComponent(grantId)}`,
+      token,
+      input,
+    );
+  }
+
   public async issueBootstrapCapability(
     token: string,
     grantId: string,

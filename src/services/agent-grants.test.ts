@@ -159,4 +159,33 @@ describe("AgentGrantService", () => {
       actor: { type: "human", id: "admin" },
     })).rejects.toThrow("duplicate");
   });
+
+  it("updates the policy of an active grant without replacing its identity", async () => {
+    const repository = {
+      getAgentGrant: jest.fn(async () => grant),
+      updateAgentGrant: jest.fn(async () => undefined),
+    } as unknown as DynamoRepository;
+    const service = new AgentGrantService(
+      repository,
+      {} as ConsumerService,
+      {} as EnvironmentService,
+      {} as AgentNotificationService,
+    );
+
+    const updated = await service.update(grant.grantId, {
+      capabilities: ["read"],
+      readPathPrefixes: ["platform/hemlig/integration", "platform/gitlab-agents/staging"],
+      writePathPrefixes: [],
+      displayName: "Staging trusted cluster consumer",
+    });
+
+    expect(updated.grantId).toBe(grant.grantId);
+    expect(updated.consumerId).toBe(grant.consumerId);
+    expect(updated.readPathPrefixes).toEqual([
+      "platform/gitlab-agents/staging",
+      "platform/hemlig/integration",
+    ]);
+    expect((repository as unknown as { updateAgentGrant: jest.Mock }).updateAgentGrant)
+      .toHaveBeenCalledWith(updated, false);
+  });
 });

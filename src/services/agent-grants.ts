@@ -28,6 +28,13 @@ export interface CreateAgentGrantInput {
   readonly actor: Actor;
 }
 
+export interface UpdateAgentGrantInput {
+  readonly capabilities: unknown;
+  readonly readPathPrefixes: unknown;
+  readonly writePathPrefixes: unknown;
+  readonly displayName?: unknown;
+}
+
 export interface BootstrapCapabilityResult {
   readonly grantId: string;
   readonly token: string;
@@ -86,6 +93,39 @@ export class AgentGrantService {
     };
     await this.repository.createAgentGrant(grant);
     return grant;
+  }
+
+  /** Updates only the remote policy; the consumer ID, identity, and grant ID stay stable. */
+  public async update(
+    grantId: string,
+    input: UpdateAgentGrantInput,
+  ): Promise<AgentGrantRecord> {
+    const existing = await this.repository.getAgentGrant(grantId);
+    if (existing === undefined) {
+      throw notFound("The requested agent grant was not found.");
+    }
+    const capabilities = parseAgentCapabilities(input.capabilities);
+    const readPathPrefixes = capabilities.includes("read")
+      ? parseAgentPathPrefixes(input.readPathPrefixes, "readPathPrefixes")
+      : emptyPrefixes(input.readPathPrefixes, "readPathPrefixes");
+    const writePathPrefixes = capabilities.includes("write")
+      ? parseAgentPathPrefixes(input.writePathPrefixes, "writePathPrefixes")
+      : emptyPrefixes(input.writePathPrefixes, "writePathPrefixes");
+    if (
+      input.displayName !== undefined &&
+      (typeof input.displayName !== "string" || input.displayName.length === 0 || input.displayName.length > 256)
+    ) {
+      throw badRequest("displayName must be a non-empty string of at most 256 characters.");
+    }
+    const updated: AgentGrantRecord = {
+      ...existing,
+      capabilities,
+      readPathPrefixes,
+      writePathPrefixes,
+      ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+    };
+    await this.repository.updateAgentGrant(updated, input.displayName === undefined);
+    return updated;
   }
 
   public async issueBootstrapCapability(

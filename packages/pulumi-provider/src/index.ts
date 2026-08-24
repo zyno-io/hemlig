@@ -102,7 +102,7 @@ type HemligSecretClient = Pick<
 type HemligSecretClientFactory = (inputs: ResolvedSecretInputs) => HemligSecretClient;
 type HemligAgentGrantClient = Pick<
   HemligClient,
-  "createAgentGrant" | "issueBootstrapCapability"
+  "createAgentGrant" | "issueBootstrapCapability" | "updateAgentGrant"
 >;
 type HemligAgentGrantClientFactory = (
   inputs: ResolvedAgentGrantInputs,
@@ -245,10 +245,6 @@ export class HemligAgentGrantProvider implements pulumi.dynamic.ResourceProvider
     const immutableProperties = [
       "consumerId",
       "environment",
-      "capabilities",
-      "readPathPrefixes",
-      "writePathPrefixes",
-      "displayName",
     ].filter((property) =>
       JSON.stringify(olds[property as keyof ResolvedAgentGrantInputs]) !==
       JSON.stringify(news[property as keyof ResolvedAgentGrantInputs]),
@@ -261,6 +257,28 @@ export class HemligAgentGrantProvider implements pulumi.dynamic.ResourceProvider
     olds: ResolvedAgentGrantState,
     news: ResolvedAgentGrantInputs,
   ): Promise<pulumi.dynamic.UpdateResult> {
+    const client = this.createClient(news);
+    const adminToken = this.adminTokenFor();
+    const policyChanged = [
+      "capabilities",
+      "readPathPrefixes",
+      "writePathPrefixes",
+      "displayName",
+    ].some((property) =>
+      JSON.stringify(olds[property as keyof ResolvedAgentGrantInputs]) !==
+      JSON.stringify(news[property as keyof ResolvedAgentGrantInputs]),
+    );
+    if (policyChanged) {
+      const updatedGrant = await client.updateAgentGrant(adminToken, olds.grantId, {
+        capabilities: news.capabilities,
+        readPathPrefixes: news.readPathPrefixes,
+        writePathPrefixes: news.writePathPrefixes,
+        displayName: news.displayName,
+      });
+      if (updatedGrant.grantId !== olds.grantId) {
+        throw new Error("Hemlig returned a different AgentGrant ID after a policy update.");
+      }
+    }
     if (olds.bootstrapGeneration === news.bootstrapGeneration) {
       return {
         outs: {
@@ -272,8 +290,6 @@ export class HemligAgentGrantProvider implements pulumi.dynamic.ResourceProvider
       };
     }
 
-    const client = this.createClient(news);
-    const adminToken = this.adminTokenFor();
     const capability = await client.issueBootstrapCapability(adminToken, olds.grantId);
     return {
       outs: {

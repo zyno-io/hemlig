@@ -177,6 +177,9 @@ test("creates one pending agent grant and one bootstrap capability", async () =>
         expiresAt: "2026-08-23T00:30:00.000Z",
       };
     },
+    updateAgentGrant: async () => {
+      throw new Error("create must not update an AgentGrant");
+    },
   }), () => "token-for-test");
 
   const result = await provider.create(agentGrantInputs());
@@ -203,6 +206,9 @@ test("only reissues the bootstrap capability when its generation changes", async
         expiresAt: "2026-08-23T01:00:00.000Z",
       };
     },
+    updateAgentGrant: async () => {
+      throw new Error("a bootstrap reissue must not change policy");
+    },
   }), () => "token-for-test");
   const oldInputs = {
     ...agentGrantInputs(),
@@ -221,6 +227,53 @@ test("only reissues the bootstrap capability when its generation changes", async
   assert.equal(capabilityIssues, 1);
   assert.equal(result.outs.grantId, "grant-staging-hemlig-sentinel");
   assert.equal(result.outs.bootstrapToken, "hmlb_reissued");
+});
+
+test("updates an active AgentGrant policy without re-enrolling its consumer", async () => {
+  let policyUpdates = 0;
+  let capabilityIssues = 0;
+  const provider = new HemligAgentGrantProvider(() => ({
+    createAgentGrant: async () => {
+      throw new Error("create must not be called during policy update");
+    },
+    issueBootstrapCapability: async () => {
+      capabilityIssues += 1;
+      throw new Error("policy update must not issue a bootstrap capability");
+    },
+    updateAgentGrant: async (_token, grantId, input) => {
+      policyUpdates += 1;
+      return {
+        grantId,
+        consumerId: "staging-hemlig-sentinel",
+        environment: "staging",
+        capabilities: input.capabilities,
+        readPathPrefixes: input.readPathPrefixes ?? [],
+        writePathPrefixes: input.writePathPrefixes ?? [],
+        displayName: input.displayName,
+        status: "ACTIVE",
+        createdAt: "2026-08-23T00:00:00.000Z",
+      };
+    },
+  }), () => "token-for-test");
+  const oldInputs = {
+    ...agentGrantInputs(),
+    grantId: "grant-staging-hemlig-sentinel",
+    bootstrapToken: "hmlb_old",
+    bootstrapExpiresAt: "2026-08-23T00:30:00.000Z",
+  };
+
+  const result = await provider.update(
+    "grant-staging-hemlig-sentinel",
+    oldInputs,
+    agentGrantInputs({
+      readPathPrefixes: ["platform/hemlig/integration", "platform/gitlab-agents/staging"],
+    }),
+  );
+
+  assert.equal(policyUpdates, 1);
+  assert.equal(capabilityIssues, 0);
+  assert.equal(result.outs.grantId, "grant-staging-hemlig-sentinel");
+  assert.equal(result.outs.bootstrapToken, "hmlb_old");
 });
 
 test("binds agent grant dynamic outputs onto the resource instance", async () => {

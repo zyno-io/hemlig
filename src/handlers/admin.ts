@@ -310,6 +310,33 @@ export const handler = async (
         });
         return json(201, agentGrantResponse(grant));
       }
+      const agentGrantMatch = /^\/v1\/admin\/agent-grants\/(grant-[a-z0-9-]{3,80})$/.exec(
+        event.rawPath,
+      );
+      if (
+        event.requestContext.http.method === "PUT" &&
+        agentGrantMatch !== null
+      ) {
+        const body = parseObjectBody(event.body);
+        const grant = await app.agentGrants.update(
+          agentGrantMatch[1] as string,
+          {
+            capabilities: body.capabilities,
+            readPathPrefixes: body.readPathPrefixes,
+            writePathPrefixes: body.writePathPrefixes,
+            ...(body.displayName === undefined ? {} : { displayName: body.displayName }),
+          },
+        );
+        await app.audit.write({
+          correlationId,
+          outcome: "succeeded",
+          actor,
+          operation,
+          target: { grantId: grant.grantId, consumerId: grant.consumerId },
+          sourceIp: event.requestContext.http.sourceIp,
+        });
+        return json(200, agentGrantResponse(grant));
+      }
       const bootstrapCapabilityMatch =
         /^\/v1\/admin\/agent-grants\/(grant-[a-z0-9-]{3,80})\/bootstrap-capabilities$/.exec(
           event.rawPath,

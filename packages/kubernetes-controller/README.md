@@ -12,7 +12,8 @@ The resource topology is intentionally split:
 - `HemligProvider` is cluster-scoped public endpoint configuration plus the
   namespace label selector allowed to use it.
 - `HemligConsumer` is namespaced and points to a same-namespace bootstrap
-  Secret. Its identity Secret is created only with exact owner markers.
+  Secret. Its identity Secret is created only with exact owner markers. It may
+  explicitly opt in to serving imports and exports in other selected namespaces.
 - `HemligSecretImport` materializes a granted remote payload into an exact-owned
   Kubernetes Secret.
 - `HemligSecretExport` pushes an application-owned source Secret through the
@@ -95,6 +96,23 @@ The administrator-side AgentGrant must give this consumer compatible
 `payments/production` read/write prefixes. Remote Hemlig authorization is the
 keyspace boundary: Kubernetes RBAC alone cannot expand it. An export rejects an
 import-managed source, and an import refuses to overwrite a user-owned target.
+
+By default, `consumerRef` resolves only inside the import or export namespace.
+This is the normal one-consumer-per-namespace model. A platform may instead use
+one deliberately shared cluster consumer by setting
+`HemligConsumer.spec.allowCrossNamespaceReferences: true` and naming both the
+consumer and its namespace on each workload resource:
+
+```yaml
+spec:
+  consumerRef: cluster
+  consumerNamespace: hemlig-system
+```
+
+This is an explicit trust-boundary decision: every namespace allowed to refer
+to that consumer shares its mTLS identity and the union of its remote
+AgentGrant paths. The consumer's bootstrap Secret and identity Secret always
+remain in the consumer's own namespace.
 
 Build from the monorepo root:
 

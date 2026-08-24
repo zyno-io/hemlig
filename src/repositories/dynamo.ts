@@ -608,6 +608,34 @@ export class DynamoRepository {
     }
   }
 
+  /** Updates policy fields without racing an enrollment status transition. */
+  public async updateAgentGrant(
+    grant: AgentGrantRecord,
+    removeDisplayName: boolean,
+  ): Promise<void> {
+    const updateExpression = removeDisplayName
+      ? "SET capabilities = :capabilities, readPathPrefixes = :readPathPrefixes, writePathPrefixes = :writePathPrefixes REMOVE displayName"
+      : "SET capabilities = :capabilities, readPathPrefixes = :readPathPrefixes, writePathPrefixes = :writePathPrefixes, displayName = :displayName";
+    try {
+      await this.dynamo.send(
+        new UpdateCommand({
+          TableName: this.config.controlTableName,
+          Key: { pk: agentGrantPk(grant.grantId), sk: "PROFILE" },
+          UpdateExpression: updateExpression,
+          ConditionExpression: "attribute_exists(pk)",
+          ExpressionAttributeValues: {
+            ":capabilities": grant.capabilities,
+            ":readPathPrefixes": grant.readPathPrefixes,
+            ":writePathPrefixes": grant.writePathPrefixes,
+            ...(removeDisplayName ? {} : { ":displayName": grant.displayName }),
+          },
+        }),
+      );
+    } catch (error) {
+      throw conflict(`Could not update agent grant: ${errorMessage(error)}`);
+    }
+  }
+
   public async createBootstrapCapability(
     capability: BootstrapCapabilityRecord,
   ): Promise<void> {

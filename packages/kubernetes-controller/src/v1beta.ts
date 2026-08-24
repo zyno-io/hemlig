@@ -77,6 +77,8 @@ export interface HemligConsumer {
     readonly providerRef: string;
     readonly bootstrapTokenRef: { readonly name: string; readonly key: string };
     readonly identity: { readonly secretName: string; readonly rotateBefore?: string };
+    /** Explicitly permits another namespace to reference this cluster consumer. */
+    readonly allowCrossNamespaceReferences?: boolean;
   };
   readonly status?: ReconciliationStatus;
 }
@@ -87,6 +89,8 @@ export interface HemligSecretImport {
   readonly metadata: ObjectMeta;
   readonly spec: {
     readonly consumerRef: string;
+    /** Defaults to this Import's namespace; cross-namespace use requires consumer opt-in. */
+    readonly consumerNamespace?: string;
     readonly secretId: string;
     readonly target?: { readonly name?: string; readonly type?: string };
     readonly deletionPolicy?: "Retain" | "Delete";
@@ -100,6 +104,8 @@ export interface HemligSecretExport {
   readonly metadata: ObjectMeta;
   readonly spec: {
     readonly consumerRef: string;
+    /** Defaults to this Export's namespace; cross-namespace use requires consumer opt-in. */
+    readonly consumerNamespace?: string;
     readonly secretId: string;
     readonly source: { readonly name: string };
     readonly metadata: SecretMetadata;
@@ -143,6 +149,21 @@ interface IdentitySecret {
   readonly binaryData?: Readonly<Record<string, string>>;
   readonly type?: string;
 }
+
+export const consumerReferenceKey = (
+  resourceNamespace: string,
+  consumerRef: string,
+  consumerNamespace?: string,
+): string => `${consumerNamespace ?? resourceNamespace}/${consumerRef}`;
+
+export const allowsConsumerReference = (
+  resourceNamespace: string,
+  consumerNamespace: string | undefined,
+  consumer: HemligConsumer | undefined,
+): boolean =>
+  consumerNamespace === undefined ||
+  consumerNamespace === resourceNamespace ||
+  consumer?.spec.allowCrossNamespaceReferences === true;
 
 export interface V1BetaControllerConfig {
   readonly intervalMilliseconds: number;
@@ -196,7 +217,7 @@ export class HemligV1BetaController {
     }
     this.reconciling = true;
     try {
-      const [providers, consumers, imports, exports] = await Promise.all([
+      const [providers, consumers, imports, secretExports] = await Promise.all([
         this.listCluster<HemligProvider>(providerPlural),
         this.listNamespaced<HemligConsumer>(consumerPlural),
         this.listNamespaced<HemligSecretImport>(importPlural),
@@ -213,12 +234,28 @@ export class HemligV1BetaController {
         }
       }
       for (const resource of imports) {
-        const consumer = readyConsumers.get(`${required(resource.metadata.namespace, "import namespace")}/${resource.spec.consumerRef}`);
-        await this.reconcileImport(resource, consumer);
+        const namespace = required(resource.metadata.namespace, "import namespace");
+        const consumer = readyConsumers.get(
+          consumerReferenceKey(namespace, resource.spec.consumerRef, resource.spec.consumerNamespace),
+        );
+        const usableConsumer = allowsConsumerReference(
+          namespace,
+          resource.spec.consumerNamespace,
+          consumer?.resource,
+        ) ? consumer : undefined;
+        await this.reconcileImport(resource, usableConsumer);
       }
-      for (const resource of exports) {
-        const consumer = readyConsumers.get(`${required(resource.metadata.namespace, "export namespace")}/${resource.spec.consumerRef}`);
-        await this.reconcileExport(resource, consumer);
+      for (const resource of secretExports) {
+        const namespace = required(resource.metadata.namespace, "export namespace");
+        const consumer = readyConsumers.get(
+          consumerReferenceKey(namespace, resource.spec.consumerRef, resource.spec.consumerNamespace),
+        );
+        const usableConsumer = allowsConsumerReference(
+          namespace,
+          resource.spec.consumerNamespace,
+          consumer?.resource,
+        ) ? consumer : undefined;
+        await this.reconcileExport(resource, usableConsumer);
       }
     } finally {
       this.reconciling = false;

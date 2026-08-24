@@ -36,7 +36,7 @@ during one migration release but is not extended further.
 | Administrator access    | The controller receives no administrator OIDC token, client secret, or token-file path                                                              | A namespace controller must not hold a credential able to manage every Hemlig secret.                                            |
 | Bootstrap               | An administrator creates a one-time opaque bootstrap capability for an AgentGrant; the controller redeems it once with a locally generated CSR      | The capability can activate one pre-scoped identity only. It cannot browse, read, write, or manage arbitrary secrets.            |
 | Namespace authorization | Each AgentGrant binds consumer identity, environment, read prefixes, write prefixes, and capabilities; Hemlig enforces it before payload read/write | Kubernetes namespaces and RBAC alone cannot constrain a remote credential.                                                       |
-| Identity                | One mTLS consumer identity per HemligConsumer, normally per namespace and environment                                                               | An ACL grant is least-privilege and does not let one namespace read another namespace's grants.                                  |
+| Identity                | One mTLS consumer identity per HemligConsumer, normally per namespace and environment; an explicit opt-in permits one shared cluster consumer      | A shared identity is reserved for trusted cluster services and carries the union of their granted paths.                          |
 | Enrollment              | The controller generates a 3072-bit RSA key and CSR, Hemlig signs it, registers it for MQTT, and the controller writes a kubernetes.io/tls Secret   | The private key is generated and retained in the cluster; it is never sent to Hemlig or placed in CR status.                     |
 | Import source of truth  | Hemlig consumer API plus the current-access snapshot                                                                                                | ACL revocation is a security event, so the controller can remove previously materialized targets.                                |
 | Export source of truth  | The referenced Kubernetes Secret                                                                                                                    | Kubernetes data is authoritative for an export; remote drift is reconciled back to it.                                           |
@@ -108,10 +108,12 @@ reference](https://docs.aws.amazon.com/lambda/latest/dg/lambda-nodejs.html) and
 
 ## v1beta1 resource contract
 
-All namespaced references are same-namespace. IDs use Hemlig's existing
-lowercase secret/consumer grammar. URLs must be HTTPS origins without query or
-fragment. CEL validation handles syntax and defaults; cross-resource checks are
-reported through conditions.
+Namespaced references are same-namespace by default. An import or export may
+name a `consumerNamespace` only when the referenced `HemligConsumer` explicitly
+sets `allowCrossNamespaceReferences: true`. IDs use Hemlig's existing lowercase
+secret/consumer grammar. URLs must be HTTPS origins without query or fragment.
+CEL validation handles syntax and defaults; cross-resource checks are reported
+through conditions.
 
 ### HemligProvider (cluster scoped)
 
@@ -156,6 +158,13 @@ capabilities. The bootstrap capability is the authority for those values; the
 redemption response supplies them and the controller verifies its provider and
 namespace expectation before persisting safe status.
 
+`allowCrossNamespaceReferences` defaults to false. A platform team may set it
+to true only for a deliberately shared cluster identity. Imports and exports in
+other selected namespaces then set both `consumerRef` and `consumerNamespace`.
+Those workloads use the same mTLS identity, so the consumer's AgentGrant must
+contain the reviewed union of every allowed workload path. The consumer's
+bootstrap and identity Secrets never leave its own namespace.
+
 A successful enrollment in the current controller:
 
 1. Reads the opaque token from the same namespace without logging it.
@@ -194,6 +203,9 @@ metadata:
   namespace: payments
 spec:
   consumerRef: payments-prod
+  # Omit for the normal same-namespace consumer. A cross-namespace reference
+  # requires payments-prod.spec.allowCrossNamespaceReferences: true.
+  # consumerNamespace: hemlig-system
   secretId: payments-api
   target:
     name: payments-api
