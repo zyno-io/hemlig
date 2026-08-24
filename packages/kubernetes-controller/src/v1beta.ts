@@ -307,7 +307,10 @@ export class HemligV1BetaController {
           "hemlig.io/api-fingerprint": enrolled.apiFingerprint,
         },
       },
-      type: "kubernetes.io/tls",
+      // Kubernetes treats Secret.type as immutable. The pending identity is
+      // deliberately created as Opaque so it can also carry the CSR; retain
+      // that type when replacing it with the enrolled certificate.
+      type: pending.type ?? "Opaque",
       data: {
         "tls.crt": Buffer.from(enrolled.apiCertificatePem, "utf8").toString("base64"),
         "tls.key": privateKey,
