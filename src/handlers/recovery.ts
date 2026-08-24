@@ -45,13 +45,27 @@ export const handler: Handler = async (): Promise<void> => {
           }
         }
       } catch {
+        // An enrollment is allowed one delayed recovery attempt because API
+        // Gateway can take longer than the synchronous request window to
+        // publish a truststore.  Do not let a permanently stalled attempt
+        // keep renewing the shared truststore lease, though: it would prevent
+        // every later consumer enrollment from publishing its own certificate.
+        const enrollment = await app.repository.getEnrollment(operationId);
+        if (enrollment?.workflowState === "PREPARED") {
+          try {
+            await app.repository.failEnrollment(enrollment);
+          } catch {
+            // A concurrent completion or lease takeover wins. In either case,
+            // avoid masking the recovery audit event below.
+          }
+        }
         await app.audit.write({
           correlationId: operationId,
           outcome: "failed",
           actor: { type: "system", id: "recovery" },
           operation: "consumer.enrollment.recovery",
           target: { operationId },
-          reasonCode: "truststore_publication_pending",
+          reasonCode: "enrollment_expired",
         });
       }
       continue;
