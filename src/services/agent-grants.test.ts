@@ -34,6 +34,63 @@ const capability: BootstrapCapabilityRecord = {
 };
 
 describe("AgentGrantService", () => {
+  it("recovers an already-active identity before consuming a replacement capability", async () => {
+    const pendingGrant = {
+      ...grant,
+      status: "PENDING" as const,
+      activatedFingerprint: undefined,
+    };
+    const pendingCapability = {
+      ...capability,
+      status: "PENDING" as const,
+      consumedFingerprint: undefined,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    const repository = {
+      getBootstrapCapability: jest.fn(async () => pendingCapability),
+      getAgentGrant: jest.fn(async () => pendingGrant),
+      activateAgentGrant: jest.fn(async () => undefined),
+      consumeBootstrapCapability: jest.fn(async () => undefined),
+    } as unknown as DynamoRepository;
+    const consumers = {
+      recoverActiveIdentity: jest.fn(async () => ({
+        consumerId: pendingGrant.consumerId,
+        environment: pendingGrant.environment,
+        rootFingerprint: "b".repeat(64),
+        apiFingerprint: "a".repeat(64),
+        apiCertificatePem: "public-certificate",
+        status: "ACTIVE" as const,
+      })),
+      enroll: jest.fn(),
+    } as unknown as ConsumerService;
+    const notifications = {
+      provision: jest.fn(async () => undefined),
+    } as unknown as AgentNotificationService;
+    const service = new AgentGrantService(
+      repository,
+      consumers,
+      {} as EnvironmentService,
+      notifications,
+    );
+
+    await expect(
+      service.redeem("hmlb_token", "same-csr"),
+    ).resolves.toMatchObject({
+      apiFingerprint: "a".repeat(64),
+    });
+
+    expect(consumers.recoverActiveIdentity).toHaveBeenCalledWith({
+      consumerId: pendingGrant.consumerId,
+      environment: pendingGrant.environment,
+      apiCertificateSigningRequestPem: "same-csr",
+    });
+    expect(consumers.enroll).not.toHaveBeenCalled();
+    expect(
+      (repository as unknown as { consumeBootstrapCapability: jest.Mock })
+        .consumeBootstrapCapability,
+    ).toHaveBeenCalledWith(expect.any(String), "a".repeat(64));
+  });
+
   it("replays a consumed bootstrap only through the enrollment idempotency key", async () => {
     const repository = {
       getBootstrapCapability: jest.fn(async () => capability),

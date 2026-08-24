@@ -71,6 +71,18 @@ describe("Hemlig issuer", () => {
 
     expect(issued.rootFingerprint).toBe(rootFingerprint);
     expect(issued.apiIdentity.certificatePem).toContain("BEGIN CERTIFICATE");
+    expect(
+      service.certificateRequestMatchesCertificate(
+        csrPem,
+        issued.apiIdentity.certificatePem,
+      ),
+    ).toBe(true);
+    expect(
+      service.certificateRequestMatchesCertificate(
+        createCsr(),
+        issued.apiIdentity.certificatePem,
+      ),
+    ).toBe(false);
     const root = new X509Certificate(issuer?.rootCertificatePem as string);
     const leaf = new X509Certificate(
       issued.apiIdentity.certificatePem as string,

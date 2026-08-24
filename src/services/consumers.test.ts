@@ -144,6 +144,57 @@ describe("consumer certificate lifecycle idempotency", () => {
     }
   });
 
+  it("recovers an active identity only when its certificate matches the submitted CSR", async () => {
+    const repository = {
+      getConsumer: jest.fn(async () => ({
+        consumerId: "staging-agent",
+        environment: "staging",
+        status: "ACTIVE",
+      })),
+      listConsumerApiIdentities: jest.fn(async () => ({
+        identities: [
+          {
+            fingerprint: "a".repeat(64),
+            environment: "staging",
+            status: "ACTIVE",
+            certificatePem: "certificate",
+          },
+        ],
+      })),
+    } as unknown as DynamoRepository;
+    const issuer = {
+      certificateRequestMatchesCertificate: jest.fn(() => true),
+      issuerFingerprint: jest.fn(async () => "root"),
+    } as unknown as IssuerService;
+    const service = new ConsumerService(
+      repository,
+      {} as ObjectStore,
+      {} as ApiGatewayV2Client,
+      issuer,
+      {} as AppConfig,
+      {} as EnvironmentService,
+    );
+
+    const result = await service.recoverActiveIdentity({
+      consumerId: "staging-agent",
+      environment: "staging",
+      apiCertificateSigningRequestPem: "CSR",
+    });
+
+    expect(result).toMatchObject({
+      consumerId: "staging-agent",
+      environment: "staging",
+      rootFingerprint: "root",
+      apiFingerprint: "a".repeat(64),
+      apiCertificatePem: "certificate",
+      status: "ACTIVE",
+    });
+    expect(issuer.certificateRequestMatchesCertificate).toHaveBeenCalledWith(
+      "CSR",
+      "certificate",
+    );
+  });
+
   it("returns the persisted winning leaf when concurrent CSR rotations race", async () => {
     const consumer: ConsumerRecord = {
       pk: "CONSUMER#prod-east",

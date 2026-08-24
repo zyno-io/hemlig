@@ -45,6 +45,12 @@ export interface ApiIdentityInput {
   readonly idempotencyKey: string;
 }
 
+export interface ActiveIdentityRecoveryInput {
+  readonly consumerId: string;
+  readonly environment: string;
+  readonly apiCertificateSigningRequestPem: string;
+}
+
 export interface RevocationInput {
   readonly consumerId: string;
   readonly apiFingerprint: string;
@@ -170,6 +176,51 @@ export class ConsumerService {
       apiCertificatePem: issued.apiIdentity.certificatePem,
       status: "ACTIVE",
       shouldWriteTerminalAudit: true,
+    };
+  }
+
+  /**
+   * Recovers the public certificate from an already-active first enrollment.
+   * The CSR is proof that the caller owns the corresponding private key; a
+   * pending agent grant may use this after its original one-use capability
+   * expired during external truststore propagation.
+   */
+  public async recoverActiveIdentity(
+    input: ActiveIdentityRecoveryInput,
+  ): Promise<ConsumerProvisioningResult | undefined> {
+    assertIdentifier(input.consumerId, "consumerId");
+    const consumer = await this.repository.getConsumer(input.consumerId);
+    if (consumer === undefined || consumer.status !== "ACTIVE") {
+      return undefined;
+    }
+    if (consumer.environment !== input.environment) {
+      throw conflict("The active consumer belongs to a different environment.");
+    }
+    const page = await this.repository.listConsumerApiIdentities(
+      input.consumerId,
+    );
+    const identity = page.identities.find(
+      (candidate) =>
+        candidate.status === "ACTIVE" &&
+        candidate.environment === input.environment &&
+        candidate.certificatePem !== undefined &&
+        this.issuer.certificateRequestMatchesCertificate(
+          input.apiCertificateSigningRequestPem,
+          candidate.certificatePem,
+        ),
+    );
+    if (identity?.certificatePem === undefined) {
+      throw conflict(
+        "The active consumer does not have an identity for this certificate request.",
+      );
+    }
+    return {
+      consumerId: consumer.consumerId,
+      environment: consumer.environment,
+      rootFingerprint: await this.issuer.issuerFingerprint(),
+      apiFingerprint: identity.fingerprint,
+      apiCertificatePem: identity.certificatePem,
+      status: "ACTIVE",
     };
   }
 

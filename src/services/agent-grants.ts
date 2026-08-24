@@ -147,13 +147,24 @@ export class AgentGrantService {
       consumerId: grant.consumerId,
       environment: grant.environment,
     };
-    const enrollment = await this.consumers.enroll({
-      consumerId: grant.consumerId,
-      environment: grant.environment,
-      apiCertificateSigningRequestPem,
-      actor,
-      idempotencyKey: `redeem-${tokenHash}`,
-    });
+    const recovered =
+      grant.status === "PENDING"
+        ? await this.consumers.recoverActiveIdentity({
+            consumerId: grant.consumerId,
+            environment: grant.environment,
+            apiCertificateSigningRequestPem,
+          })
+        : undefined;
+    const enrollment =
+      recovered === undefined
+        ? await this.consumers.enroll({
+            consumerId: grant.consumerId,
+            environment: grant.environment,
+            apiCertificateSigningRequestPem,
+            actor,
+            idempotencyKey: `redeem-${tokenHash}`,
+          })
+        : { result: recovered, shouldWriteTerminalAudit: true };
     if (
       capability.status === "CONSUMED" &&
       capability.consumedFingerprint !== enrollment.result.apiFingerprint

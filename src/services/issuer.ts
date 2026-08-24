@@ -108,6 +108,36 @@ export class IssuerService {
     return createHash("sha256").update(Buffer.from(der, "latin1")).digest("hex");
   }
 
+  /**
+   * Confirms that a certificate contains the public key certified by a
+   * submitted CSR.  This is used only to recover a certificate that Hemlig
+   * already issued, so a replacement bootstrap capability cannot retrieve an
+   * identity for a different private key.
+   */
+  public certificateRequestMatchesCertificate(
+    csrPem: string,
+    certificatePem: string,
+  ): boolean {
+    const csr = parseAndVerifyCsr(csrPem);
+    if (csr.publicKey === null) {
+      return false;
+    }
+    try {
+      const csrDer = Buffer.from(
+        forge.asn1.toDer(forge.pki.publicKeyToAsn1(csr.publicKey)).getBytes(),
+        "latin1",
+      );
+      const certificate = new X509Certificate(certificatePem);
+      const certificateDer = certificate.publicKey.export({
+        type: "spki",
+        format: "der",
+      });
+      return csrDer.equals(certificateDer);
+    } catch {
+      return false;
+    }
+  }
+
   private async getOrCreateIssuer(): Promise<{ readonly issuer: IssuerRecord; readonly created: boolean }> {
     const existing = await this.repository.getIssuer();
     if (existing !== undefined) {
