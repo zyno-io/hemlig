@@ -4,7 +4,12 @@ import {
   type ApiGatewayV2Client,
 } from "@aws-sdk/client-apigatewayv2";
 import type { AppConfig } from "../aws/config";
-import type { ConsumerRecord, IdentityRecord } from "../domain/types";
+import type {
+  ConsumerRecord,
+  EnrollmentRecord,
+  IdentityRecord,
+  TruststoreRootRecord,
+} from "../domain/types";
 import type { DynamoRepository } from "../repositories/dynamo";
 import type { ObjectStore } from "../repositories/object-store";
 import type { IssuerService } from "./issuer";
@@ -142,6 +147,152 @@ describe("consumer certificate lifecycle idempotency", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it("reuses a matching published truststore when enrolling another leaf", async () => {
+    const operation: EnrollmentRecord = {
+      pk: "ENROLLMENT#operation-next",
+      sk: "STATE",
+      operationId: "operation-next",
+      operationType: "consumer.enroll",
+      consumerId: "prod-west",
+      environment: "prod",
+      rootFingerprint: "root-current",
+      apiFingerprint: "a".repeat(64),
+      apiCertificatePem: "certificate",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      workflowState: "PREPARED",
+      requestDigest: "request-digest",
+      actor: { type: "human", id: "admin" },
+      idempotencyKey: "enrollment-next",
+    };
+    const roots: TruststoreRootRecord[] = [
+      {
+        pk: "TRUSTSTORE#ROOTS",
+        sk: "ROOT#root-current",
+        fingerprint: "root-current",
+        consumerId: "issuer",
+        environment: "prod",
+        certificatePem: "root-certificate",
+        notBefore: "2026-08-24T00:00:00.000Z",
+        notAfter: "2036-08-24T00:00:00.000Z",
+        status: "ACTIVE",
+        operationId: "issuer-operation",
+        createdAt: "2026-08-24T00:00:00.000Z",
+      },
+    ];
+    const existingTruststore = {
+      bucket: "truststores",
+      key: "truststores/bundles/current.pem",
+      versionId: "version-current",
+      checksumSha256: "checksum-current",
+    };
+    const completeEnrollment = jest.fn(async () => ({
+      consumerId: operation.consumerId,
+      environment: operation.environment,
+      rootFingerprint: operation.rootFingerprint,
+      apiFingerprint: operation.apiFingerprint,
+      apiCertificatePem: operation.apiCertificatePem,
+      status: "ACTIVE" as const,
+    }));
+    const repository = {
+      getEnrollment: jest.fn(async () => operation),
+      acquireTruststoreLease: jest.fn(async () => undefined),
+      listTruststoreRoots: jest.fn(async () => roots),
+      getTruststoreState: jest.fn(async () => ({
+        pk: "SYSTEM#TRUSTSTORE" as const,
+        sk: "STATE" as const,
+        currentTruststoreKey: existingTruststore.key,
+        currentTruststoreVersionId: existingTruststore.versionId,
+        currentTruststoreChecksumSha256: existingTruststore.checksumSha256,
+        currentRootFingerprints: ["root-current"],
+      })),
+      recordTruststoreBundle: jest.fn(),
+      completeEnrollment,
+    } as unknown as DynamoRepository;
+    const objects = {
+      putImmutableOrGet: jest.fn(),
+    } as unknown as ObjectStore;
+    const apiGateway = {
+      send: jest.fn(async (command: unknown) => {
+        if (command instanceof GetDomainNameCommand) {
+          return {
+            MutualTlsAuthentication: {
+              TruststoreUri: "s3://truststores/truststores/bundles/current.pem",
+              TruststoreVersion: "version-current",
+            },
+            DomainNameConfigurations: [{ DomainNameStatus: "AVAILABLE" }],
+          };
+        }
+        throw new Error("A matching bundle must not be updated.");
+      }),
+    } as unknown as ApiGatewayV2Client;
+    const service = new ConsumerService(
+      repository,
+      objects,
+      apiGateway,
+      {} as IssuerService,
+      {
+        deliveryApiCustomDomainName: "api.example.test",
+        truststoreBucketName: "truststores",
+        truststoreKeyPrefix: "truststores",
+      } as AppConfig,
+      {} as EnvironmentService,
+    );
+
+    const result = await service.resume(operation.operationId);
+
+    expect(objects.putImmutableOrGet).not.toHaveBeenCalled();
+    expect(repository.recordTruststoreBundle).not.toHaveBeenCalled();
+    expect(apiGateway.send).toHaveBeenCalled();
+    expect(
+      (apiGateway.send as jest.Mock).mock.calls.every(
+        ([command]) => command instanceof GetDomainNameCommand,
+      ),
+    ).toBe(true);
+    expect(completeEnrollment).toHaveBeenCalledWith(
+      operation,
+      existingTruststore,
+      ["root-current"],
+    );
+    expect(result.status).toBe("ACTIVE");
+  });
+
+  it("defers enrollment when API Gateway has not accepted a new truststore bundle yet", async () => {
+    const repository = {
+      getTruststoreState: jest.fn(async () => ({
+        currentTruststoreKey: "truststores/bundles/current.pem",
+        currentTruststoreVersionId: "version-current",
+      })),
+    } as unknown as DynamoRepository;
+    const apiGateway = {
+      send: jest.fn(async (command: unknown) => {
+        if (command instanceof GetDomainNameCommand) {
+          return {};
+        }
+        if (command instanceof UpdateDomainNameCommand) {
+          throw Object.assign(new Error("bundle is not available yet"), {
+            name: "BadRequestException",
+          });
+        }
+        throw new Error("Unexpected API Gateway command.");
+      }),
+    } as unknown as ApiGatewayV2Client;
+    const service = new ConsumerService(
+      repository,
+      {} as ObjectStore,
+      apiGateway,
+      {} as IssuerService,
+      {
+        deliveryApiCustomDomainName: "api.example.test",
+        truststoreBucketName: "truststores",
+      } as AppConfig,
+      {} as EnvironmentService,
+    );
+
+    await expect(service.reconcileTruststore()).rejects.toMatchObject({
+      code: "service_unavailable",
+    });
   });
 
   it("recovers an active identity only when its certificate matches the submitted CSR", async () => {

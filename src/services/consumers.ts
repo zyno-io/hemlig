@@ -15,11 +15,14 @@ import type {
   Actor,
   ConsumerProvisioningResult,
   EnrollmentRecord,
+  ObjectReference,
+  TruststoreRootRecord,
 } from "../domain/types";
 import { assertIdentifier } from "../domain/validation";
 import type {
   DynamoRepository,
   PreparedEnrollment,
+  TruststoreStateRecord,
 } from "../repositories/dynamo";
 import type { ObjectStore } from "../repositories/object-store";
 import { IssuerService } from "./issuer";
@@ -294,9 +297,10 @@ export class ConsumerService {
       operation.operationId,
       expiresAt,
     );
-    const roots = await this.repository.listTruststoreRoots(
-      operation.operationId,
-    );
+    const [roots, truststoreState] = await Promise.all([
+      this.repository.listTruststoreRoots(operation.operationId),
+      this.repository.getTruststoreState(),
+    ]);
     if (
       !roots.some(
         (root) =>
@@ -314,6 +318,42 @@ export class ConsumerService {
         `The truststore cannot contain more than ${maximumTruststoreCertificates} certificates.`,
       );
     }
+    const currentTruststore = currentTruststoreForRoots(
+      truststoreState,
+      rootFingerprints,
+      this.config.truststoreBucketName,
+    );
+    const truststore =
+      currentTruststore ??
+      (await this.createTruststoreBundle(operation, roots, rootFingerprints));
+    try {
+      await this.publishTruststore(truststore);
+    } catch (error) {
+      if (error instanceof TruststoreRejectedError) {
+        await this.rollbackRejectedTruststore(operation);
+      }
+      throw error;
+    }
+    try {
+      return await this.repository.completeEnrollment(
+        operation,
+        truststore,
+        rootFingerprints,
+      );
+    } catch (error) {
+      const latest = await this.repository.getEnrollment(operation.operationId);
+      if (latest?.workflowState === "READY") {
+        return activeResult(latest);
+      }
+      throw error;
+    }
+  }
+
+  private async createTruststoreBundle(
+    operation: EnrollmentRecord,
+    roots: readonly TruststoreRootRecord[],
+    rootFingerprints: readonly string[],
+  ): Promise<ObjectReference> {
     const truststorePem =
       [...roots]
         .sort((left, right) =>
@@ -338,27 +378,7 @@ export class ConsumerService {
       truststore,
       rootFingerprints,
     );
-    try {
-      await this.publishTruststore(truststore);
-    } catch (error) {
-      if (error instanceof TruststoreRejectedError) {
-        await this.rollbackRejectedTruststore(operation);
-      }
-      throw error;
-    }
-    try {
-      return await this.repository.completeEnrollment(
-        operation,
-        truststore,
-        rootFingerprints,
-      );
-    } catch (error) {
-      const latest = await this.repository.getEnrollment(operation.operationId);
-      if (latest?.workflowState === "READY") {
-        return activeResult(latest);
-      }
-      throw error;
-    }
+    return truststore;
   }
 
   private async startOrResume(
@@ -508,15 +528,24 @@ export class ConsumerService {
       !truststoreMatches(current, uri, truststore.versionId) &&
       !truststoreUpdateInProgress(current)
     ) {
-      await this.apiGateway.send(
-        new UpdateDomainNameCommand({
-          DomainName: this.config.deliveryApiCustomDomainName,
-          MutualTlsAuthentication: {
-            TruststoreUri: uri,
-            TruststoreVersion: truststore.versionId,
-          },
-        }),
-      );
+      try {
+        await this.apiGateway.send(
+          new UpdateDomainNameCommand({
+            DomainName: this.config.deliveryApiCustomDomainName,
+            MutualTlsAuthentication: {
+              TruststoreUri: uri,
+              TruststoreVersion: truststore.versionId,
+            },
+          }),
+        );
+      } catch (error) {
+        if (retryableTruststoreUpdateError(error)) {
+          throw serviceUnavailable(
+            "API Gateway has not accepted the new truststore version yet.",
+          );
+        }
+        throw error;
+      }
     }
     // Keep a failed candidate plus its rollback comfortably inside API
     // Gateway's synchronous Lambda integration window. Longer propagation
@@ -564,6 +593,56 @@ export class ConsumerService {
 
 const truststoreKey = (prefix: string, operationId: string): string =>
   `${prefix.replace(/\/$/, "")}/bundles/${operationId}.pem`;
+
+/**
+ * A leaf enrollment cannot change which CA roots API Gateway trusts. Reuse the
+ * pinned immutable bundle when it already represents the active root set, but
+ * still call publishTruststore() to verify that API Gateway has that exact
+ * version attached before activating the new identity.
+ */
+const currentTruststoreForRoots = (
+  state: TruststoreStateRecord | undefined,
+  rootFingerprints: readonly string[],
+  bucket: string,
+): ObjectReference | undefined => {
+  if (
+    state?.currentTruststoreKey === undefined ||
+    state.currentTruststoreVersionId === undefined ||
+    state.currentTruststoreChecksumSha256 === undefined ||
+    state.currentRootFingerprints === undefined ||
+    !sameRootFingerprints(state.currentRootFingerprints, rootFingerprints)
+  ) {
+    return undefined;
+  }
+  return {
+    bucket,
+    key: state.currentTruststoreKey,
+    versionId: state.currentTruststoreVersionId,
+    checksumSha256: state.currentTruststoreChecksumSha256,
+  };
+};
+
+const sameRootFingerprints = (
+  left: readonly string[],
+  right: readonly string[],
+): boolean => {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return sortedLeft.every(
+    (fingerprint, index) => fingerprint === sortedRight[index],
+  );
+};
+
+const retryableTruststoreUpdateError = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "name" in error &&
+  (error.name === "BadRequestException" ||
+    error.name === "ConflictException" ||
+    error.name === "TooManyRequestsException");
 
 const assertIdempotency = (
   record: Record<string, unknown>,
