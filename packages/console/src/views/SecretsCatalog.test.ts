@@ -262,26 +262,28 @@ describe("SecretsCatalog search", () => {
     }
   });
 
-  it("renders the results of a completed search, spanning the whole environment", async () => {
-    vi.useFakeTimers();
-    try {
-      const api = defaultApi({
-        listSecrets: async () => ({
-
   it("restores a search carried back from secret detail", async () => {
     const listSecrets = vi.fn(async (): Promise<CatalogPage> => ({
       secrets: [secretFixture()],
       generatedAt: "2026-08-23T00:00:00.000Z",
     }));
+
     await mountCatalog(
       defaultApi({ listSecrets }),
       { env: "dev" },
       { catalogFilter: "stripe" },
     );
+
     expect(listSecrets).toHaveBeenCalledWith(
       expect.objectContaining({ environment: "dev", q: "stripe" }),
     );
   });
+
+  it("renders the results of a completed search, spanning the whole environment", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = defaultApi({
+        listSecrets: async () => ({
           secrets: [secretFixture()],
           generatedAt: "2026-08-23T00:00:00.000Z",
         }),
