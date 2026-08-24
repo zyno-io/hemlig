@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { HemligSecretProvider, Provider, type ResolvedSecretInputs } from "./index";
+import {
+  HemligAgentGrantProvider,
+  HemligSecretProvider,
+  Provider,
+  type ResolvedAgentGrantInputs,
+  type ResolvedSecretInputs,
+} from "./index";
 
 test("exports a Pulumi component provider", () => {
   assert.equal(typeof Provider, "function");
@@ -15,6 +21,23 @@ function inputs(overrides: Partial<ResolvedSecretInputs> = {}): ResolvedSecretIn
     metadata: { description: "Pulumi provider sentinel", path: "platform/hemlig" },
     acl: [],
     payload: { SENTINEL: { encoding: "utf8", value: "one" } },
+    ...overrides,
+  };
+}
+
+function agentGrantInputs(
+  overrides: Partial<ResolvedAgentGrantInputs> = {},
+): ResolvedAgentGrantInputs {
+  return {
+    adminUrl: "https://admin.example.com",
+    providerSchemaVersion: "1",
+    consumerId: "staging-hemlig-sentinel",
+    environment: "staging",
+    capabilities: ["read"],
+    readPathPrefixes: ["platform/hemlig/integration"],
+    writePathPrefixes: [],
+    displayName: "Staging Hemlig Pulumi sentinel",
+    bootstrapGeneration: "1",
     ...overrides,
   };
 }
@@ -124,4 +147,76 @@ test("payload updates write exactly one new revision", async () => {
   assert.equal(payloadWrites, 1);
   assert.equal(result.outs.payloadVersionId, "payload-next");
   assert.equal(result.outs.controlVersionId, "ctl-payload");
+});
+
+test("creates one pending agent grant and one bootstrap capability", async () => {
+  let grantCreates = 0;
+  let capabilityIssues = 0;
+  const provider = new HemligAgentGrantProvider(() => ({
+    createAgentGrant: async () => {
+      grantCreates += 1;
+      return {
+        grantId: "grant-staging-hemlig-sentinel",
+        consumerId: "staging-hemlig-sentinel",
+        environment: "staging",
+        capabilities: ["read"] as const,
+        readPathPrefixes: ["platform/hemlig/integration"],
+        writePathPrefixes: [],
+        displayName: "Staging Hemlig Pulumi sentinel",
+        status: "PENDING" as const,
+        createdAt: "2026-08-23T00:00:00.000Z",
+      };
+    },
+    issueBootstrapCapability: async () => {
+      capabilityIssues += 1;
+      return {
+        grantId: "grant-staging-hemlig-sentinel",
+        token: "hmlb_test",
+        expiresAt: "2026-08-23T00:30:00.000Z",
+      };
+    },
+  }), () => "token-for-test");
+
+  const result = await provider.create(agentGrantInputs());
+
+  assert.equal(grantCreates, 1);
+  assert.equal(capabilityIssues, 1);
+  assert.equal(result.id, "grant-staging-hemlig-sentinel");
+  assert.equal(result.outs.bootstrapToken, "hmlb_test");
+});
+
+test("only reissues the bootstrap capability when its generation changes", async () => {
+  let grantCreates = 0;
+  let capabilityIssues = 0;
+  const provider = new HemligAgentGrantProvider(() => ({
+    createAgentGrant: async () => {
+      grantCreates += 1;
+      throw new Error("create must not be called during bootstrap reissue");
+    },
+    issueBootstrapCapability: async () => {
+      capabilityIssues += 1;
+      return {
+        grantId: "grant-staging-hemlig-sentinel",
+        token: "hmlb_reissued",
+        expiresAt: "2026-08-23T01:00:00.000Z",
+      };
+    },
+  }), () => "token-for-test");
+  const oldInputs = {
+    ...agentGrantInputs(),
+    grantId: "grant-staging-hemlig-sentinel",
+    bootstrapToken: "hmlb_old",
+    bootstrapExpiresAt: "2026-08-23T00:30:00.000Z",
+  };
+
+  const result = await provider.update(
+    "grant-staging-hemlig-sentinel",
+    oldInputs,
+    agentGrantInputs({ bootstrapGeneration: "2" }),
+  );
+
+  assert.equal(grantCreates, 0);
+  assert.equal(capabilityIssues, 1);
+  assert.equal(result.outs.grantId, "grant-staging-hemlig-sentinel");
+  assert.equal(result.outs.bootstrapToken, "hmlb_reissued");
 });

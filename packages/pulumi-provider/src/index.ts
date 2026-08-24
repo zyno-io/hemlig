@@ -3,6 +3,8 @@ import * as pulumi from "@pulumi/pulumi";
 import {
   HemligClient,
   HemligError,
+  type AgentGrant,
+  type BootstrapCapability,
   type Grant,
   type SecretMetadata,
   type SecretPayload,
@@ -30,6 +32,18 @@ export class Provider extends pulumi.ComponentResource {
   ): HemligSecret {
     return new HemligSecret(name, args, this.adminUrl, opts);
   }
+
+  /**
+   * Creates the remote policy and one-use enrollment capability for a
+   * constrained non-administrator agent, such as the Kubernetes controller.
+   */
+  public agentGrant(
+    name: string,
+    args: HemligAgentGrantArgs,
+    opts?: pulumi.CustomResourceOptions,
+  ): HemligAgentGrant {
+    return new HemligAgentGrant(name, args, this.adminUrl, opts);
+  }
 }
 
 export interface HemligSecretArgs {
@@ -51,12 +65,48 @@ export interface ResolvedSecretInputs {
   readonly payload: SecretPayload;
 }
 
+export interface HemligAgentGrantArgs {
+  readonly consumerId: pulumi.Input<string>;
+  readonly environment: pulumi.Input<string>;
+  readonly capabilities: pulumi.Input<readonly ("read" | "write")[]>;
+  readonly readPathPrefixes: pulumi.Input<readonly string[]>;
+  readonly writePathPrefixes: pulumi.Input<readonly string[]>;
+  readonly displayName: pulumi.Input<string>;
+  /** Bump only before enrollment to replace an expired bootstrap capability. */
+  readonly bootstrapGeneration: pulumi.Input<string>;
+}
+
+export interface ResolvedAgentGrantInputs {
+  readonly adminUrl: string;
+  readonly providerSchemaVersion: string;
+  readonly consumerId: string;
+  readonly environment: string;
+  readonly capabilities: readonly ("read" | "write")[];
+  readonly readPathPrefixes: readonly string[];
+  readonly writePathPrefixes: readonly string[];
+  readonly displayName: string;
+  readonly bootstrapGeneration: string;
+}
+
+interface ResolvedAgentGrantState extends ResolvedAgentGrantInputs {
+  readonly grantId: string;
+  readonly bootstrapToken: string;
+  readonly bootstrapExpiresAt: string;
+}
+
 type HemligSecretClient = Pick<
   HemligClient,
   "createAdminSecret" | "getAdminSecret" | "putAdminPayload" | "updateAdminSecret"
 >;
 
 type HemligSecretClientFactory = (inputs: ResolvedSecretInputs) => HemligSecretClient;
+type HemligAgentGrantClient = Pick<
+  HemligClient,
+  "createAgentGrant" | "issueBootstrapCapability"
+>;
+type HemligAgentGrantClientFactory = (
+  inputs: ResolvedAgentGrantInputs,
+) => HemligAgentGrantClient;
 type AdminTokenSource = () => string;
 
 export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
@@ -162,6 +212,83 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
   public async delete(): Promise<void> {}
 }
 
+export class HemligAgentGrantProvider implements pulumi.dynamic.ResourceProvider {
+  public constructor(
+    private readonly createClient: HemligAgentGrantClientFactory = agentGrantClientFor,
+    private readonly adminTokenFor: AdminTokenSource = adminTokenFromEnvironment,
+  ) {}
+
+  public async create(inputs: ResolvedAgentGrantInputs): Promise<pulumi.dynamic.CreateResult> {
+    const client = this.createClient(inputs);
+    const adminToken = this.adminTokenFor();
+    const grant = await client.createAgentGrant(adminToken, {
+      consumerId: inputs.consumerId,
+      environment: inputs.environment,
+      capabilities: inputs.capabilities,
+      readPathPrefixes: inputs.readPathPrefixes,
+      writePathPrefixes: inputs.writePathPrefixes,
+      displayName: inputs.displayName,
+    });
+    const capability = await client.issueBootstrapCapability(adminToken, grant.grantId);
+    return {
+      id: grant.grantId,
+      outs: withAgentGrantState(inputs, grant, capability),
+    };
+  }
+
+  public async diff(
+    _id: string,
+    olds: ResolvedAgentGrantState,
+    news: ResolvedAgentGrantInputs,
+  ): Promise<pulumi.dynamic.DiffResult> {
+    const changes = JSON.stringify(agentGrantInputs(olds)) !== JSON.stringify(news);
+    const immutableProperties = [
+      "consumerId",
+      "environment",
+      "capabilities",
+      "readPathPrefixes",
+      "writePathPrefixes",
+      "displayName",
+    ].filter((property) =>
+      JSON.stringify(olds[property as keyof ResolvedAgentGrantInputs]) !==
+      JSON.stringify(news[property as keyof ResolvedAgentGrantInputs]),
+    );
+    return { changes, replaces: immutableProperties };
+  }
+
+  public async update(
+    _id: string,
+    olds: ResolvedAgentGrantState,
+    news: ResolvedAgentGrantInputs,
+  ): Promise<pulumi.dynamic.UpdateResult> {
+    if (olds.bootstrapGeneration === news.bootstrapGeneration) {
+      return {
+        outs: {
+          ...news,
+          grantId: olds.grantId,
+          bootstrapToken: olds.bootstrapToken,
+          bootstrapExpiresAt: olds.bootstrapExpiresAt,
+        },
+      };
+    }
+
+    const client = this.createClient(news);
+    const adminToken = this.adminTokenFor();
+    const capability = await client.issueBootstrapCapability(adminToken, olds.grantId);
+    return {
+      outs: {
+        ...news,
+        grantId: olds.grantId,
+        bootstrapToken: capability.token,
+        bootstrapExpiresAt: capability.expiresAt,
+      },
+    };
+  }
+
+  /** Agent grants are retained remotely so an accidental state destroy cannot widen access. */
+  public async delete(): Promise<void> {}
+}
+
 export class HemligSecret extends pulumi.dynamic.Resource {
   public readonly controlVersionId!: pulumi.Output<string>;
   public readonly payloadVersionId!: pulumi.Output<string>;
@@ -188,7 +315,37 @@ export class HemligSecret extends pulumi.dynamic.Resource {
   }
 }
 
+export class HemligAgentGrant extends pulumi.dynamic.Resource {
+  public readonly grantId!: pulumi.Output<string>;
+  public readonly bootstrapToken!: pulumi.Output<string>;
+  public readonly bootstrapExpiresAt!: pulumi.Output<string>;
+
+  public constructor(
+    name: string,
+    args: HemligAgentGrantArgs,
+    adminUrl: pulumi.Input<string>,
+    opts?: pulumi.CustomResourceOptions,
+  ) {
+    super(
+      new HemligAgentGrantProvider(),
+      name,
+      {
+        ...args,
+        adminUrl,
+        providerSchemaVersion: "1",
+      },
+      {
+        ...opts,
+        additionalSecretOutputs: ["bootstrapToken"],
+      },
+    );
+  }
+}
+
 const clientFor = (inputs: ResolvedSecretInputs): HemligClient =>
+  new HemligClient(new URL(inputs.adminUrl), new NodeHttpsTransport());
+
+const agentGrantClientFor = (inputs: ResolvedAgentGrantInputs): HemligClient =>
   new HemligClient(new URL(inputs.adminUrl), new NodeHttpsTransport());
 
 const adminTokenFromEnvironment = (): string => {
@@ -227,3 +384,24 @@ const stripVersions = (
  * compatibility filter ignores it in stacks created by provider schema v1.
  */
 const desiredInputs = (value: ResolvedSecretInputs): ResolvedSecretInputs => stripVersions(value);
+
+const withAgentGrantState = (
+  inputs: ResolvedAgentGrantInputs,
+  grant: AgentGrant,
+  capability: BootstrapCapability,
+): ResolvedAgentGrantState => ({
+  ...inputs,
+  grantId: grant.grantId,
+  bootstrapToken: capability.token,
+  bootstrapExpiresAt: capability.expiresAt,
+});
+
+const agentGrantInputs = (value: ResolvedAgentGrantState): ResolvedAgentGrantInputs => {
+  const {
+    grantId: _grantId,
+    bootstrapToken: _bootstrapToken,
+    bootstrapExpiresAt: _bootstrapExpiresAt,
+    ...inputs
+  } = value;
+  return inputs;
+};
