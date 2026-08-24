@@ -1194,6 +1194,7 @@ const grantTruststorePublisher = (
         "apigateway:GET",
         "apigateway:PATCH",
         "apigateway:AddCertificateToDomain",
+        "apigateway:RemoveCertificateFromDomain",
       ],
       resources: [
         Arn.format(

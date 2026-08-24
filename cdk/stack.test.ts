@@ -173,6 +173,7 @@ describe("HemligStack", () => {
               "apigateway:GET",
               "apigateway:PATCH",
               "apigateway:AddCertificateToDomain",
+              "apigateway:RemoveCertificateFromDomain",
             ]),
           }),
         ]),
