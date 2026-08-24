@@ -185,6 +185,12 @@ export interface ConsumerRecord {
     readonly status: ConsumerStatus;
     readonly createdAt: string;
     readonly createdBy: Actor;
+    /**
+     * Present only while the first enrollment is still being published.  It
+     * lets a replacement bootstrap capability resume that one operation
+     * instead of attempting a second consumer creation.
+     */
+    readonly pendingEnrollmentOperationId?: string;
     /** Sparse GSI projection for administrative consumer browsing. */
     readonly consumerDirectoryPk?: string;
     readonly consumerDirectorySk?: string;

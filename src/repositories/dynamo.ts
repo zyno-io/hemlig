@@ -504,6 +504,50 @@ export class DynamoRepository {
     return response.Item as ConsumerRecord | undefined;
   }
 
+  public async getPendingEnrollmentForConsumer(
+    consumerId: string,
+  ): Promise<EnrollmentRecord | undefined> {
+    const consumer = await this.getConsumer(consumerId);
+    if (
+      consumer?.status !== "PENDING" ||
+      consumer.pendingEnrollmentOperationId === undefined
+    ) {
+      return undefined;
+    }
+    return this.getEnrollment(consumer.pendingEnrollmentOperationId);
+  }
+
+  public async associateEnrollmentIdempotency(
+    operation: EnrollmentRecord,
+    actor: Actor,
+    idempotencyKey: string,
+  ): Promise<void> {
+    try {
+      await this.dynamo.send(
+        new PutCommand({
+          TableName: this.config.controlTableName,
+          Item: {
+            pk: idempotencyPk(actor),
+            sk: `REQUEST#${idempotencyKey}`,
+            requestDigest: operation.requestDigest,
+            operationId: operation.operationId,
+            operationType: operation.operationType,
+            consumerId: operation.consumerId,
+            environment: operation.environment,
+            rootFingerprint: operation.rootFingerprint,
+            apiFingerprint: operation.apiFingerprint,
+            status: "PREPARED",
+          },
+          ConditionExpression: "attribute_not_exists(pk)",
+        }),
+      );
+    } catch (error) {
+      throw conflict(
+        `Could not associate enrollment idempotency: ${errorMessage(error)}`,
+      );
+    }
+  }
+
   public async getAgentGrant(
     grantId: string,
   ): Promise<AgentGrantRecord | undefined> {
@@ -1387,6 +1431,7 @@ export class DynamoRepository {
           status: "PENDING",
           createdAt: enrollment.createdAt,
           createdBy: enrollment.actor,
+          pendingEnrollmentOperationId: enrollment.operationId,
           consumerDirectoryPk: consumerDirectoryPk(enrollment.environment),
           consumerDirectorySk: enrollment.consumerId,
         } satisfies ConsumerRecord,
@@ -1510,7 +1555,8 @@ export class DynamoRepository {
         Update: {
           TableName: this.config.controlTableName,
           Key: { pk: `CONSUMER#${operation.consumerId}`, sk: "PROFILE" },
-          UpdateExpression: "SET #status = :active",
+          UpdateExpression:
+            "SET #status = :active REMOVE pendingEnrollmentOperationId",
           ConditionExpression:
             "#status = :pending AND #environment = :environment",
           ExpressionAttributeNames: {

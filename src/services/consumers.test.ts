@@ -181,4 +181,78 @@ describe("consumer certificate lifecycle idempotency", () => {
       status: "ACTIVE",
     });
   });
+
+  it("resumes a matching pending enrollment when a replacement bootstrap capability arrives", async () => {
+    const requestDigest = sha256Hex(
+      stableJson({
+        operationType: "consumer.enroll",
+        consumerId: "staging-agent",
+        environment: "staging",
+        rootFingerprint: "root",
+        csrFingerprint: "csr",
+      }),
+    );
+    const operation = {
+      pk: "ENROLLMENT#operation-1",
+      sk: "STATE" as const,
+      operationId: "operation-1",
+      operationType: "consumer.enroll" as const,
+      consumerId: "staging-agent",
+      environment: "staging",
+      rootFingerprint: "root",
+      apiFingerprint: "a".repeat(64),
+      apiCertificatePem: "certificate",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      workflowState: "PREPARED" as const,
+      requestDigest,
+      actor: { type: "system" as const, id: "bootstrap:grant-1" },
+      idempotencyKey: "redeem-original",
+    };
+    const repository = {
+      getIdempotency: jest.fn(async () => undefined),
+      getPendingEnrollmentForConsumer: jest.fn(async () => operation),
+      associateEnrollmentIdempotency: jest.fn(async () => undefined),
+    } as unknown as DynamoRepository;
+    const issuer = {
+      certificateRequestFingerprint: jest.fn(() => "csr"),
+      issuerFingerprint: jest.fn(async () => "root"),
+      issueApiIdentity: jest.fn(),
+    } as unknown as IssuerService;
+    const environments = {
+      require: jest.fn(async () => undefined),
+    } as unknown as EnvironmentService;
+    const service = new ConsumerService(
+      repository,
+      {} as ObjectStore,
+      {} as ApiGatewayV2Client,
+      issuer,
+      {} as AppConfig,
+      environments,
+    );
+    const resume = jest.spyOn(service, "resume").mockResolvedValue({
+      consumerId: "staging-agent",
+      environment: "staging",
+      rootFingerprint: "root",
+      apiFingerprint: "a".repeat(64),
+      apiCertificatePem: "certificate",
+      status: "ACTIVE",
+    });
+
+    const result = await service.enroll({
+      consumerId: "staging-agent",
+      environment: "staging",
+      apiCertificateSigningRequestPem: "CSR",
+      actor: { type: "system", id: "bootstrap:grant-1" },
+      idempotencyKey: "redeem-replacement",
+    });
+
+    expect(repository.associateEnrollmentIdempotency).toHaveBeenCalledWith(
+      operation,
+      { type: "system", id: "bootstrap:grant-1" },
+      "redeem-replacement",
+    );
+    expect(resume).toHaveBeenCalledWith("operation-1");
+    expect(issuer.issueApiIdentity).not.toHaveBeenCalled();
+    expect(result.result.apiCertificatePem).toBe("certificate");
+  });
 });

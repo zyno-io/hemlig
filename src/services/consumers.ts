@@ -336,6 +336,46 @@ export class ConsumerService {
       const result = await this.resume(operationId);
       return { result, shouldWriteTerminalAudit: prior.status !== "SUCCEEDED" };
     }
+    const pending = await this.repository.getPendingEnrollmentForConsumer(
+      input.consumerId,
+    );
+    if (pending !== undefined) {
+      if (
+        pending.operationType !== "consumer.enroll" ||
+        pending.consumerId !== input.consumerId ||
+        pending.environment !== input.environment ||
+        pending.requestDigest !== requestDigest ||
+        pending.workflowState !== "PREPARED"
+      ) {
+        throw conflict(
+          "The existing pending consumer enrollment does not match this certificate request.",
+        );
+      }
+      try {
+        await this.repository.associateEnrollmentIdempotency(
+          pending,
+          input.actor,
+          input.idempotencyKey,
+        );
+      } catch (error) {
+        const winner = await this.repository.getIdempotency(
+          input.actor,
+          input.idempotencyKey,
+        );
+        if (winner === undefined) {
+          throw error;
+        }
+        assertIdempotency(winner, requestDigest, "consumer.enroll");
+        const winnerOperationId = stringField(winner, "operationId");
+        const result = await this.resume(winnerOperationId);
+        return {
+          result,
+          shouldWriteTerminalAudit: winner.status !== "SUCCEEDED",
+        };
+      }
+      const result = await this.resume(pending.operationId);
+      return { result, shouldWriteTerminalAudit: true };
+    }
     const issued = await this.issuer.issueApiIdentity(
       input.consumerId,
       input.environment,
