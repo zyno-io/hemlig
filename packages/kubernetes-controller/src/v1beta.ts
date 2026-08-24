@@ -639,7 +639,9 @@ export class HemligV1BetaController {
       namespace,
       plural,
       name,
-      body: { status },
+      // CustomObjectsApi prefers JSON Patch. `add` creates status on a new
+      // object and replaces the status member on later reconciliations.
+      body: [{ op: "add", path: "/status", value: status }],
     });
   }
 
