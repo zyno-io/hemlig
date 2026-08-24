@@ -119,11 +119,11 @@ describe("GET /v1/admin/audit", () => {
   it("reads a signed, date-scoped archive page and records the read", async () => {
     const response = await handler(buildEvent({ date: "2026-08-23" }));
 
-    expect(list).toHaveBeenCalledWith("2026-08-23", undefined, undefined);
+    expect(list).toHaveBeenCalledWith("2026-08-23", undefined, undefined, undefined);
     expect(encode).toHaveBeenCalledWith(
       expect.objectContaining({
         scope: `admin:audit:admin-1:${sha256Hex(
-          stableJson({ date: "2026-08-23", secretId: undefined }),
+          stableJson({ date: "2026-08-23", environment: undefined, secretId: undefined }),
         )}`,
         lastEvaluatedKey: { continuationToken: "s3-next" },
       }),
@@ -160,11 +160,11 @@ describe("GET /v1/admin/audit", () => {
       buildEvent({ date: "2026-08-23", secretId: "payments-api" }),
     );
 
-    expect(list).toHaveBeenCalledWith("2026-08-23", undefined, "payments-api");
+    expect(list).toHaveBeenCalledWith("2026-08-23", undefined, "payments-api", undefined);
     expect(encode).toHaveBeenCalledWith(
       expect.objectContaining({
         scope: `admin:audit:admin-1:${sha256Hex(
-          stableJson({ date: "2026-08-23", secretId: "payments-api" }),
+          stableJson({ date: "2026-08-23", environment: undefined, secretId: "payments-api" }),
         )}`,
       }),
     );

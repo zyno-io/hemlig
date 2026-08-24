@@ -41,6 +41,7 @@ export const handler = async (event: DynamoDBStreamEvent): Promise<void> => {
         schemaVersion: 1,
         kind: record.kind,
         secretId: record.secretId,
+        environment: record.environment,
         controlVersionId: record.controlVersionId,
         ...(record.payloadVersionId === undefined
           ? {}

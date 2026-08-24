@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { useQuery } from "@tanstack/vue-query";
+import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, onUnmounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import ErrorNotice from "../components/ErrorNotice.vue";
 import MutationState from "../components/MutationState.vue";
 import {
@@ -22,10 +22,12 @@ import { useAppStore } from "../stores/app";
 const props = defineProps<{ env: string; secretId: string }>();
 const store = useAppStore();
 const router = useRouter();
+const route = useRoute();
+const queryClient = useQueryClient();
 
 const { data, error, refetch } = useQuery({
-  queryKey: computed(() => ["secret", props.secretId]),
-  queryFn: () => store.requireApi().getSecret(props.secretId),
+  queryKey: computed(() => ["secret", props.env, props.secretId]),
+  queryFn: () => store.requireApi().getSecret(props.env, props.secretId),
 });
 
 /**
@@ -82,7 +84,12 @@ onUnmounted(() => {
 });
 
 const addRow = (): void => {
-  rows.value.push({ id: crypto.randomUUID(), key: "", value: "", encoding: "utf8" });
+  rows.value.push({
+    id: crypto.randomUUID(),
+    key: "",
+    value: "",
+    encoding: "utf8",
+  });
 };
 if (rows.value.length === 0) {
   addRow();
@@ -111,18 +118,27 @@ const encodingDowngrades = computed(() => {
   }
   return rows.value
     .filter(
-      (row) => row.key.length > 0 && baseline.get(row.key) === "base64" && row.encoding === "utf8",
+      (row) =>
+        row.key.length > 0 &&
+        baseline.get(row.key) === "base64" &&
+        row.encoding === "utf8",
     )
     .map((row) => row.key);
 });
 
 const currentCount = computed(() => data.value?.payloadKeyCount);
+const isFirstPayload = computed(
+  () => data.value?.payloadVersionId === undefined,
+);
 const destroyed = computed(() => {
   const existing = currentCount.value;
   if (existing === undefined) {
     return undefined;
   }
-  return Math.max(0, existing - rows.value.filter((row) => row.key.length > 0).length);
+  return Math.max(
+    0,
+    existing - rows.value.filter((row) => row.key.length > 0).length,
+  );
 });
 
 const toggleReveal = (id: string): void => {
@@ -196,7 +212,9 @@ const loadPayload = async (): Promise<void> => {
   payloadLoading.value = true;
   payloadError.value = undefined;
   try {
-    const current = await store.requireApi().getSecretPayload(props.secretId);
+    const current = await store
+      .requireApi()
+      .getSecretPayload(props.env, props.secretId);
     rows.value = Object.entries(current.payload).map(([key, entry]) => ({
       id: crypto.randomUUID(),
       key,
@@ -204,7 +222,10 @@ const loadPayload = async (): Promise<void> => {
       encoding: entry.encoding,
     }));
     baselineEncodings.value = new Map(
-      Object.entries(current.payload).map(([key, entry]) => [key, entry.encoding]),
+      Object.entries(current.payload).map(([key, entry]) => [
+        key,
+        entry.encoding,
+      ]),
     );
     revealed.value = new Set();
     refreshActiveTabText();
@@ -217,15 +238,28 @@ const loadPayload = async (): Promise<void> => {
   }
 };
 
-const mutation = useGuardedMutation<{ controlVersionId: string; rows: PayloadRow[] }, ControlRevision>({
+const mutation = useGuardedMutation<
+  { controlVersionId: string; rows: PayloadRow[] },
+  ControlRevision
+>({
   family: "secret",
   mutate: (input, key) =>
     store
       .requireApi()
-      .putPayload(props.secretId, input.controlVersionId, toPayload(input.rows), key),
+      .putPayload(
+        props.env,
+        props.secretId,
+        input.controlVersionId,
+        toPayload(input.rows),
+        key,
+      ),
   reconcile: async (input) => {
-    const current = await store.requireApi().getSecret(props.secretId);
-    return current.controlVersionId === input.controlVersionId ? undefined : current;
+    const current = await store
+      .requireApi()
+      .getSecret(props.env, props.secretId);
+    return current.controlVersionId === input.controlVersionId
+      ? undefined
+      : current;
   },
 });
 
@@ -243,8 +277,19 @@ const submit = async (): Promise<void> => {
     rows: rows.value,
   });
   if (result !== undefined) {
+    // The successful PUT already returned the authoritative replacement
+    // control revision, so update the cache before returning to the detail
+    // page instead of rendering the old pending revision.
+    queryClient.setQueryData<ControlRevision>(
+      ["secret", props.env, props.secretId],
+      result,
+    );
     rows.value = [];
-    await router.push({ name: "secret", params: { env: props.env, secretId: props.secretId } });
+    await router.push({
+      name: "secret",
+      params: { env: props.env, secretId: props.secretId },
+      query: route.query,
+    });
   }
 };
 
@@ -257,7 +302,10 @@ const reload = async (): Promise<void> => {
 <template>
   <div class="max-w-3xl space-y-4 text-sm">
     <div>
-      <RouterLink class="text-xs text-accent hover:underline" :to="{ name: 'secret', params: { env, secretId } }">
+      <RouterLink
+        class="text-xs text-accent hover:underline"
+        :to="{ name: 'secret', params: { env, secretId }, query: route.query }"
+      >
         ← {{ secretId }}
       </RouterLink>
       <h1 class="text-lg font-semibold">Replace payload</h1>
@@ -266,13 +314,17 @@ const reload = async (): Promise<void> => {
     <div class="rounded border border-warn/50 bg-warn/5 p-3 text-xs text-warn">
       <p class="font-medium">This replaces the entire payload.</p>
       <p class="mt-1">
-        Loading the current payload is explicit and audited. Values remain only in this
-        editor; anything not listed when you save is destroyed.
+        Loading the current payload is explicit and audited. Values remain only
+        in this editor; anything not listed when you save is destroyed.
       </p>
     </div>
 
     <ErrorNotice v-if="error" :error="error" />
-    <ErrorNotice v-if="payloadError" :error="payloadError" context="Could not load the current payload." />
+    <ErrorNotice
+      v-if="payloadError"
+      :error="payloadError"
+      context="Could not load the current payload."
+    />
     <MutationState
       :phase="mutation.phase.value"
       intent="replace this payload"
@@ -289,14 +341,20 @@ const reload = async (): Promise<void> => {
         </span>
         <div class="flex gap-1" role="tablist">
           <button
-            v-for="tab in (['form', 'json', 'env'] as const)"
+            v-for="tab in ['form', 'json', 'env'] as const"
             :key="tab"
             type="button"
             role="tab"
             :aria-selected="activeTab === tab"
-            :disabled="activeTab === 'json' && jsonError !== undefined && tab !== 'json'"
+            :disabled="
+              activeTab === 'json' && jsonError !== undefined && tab !== 'json'
+            "
             class="rounded border px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-            :class="activeTab === tab ? 'border-accent bg-accent/10 text-accent' : 'border-line'"
+            :class="
+              activeTab === tab
+                ? 'border-accent bg-accent/10 text-accent'
+                : 'border-line'
+            "
             @click="selectTab(tab)"
           >
             {{ tab === "form" ? "Form" : tab === "json" ? "JSON" : ".env" }}
@@ -308,19 +366,32 @@ const reload = async (): Promise<void> => {
           :disabled="payloadLoading || data?.payloadVersionId === undefined"
           @click="loadPayload"
         >
-          {{ payloadLoading ? "Loading…" : payloadLoaded ? "Reload current payload" : "Load current payload" }}
+          {{
+            payloadLoading
+              ? "Loading…"
+              : payloadLoaded
+                ? "Reload current payload"
+                : "Load current payload"
+          }}
         </button>
       </div>
 
       <div v-if="activeTab === 'form'">
-        <div v-for="row in rows" :key="row.id" class="mb-2 flex items-start gap-2">
+        <div
+          v-for="row in rows"
+          :key="row.id"
+          class="mb-2 flex items-start gap-2"
+        >
           <input
             v-model="row.key"
             spellcheck="false"
             autocomplete="off"
             class="mono w-52 rounded border border-line bg-surface px-2 py-1"
           />
-          <select v-model="row.encoding" class="rounded border border-line bg-surface px-2 py-1 text-xs">
+          <select
+            v-model="row.encoding"
+            class="rounded border border-line bg-surface px-2 py-1 text-xs"
+          >
             <option value="utf8">utf8</option>
             <option value="base64">base64</option>
           </select>
@@ -336,7 +407,11 @@ const reload = async (): Promise<void> => {
               {{ problems.rows.get(row.id) }}
             </span>
           </div>
-          <button type="button" class="rounded border border-line px-2 py-1 text-xs" @click="toggleReveal(row.id)">
+          <button
+            type="button"
+            class="rounded border border-line px-2 py-1 text-xs"
+            @click="toggleReveal(row.id)"
+          >
             {{ revealed.has(row.id) ? "Hide" : "Show" }}
           </button>
           <button
@@ -348,7 +423,11 @@ const reload = async (): Promise<void> => {
           </button>
         </div>
 
-        <button type="button" class="mt-1 rounded border border-line px-2 py-1 text-xs" @click="addRow">
+        <button
+          type="button"
+          class="mt-1 rounded border border-line px-2 py-1 text-xs"
+          @click="addRow"
+        >
           Add key
         </button>
       </div>
@@ -356,8 +435,8 @@ const reload = async (): Promise<void> => {
       <div v-else-if="activeTab === 'json'">
         <p class="mb-2 text-xs text-ink-muted">
           Wire format: each entry carries its own encoding, so this is
-          <code class="mono">{{ "{ key: { encoding, value } }" }}</code>, not a flat
-          key/value map.
+          <code class="mono">{{ "{ key: { encoding, value } }" }}</code
+          >, not a flat key/value map.
         </p>
         <textarea
           v-model="jsonText"
@@ -372,15 +451,19 @@ const reload = async (): Promise<void> => {
       </div>
 
       <div v-else>
-        <p v-if="base64Keys.length > 0" class="mb-2 rounded bg-warn/10 p-2 text-xs text-warn">
+        <p
+          v-if="base64Keys.length > 0"
+          class="mb-2 rounded bg-warn/10 p-2 text-xs text-warn"
+        >
           <span class="font-medium">
-            {{ base64Keys.length }} entr{{ base64Keys.length === 1 ? "y" : "ies" }} ({{
-              base64Keys.join(", ")
-            }})
+            {{ base64Keys.length }} entr{{
+              base64Keys.length === 1 ? "y" : "ies"
+            }}
+            ({{ base64Keys.join(", ") }})
             {{ base64Keys.length === 1 ? "is" : "are" }} base64-encoded.
           </span>
-          .env cannot express an encoding. Editing here and submitting marks every entry
-          utf8, including these -- that changes what gets delivered.
+          .env cannot express an encoding. Editing here and submitting marks
+          every entry utf8, including these -- that changes what gets delivered.
         </p>
         <textarea
           v-model="envText"
@@ -398,8 +481,14 @@ const reload = async (): Promise<void> => {
       </p>
 
       <div class="mt-4">
-        <div class="flex justify-between text-xs" :class="problems.oversize ? 'text-danger' : 'text-ink-muted'">
-          <span>{{ problems.bytes.toLocaleString() }} of {{ MAX_PAYLOAD_BYTES.toLocaleString() }} bytes</span>
+        <div
+          class="flex justify-between text-xs"
+          :class="problems.oversize ? 'text-danger' : 'text-ink-muted'"
+        >
+          <span
+            >{{ problems.bytes.toLocaleString() }} of
+            {{ MAX_PAYLOAD_BYTES.toLocaleString() }} bytes</span
+          >
           <span>{{ percentUsed }}%</span>
         </div>
         <div class="mt-1 h-1.5 overflow-hidden rounded bg-line">
@@ -416,7 +505,11 @@ const reload = async (): Promise<void> => {
         :disabled="!canSubmit || mutation.phase.value.kind === 'submitting'"
         @click="confirming = true"
       >
-        {{ mutation.phase.value.kind === "submitting" ? "Encrypting…" : "Replace payload" }}
+        {{
+          mutation.phase.value.kind === "submitting"
+            ? "Encrypting…"
+            : "Replace payload"
+        }}
       </button>
     </div>
 
@@ -426,34 +519,66 @@ const reload = async (): Promise<void> => {
       role="dialog"
       aria-modal="true"
     >
-      <div class="w-full max-w-md rounded border border-line bg-surface-raised p-5">
+      <div
+        class="w-full max-w-md rounded border border-line bg-surface-raised p-5"
+      >
         <h2 class="font-semibold">Replace the payload of {{ secretId }}?</h2>
         <p class="mt-2 text-sm">
-          You are submitting {{ rows.filter((r) => r.key.length > 0).length }}
-          entr{{ rows.filter((r) => r.key.length > 0).length === 1 ? "y" : "ies" }}.
+          You are submitting
+          {{ rows.filter((r) => r.key.length > 0).length }} entr{{
+            rows.filter((r) => r.key.length > 0).length === 1 ? "y" : "ies"
+          }}.
         </p>
-        <p v-if="destroyed !== undefined && destroyed > 0" class="mt-2 rounded bg-danger/10 p-2 text-sm text-danger">
+        <p
+          v-if="isFirstPayload"
+          class="mt-2 rounded bg-accent/10 p-2 text-sm text-accent"
+        >
+          This is the first payload. Saving it activates the secret; no stored
+          entries will be destroyed.
+        </p>
+        <p
+          v-else-if="destroyed !== undefined && destroyed > 0"
+          class="mt-2 rounded bg-danger/10 p-2 text-sm text-danger"
+        >
           The stored payload has {{ currentCount }} entries, so this destroys
-          {{ destroyed }} of them permanently. The API cannot tell you which — only how
-          many.
+          {{ destroyed }} of them permanently. The API cannot tell you which —
+          only how many.
         </p>
-        <p v-else-if="destroyed === undefined" class="mt-2 rounded bg-warn/10 p-2 text-sm text-warn">
-          This revision predates entry counting, so how many entries exist is unknown.
-          Anything not listed will be destroyed.
+        <p
+          v-else-if="destroyed === undefined"
+          class="mt-2 rounded bg-warn/10 p-2 text-sm text-warn"
+        >
+          This revision predates entry counting, so how many entries exist is
+          unknown. Anything not listed will be destroyed.
         </p>
-        <p v-if="encodingDowngrades.length > 0" class="mt-2 rounded bg-danger/10 p-2 text-sm text-danger">
-          {{ encodingDowngrades.length }} entr{{ encodingDowngrades.length === 1 ? "y" : "ies" }}
-          ({{ encodingDowngrades.join(", ") }}) will change from base64 to utf8. The
-          original bytes cannot be recovered from stored ciphertext once this is
-          submitted.
+        <p
+          v-if="encodingDowngrades.length > 0"
+          class="mt-2 rounded bg-danger/10 p-2 text-sm text-danger"
+        >
+          {{ encodingDowngrades.length }} entr{{
+            encodingDowngrades.length === 1 ? "y" : "ies"
+          }}
+          ({{ encodingDowngrades.join(", ") }}) will change from base64 to utf8.
+          The original bytes cannot be recovered from stored ciphertext once
+          this is submitted.
         </p>
         <p class="mt-2 text-xs text-ink-muted">
           Every grant-holding consumer receives the new payload on its next
           reconciliation.
         </p>
         <div class="mt-4 flex justify-end gap-2">
-          <button class="rounded border border-line px-3 py-1" @click="confirming = false">Cancel</button>
-          <button class="rounded bg-danger px-3 py-1 text-white" @click="submit">Replace payload</button>
+          <button
+            class="rounded border border-line px-3 py-1"
+            @click="confirming = false"
+          >
+            Cancel
+          </button>
+          <button
+            class="rounded bg-danger px-3 py-1 text-white"
+            @click="submit"
+          >
+            Replace payload
+          </button>
         </div>
       </div>
     </div>

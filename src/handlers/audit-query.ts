@@ -6,7 +6,7 @@ import type {
 import { humanActorFromEvent } from "../auth/actors";
 import { badRequest } from "../domain/errors";
 import { json } from "../http/responses";
-import { parseAuditDate, parseAuditSecretId } from "../services/audit";
+import { parseAuditDate, parseAuditEnvironment, parseAuditSecretId } from "../services/audit";
 import { isoNow, sha256Hex, stableJson } from "../util/encoding";
 import { withErrorResponse } from "./shared";
 
@@ -47,7 +47,8 @@ export const handler = async (
     }
     const date = parseAuditDate(event.queryStringParameters?.date);
     const secretId = parseAuditSecretId(event.queryStringParameters?.secretId);
-    const filterScope = sha256Hex(stableJson({ date, secretId }));
+    const environment = parseAuditEnvironment(event.queryStringParameters?.environment);
+    const filterScope = sha256Hex(stableJson({ date, environment, secretId }));
     const scope = `admin:audit:${actor.id}:${filterScope}`;
     const rawCursor = event.queryStringParameters?.cursor;
     const decoded =
@@ -58,6 +59,7 @@ export const handler = async (
       date,
       decoded?.lastEvaluatedKey?.continuationToken,
       secretId,
+      environment,
     );
     const nextCursor =
       page.nextContinuationToken === undefined

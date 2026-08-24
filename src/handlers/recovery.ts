@@ -1,4 +1,5 @@
 import type { Handler } from "aws-lambda";
+import { secretIdentityFromPk } from "../repositories/dynamo";
 import { isoNow } from "../util/encoding";
 import { getApplication } from "./shared";
 
@@ -76,13 +77,19 @@ export const handler: Handler = async (): Promise<void> => {
     if (!retryResults.some(Boolean)) {
       continue;
     }
-    const secretId = workflow.pk.slice("SECRET#".length);
+    const identity = secretIdentityFromPk(workflow.pk);
+    if (identity === undefined) {
+      continue;
+    }
+    const { environment, secretId } = identity;
     const abortedCreate = await app.repository.abortPreparedCreate(
+      environment,
       secretId,
       operationId,
     );
     if (!abortedCreate) {
       const releasedLease = await app.repository.releaseLease(
+        environment,
         secretId,
         operationId,
       );
@@ -95,7 +102,7 @@ export const handler: Handler = async (): Promise<void> => {
       outcome: "failed",
       actor: { type: "system", id: "recovery" },
       operation: "workflow.recovery",
-      target: { secretId },
+      target: { environment, secretId },
       reasonCode: "prepared_workflow_expired",
     });
   }

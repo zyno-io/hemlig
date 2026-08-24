@@ -6,7 +6,11 @@ import {
   type DynamoDBDocumentClient,
 } from "@aws-sdk/lib-dynamodb";
 import type { AppConfig } from "../aws/config";
-import { DynamoRepository, type CompletedMutation } from "./dynamo";
+import {
+  DynamoRepository,
+  type CompletedMutation,
+  type PreparedMutation,
+} from "./dynamo";
 
 const config: AppConfig = {
   region: "us-east-1",
@@ -100,6 +104,53 @@ describe("opaque cursor storage", () => {
 });
 
 describe("console management indexes", () => {
+  it("uses separate records for the same secret ID in different environments", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    const mutation = (environment: string): PreparedMutation => ({
+      operationId: `op-${environment}`,
+      idempotencyKey: `create-${environment}`,
+      actor: { type: "human", id: "admin-1" },
+      requestDigest: `digest-${environment}`,
+      secretId: "shared-secret",
+      environment,
+      control: {
+        schemaVersion: 1,
+        secretId: "shared-secret",
+        controlVersionId: `ctl-${environment}`,
+        environment,
+        state: "PENDING_VALUE",
+        createdAt: "2026-08-24T00:00:00.000Z",
+        createdBy: { type: "human", id: "admin-1" },
+        metadata: {},
+        acl: [],
+      },
+      controlKey: `secrets/${environment}/shared-secret/control.json`,
+      controlChecksumSha256: "checksum",
+      controlBytes: Buffer.from("control"),
+      expiresAt: "2026-08-24T00:10:00.000Z",
+    });
+
+    await repository.prepareMutation(mutation("dev"));
+    await repository.prepareMutation(mutation("prod"));
+
+    const heads = (dynamo.send as jest.Mock).mock.calls.map(([command]) => {
+      const transaction = command as TransactWriteCommand;
+      const items = transaction.input.TransactItems ?? [];
+      return items
+        .flatMap((item) =>
+          item.Put?.Item === undefined ? [] : [item.Put.Item],
+        )
+        .find((item) => item.sk === "HEAD");
+    });
+    expect(heads).toEqual([
+      expect.objectContaining({ pk: "SECRET#dev#shared-secret" }),
+      expect.objectContaining({ pk: "SECRET#prod#shared-secret" }),
+    ]);
+  });
+
   it("does not rewrite unchanged consumer grants for a payload-only mutation", async () => {
     const dynamo = {
       send: jest.fn().mockResolvedValue({}),
@@ -123,7 +174,7 @@ describe("console management indexes", () => {
     };
     const priorAccess = control.acl.map((grant) => ({
       pk: `CONSUMER#${grant.consumerId}`,
-      sk: "SECRET#payments-api",
+      sk: "SECRET#prod#payments-api",
       consumerId: grant.consumerId,
       secretId: "payments-api",
       environment: "prod",
@@ -181,7 +232,7 @@ describe("console management indexes", () => {
         checksumSha256: "checksum-payload",
       },
       priorHead: {
-        pk: "SECRET#payments-api",
+        pk: "SECRET#prod#payments-api",
         sk: "HEAD",
         secretId: "payments-api",
         environment: "prod",
@@ -296,7 +347,7 @@ describe("console management indexes", () => {
         checksumSha256: "checksum-payload",
       },
       priorHead: {
-        pk: "SECRET#payments-api",
+        pk: "SECRET#prod#payments-api",
         sk: "HEAD",
         secretId: "payments-api",
         environment: "prod",
@@ -306,7 +357,7 @@ describe("console management indexes", () => {
       },
       priorAccess: revokedConsumerIds.map((consumerId) => ({
         pk: `CONSUMER#${consumerId}`,
-        sk: "SECRET#payments-api",
+        sk: "SECRET#prod#payments-api",
         consumerId,
         secretId: "payments-api",
         environment: "prod",
@@ -383,7 +434,7 @@ describe("console management indexes", () => {
           Items: [
             {
               pk: "CONSUMER#prod-east",
-              sk: "SECRET#payments-api",
+              sk: "SECRET#prod#payments-api",
               consumerId: "prod-east",
               secretId: "payments-api",
               environment: "prod",
@@ -397,7 +448,7 @@ describe("console management indexes", () => {
         })
         .mockResolvedValueOnce({
           Item: {
-            pk: "SECRET#payments-api",
+            pk: "SECRET#prod#payments-api",
             sk: "HEAD",
             secretId: "payments-api",
             environment: "prod",
@@ -521,7 +572,7 @@ describe("console management indexes", () => {
 
   it("returns newest-first revision history and marks an extra record as truncated", async () => {
     const revisions = Array.from({ length: 501 }, (_, index) => ({
-      pk: "SECRET#payments-api",
+      pk: "SECRET#prod#payments-api",
       sk: `CONTROL#ctl-${index}`,
       workflowState: "READY",
       serialized: {
@@ -541,14 +592,17 @@ describe("console management indexes", () => {
     } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
-    const page = await repository.listRecentControlRevisions("payments-api");
+    const page = await repository.listRecentControlRevisions(
+      "prod",
+      "payments-api",
+    );
 
     const command = (dynamo.send as jest.Mock).mock
       .calls[0]?.[0] as QueryCommand;
     expect(command.input).toMatchObject({
       IndexName: "secret-revision",
       KeyConditionExpression: "revisionPk = :secret",
-      ExpressionAttributeValues: { ":secret": "SECRET#payments-api" },
+      ExpressionAttributeValues: { ":secret": "SECRET#prod#payments-api" },
       Limit: 501,
       ScanIndexForward: false,
     });
@@ -620,11 +674,9 @@ describe("folder registry", () => {
 
   it("reads a folder record by environment and exact path", async () => {
     const dynamo = {
-      send: jest
-        .fn()
-        .mockResolvedValue({
-          Item: { pk: "FOLDER#prod", sk: "PATH#a", path: "a" },
-        }),
+      send: jest.fn().mockResolvedValue({
+        Item: { pk: "FOLDER#prod", sk: "PATH#a", path: "a" },
+      }),
     } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 

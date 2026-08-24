@@ -66,6 +66,7 @@ export const parseCatalogFilter = (input: string): ParsedCatalogFilter => {
 <script setup lang="ts">
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, onUnmounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import ErrorNotice from "../components/ErrorNotice.vue";
 import StateBadge from "../components/StateBadge.vue";
 import { useCursorPages } from "../composables/useCursorPages";
@@ -81,6 +82,7 @@ import { useAppStore } from "../stores/app";
 // reload.
 const props = defineProps<{ env: string; path?: string[] }>();
 const store = useAppStore();
+const route = useRoute();
 
 const currentPath = computed(() => (props.path ?? []).filter((s) => s.length > 0).join("/"));
 const breadcrumbs = computed(() => pathSegments(currentPath.value));
@@ -225,8 +227,12 @@ const removeFolder = async (path: string): Promise<void> => {
 // backend accepts `q` and `tags` together — so there is no longer a reason
 // to force applying one to clear the other.
 const SEARCH_DEBOUNCE_MS = 300;
-const searchInput = ref("");
-const appliedInput = ref("");
+const catalogFilterFromRoute = (): string =>
+  typeof route.query.catalogFilter === "string"
+    ? route.query.catalogFilter
+    : "";
+const searchInput = ref(catalogFilterFromRoute());
+const appliedInput = ref(catalogFilterFromRoute());
 let searchDebounceHandle: ReturnType<typeof setTimeout> | undefined;
 
 const cancelSearchDebounce = (): void => {
@@ -255,6 +261,17 @@ watch(searchInput, (value) => {
     appliedInput.value = trimmed;
   }, SEARCH_DEBOUNCE_MS);
 });
+watch(
+  () => route.query.catalogFilter,
+  () => {
+    const filter = catalogFilterFromRoute();
+    if (filter !== appliedInput.value) {
+      cancelSearchDebounce();
+      searchInput.value = filter;
+      appliedInput.value = filter;
+    }
+  },
+);
 
 onUnmounted(cancelSearchDebounce);
 
@@ -267,6 +284,18 @@ const appliedFilter = computed(() => parseCatalogFilter(appliedInput.value));
 const hasFilter = computed(
   () => appliedFilter.value.text.length > 0 || appliedFilter.value.tags.length > 0,
 );
+const secretTo = (secretId: string) => ({
+  name: "secret",
+  params: { env: props.env, secretId },
+  query: {
+    ...(currentPath.value.length === 0
+      ? {}
+      : { catalogPath: currentPath.value }),
+    ...(appliedInput.value.length === 0
+      ? {}
+      : { catalogFilter: appliedInput.value }),
+  },
+});
 const tagsParam = computed(() =>
   appliedFilter.value.tags.map((tag) => `${tag.key}:${tag.value}`).join(","),
 );
@@ -552,7 +581,7 @@ const tagRejection = computed(() =>
           <tbody>
             <tr v-for="secret in tree.data.value.secrets" :key="secret.secretId" class="border-b border-line/60">
               <td class="py-2 pr-3">
-                <RouterLink class="mono text-accent hover:underline" :to="{ name: 'secret', params: { env, secretId: secret.secretId } }">
+                <RouterLink class="mono text-accent hover:underline" :to="secretTo(secret.secretId)">
                   {{ secret.secretId }}
                 </RouterLink>
               </td>
@@ -597,7 +626,7 @@ const tagRejection = computed(() =>
         <tbody>
           <tr v-for="secret in flatPages.items.value" :key="secret.secretId" class="border-b border-line/60">
             <td class="py-2 pr-3">
-              <RouterLink class="text-accent hover:underline" :to="{ name: 'secret', params: { env, secretId: secret.secretId } }">
+              <RouterLink class="text-accent hover:underline" :to="secretTo(secret.secretId)">
                 {{ secret.secretId }}
               </RouterLink>
             </td>
@@ -674,7 +703,7 @@ const tagRejection = computed(() =>
           <tbody>
             <tr v-for="secret in searchResults.data.value.secrets" :key="secret.secretId" class="border-b border-line/60">
               <td class="py-2 pr-3">
-                <RouterLink class="text-accent hover:underline" :to="{ name: 'secret', params: { env, secretId: secret.secretId } }">
+                <RouterLink class="text-accent hover:underline" :to="secretTo(secret.secretId)">
                   {{ secret.secretId }}
                 </RouterLink>
               </td>

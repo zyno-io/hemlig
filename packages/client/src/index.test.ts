@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { HemligClient, type HemligTransport, type TransportRequest } from "./index";
+import {
+  HemligClient,
+  type HemligTransport,
+  type TransportRequest,
+} from "./index";
 
 test("admin payload write carries the ETag and idempotency key", async () => {
   const requests: TransportRequest[] = [];
@@ -21,10 +25,14 @@ test("admin payload write carries the ETag and idempotency key", async () => {
       };
     },
   };
-  const client = new HemligClient(new URL("https://admin.example.com"), transport);
+  const client = new HemligClient(
+    new URL("https://admin.example.com"),
+    transport,
+  );
 
   await client.putAdminPayload(
     "token",
+    "prod",
     "payments-api",
     "ctl-current",
     { API_TOKEN: { encoding: "utf8", value: "value" } },
@@ -34,8 +42,9 @@ test("admin payload write carries the ETag and idempotency key", async () => {
   assert.equal(requests.length, 1);
   const request = requests[0];
   assert.equal(request?.url.pathname, "/v1/admin/secrets/payments-api/payload");
+  assert.equal(request?.url.searchParams.get("environment"), "prod");
   assert.equal(request?.headers?.authorization, "Bearer token");
-  assert.equal(request?.headers?.["if-match"], "\"ctl-current\"");
+  assert.equal(request?.headers?.["if-match"], '"ctl-current"');
   assert.equal(request?.headers?.["idempotency-key"], "stable-key");
 });
 
@@ -47,12 +56,15 @@ test("conditional consumer reads return undefined for an unchanged secret", asyn
       return { status: 304, headers: { etag: "ctl-current" } };
     },
   };
-  const client = new HemligClient(new URL("https://api.example.com"), transport);
+  const client = new HemligClient(
+    new URL("https://api.example.com"),
+    transport,
+  );
 
   const secret = await client.getConsumerSecret("payments-api", "ctl-current");
 
   assert.equal(secret, undefined);
-  assert.equal(requests[0]?.headers?.["if-none-match"], "\"ctl-current\"");
+  assert.equal(requests[0]?.headers?.["if-none-match"], '"ctl-current"');
 });
 
 test("administrator payload reads use the authenticated administrator route", async () => {
@@ -72,12 +84,23 @@ test("administrator payload reads use the authenticated administrator route", as
       };
     },
   };
-  const client = new HemligClient(new URL("https://admin.example.com"), transport);
+  const client = new HemligClient(
+    new URL("https://admin.example.com"),
+    transport,
+  );
 
-  const result = await client.getAdminSecretPayload("token", "payments-api");
+  const result = await client.getAdminSecretPayload(
+    "token",
+    "prod",
+    "payments-api",
+  );
 
   assert.equal(result.payload.API_TOKEN?.value, "value");
-  assert.equal(requests[0]?.url.pathname, "/v1/admin/secrets/payments-api/payload");
+  assert.equal(
+    requests[0]?.url.pathname,
+    "/v1/admin/secrets/payments-api/payload",
+  );
+  assert.equal(requests[0]?.url.searchParams.get("environment"), "prod");
   assert.equal(requests[0]?.headers?.authorization, "Bearer token");
 });
 
@@ -98,9 +121,17 @@ test("API identity revocation uses DELETE and requires a caller-provided idempot
       };
     },
   };
-  const client = new HemligClient(new URL("https://admin.example.com"), transport);
+  const client = new HemligClient(
+    new URL("https://admin.example.com"),
+    transport,
+  );
 
-  await client.revokeApiIdentity("token", "payments-prod", "a".repeat(64), "stable-key");
+  await client.revokeApiIdentity(
+    "token",
+    "payments-prod",
+    "a".repeat(64),
+    "stable-key",
+  );
 
   assert.equal(requests[0]?.method, "DELETE");
   assert.equal(
@@ -137,7 +168,10 @@ test("bootstrap redemption uses its one-use authorization scheme rather than bea
       };
     },
   };
-  const client = new HemligClient(new URL("https://admin.example.com"), transport);
+  const client = new HemligClient(
+    new URL("https://admin.example.com"),
+    transport,
+  );
 
   await client.redeemBootstrap("hmlb_opaque", "csr");
 
@@ -163,7 +197,10 @@ test("agent control and payload updates use only mTLS transport headers", async 
       };
     },
   };
-  const client = new HemligClient(new URL("https://api.example.com"), transport);
+  const client = new HemligClient(
+    new URL("https://api.example.com"),
+    transport,
+  );
 
   await client.getAgentControl("payments-api");
   await client.putAgentPayload(
@@ -173,8 +210,14 @@ test("agent control and payload updates use only mTLS transport headers", async 
     "stable-key",
   );
 
-  assert.equal(requests[0]?.url.pathname, "/v1/agent/secrets/payments-api/control");
+  assert.equal(
+    requests[0]?.url.pathname,
+    "/v1/agent/secrets/payments-api/control",
+  );
   assert.equal(requests[0]?.headers?.authorization, undefined);
-  assert.equal(requests[1]?.url.pathname, "/v1/agent/secrets/payments-api/payload");
-  assert.equal(requests[1]?.headers?.["if-match"], "\"ctl-current\"");
+  assert.equal(
+    requests[1]?.url.pathname,
+    "/v1/agent/secrets/payments-api/payload",
+  );
+  assert.equal(requests[1]?.headers?.["if-match"], '"ctl-current"');
 });

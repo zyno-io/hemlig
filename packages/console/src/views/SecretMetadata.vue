@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { useQuery } from "@tanstack/vue-query";
 import { computed, reactive, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import AclEditor from "../components/AclEditor.vue";
 import ErrorNotice from "../components/ErrorNotice.vue";
-import MetadataFields, { type MetadataDraft } from "../components/MetadataFields.vue";
+import MetadataFields, {
+  type MetadataDraft,
+} from "../components/MetadataFields.vue";
 import MutationState from "../components/MutationState.vue";
 import type { ControlRevision } from "../api/schemas";
 import { useGuardedMutation } from "../composables/useGuardedMutation";
@@ -13,14 +15,19 @@ import { useAppStore } from "../stores/app";
 const props = defineProps<{ env: string; secretId: string }>();
 const store = useAppStore();
 const router = useRouter();
+const route = useRoute();
 
 const { data, error, refetch } = useQuery({
-  queryKey: computed(() => ["secret", props.secretId]),
-  queryFn: () => store.requireApi().getSecret(props.secretId),
+  queryKey: computed(() => ["secret", props.env, props.secretId]),
+  queryFn: () => store.requireApi().getSecret(props.env, props.secretId),
 });
 
 const acl = ref<string[]>([]);
-const metadata = reactive<MetadataDraft>({ description: "", path: "", tags: [] });
+const metadata = reactive<MetadataDraft>({
+  description: "",
+  path: "",
+  tags: [],
+});
 const loadedVersion = ref<string | undefined>();
 /** The path as last loaded from the server, to detect a move-in-progress against. */
 const loadedPath = ref("");
@@ -33,11 +40,13 @@ const adopt = (revision: ControlRevision | undefined): void => {
   metadata.description = revision.metadata.description ?? "";
   metadata.path = revision.metadata.path ?? "";
   loadedPath.value = metadata.path;
-  metadata.tags = Object.entries(revision.metadata.tags ?? {}).map(([key, value]) => ({
-    id: crypto.randomUUID(),
-    key,
-    value,
-  }));
+  metadata.tags = Object.entries(revision.metadata.tags ?? {}).map(
+    ([key, value]) => ({
+      id: crypto.randomUUID(),
+      key,
+      value,
+    }),
+  );
   acl.value = revision.acl.map((grant) => grant.consumerId);
 };
 
@@ -56,7 +65,8 @@ const removed = computed(() =>
 // consequence before submit, next to the button that will trigger it, rather
 // than as an interrupting dialog.
 const pathMoved = computed(() => metadata.path.trim() !== loadedPath.value);
-const pathLabel = (path: string): string => (path.length > 0 ? path : "the root");
+const pathLabel = (path: string): string =>
+  path.length > 0 ? path : "the root";
 
 interface UpdateInput {
   readonly controlVersionId: string;
@@ -70,16 +80,21 @@ const update = useGuardedMutation<UpdateInput, ControlRevision>({
     store
       .requireApi()
       .updateSecret(
+        props.env,
         props.secretId,
         input.controlVersionId,
         { metadata: input.metadata, acl: input.acl },
         key,
       ),
   reconcile: async (input) => {
-    const current = await store.requireApi().getSecret(props.secretId);
+    const current = await store
+      .requireApi()
+      .getSecret(props.env, props.secretId);
     // A different control version than the one we sent If-Match for means our
     // write landed; the same version means it did not.
-    return current.controlVersionId === input.controlVersionId ? undefined : current;
+    return current.controlVersionId === input.controlVersionId
+      ? undefined
+      : current;
   },
 });
 
@@ -90,7 +105,9 @@ const submit = async (): Promise<void> => {
   const result = await update.submit({
     controlVersionId: loadedVersion.value,
     metadata: {
-      ...(metadata.description.trim() ? { description: metadata.description.trim() } : {}),
+      ...(metadata.description.trim()
+        ? { description: metadata.description.trim() }
+        : {}),
       ...(metadata.path.trim() ? { path: metadata.path.trim() } : {}),
       ...(metadata.tags.filter((t) => t.key).length > 0
         ? {
@@ -100,10 +117,17 @@ const submit = async (): Promise<void> => {
           }
         : {}),
     },
-    acl: acl.value.map((consumerId) => ({ consumerId, permissions: ["read" as const] })),
+    acl: acl.value.map((consumerId) => ({
+      consumerId,
+      permissions: ["read" as const],
+    })),
   });
   if (result !== undefined) {
-    await router.push({ name: "secret", params: { env: props.env, secretId: props.secretId } });
+    await router.push({
+      name: "secret",
+      params: { env: props.env, secretId: props.secretId },
+      query: route.query,
+    });
   }
 };
 
@@ -117,11 +141,16 @@ const reload = async (): Promise<void> => {
 <template>
   <div class="max-w-2xl space-y-4 text-sm">
     <div>
-      <RouterLink class="text-xs text-accent hover:underline" :to="{ name: 'secret', params: { env, secretId } }">
+      <RouterLink
+        class="text-xs text-accent hover:underline"
+        :to="{ name: 'secret', params: { env, secretId }, query: route.query }"
+      >
         ← {{ secretId }}
       </RouterLink>
       <h1 class="text-lg font-semibold">Edit metadata and access</h1>
-      <p class="mt-1 text-ink-muted">This creates a new control revision. It never decrypts the payload.</p>
+      <p class="mt-1 text-ink-muted">
+        This creates a new control revision. It never decrypts the payload.
+      </p>
     </div>
 
     <ErrorNotice v-if="error" :error="error" />
@@ -131,24 +160,35 @@ const reload = async (): Promise<void> => {
       @reload="reload"
     />
 
-    <form v-if="data" class="space-y-4 rounded border border-line bg-surface-raised p-4" @submit.prevent="submit">
+    <form
+      v-if="data"
+      class="space-y-4 rounded border border-line bg-surface-raised p-4"
+      @submit.prevent="submit"
+    >
       <MetadataFields v-model="metadata" />
       <AclEditor v-model="acl" :environment="env" :removed="removed" />
       <p v-if="pathMoved" class="text-xs text-ink-muted">
         Moving from
-        <span :class="loadedPath.length > 0 ? 'mono' : undefined">{{ pathLabel(loadedPath) }}</span>
+        <span :class="loadedPath.length > 0 ? 'mono' : undefined">{{
+          pathLabel(loadedPath)
+        }}</span>
         to
-        <span :class="metadata.path.trim().length > 0 ? 'mono' : undefined">{{ pathLabel(metadata.path.trim()) }}</span>.
+        <span :class="metadata.path.trim().length > 0 ? 'mono' : undefined">{{
+          pathLabel(metadata.path.trim())
+        }}</span
+        >.
       </p>
       <div class="flex items-center gap-3">
         <button
           class="rounded bg-accent px-4 py-1.5 text-white disabled:opacity-50"
-        :disabled="update.phase.value.kind === 'submitting'"
+          :disabled="update.phase.value.kind === 'submitting'"
           type="submit"
         >
           {{ update.phase.value.kind === "submitting" ? "Saving…" : "Save" }}
         </button>
-        <span class="mono text-xs text-ink-muted">If-Match {{ loadedVersion }}</span>
+        <span class="mono text-xs text-ink-muted"
+          >If-Match {{ loadedVersion }}</span
+        >
       </div>
     </form>
   </div>

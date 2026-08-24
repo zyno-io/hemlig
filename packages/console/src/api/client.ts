@@ -107,24 +107,36 @@ export class HemligApi {
     });
   }
 
-  public getSecret(secretId: string): Promise<s.ControlRevision> {
+  public getSecret(
+    environment: string,
+    secretId: string,
+  ): Promise<s.ControlRevision> {
     return this.request(
       s.controlRevision,
       `/v1/admin/secrets/${encode(secretId)}`,
+      { query: { environment } },
     );
   }
 
-  public getSecretPayload(secretId: string): Promise<s.SecretReadResponse> {
+  public getSecretPayload(
+    environment: string,
+    secretId: string,
+  ): Promise<s.SecretReadResponse> {
     return this.request(
       s.secretReadResponse,
       `/v1/admin/secrets/${encode(secretId)}/payload`,
+      { query: { environment } },
     );
   }
 
-  public listRevisions(secretId: string): Promise<s.SecretRevisionPage> {
+  public listRevisions(
+    environment: string,
+    secretId: string,
+  ): Promise<s.SecretRevisionPage> {
     return this.request(
       s.secretRevisionPage,
       `/v1/admin/secrets/${encode(secretId)}/revisions`,
+      { query: { environment } },
     );
   }
 
@@ -145,6 +157,7 @@ export class HemligApi {
   }
 
   public updateSecret(
+    environment: string,
     secretId: string,
     controlVersionId: string,
     input: { metadata?: s.Metadata; acl?: readonly s.Grant[] },
@@ -155,6 +168,7 @@ export class HemligApi {
       `/v1/admin/secrets/${encode(secretId)}`,
       {
         method: "PUT",
+        query: { environment },
         body: input,
         idempotencyKey,
         ifMatch: controlVersionId,
@@ -163,6 +177,7 @@ export class HemligApi {
   }
 
   public putPayload(
+    environment: string,
     secretId: string,
     controlVersionId: string,
     payload: Readonly<
@@ -175,6 +190,7 @@ export class HemligApi {
       `/v1/admin/secrets/${encode(secretId)}/payload`,
       {
         method: "PUT",
+        query: { environment },
         body: { payload },
         idempotencyKey,
         ifMatch: controlVersionId,
@@ -282,6 +298,7 @@ export class HemligApi {
    */
   public listAudit(input: {
     date: string;
+    environment?: string;
     secretId?: string;
     cursor?: string;
   }): Promise<s.AuditPage> {

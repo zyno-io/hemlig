@@ -49,7 +49,10 @@ export class AgentService {
     onAuthorized?: () => Promise<void>,
   ): Promise<SecretReadResult> {
     const grant = await this.requireCapability(consumerId, environment, "read");
-    const control = await this.secrets.getControlRevision(secretId);
+    const control = await this.secrets.getControlRevision(
+      environment,
+      secretId,
+    );
     this.requirePath(control, grant.readPathPrefixes);
     return this.secrets.read(
       consumerId,
@@ -71,10 +74,16 @@ export class AgentService {
     secretId: string,
   ): Promise<ControlRevision> {
     const grant = await this.requireGrant(consumerId, environment);
-    if (!grant.capabilities.includes("read") && !grant.capabilities.includes("write")) {
+    if (
+      !grant.capabilities.includes("read") &&
+      !grant.capabilities.includes("write")
+    ) {
       throw forbidden("The agent grant does not allow this operation.");
     }
-    const control = await this.secrets.getControlRevision(secretId);
+    const control = await this.secrets.getControlRevision(
+      environment,
+      secretId,
+    );
     const prefixes = grant.capabilities.includes("read")
       ? grant.readPathPrefixes
       : grant.writePathPrefixes;
@@ -86,7 +95,10 @@ export class AgentService {
     consumerId: string,
     environment: string,
     exclusiveStartKey?: Record<string, string>,
-  ): Promise<{ readonly changes: readonly AccessRecord[]; readonly nextCursor?: string }> {
+  ): Promise<{
+    readonly changes: readonly AccessRecord[];
+    readonly nextCursor?: string;
+  }> {
     const grant = await this.requireCapability(consumerId, environment, "read");
     const page = await this.repository.listAccess(
       consumerId,
@@ -95,7 +107,10 @@ export class AgentService {
     );
     const candidates = await Promise.all(
       page.changes.map(async (change) => {
-        const head = await this.repository.getHead(change.secretId);
+        const head = await this.repository.getHead(
+          environment,
+          change.secretId,
+        );
         if (head === undefined || head.environment !== environment) {
           return undefined;
         }
@@ -152,7 +167,10 @@ export class AgentService {
       input.environment,
       "write",
     );
-    const current = await this.secrets.getControlRevision(input.secretId);
+    const current = await this.secrets.getControlRevision(
+      input.environment,
+      input.secretId,
+    );
     if (current.environment !== input.environment) {
       throw forbidden();
     }
@@ -163,6 +181,7 @@ export class AgentService {
     this.requirePath({ metadata }, grant.writePathPrefixes);
     return this.secrets.update({
       secretId: input.secretId,
+      environment: input.environment,
       expectedControlVersionId: input.expectedControlVersionId,
       ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
       ...(input.payload === undefined ? {} : { payload: input.payload }),
@@ -181,7 +200,9 @@ export class AgentService {
       grant.status !== "ACTIVE" ||
       grant.environment !== environment
     ) {
-      throw forbidden("The client identity does not have an active agent grant.");
+      throw forbidden(
+        "The client identity does not have an active agent grant.",
+      );
     }
     return grant;
   }

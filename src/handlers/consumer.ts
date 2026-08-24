@@ -109,6 +109,7 @@ export const handler = async (
         actor,
         operation,
         event,
+        environment,
         control.secretId,
         control.controlVersionId,
       );
@@ -128,7 +129,7 @@ export const handler = async (
         outcome: "authorized",
         actor,
         operation,
-        target: { secretId: control.secretId },
+        target: { environment, secretId: control.secretId },
         sourceIp: event.requestContext.http.sourceIp,
       });
       await app.audit.write({
@@ -138,6 +139,7 @@ export const handler = async (
         operation,
         target: {
           secretId: control.secretId,
+          environment,
           controlVersionId: control.controlVersionId,
         },
         sourceIp: event.requestContext.http.sourceIp,
@@ -169,6 +171,7 @@ export const handler = async (
         actor,
         operation,
         event,
+        environment,
         control.secretId,
         control.controlVersionId,
       );
@@ -195,6 +198,7 @@ export const handler = async (
         actor,
         operation,
         event,
+        environment,
         control.secretId,
         control.controlVersionId,
       );
@@ -209,7 +213,7 @@ export const handler = async (
       setAuditContext({
         actor,
         operation,
-        target: { secretId },
+        target: { environment, secretId },
         permission: "read",
         sourceIp: event.requestContext.http.sourceIp,
       });
@@ -226,7 +230,7 @@ export const handler = async (
                   outcome: "authorized",
                   actor,
                   operation,
-                  target: { secretId },
+                  target: { environment, secretId },
                   permission: "read",
                   sourceIp: event.requestContext.http.sourceIp,
                 });
@@ -243,7 +247,7 @@ export const handler = async (
                   outcome: "authorized",
                   actor,
                   operation,
-                  target: { secretId },
+                  target: { environment, secretId },
                   permission: "read",
                   sourceIp: event.requestContext.http.sourceIp,
                 });
@@ -254,7 +258,7 @@ export const handler = async (
         outcome: "succeeded",
         actor,
         operation,
-        target: { secretId, controlVersionId: result.controlVersionId },
+        target: { environment, secretId, controlVersionId: result.controlVersionId },
         permission: "read",
         sourceIp: event.requestContext.http.sourceIp,
         reasonCode: result.notModified ? "not_modified" : undefined,
@@ -376,6 +380,7 @@ const agentMutationAudit = async (
   actor: Awaited<ReturnType<typeof consumerActorFromEvent>>,
   operation: string,
   event: APIGatewayProxyEventV2,
+  environment: string,
   secretId: string,
   controlVersionId: string,
 ): Promise<void> => {
@@ -384,7 +389,7 @@ const agentMutationAudit = async (
     outcome: "authorized",
     actor,
     operation,
-    target: { secretId },
+    target: { environment, secretId },
     sourceIp: event.requestContext.http.sourceIp,
   });
   await app.audit.write({
@@ -392,7 +397,7 @@ const agentMutationAudit = async (
     outcome: "succeeded",
     actor,
     operation,
-    target: { secretId, controlVersionId },
+    target: { environment, secretId, controlVersionId },
     sourceIp: event.requestContext.http.sourceIp,
   });
 };

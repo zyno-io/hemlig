@@ -63,6 +63,7 @@ describe("HemligApi transport", () => {
 
     const api = new HemligApi(config, tokens, fetchImpl);
     await api.updateSecret(
+      "dev",
       "s",
       "ctl-1",
       { metadata: { description: "test secret" } },
@@ -93,11 +94,14 @@ describe("HemligApi transport", () => {
       fetchMock as unknown as typeof fetch,
     );
 
-    await expect(api.getSecretPayload("payments-api")).resolves.toMatchObject({
+    await expect(
+      api.getSecretPayload("dev", "payments-api"),
+    ).resolves.toMatchObject({
       payloadVersionId: "pay-2",
     });
     const request = fetchMock.mock.calls[0]?.[0];
     expect(request?.pathname).toBe("/v1/admin/secrets/payments-api/payload");
+    expect(request?.searchParams.get("environment")).toBe("dev");
   });
 
   it("reads a caller-bound audit archive page", async () => {

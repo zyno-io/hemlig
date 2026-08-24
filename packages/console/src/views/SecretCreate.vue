@@ -62,7 +62,7 @@ const creation = useGuardedMutation<CreateInput, ControlRevision>({
   // fresh one, so the only safe recovery is to look for the named secret.
   reconcile: async (input) => {
     try {
-      return await store.requireApi().getSecret(input.secretId);
+      return await store.requireApi().getSecret(input.environment, input.secretId);
     } catch {
       return undefined;
     }

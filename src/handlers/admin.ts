@@ -201,6 +201,7 @@ export const handler = async (
           operation,
           event.requestContext.http.sourceIp,
           {
+            environment: control.environment,
             secretId: control.secretId,
             controlVersionId: control.controlVersionId,
           },
@@ -664,15 +665,25 @@ export const handler = async (
         revisionMatch !== null
       ) {
         const secretId = revisionMatch[1] as string;
-        const current = await app.secrets.getControlRevision(secretId);
-        const history =
-          await app.repository.listRecentControlRevisions(secretId);
+        const environment = requireQueryString(event, "environment");
+        const current = await app.secrets.getControlRevision(
+          environment,
+          secretId,
+        );
+        const history = await app.repository.listRecentControlRevisions(
+          environment,
+          secretId,
+        );
         await app.audit.write({
           correlationId,
           outcome: "succeeded",
           actor,
           operation,
-          target: { secretId, controlVersionId: current.controlVersionId },
+          target: {
+            environment,
+            secretId,
+            controlVersionId: current.controlVersionId,
+          },
           sourceIp: event.requestContext.http.sourceIp,
         });
         return json(200, {
@@ -695,7 +706,9 @@ export const handler = async (
         });
       }
       if (event.requestContext.http.method === "GET" && secretMatch !== null) {
+        const environment = requireQueryString(event, "environment");
         const control = await app.secrets.getControlRevision(
+          environment,
           secretMatch[1] as string,
         );
         await app.audit.write({
@@ -704,6 +717,7 @@ export const handler = async (
           actor,
           operation,
           target: {
+            environment,
             secretId: control.secretId,
             controlVersionId: control.controlVersionId,
           },
@@ -713,20 +727,25 @@ export const handler = async (
       }
       if (event.requestContext.http.method === "GET" && payloadMatch !== null) {
         const secretId = payloadMatch[1] as string;
+        const environment = requireQueryString(event, "environment");
         setAuditContext({
           actor,
           operation,
-          target: { secretId },
+          target: { environment, secretId },
           permission: "read",
           sourceIp: event.requestContext.http.sourceIp,
         });
-        const payload = await app.secrets.readAdminPayload(secretId);
+        const payload = await app.secrets.readAdminPayload(
+          environment,
+          secretId,
+        );
         await app.audit.write({
           correlationId,
           outcome: "succeeded",
           actor,
           operation,
           target: {
+            environment,
             secretId,
             controlVersionId: payload.controlVersionId,
             payloadVersionId: payload.payloadVersionId,
@@ -748,8 +767,10 @@ export const handler = async (
       if (event.requestContext.http.method === "PUT" && secretMatch !== null) {
         const key = requireIdempotencyKey(event.headers["idempotency-key"]);
         const body = parseObjectBody(event.body);
+        const environment = requireQueryString(event, "environment");
         const control = await app.secrets.update({
           secretId: secretMatch[1] as string,
+          environment,
           expectedControlVersionId: requireIfMatch(event.headers["if-match"]),
           metadata:
             body.metadata === undefined
@@ -767,6 +788,7 @@ export const handler = async (
           operation,
           event.requestContext.http.sourceIp,
           {
+            environment: control.environment,
             secretId: control.secretId,
             controlVersionId: control.controlVersionId,
           },
@@ -776,8 +798,10 @@ export const handler = async (
       if (event.requestContext.http.method === "PUT" && payloadMatch !== null) {
         const key = requireIdempotencyKey(event.headers["idempotency-key"]);
         const body = parseObjectBody(event.body);
+        const environment = requireQueryString(event, "environment");
         const control = await app.secrets.update({
           secretId: payloadMatch[1] as string,
+          environment,
           expectedControlVersionId: requireIfMatch(event.headers["if-match"]),
           payload: parsePayload(body.payload, app.config.maxPayloadBytes),
           actor,
@@ -791,6 +815,7 @@ export const handler = async (
           operation,
           event.requestContext.http.sourceIp,
           {
+            environment: control.environment,
             secretId: control.secretId,
             controlVersionId: control.controlVersionId,
             payloadVersionId: control.payloadVersionId ?? "",

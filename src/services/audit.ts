@@ -1,7 +1,7 @@
 import type { AppConfig } from "../aws/config";
 import type { Actor } from "../domain/types";
 import { badRequest } from "../domain/errors";
-import { assertIdentifier } from "../domain/validation";
+import { assertEnvironmentName, assertIdentifier } from "../domain/validation";
 import { isoNow, newId, stableJson } from "../util/encoding";
 import type { ObjectStore } from "../repositories/object-store";
 
@@ -66,6 +66,7 @@ export class AuditQueryService {
     date: string,
     continuationToken?: string,
     secretId?: string,
+    environment?: string,
   ): Promise<AuditPage> {
     const page = await this.objectStore.listKeys(
       this.config.auditBucketName,
@@ -77,10 +78,12 @@ export class AuditQueryService {
       this.objectStore.getJson<AuditEvent>(this.config.auditBucketName, key),
     );
     const events = await Promise.all(reads);
-    const matched =
-      secretId === undefined
-        ? events
-        : events.filter((event) => event.target?.secretId === secretId);
+    const matched = events.filter(
+      (event) =>
+        (secretId === undefined || event.target?.secretId === secretId) &&
+        (environment === undefined ||
+          event.target?.environment === environment),
+    );
     return {
       date,
       // New records have reverse-chronological key prefixes. Sorting by
@@ -121,6 +124,16 @@ export const parseAuditSecretId = (
     return undefined;
   }
   assertIdentifier(value, "secretId");
+  return value;
+};
+
+export const parseAuditEnvironment = (
+  value: string | undefined,
+): string | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  assertEnvironmentName(value);
   return value;
 };
 

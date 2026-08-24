@@ -253,6 +253,7 @@ export interface NotificationOutboxRecord {
     /** Legacy single-recipient records created before grouped fan-out. */
     readonly consumerId?: string;
     readonly secretId: string;
+    readonly environment: EnvironmentName;
     readonly controlVersionId: string;
     readonly payloadVersionId?: string;
     readonly kind: 'secret.changed' | 'secret.revoked';

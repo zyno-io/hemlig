@@ -132,6 +132,7 @@ const buildRouter = (): Router =>
 const mountCatalog = async (
   api: FakeApi,
   props: { env: string; path?: string[] } = { env: "dev" },
+  query: Record<string, string> = {},
 ): Promise<{ wrapper: ReturnType<typeof mount>; router: Router; pinia: Pinia; queryClient: QueryClient }> => {
   const pinia = createPinia();
   setActivePinia(pinia);
@@ -142,7 +143,7 @@ const mountCatalog = async (
   store.api = api as unknown as ReturnType<typeof store.requireApi>;
 
   const router = buildRouter();
-  await router.push({ name: "secrets", params: { env: props.env } });
+  await router.push({ name: "secrets", params: { env: props.env }, query });
   await router.isReady();
 
   const queryClient = new QueryClient({
@@ -190,6 +191,22 @@ describe("SecretsCatalog tree browsing", () => {
     const url = new URL(link?.attributes("href") ?? "", "http://console.invalid");
     expect(url.pathname).toBe("/e/dev/secrets/new");
     expect(url.searchParams.get("path")).toBe("payments/stripe");
+  });
+
+  it("carries the current folder into a secret detail return link", async () => {
+    const { wrapper } = await mountCatalog(
+      defaultApi({
+        getSecretsTree: async () => ({
+          ...emptyTreePage,
+          secrets: [secretFixture()],
+        }),
+      }),
+      { env: "dev", path: ["payments", "stripe"] },
+    );
+    const link = wrapper.findAll("a").find((anchor) => anchor.text() === "stripe-api-key");
+    const url = new URL(link?.attributes("href") ?? "", "http://console.invalid");
+    expect(url.pathname).toBe("/e/dev/secrets/stripe-api-key");
+    expect(url.searchParams.get("catalogPath")).toBe("payments/stripe");
   });
 
   it("renders an empty explicit folder normally, not as broken or missing", async () => {
@@ -250,6 +267,21 @@ describe("SecretsCatalog search", () => {
     try {
       const api = defaultApi({
         listSecrets: async () => ({
+
+  it("restores a search carried back from secret detail", async () => {
+    const listSecrets = vi.fn(async (): Promise<CatalogPage> => ({
+      secrets: [secretFixture()],
+      generatedAt: "2026-08-23T00:00:00.000Z",
+    }));
+    await mountCatalog(
+      defaultApi({ listSecrets }),
+      { env: "dev" },
+      { catalogFilter: "stripe" },
+    );
+    expect(listSecrets).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: "dev", q: "stripe" }),
+    );
+  });
           secrets: [secretFixture()],
           generatedAt: "2026-08-23T00:00:00.000Z",
         }),

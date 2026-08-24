@@ -118,19 +118,19 @@ for recovery; TTL is set only after an idempotency or workflow record has
 reached a terminal state and its documented cleanup delay has elapsed. TTL
 must never remove a `PREPARED` record that recovery still needs.
 
-| Key                                     | Role                                                                                                                                             |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `SECRET#<id> / HEAD`                    | environment, current control/payload versions, state, write lease, and current path/tag catalog projection; the control version is the HTTP ETag |
-| `SECRET#<id> / CONTROL#<id>`            | immutable metadata/ACL/state/payload-pointer revision, S3 version/checksum, and retention state                                                  |
-| `SECRET#<id> / PAYLOAD#<id>`            | encrypted-envelope workflow metadata, S3 version/checksum, and retention state                                                                   |
-| `IDENTITY#<der-sha256> / PROFILE`       | consumer/environment, leaf type, validity, active/revoked state                                                                                  |
-| `CONSUMER#<id> / PROFILE`               | immutable environment, SPIFFE identity, and enrollment state                                                                                     |
-| `CONSUMER#<id> / SECRET#<id>`           | current permission/revision/state; a retained `REVOKED` tombstone is the change feed                                                             |
-| `SYSTEM#ISSUER / PROFILE`               | one public issuing root, KMS-wrapped private-key envelope, fingerprint, and validity                                                             |
-| `TRUSTSTORE#ROOTS / ROOT#<fingerprint>` | public deployment-wide issuing root used by every consumer                                                                                       |
-| `ENROLLMENT#<operation> / STATE`        | recoverable pending enrollment/leaf-issuance workflow                                                                                            |
-| `SYSTEM#TRUSTSTORE / STATE`             | singleton publication lease plus current/pending root set and version-pinned bundle                                                              |
-| `IDEMPOTENCY#<actor>#<key> / REQUEST`   | request digest, operation/response state, terminal audit event key/status, terminal cleanup TTL                                                  |
+| Key                                         | Role                                                                                                                                |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `SECRET#<environment>#<id> / HEAD`          | current control/payload versions, state, write lease, and current path/tag catalog projection; the control version is the HTTP ETag |
+| `SECRET#<environment>#<id> / CONTROL#<id>`  | immutable metadata/ACL/state/payload-pointer revision, S3 version/checksum, and retention state                                     |
+| `SECRET#<environment>#<id> / PAYLOAD#<id>`  | encrypted-envelope workflow metadata, S3 version/checksum, and retention state                                                      |
+| `IDENTITY#<der-sha256> / PROFILE`           | consumer/environment, leaf type, validity, active/revoked state                                                                     |
+| `CONSUMER#<id> / PROFILE`                   | immutable environment, SPIFFE identity, and enrollment state                                                                        |
+| `CONSUMER#<id> / SECRET#<environment>#<id>` | current permission/revision/state; a retained `REVOKED` tombstone is the change feed                                                |
+| `SYSTEM#ISSUER / PROFILE`                   | one public issuing root, KMS-wrapped private-key envelope, fingerprint, and validity                                                |
+| `TRUSTSTORE#ROOTS / ROOT#<fingerprint>`     | public deployment-wide issuing root used by every consumer                                                                          |
+| `ENROLLMENT#<operation> / STATE`            | recoverable pending enrollment/leaf-issuance workflow                                                                               |
+| `SYSTEM#TRUSTSTORE / STATE`                 | singleton publication lease plus current/pending root set and version-pinned bundle                                                 |
+| `IDEMPOTENCY#<actor>#<key> / REQUEST`       | request digest, operation/response state, terminal audit event key/status, terminal cleanup TTL                                     |
 
 Three sparse GSIs support scheduled/catalog work without a table scan:
 `WORKFLOW#DUE` orders non-terminal secret and enrollment preparations by lease
@@ -152,8 +152,8 @@ with a ten-consumer ACL cap.
 Secret revisions use:
 
 ```text
-secrets/<secret-id>/control/<control-version-id>.json
-secrets/<secret-id>/payload/<payload-version-id>.json
+secrets/<environment>/<secret-id>/control/<control-version-id>.json
+secrets/<environment>/<secret-id>/payload/<payload-version-id>.json
 ```
 
 Every object is written conditionally with `If-None-Match: *` and an S3

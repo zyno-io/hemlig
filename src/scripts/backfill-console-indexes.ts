@@ -8,7 +8,6 @@ import {
   consumerDirectoryPk,
   identityConsumerPk,
   identityConsumerSk,
-  secretPk,
 } from "../repositories/dynamo";
 
 const tableName = process.env.CONTROL_TABLE_NAME;
@@ -24,10 +23,12 @@ const run = async (): Promise<void> => {
   let candidates = 0;
   let updated = 0;
   do {
-    const page = await client.send(new ScanCommand({
-      TableName: tableName,
-      ExclusiveStartKey: lastEvaluatedKey as never,
-    }));
+    const page = await client.send(
+      new ScanCommand({
+        TableName: tableName,
+        ExclusiveStartKey: lastEvaluatedKey as never,
+      }),
+    );
     for (const item of page.Items ?? []) {
       const update = indexUpdate(item);
       if (update === undefined) {
@@ -37,13 +38,16 @@ const run = async (): Promise<void> => {
       if (!apply) {
         continue;
       }
-      await client.send(new UpdateCommand({
-        TableName: tableName,
-        ...update,
-      }));
+      await client.send(
+        new UpdateCommand({
+          TableName: tableName,
+          ...update,
+        }),
+      );
       updated += 1;
     }
-    lastEvaluatedKey = page.LastEvaluatedKey as Record<string, unknown> | undefined;
+    lastEvaluatedKey = page.LastEvaluatedKey as
+      Record<string, unknown> | undefined;
   } while (lastEvaluatedKey !== undefined);
   process.stdout.write(
     apply
@@ -52,11 +56,15 @@ const run = async (): Promise<void> => {
   );
 };
 
-const indexUpdate = (item: Record<string, unknown>): {
-  readonly Key: { readonly pk: string; readonly sk: string };
-  readonly UpdateExpression: string;
-  readonly ExpressionAttributeValues: Record<string, string>;
-} | undefined => {
+const indexUpdate = (
+  item: Record<string, unknown>,
+):
+  | {
+      readonly Key: { readonly pk: string; readonly sk: string };
+      readonly UpdateExpression: string;
+      readonly ExpressionAttributeValues: Record<string, string>;
+    }
+  | undefined => {
   const pk = stringField(item, "pk");
   const sk = stringField(item, "sk");
   if (pk === undefined || sk === undefined) {
@@ -82,7 +90,11 @@ const indexUpdate = (item: Record<string, unknown>): {
     const consumerId = stringField(item, "consumerId");
     const fingerprint = stringField(item, "fingerprint");
     const notAfter = stringField(item, "notAfter");
-    if (consumerId === undefined || fingerprint === undefined || notAfter === undefined) {
+    if (
+      consumerId === undefined ||
+      fingerprint === undefined ||
+      notAfter === undefined
+    ) {
       return undefined;
     }
     return setIndexAttributes(
@@ -100,8 +112,14 @@ const indexUpdate = (item: Record<string, unknown>): {
     if (typeof serialized !== "object" || serialized === null) {
       return undefined;
     }
-    const createdAt = stringField(serialized as Record<string, unknown>, "createdAt");
-    const controlVersionId = stringField(serialized as Record<string, unknown>, "controlVersionId");
+    const createdAt = stringField(
+      serialized as Record<string, unknown>,
+      "createdAt",
+    );
+    const controlVersionId = stringField(
+      serialized as Record<string, unknown>,
+      "controlVersionId",
+    );
     if (createdAt === undefined || controlVersionId === undefined) {
       return undefined;
     }
@@ -110,7 +128,7 @@ const indexUpdate = (item: Record<string, unknown>): {
       pk,
       sk,
       "revisionPk",
-      secretPk(pk.slice("SECRET#".length)),
+      pk,
       "revisionSk",
       `${createdAt}#${controlVersionId}`,
     );
@@ -126,11 +144,13 @@ const setIndexAttributes = (
   firstValue: string,
   secondName: string,
   secondValue: string,
-): {
-  readonly Key: { readonly pk: string; readonly sk: string };
-  readonly UpdateExpression: string;
-  readonly ExpressionAttributeValues: Record<string, string>;
-} | undefined => {
+):
+  | {
+      readonly Key: { readonly pk: string; readonly sk: string };
+      readonly UpdateExpression: string;
+      readonly ExpressionAttributeValues: Record<string, string>;
+    }
+  | undefined => {
   if (item[firstName] === firstValue && item[secondName] === secondValue) {
     return undefined;
   }
@@ -141,7 +161,10 @@ const setIndexAttributes = (
   };
 };
 
-const stringField = (value: Record<string, unknown>, name: string): string | undefined => {
+const stringField = (
+  value: Record<string, unknown>,
+  name: string,
+): string | undefined => {
   const field = value[name];
   return typeof field === "string" && field.length > 0 ? field : undefined;
 };

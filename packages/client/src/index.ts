@@ -173,7 +173,12 @@ export interface AgentConfig {
 export interface AgentBootstrapResult extends ConsumerProvisioningResult {
   readonly grant: Pick<
     AgentGrant,
-    "grantId" | "consumerId" | "environment" | "capabilities" | "readPathPrefixes" | "writePathPrefixes"
+    | "grantId"
+    | "consumerId"
+    | "environment"
+    | "capabilities"
+    | "readPathPrefixes"
+    | "writePathPrefixes"
   >;
 }
 
@@ -314,7 +319,13 @@ export class HemligClient {
     },
     idempotencyKey: string,
   ): Promise<ControlRevision> {
-    return this.request("POST", "/v1/agent/secrets", undefined, input, idempotencyKey);
+    return this.request(
+      "POST",
+      "/v1/agent/secrets",
+      undefined,
+      input,
+      idempotencyKey,
+    );
   }
 
   public async updateAgentSecret(
@@ -351,18 +362,28 @@ export class HemligClient {
 
   public async getAdminSecret(
     token: string,
+    environment: string,
     secretId: string,
   ): Promise<ControlRevision> {
-    return this.request("GET", `/v1/admin/secrets/${encodeURIComponent(secretId)}`, token);
+    return this.request(
+      "GET",
+      withQuery(`/v1/admin/secrets/${encodeURIComponent(secretId)}`, {
+        environment,
+      }),
+      token,
+    );
   }
 
   public async getAdminSecretPayload(
     token: string,
+    environment: string,
     secretId: string,
   ): Promise<AdminSecretPayloadResponse> {
     return this.request(
       "GET",
-      `/v1/admin/secrets/${encodeURIComponent(secretId)}/payload`,
+      withQuery(`/v1/admin/secrets/${encodeURIComponent(secretId)}/payload`, {
+        environment,
+      }),
       token,
     );
   }
@@ -376,22 +397,37 @@ export class HemligClient {
       readonly cursor?: string;
     },
   ): Promise<SecretCatalogPage> {
-    const tags = query.tags === undefined
-      ? undefined
-      : Object.entries(query.tags)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, value]) => `${key}:${value}`)
-        .join(",");
-    return this.request("GET", withQuery("/v1/admin/secrets", {
-      environment: query.environment,
-      pathPrefix: query.pathPrefix,
-      tags,
-      cursor: query.cursor,
-    }), token);
+    const tags =
+      query.tags === undefined
+        ? undefined
+        : Object.entries(query.tags)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, value]) => `${key}:${value}`)
+            .join(",");
+    return this.request(
+      "GET",
+      withQuery("/v1/admin/secrets", {
+        environment: query.environment,
+        pathPrefix: query.pathPrefix,
+        tags,
+        cursor: query.cursor,
+      }),
+      token,
+    );
   }
 
-  public async listSecretRevisions(token: string, secretId: string): Promise<SecretRevisionPage> {
-    return this.request("GET", `/v1/admin/secrets/${encodeURIComponent(secretId)}/revisions`, token);
+  public async listSecretRevisions(
+    token: string,
+    environment: string,
+    secretId: string,
+  ): Promise<SecretRevisionPage> {
+    return this.request(
+      "GET",
+      withQuery(`/v1/admin/secrets/${encodeURIComponent(secretId)}/revisions`, {
+        environment,
+      }),
+      token,
+    );
   }
 
   public async listConsumers(
@@ -401,8 +437,15 @@ export class HemligClient {
     return this.request("GET", withQuery("/v1/admin/consumers", query), token);
   }
 
-  public async getConsumer(token: string, consumerId: string): Promise<ConsumerDetail> {
-    return this.request("GET", `/v1/admin/consumers/${encodeURIComponent(consumerId)}`, token);
+  public async getConsumer(
+    token: string,
+    consumerId: string,
+  ): Promise<ConsumerDetail> {
+    return this.request(
+      "GET",
+      `/v1/admin/consumers/${encodeURIComponent(consumerId)}`,
+      token,
+    );
   }
 
   public async listApiIdentities(
@@ -412,7 +455,10 @@ export class HemligClient {
   ): Promise<ApiIdentityListPage> {
     return this.request(
       "GET",
-      withQuery(`/v1/admin/consumers/${encodeURIComponent(consumerId)}/api-identities`, { cursor }),
+      withQuery(
+        `/v1/admin/consumers/${encodeURIComponent(consumerId)}/api-identities`,
+        { cursor },
+      ),
       token,
     );
   }
@@ -431,7 +477,13 @@ export class HemligClient {
     },
     idempotencyKey: string,
   ): Promise<ControlRevision> {
-    return this.request("POST", "/v1/admin/secrets", token, input, idempotencyKey);
+    return this.request(
+      "POST",
+      "/v1/admin/secrets",
+      token,
+      input,
+      idempotencyKey,
+    );
   }
 
   public async createAgentGrant(
@@ -479,6 +531,7 @@ export class HemligClient {
 
   public async updateAdminSecret(
     token: string,
+    environment: string,
     secretId: string,
     controlVersionId: string,
     input: Pick<ControlRevision, "metadata" | "acl">,
@@ -486,7 +539,9 @@ export class HemligClient {
   ): Promise<ControlRevision> {
     return this.request(
       "PUT",
-      `/v1/admin/secrets/${encodeURIComponent(secretId)}`,
+      withQuery(`/v1/admin/secrets/${encodeURIComponent(secretId)}`, {
+        environment,
+      }),
       token,
       input,
       idempotencyKey,
@@ -496,6 +551,7 @@ export class HemligClient {
 
   public async putAdminPayload(
     token: string,
+    environment: string,
     secretId: string,
     controlVersionId: string,
     payload: SecretPayload,
@@ -503,7 +559,9 @@ export class HemligClient {
   ): Promise<ControlRevision> {
     return this.request(
       "PUT",
-      `/v1/admin/secrets/${encodeURIComponent(secretId)}/payload`,
+      withQuery(`/v1/admin/secrets/${encodeURIComponent(secretId)}/payload`, {
+        environment,
+      }),
       token,
       { payload },
       idempotencyKey,
@@ -520,7 +578,13 @@ export class HemligClient {
     },
     idempotencyKey: string,
   ): Promise<ConsumerProvisioningResult> {
-    return this.request("POST", "/v1/admin/consumers", token, input, idempotencyKey);
+    return this.request(
+      "POST",
+      "/v1/admin/consumers",
+      token,
+      input,
+      idempotencyKey,
+    );
   }
 
   public async rotateApiIdentity(
@@ -610,10 +674,12 @@ export class HemligClient {
 
   private responseBody<T>(response: TransportResponse): T {
     if (response.status < 200 || response.status >= 300) {
-      const error = response.body as { error?: { code?: string; message?: string } } | undefined;
+      const error = response.body as
+        { error?: { code?: string; message?: string } } | undefined;
       throw new HemligError(
         response.status,
-        error?.error?.message ?? `Hemlig request failed with status ${response.status}.`,
+        error?.error?.message ??
+          `Hemlig request failed with status ${response.status}.`,
         error?.error?.code,
       );
     }
@@ -628,7 +694,8 @@ export class FetchTransport implements HemligTransport {
   ) {}
 
   public async request(request: TransportRequest): Promise<TransportResponse> {
-    const body = request.body === undefined ? undefined : JSON.stringify(request.body);
+    const body =
+      request.body === undefined ? undefined : JSON.stringify(request.body);
     const headers: Record<string, string> = {
       accept: "application/json",
       ...request.headers,
@@ -662,6 +729,9 @@ const withQuery = (
 ): string => {
   const pairs = Object.entries(query)
     .filter((entry): entry is [string, string] => entry[1] !== undefined)
-    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+    .map(
+      ([key, value]) =>
+        `${encodeURIComponent(key)}=${encodeURIComponent(value)}`,
+    );
   return pairs.length === 0 ? path : `${path}?${pairs.join("&")}`;
 };

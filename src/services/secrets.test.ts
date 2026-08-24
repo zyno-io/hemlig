@@ -35,7 +35,7 @@ const config: AppConfig = {
 };
 
 const head: HeadRecord = {
-  pk: "SECRET#database-credentials",
+  pk: "SECRET#prod#database-credentials",
   sk: "HEAD",
   secretId: "database-credentials",
   environment: "prod",
@@ -49,7 +49,7 @@ const head: HeadRecord = {
 
 const access: AccessRecord = {
   pk: "CONSUMER#prod-east",
-  sk: "SECRET#database-credentials",
+  sk: "SECRET#prod#database-credentials",
   consumerId: "prod-east",
   secretId: "database-credentials",
   environment: "prod",
@@ -273,14 +273,17 @@ describe("SecretService.readAdminPayload", () => {
     );
 
     await expect(
-      service.readAdminPayload("database-credentials"),
+      service.readAdminPayload("prod", "database-credentials"),
     ).resolves.toEqual({
       controlVersionId: "ctl-current",
       payloadVersionId: "pay-current",
       payload: { PASSWORD: { encoding: "utf8", value: "value" } },
     });
 
-    expect(repository.requireHead).toHaveBeenCalledWith("database-credentials");
+    expect(repository.requireHead).toHaveBeenCalledWith(
+      "prod",
+      "database-credentials",
+    );
     expect(objects.getJson).toHaveBeenCalledTimes(2);
     expect(crypto.decrypt).toHaveBeenCalledWith(payload);
   });
@@ -302,7 +305,7 @@ describe("SecretService.readAdminPayload", () => {
     );
 
     await expect(
-      service.readAdminPayload("database-credentials"),
+      service.readAdminPayload("prod", "database-credentials"),
     ).rejects.toMatchObject({
       code: "not_found",
     });
@@ -351,6 +354,7 @@ describe("SecretService.update", () => {
 
     await service.update({
       secretId: "database-credentials",
+      environment: "prod",
       expectedControlVersionId: "ctl-current",
       metadata: { description: "renamed database credentials" },
       actor: { type: "human", id: "admin" },

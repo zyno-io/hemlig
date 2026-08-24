@@ -40,8 +40,9 @@ describe("AgentService", () => {
     } as unknown as SecretService;
     const service = new AgentService(repository, secrets);
 
-    await expect(service.read("payments-agent", "prod", "payments-api", undefined))
-      .rejects.toThrow("secret path");
+    await expect(
+      service.read("payments-agent", "prod", "payments-api", undefined),
+    ).rejects.toThrow("secret path");
     expect(secrets.read).not.toHaveBeenCalled();
   });
 
@@ -49,18 +50,20 @@ describe("AgentService", () => {
     const repository = {
       getAgentGrantForConsumer: jest.fn(async () => grant),
       listAccess: jest.fn(async () => ({
-        changes: [{
-          pk: "CONSUMER#payments-agent",
-          sk: "SECRET#payments-api",
-          consumerId: "payments-agent",
-          secretId: "payments-api",
-          environment: "prod",
-          permissions: ["read"],
-          controlVersionId: "ctl-moved",
-          payloadVersionId: "pay-moved",
-          state: "ACTIVE",
-          changeKind: "secret.changed",
-        }],
+        changes: [
+          {
+            pk: "CONSUMER#payments-agent",
+            sk: "SECRET#prod#payments-api",
+            consumerId: "payments-agent",
+            secretId: "payments-api",
+            environment: "prod",
+            permissions: ["read"],
+            controlVersionId: "ctl-moved",
+            payloadVersionId: "pay-moved",
+            state: "ACTIVE",
+            changeKind: "secret.changed",
+          },
+        ],
       })),
       getHead: jest.fn(async () => ({
         secretId: "payments-api",
@@ -72,11 +75,13 @@ describe("AgentService", () => {
 
     const result = await service.listChanges("payments-agent", "prod");
 
-    expect(result.changes).toEqual([expect.objectContaining({
-      secretId: "payments-api",
-      state: "REVOKED",
-      changeKind: "secret.revoked",
-      payloadVersionId: undefined,
-    })]);
+    expect(result.changes).toEqual([
+      expect.objectContaining({
+        secretId: "payments-api",
+        state: "REVOKED",
+        changeKind: "secret.revoked",
+        payloadVersionId: undefined,
+      }),
+    ]);
   });
 });

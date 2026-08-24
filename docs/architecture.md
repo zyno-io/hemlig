@@ -185,8 +185,8 @@ Each mutation creates a fresh immutable control revision. A payload mutation
 also creates a payload revision:
 
 ```text
-secrets/<secret-id>/control/<control-version-id>.json
-secrets/<secret-id>/payload/<payload-version-id>.json
+secrets/<environment>/<secret-id>/control/<control-version-id>.json
+secrets/<environment>/<secret-id>/payload/<payload-version-id>.json
 ```
 
 A control revision contains metadata, ACL, state, actor, timestamp, and its
@@ -273,30 +273,30 @@ delete a different version.
 One on-demand DynamoDB table uses `pk`/`sk`, point-in-time recovery, and sparse
 GSIs for scheduled work.
 
-| Key                                   | Purpose                                                               |
-| ------------------------------------- | --------------------------------------------------------------------- |
-| `SECRET#<id> / HEAD`                  | Current revisions, state, environment, write lease                    |
-| `SECRET#<id> / CONTROL#<version>`     | Control workflow/object metadata                                      |
-| `SECRET#<id> / PAYLOAD#<version>`     | Payload workflow/object metadata                                      |
-| `CONSUMER#<id> / SECRET#<id>`         | Current grant or `REVOKED` tombstone                                  |
-| `CONSUMER#<id> / PROFILE`             | Immutable consumer environment/URI identity and activation state      |
-| `IDENTITY#<sha256> / PROFILE`         | Consumer API leaf identity and validity                               |
-| `SYSTEM#ISSUER / PROFILE`             | One public root, KMS-wrapped private-key envelope, and root validity  |
-| `TRUSTSTORE#ROOTS / ROOT#<sha256>`    | The public deployment-wide issuing-root truststore anchor             |
-| `ENROLLMENT#<operation> / STATE`      | Recoverable enrollment state and truststore publication due time      |
-| `SYSTEM#TRUSTSTORE / STATE`           | Singleton publication lease and current/pending version-pinned bundle |
-| `IDEMPOTENCY#<actor> / REQUEST#<key>` | Mutation state and terminal-audit marker                              |
-| `AGENT_GRANT#<id> / PROFILE`          | Administrator-owned path/capability boundary and activation state     |
-| `CONSUMER#<id> / AGENT_GRANT`         | Prevents an agent identity from falling back to unscoped delivery     |
-| `BOOTSTRAP#<sha256> / STATE`          | Hash-only, expiring, one-use CSR redemption capability                |
-| `NOTIFICATION#<id> / EVENT`           | Pending/delivered MQTT hint; TTL begins only after terminal delivery  |
-| `CURSOR#<token> / STATE`              | Opaque, caller-bound pagination continuation; DynamoDB TTL after 15 minutes |
-| `WORKFLOW#DUE` GSI                    | Expired prepared workflow discovery                                   |
-| `RETENTION#DUE` GSI                   | Eligible non-head revision discovery                                  |
-| `CATALOG#<environment>` GSI           | Current `HEAD` records in path/secret order                           |
-| `CONSUMERS#<environment>` GSI         | Administrative consumer profiles in consumer-ID order                 |
-| `CONSUMER#<id>` identity GSI          | Administrative API leaves in expiration order                         |
-| `SECRET#<id>` revision GSI            | Newest-first bounded control-revision management history              |
+| Key                                             | Purpose                                                                     |
+| ----------------------------------------------- | --------------------------------------------------------------------------- |
+| `SECRET#<environment>#<id> / HEAD`              | Current revisions, state, write lease                                       |
+| `SECRET#<environment>#<id> / CONTROL#<version>` | Control workflow/object metadata                                            |
+| `SECRET#<environment>#<id> / PAYLOAD#<version>` | Payload workflow/object metadata                                            |
+| `CONSUMER#<id> / SECRET#<environment>#<id>`     | Current grant or `REVOKED` tombstone                                        |
+| `CONSUMER#<id> / PROFILE`                       | Immutable consumer environment/URI identity and activation state            |
+| `IDENTITY#<sha256> / PROFILE`                   | Consumer API leaf identity and validity                                     |
+| `SYSTEM#ISSUER / PROFILE`                       | One public root, KMS-wrapped private-key envelope, and root validity        |
+| `TRUSTSTORE#ROOTS / ROOT#<sha256>`              | The public deployment-wide issuing-root truststore anchor                   |
+| `ENROLLMENT#<operation> / STATE`                | Recoverable enrollment state and truststore publication due time            |
+| `SYSTEM#TRUSTSTORE / STATE`                     | Singleton publication lease and current/pending version-pinned bundle       |
+| `IDEMPOTENCY#<actor> / REQUEST#<key>`           | Mutation state and terminal-audit marker                                    |
+| `AGENT_GRANT#<id> / PROFILE`                    | Administrator-owned path/capability boundary and activation state           |
+| `CONSUMER#<id> / AGENT_GRANT`                   | Prevents an agent identity from falling back to unscoped delivery           |
+| `BOOTSTRAP#<sha256> / STATE`                    | Hash-only, expiring, one-use CSR redemption capability                      |
+| `NOTIFICATION#<id> / EVENT`                     | Pending/delivered MQTT hint; TTL begins only after terminal delivery        |
+| `CURSOR#<token> / STATE`                        | Opaque, caller-bound pagination continuation; DynamoDB TTL after 15 minutes |
+| `WORKFLOW#DUE` GSI                              | Expired prepared workflow discovery                                         |
+| `RETENTION#DUE` GSI                             | Eligible non-head revision discovery                                        |
+| `CATALOG#<environment>` GSI                     | Current `HEAD` records in path/secret order                                 |
+| `CONSUMERS#<environment>` GSI                   | Administrative consumer profiles in consumer-ID order                       |
+| `CONSUMER#<id>` identity GSI                    | Administrative API leaves in expiration order                               |
+| `SECRET#<environment>#<id>` revision GSI        | Newest-first bounded control-revision management history                    |
 
 `GET /v1/changes` is a paginated _current access snapshot_, not an event log.
 The cursor is an opaque 256-bit token, bound to one consumer, and expires after

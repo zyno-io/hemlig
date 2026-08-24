@@ -151,11 +151,14 @@ export class DynamoRepository {
     private readonly config: AppConfig,
   ) {}
 
-  public async getHead(secretId: string): Promise<HeadRecord | undefined> {
+  public async getHead(
+    environment: string,
+    secretId: string,
+  ): Promise<HeadRecord | undefined> {
     const response = await this.dynamo.send(
       new GetCommand({
         TableName: this.config.controlTableName,
-        Key: { pk: secretPk(secretId), sk: "HEAD" },
+        Key: { pk: secretPk(environment, secretId), sk: "HEAD" },
         ConsistentRead: true,
       }),
     );
@@ -470,8 +473,11 @@ export class DynamoRepository {
     return false;
   }
 
-  public async requireHead(secretId: string): Promise<HeadRecord> {
-    const head = await this.getHead(secretId);
+  public async requireHead(
+    environment: string,
+    secretId: string,
+  ): Promise<HeadRecord> {
+    const head = await this.getHead(environment, secretId);
     if (head === undefined) {
       throw notFound("The requested secret was not found.");
     }
@@ -943,12 +949,16 @@ export class DynamoRepository {
 
   public async getAccess(
     consumerId: string,
+    environment: string,
     secretId: string,
   ): Promise<AccessRecord | undefined> {
     const response = await this.dynamo.send(
       new GetCommand({
         TableName: this.config.controlTableName,
-        Key: { pk: `CONSUMER#${consumerId}`, sk: `SECRET#${secretId}` },
+        Key: {
+          pk: `CONSUMER#${consumerId}`,
+          sk: accessSk(environment, secretId),
+        },
         ConsistentRead: true,
       }),
     );
@@ -957,6 +967,7 @@ export class DynamoRepository {
 
   public async getAccessAndHead(
     consumerId: string,
+    environment: string,
     secretId: string,
   ): Promise<AccessAndHead> {
     const response = await this.dynamo.send(
@@ -965,13 +976,16 @@ export class DynamoRepository {
           {
             Get: {
               TableName: this.config.controlTableName,
-              Key: { pk: `CONSUMER#${consumerId}`, sk: `SECRET#${secretId}` },
+              Key: {
+                pk: `CONSUMER#${consumerId}`,
+                sk: accessSk(environment, secretId),
+              },
             },
           },
           {
             Get: {
               TableName: this.config.controlTableName,
-              Key: { pk: secretPk(secretId), sk: "HEAD" },
+              Key: { pk: secretPk(environment, secretId), sk: "HEAD" },
             },
           },
         ],
@@ -992,12 +1006,9 @@ export class DynamoRepository {
       new QueryCommand({
         TableName: this.config.controlTableName,
         KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-        FilterExpression: "#environment = :environment",
-        ExpressionAttributeNames: { "#environment": "environment" },
         ExpressionAttributeValues: {
           ":pk": `CONSUMER#${consumerId}`,
-          ":prefix": "SECRET#",
-          ":environment": environment,
+          ":prefix": accessSkPrefix(environment),
         },
         ExclusiveStartKey: exclusiveStartKey,
         Limit: 100,
@@ -1028,7 +1039,7 @@ export class DynamoRepository {
     if (!access.permissions.includes("read") || access.state === "REVOKED") {
       return access;
     }
-    const head = await this.getHead(access.secretId);
+    const head = await this.getHead(access.environment, access.secretId);
     if (
       head === undefined ||
       head.environment !== access.environment ||
@@ -1081,8 +1092,7 @@ export class DynamoRepository {
   }
 
   /**
-   * Every admin request writes three audit objects into a seven-year Object
-   * Lock Compliance archive. The plain catalog page above applies its filters
+   * The plain catalog page above applies its filters
    * (workflowState, tags) after a bounded 100-record read, so a page can come
    * back empty while nextCursor is still set -- a caller has to keep chasing
    * cursors to learn whether there truly are no results. That is tolerable
@@ -1131,11 +1141,8 @@ export class DynamoRepository {
   }
 
   /**
-   * Every admin request writes three audit objects into a seven-year Object
-   * Lock Compliance archive, so the console browsing a subtree folder by
-   * folder would multiply that archive write per directory opened for no
-   * operational benefit. This method paginates the catalog-path GSI
-   * internally, within this one request, and groups the result into
+   * This method paginates the catalog-path GSI internally, within one
+   * request, and groups the result into
    * immediate child folders (counted recursively) and exact-path secrets.
    * It is bounded at maximumBoundedScan and reports `truncated` instead of
    * returning a cursor: a partial tree with a cursor is worse than a
@@ -1144,9 +1151,8 @@ export class DynamoRepository {
    * `folders` is the union of segments implied by a secret's metadata.path
    * and segments implied by an explicit folder record (POST
    * /v1/admin/folders), deduplicated by path. That is a second internal
-   * DynamoDB query (listFolders), but still one HTTP request and therefore
-   * one audit triple -- `truncated` continues to reflect only the secret
-   * scan's bound, since the folder registry has its own, separate bound
+   * DynamoDB query (listFolders). `truncated` continues to reflect only the
+   * secret scan's bound, since the folder registry has its own, separate bound
    * enforced at creation time.
    */
   public async listSecretTree(
@@ -1338,6 +1344,7 @@ export class DynamoRepository {
    * response contain the newest revisions rather than an arbitrary UUID slice.
    */
   public async listRecentControlRevisions(
+    environment: string,
     secretId: string,
   ): Promise<RevisionHistoryPage> {
     const response = await this.dynamo.send(
@@ -1345,7 +1352,9 @@ export class DynamoRepository {
         TableName: this.config.controlTableName,
         IndexName: this.config.secretRevisionIndex,
         KeyConditionExpression: "revisionPk = :secret",
-        ExpressionAttributeValues: { ":secret": secretPk(secretId) },
+        ExpressionAttributeValues: {
+          ":secret": secretPk(environment, secretId),
+        },
         Limit: maximumRevisionHistory + 1,
         ScanIndexForward: false,
       }),
@@ -1777,8 +1786,12 @@ export class DynamoRepository {
   }
 
   public async prepareMutation(mutation: PreparedMutation): Promise<void> {
-    const headKey = { pk: secretPk(mutation.secretId), sk: "HEAD" };
+    const headKey = {
+      pk: secretPk(mutation.environment, mutation.secretId),
+      sk: "HEAD",
+    };
     const controlItem = workflowItem(
+      mutation.environment,
       mutation.secretId,
       `CONTROL#${mutation.control.controlVersionId}`,
       mutation.operationId,
@@ -1820,6 +1833,7 @@ export class DynamoRepository {
         Put: {
           TableName: this.config.controlTableName,
           Item: workflowItem(
+            mutation.environment,
             mutation.secretId,
             `PAYLOAD#${mutation.payload.revision.payloadVersionId}`,
             mutation.operationId,
@@ -1959,7 +1973,10 @@ export class DynamoRepository {
       {
         Update: {
           TableName: this.config.controlTableName,
-          Key: { pk: secretPk(prepared.secretId), sk: "HEAD" },
+          Key: {
+            pk: secretPk(prepared.environment, prepared.secretId),
+            sk: "HEAD",
+          },
           UpdateExpression: headUpdate,
           ConditionExpression: "leaseOwner = :owner",
           ExpressionAttributeNames: { "#state": "state" },
@@ -1968,6 +1985,7 @@ export class DynamoRepository {
       },
       workflowReadyUpdate(
         this.config.controlTableName,
+        prepared.environment,
         prepared.secretId,
         `CONTROL#${prepared.control.controlVersionId}`,
         completed.controlObject,
@@ -1980,6 +1998,7 @@ export class DynamoRepository {
       transaction.push(
         workflowReadyUpdate(
           this.config.controlTableName,
+          prepared.environment,
           prepared.secretId,
           `PAYLOAD#${prepared.payload.revision.payloadVersionId}`,
           completed.payloadObject,
@@ -1993,6 +2012,7 @@ export class DynamoRepository {
       transaction.push(
         retentionCandidateUpdate(
           this.config.controlTableName,
+          prepared.environment,
           prepared.secretId,
           `CONTROL#${completed.priorHead.controlVersionId}`,
           retentionDueAt,
@@ -2002,6 +2022,7 @@ export class DynamoRepository {
         transaction.push(
           retentionCandidateUpdate(
             this.config.controlTableName,
+            prepared.environment,
             prepared.secretId,
             `PAYLOAD#${completed.priorHead.payloadVersionId}`,
             retentionDueAt,
@@ -2104,6 +2125,7 @@ export class DynamoRepository {
   }
 
   public async releaseLease(
+    environment: string,
     secretId: string,
     operationId: string,
   ): Promise<boolean> {
@@ -2111,7 +2133,7 @@ export class DynamoRepository {
       await this.dynamo.send(
         new UpdateCommand({
           TableName: this.config.controlTableName,
-          Key: { pk: secretPk(secretId), sk: "HEAD" },
+          Key: { pk: secretPk(environment, secretId), sk: "HEAD" },
           UpdateExpression: "REMOVE leaseOwner, leaseExpiresAt",
           ConditionExpression: "leaseOwner = :owner",
           ExpressionAttributeValues: { ":owner": operationId },
@@ -2132,6 +2154,7 @@ export class DynamoRepository {
    * secret ID is usable by a new request.
    */
   public async abortPreparedCreate(
+    environment: string,
     secretId: string,
     operationId: string,
   ): Promise<boolean> {
@@ -2139,7 +2162,7 @@ export class DynamoRepository {
       await this.dynamo.send(
         new DeleteCommand({
           TableName: this.config.controlTableName,
-          Key: { pk: secretPk(secretId), sk: "HEAD" },
+          Key: { pk: secretPk(environment, secretId), sk: "HEAD" },
           ConditionExpression:
             "leaseOwner = :owner AND workflowState = :prepared",
           ExpressionAttributeValues: {
@@ -2184,7 +2207,31 @@ export class DynamoRepository {
   }
 }
 
-export const secretPk = (secretId: string): string => `SECRET#${secretId}`;
+export const secretPk = (environment: string, secretId: string): string =>
+  `SECRET#${environment}#${secretId}`;
+
+const accessSk = (environment: string, secretId: string): string =>
+  `${accessSkPrefix(environment)}${secretId}`;
+
+const accessSkPrefix = (environment: string): string =>
+  `SECRET#${environment}#`;
+
+export const secretIdentityFromPk = (
+  pk: string,
+): { readonly environment: string; readonly secretId: string } | undefined => {
+  if (!pk.startsWith("SECRET#")) {
+    return undefined;
+  }
+  const separator = pk.indexOf("#", "SECRET#".length);
+  if (separator === -1) {
+    return undefined;
+  }
+  const environment = pk.slice("SECRET#".length, separator);
+  const secretId = pk.slice(separator + 1);
+  return environment.length === 0 || secretId.length === 0
+    ? undefined
+    : { environment, secretId };
+};
 
 const agentGrantPk = (grantId: string): string => `AGENT_GRANT#${grantId}`;
 
@@ -2279,6 +2326,7 @@ const catalogFilter = (
 };
 
 const workflowItem = (
+  environment: string,
   secretId: string,
   sk: string,
   operationId: string,
@@ -2291,7 +2339,7 @@ const workflowItem = (
     readonly controlVersionId: string;
   },
 ): Record<string, unknown> => ({
-  pk: secretPk(secretId),
+  pk: secretPk(environment, secretId),
   sk,
   workflowState: "PREPARED",
   workflowKind: "secret.mutation",
@@ -2305,20 +2353,21 @@ const workflowItem = (
   ...(revisionIndex === undefined
     ? {}
     : {
-        revisionPk: secretPk(secretId),
+        revisionPk: secretPk(environment, secretId),
         revisionSk: `${revisionIndex.createdAt}#${revisionIndex.controlVersionId}`,
       }),
 });
 
 const workflowReadyUpdate = (
   tableName: string,
+  environment: string,
   secretId: string,
   sk: string,
   object: ObjectReference,
 ): Record<string, unknown> => ({
   Update: {
     TableName: tableName,
-    Key: { pk: secretPk(secretId), sk },
+    Key: { pk: secretPk(environment, secretId), sk },
     UpdateExpression:
       "SET workflowState = :ready, s3VersionId = :versionId, objectKey = :key, checksumSha256 = :checksum REMOVE workflowDuePk, workflowDueSk",
     ConditionExpression: "workflowState = :prepared",
@@ -2334,13 +2383,14 @@ const workflowReadyUpdate = (
 
 const retentionCandidateUpdate = (
   tableName: string,
+  environment: string,
   secretId: string,
   sk: string,
   retentionDueAt: string,
 ): Record<string, unknown> => ({
   Update: {
     TableName: tableName,
-    Key: { pk: secretPk(secretId), sk },
+    Key: { pk: secretPk(environment, secretId), sk },
     UpdateExpression: "SET retentionDuePk = :pk, retentionDueSk = :due",
     ConditionExpression: "workflowState = :ready",
     ExpressionAttributeValues: {
@@ -2368,7 +2418,7 @@ const accessItemsFor = (
     const hasRead = grant?.permissions.includes("read") ?? false;
     return {
       pk: `CONSUMER#${consumerId}`,
-      sk: `SECRET#${control.secretId}`,
+      sk: accessSk(control.environment, control.secretId),
       consumerId,
       secretId: control.secretId,
       environment: control.environment,
@@ -2450,6 +2500,7 @@ const notificationOutboxRecord = (
     eventId,
     consumerIds,
     secretId: control.secretId,
+    environment: control.environment,
     controlVersionId: control.controlVersionId,
     ...(kind === "secret.revoked" || control.payloadVersionId === undefined
       ? {}

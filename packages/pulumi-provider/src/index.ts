@@ -19,7 +19,11 @@ export interface HemligProviderArgs {
 export class Provider extends pulumi.ComponentResource {
   private readonly adminUrl: pulumi.Output<string>;
 
-  public constructor(name: string, args: HemligProviderArgs, opts?: pulumi.ComponentResourceOptions) {
+  public constructor(
+    name: string,
+    args: HemligProviderArgs,
+    opts?: pulumi.ComponentResourceOptions,
+  ) {
     super("hemlig:index:Provider", name, {}, opts);
     this.adminUrl = pulumi.output(args.adminUrl);
     this.registerOutputs({});
@@ -96,10 +100,15 @@ interface ResolvedAgentGrantState extends ResolvedAgentGrantInputs {
 
 type HemligSecretClient = Pick<
   HemligClient,
-  "createAdminSecret" | "getAdminSecret" | "putAdminPayload" | "updateAdminSecret"
+  | "createAdminSecret"
+  | "getAdminSecret"
+  | "putAdminPayload"
+  | "updateAdminSecret"
 >;
 
-type HemligSecretClientFactory = (inputs: ResolvedSecretInputs) => HemligSecretClient;
+type HemligSecretClientFactory = (
+  inputs: ResolvedSecretInputs,
+) => HemligSecretClient;
 type HemligAgentGrantClient = Pick<
   HemligClient,
   "createAgentGrant" | "issueBootstrapCapability" | "updateAgentGrant"
@@ -115,25 +124,37 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
     private readonly adminTokenFor: AdminTokenSource = adminTokenFromEnvironment,
   ) {}
 
-  public async create(inputs: ResolvedSecretInputs): Promise<pulumi.dynamic.CreateResult> {
+  public async create(
+    inputs: ResolvedSecretInputs,
+  ): Promise<pulumi.dynamic.CreateResult> {
     const client = this.createClient(inputs);
     const adminToken = this.adminTokenFor();
     let control;
     try {
-      control = await client.createAdminSecret(adminToken, {
-        secretId: inputs.secretId,
-        environment: inputs.environment,
-        metadata: inputs.metadata,
-        acl: inputs.acl,
-      }, randomUUID());
+      control = await client.createAdminSecret(
+        adminToken,
+        {
+          secretId: inputs.secretId,
+          environment: inputs.environment,
+          metadata: inputs.metadata,
+          acl: inputs.acl,
+        },
+        randomUUID(),
+      );
     } catch (error) {
       if (!(error instanceof HemligError) || error.status !== 409) {
         throw error;
       }
-      control = await client.getAdminSecret(adminToken, inputs.secretId);
+      control = await client.getAdminSecret(
+        adminToken,
+        inputs.environment,
+        inputs.secretId,
+      );
     }
     if (control.environment !== inputs.environment) {
-      throw new Error("The existing Hemlig secret belongs to a different environment.");
+      throw new Error(
+        "The existing Hemlig secret belongs to a different environment.",
+      );
     }
     if (
       JSON.stringify(control.metadata) !== JSON.stringify(inputs.metadata) ||
@@ -141,6 +162,7 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
     ) {
       control = await client.updateAdminSecret(
         adminToken,
+        inputs.environment,
         inputs.secretId,
         control.controlVersionId,
         { metadata: inputs.metadata, acl: inputs.acl },
@@ -149,14 +171,19 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
     }
     const written = await client.putAdminPayload(
       adminToken,
+      inputs.environment,
       inputs.secretId,
       control.controlVersionId,
       inputs.payload,
       randomUUID(),
     );
     return {
-      id: inputs.secretId,
-      outs: withVersions(inputs, written.controlVersionId, written.payloadVersionId),
+      id: `${inputs.environment}:${inputs.secretId}`,
+      outs: withVersions(
+        inputs,
+        written.controlVersionId,
+        written.payloadVersionId,
+      ),
     };
   }
 
@@ -165,8 +192,17 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
     olds: ResolvedSecretInputs,
     news: ResolvedSecretInputs,
   ): Promise<pulumi.dynamic.DiffResult> {
-    const changes = JSON.stringify(desiredInputs(olds)) !== JSON.stringify(desiredInputs(news));
-    return { changes, replaces: olds.secretId === news.secretId ? [] : ["secretId"] };
+    const changes =
+      JSON.stringify(desiredInputs(olds)) !==
+      JSON.stringify(desiredInputs(news));
+    return {
+      changes,
+      replaces: ["secretId", "environment"].filter(
+        (property) =>
+          olds[property as keyof ResolvedSecretInputs] !==
+          news[property as keyof ResolvedSecretInputs],
+      ),
+    };
   }
 
   public async update(
@@ -176,9 +212,15 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
   ): Promise<pulumi.dynamic.UpdateResult> {
     const client = this.createClient(news);
     const adminToken = this.adminTokenFor();
-    const current = await client.getAdminSecret(adminToken, news.secretId);
+    const current = await client.getAdminSecret(
+      adminToken,
+      news.environment,
+      news.secretId,
+    );
     if (current.environment !== news.environment) {
-      throw new Error("The existing Hemlig secret belongs to a different environment.");
+      throw new Error(
+        "The existing Hemlig secret belongs to a different environment.",
+      );
     }
     let control = current;
     if (
@@ -187,38 +229,57 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
     ) {
       control = await client.updateAdminSecret(
         adminToken,
+        news.environment,
         news.secretId,
         current.controlVersionId,
         { metadata: news.metadata, acl: news.acl },
         randomUUID(),
       );
     }
-    const payloadChanged = JSON.stringify(olds.payload) !== JSON.stringify(news.payload);
+    const payloadChanged =
+      JSON.stringify(olds.payload) !== JSON.stringify(news.payload);
     if (!payloadChanged && control.payloadVersionId !== undefined) {
-      return { outs: withVersions(news, control.controlVersionId, control.payloadVersionId) };
+      return {
+        outs: withVersions(
+          news,
+          control.controlVersionId,
+          control.payloadVersionId,
+        ),
+      };
     }
 
     const written = await client.putAdminPayload(
       adminToken,
+      news.environment,
       news.secretId,
       control.controlVersionId,
       news.payload,
       randomUUID(),
     );
-    return { outs: withVersions(news, written.controlVersionId, written.payloadVersionId) };
+    return {
+      outs: withVersions(
+        news,
+        written.controlVersionId,
+        written.payloadVersionId,
+      ),
+    };
   }
 
   /** Hemlig intentionally has no delete endpoint; dropping Pulumi state retains the secret. */
   public async delete(): Promise<void> {}
 }
 
-export class HemligAgentGrantProvider implements pulumi.dynamic.ResourceProvider {
+export class HemligAgentGrantProvider
+  implements pulumi.dynamic.ResourceProvider
+{
   public constructor(
     private readonly createClient: HemligAgentGrantClientFactory = agentGrantClientFor,
     private readonly adminTokenFor: AdminTokenSource = adminTokenFromEnvironment,
   ) {}
 
-  public async create(inputs: ResolvedAgentGrantInputs): Promise<pulumi.dynamic.CreateResult> {
+  public async create(
+    inputs: ResolvedAgentGrantInputs,
+  ): Promise<pulumi.dynamic.CreateResult> {
     const client = this.createClient(inputs);
     const adminToken = this.adminTokenFor();
     const grant = await client.createAgentGrant(adminToken, {
@@ -229,7 +290,10 @@ export class HemligAgentGrantProvider implements pulumi.dynamic.ResourceProvider
       writePathPrefixes: inputs.writePathPrefixes,
       displayName: inputs.displayName,
     });
-    const capability = await client.issueBootstrapCapability(adminToken, grant.grantId);
+    const capability = await client.issueBootstrapCapability(
+      adminToken,
+      grant.grantId,
+    );
     return {
       id: grant.grantId,
       outs: withAgentGrantState(inputs, grant, capability),
@@ -241,13 +305,12 @@ export class HemligAgentGrantProvider implements pulumi.dynamic.ResourceProvider
     olds: ResolvedAgentGrantState,
     news: ResolvedAgentGrantInputs,
   ): Promise<pulumi.dynamic.DiffResult> {
-    const changes = JSON.stringify(agentGrantInputs(olds)) !== JSON.stringify(news);
-    const immutableProperties = [
-      "consumerId",
-      "environment",
-    ].filter((property) =>
-      JSON.stringify(olds[property as keyof ResolvedAgentGrantInputs]) !==
-      JSON.stringify(news[property as keyof ResolvedAgentGrantInputs]),
+    const changes =
+      JSON.stringify(agentGrantInputs(olds)) !== JSON.stringify(news);
+    const immutableProperties = ["consumerId", "environment"].filter(
+      (property) =>
+        JSON.stringify(olds[property as keyof ResolvedAgentGrantInputs]) !==
+        JSON.stringify(news[property as keyof ResolvedAgentGrantInputs]),
     );
     return { changes, replaces: immutableProperties };
   }
@@ -264,19 +327,26 @@ export class HemligAgentGrantProvider implements pulumi.dynamic.ResourceProvider
       "readPathPrefixes",
       "writePathPrefixes",
       "displayName",
-    ].some((property) =>
-      JSON.stringify(olds[property as keyof ResolvedAgentGrantInputs]) !==
-      JSON.stringify(news[property as keyof ResolvedAgentGrantInputs]),
+    ].some(
+      (property) =>
+        JSON.stringify(olds[property as keyof ResolvedAgentGrantInputs]) !==
+        JSON.stringify(news[property as keyof ResolvedAgentGrantInputs]),
     );
     if (policyChanged) {
-      const updatedGrant = await client.updateAgentGrant(adminToken, olds.grantId, {
-        capabilities: news.capabilities,
-        readPathPrefixes: news.readPathPrefixes,
-        writePathPrefixes: news.writePathPrefixes,
-        displayName: news.displayName,
-      });
+      const updatedGrant = await client.updateAgentGrant(
+        adminToken,
+        olds.grantId,
+        {
+          capabilities: news.capabilities,
+          readPathPrefixes: news.readPathPrefixes,
+          writePathPrefixes: news.writePathPrefixes,
+          displayName: news.displayName,
+        },
+      );
       if (updatedGrant.grantId !== olds.grantId) {
-        throw new Error("Hemlig returned a different AgentGrant ID after a policy update.");
+        throw new Error(
+          "Hemlig returned a different AgentGrant ID after a policy update.",
+        );
       }
     }
     if (olds.bootstrapGeneration === news.bootstrapGeneration) {
@@ -290,7 +360,10 @@ export class HemligAgentGrantProvider implements pulumi.dynamic.ResourceProvider
       };
     }
 
-    const capability = await client.issueBootstrapCapability(adminToken, olds.grantId);
+    const capability = await client.issueBootstrapCapability(
+      adminToken,
+      olds.grantId,
+    );
     return {
       outs: {
         ...news,
@@ -306,8 +379,8 @@ export class HemligAgentGrantProvider implements pulumi.dynamic.ResourceProvider
 }
 
 export class HemligSecret extends pulumi.dynamic.Resource {
-  public declare readonly controlVersionId: pulumi.Output<string>;
-  public declare readonly payloadVersionId: pulumi.Output<string>;
+  declare public readonly controlVersionId: pulumi.Output<string>;
+  declare public readonly payloadVersionId: pulumi.Output<string>;
 
   public constructor(
     name: string,
@@ -336,9 +409,9 @@ export class HemligSecret extends pulumi.dynamic.Resource {
 }
 
 export class HemligAgentGrant extends pulumi.dynamic.Resource {
-  public declare readonly grantId: pulumi.Output<string>;
-  public declare readonly bootstrapToken: pulumi.Output<string>;
-  public declare readonly bootstrapExpiresAt: pulumi.Output<string>;
+  declare public readonly grantId: pulumi.Output<string>;
+  declare public readonly bootstrapToken: pulumi.Output<string>;
+  declare public readonly bootstrapExpiresAt: pulumi.Output<string>;
 
   public constructor(
     name: string,
@@ -376,7 +449,9 @@ const agentGrantClientFor = (inputs: ResolvedAgentGrantInputs): HemligClient =>
 const adminTokenFromEnvironment = (): string => {
   const token = process.env.HEMLIG_ADMIN_TOKEN;
   if (!token) {
-    throw new Error("HEMLIG_ADMIN_TOKEN is required for Hemlig control-plane mutations.");
+    throw new Error(
+      "HEMLIG_ADMIN_TOKEN is required for Hemlig control-plane mutations.",
+    );
   }
   return token;
 };
@@ -385,11 +460,13 @@ const withVersions = (
   inputs: ResolvedSecretInputs,
   controlVersionId: string,
   payloadVersionId: string | undefined,
-): Record<string, unknown> => ({ ...inputs, controlVersionId, payloadVersionId });
+): Record<string, unknown> => ({
+  ...inputs,
+  controlVersionId,
+  payloadVersionId,
+});
 
-const stripVersions = (
-  value: ResolvedSecretInputs,
-): ResolvedSecretInputs => {
+const stripVersions = (value: ResolvedSecretInputs): ResolvedSecretInputs => {
   const withVersions = value as ResolvedSecretInputs & {
     readonly adminToken?: string;
     readonly controlVersionId?: string;
@@ -408,7 +485,8 @@ const stripVersions = (
  * The bearer token was never desired state and is no longer an input. This
  * compatibility filter ignores it in stacks created by provider schema v1.
  */
-const desiredInputs = (value: ResolvedSecretInputs): ResolvedSecretInputs => stripVersions(value);
+const desiredInputs = (value: ResolvedSecretInputs): ResolvedSecretInputs =>
+  stripVersions(value);
 
 const withAgentGrantState = (
   inputs: ResolvedAgentGrantInputs,
@@ -421,7 +499,9 @@ const withAgentGrantState = (
   bootstrapExpiresAt: capability.expiresAt,
 });
 
-const agentGrantInputs = (value: ResolvedAgentGrantState): ResolvedAgentGrantInputs => {
+const agentGrantInputs = (
+  value: ResolvedAgentGrantState,
+): ResolvedAgentGrantInputs => {
   const {
     grantId: _grantId,
     bootstrapToken: _bootstrapToken,

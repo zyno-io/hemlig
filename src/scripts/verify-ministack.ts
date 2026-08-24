@@ -125,7 +125,7 @@ const run = async (): Promise<void> => {
   const bytes = Buffer.from(stableJson(revision), "utf8");
   const object = await objects.putImmutable(
     bucket,
-    "secrets/sec-local/payload/pay-local.json",
+    "secrets/local/sec-local/payload/pay-local.json",
     bytes,
   );
   const existingObject = await objects.putImmutableOrGet(
@@ -153,7 +153,7 @@ const run = async (): Promise<void> => {
         Put: {
           TableName: table,
           Item: {
-            pk: "SECRET#sec-local",
+            pk: "SECRET#local#sec-local",
             sk: "HEAD",
             secretId: "sec-local",
             environment: "local",
@@ -211,10 +211,10 @@ const run = async (): Promise<void> => {
         Put: {
           TableName: table,
           Item: {
-            pk: "SECRET#sec-local",
+            pk: "SECRET#local#sec-local",
             sk: "CONTROL#ctl-local",
             workflowState: "READY",
-            revisionPk: "SECRET#sec-local",
+            revisionPk: "SECRET#local#sec-local",
             revisionSk: "2026-08-22T00:00:00.000Z#ctl-local",
             serialized: {
               schemaVersion: 1,
@@ -258,7 +258,10 @@ const run = async (): Promise<void> => {
       "Consumer identity index did not return the expected API leaf.",
     );
   }
-  const revisions = await repository.listRecentControlRevisions("sec-local");
+  const revisions = await repository.listRecentControlRevisions(
+    "local",
+    "sec-local",
+  );
   if (revisions.revisions[0]?.serialized.controlVersionId !== "ctl-local") {
     throw new Error(
       "Secret revision index did not return the expected control revision.",

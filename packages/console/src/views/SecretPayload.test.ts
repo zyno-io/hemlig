@@ -1,7 +1,7 @@
 import { QueryClient, VueQueryPlugin } from "@tanstack/vue-query";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRouter, type Router } from "vue-router";
 import type { ControlRevision } from "../api/schemas";
 import { useAppStore } from "../stores/app";
@@ -9,9 +9,17 @@ import SecretPayload from "./SecretPayload.vue";
 
 interface FakeApi {
   getSecret: (secretId: string) => Promise<ControlRevision>;
+  putPayload?: (
+    secretId: string,
+    controlVersionId: string,
+    payload: Record<string, { encoding: "utf8" | "base64"; value: string }>,
+    idempotencyKey: string,
+  ) => Promise<ControlRevision>;
 }
 
-const secretFixture = (overrides: Partial<ControlRevision> = {}): ControlRevision => ({
+const secretFixture = (
+  overrides: Partial<ControlRevision> = {},
+): ControlRevision => ({
   schemaVersion: 1,
   secretId: "stripe-api-key",
   controlVersionId: "ctl-1",
@@ -28,7 +36,11 @@ const buildRouter = (): Router =>
   createRouter({
     history: createMemoryHistory(),
     routes: [
-      { path: "/e/:env/secrets/:secretId", name: "secret", component: { template: "<div/>" } },
+      {
+        path: "/e/:env/secrets/:secretId",
+        name: "secret",
+        component: { template: "<div/>" },
+      },
       {
         path: "/e/:env/secrets/:secretId/payload",
         name: "secret-payload",
@@ -42,14 +54,19 @@ const defaultApi = (overrides: Partial<FakeApi> = {}): FakeApi => ({
   ...overrides,
 });
 
-const mountView = async (api: FakeApi): Promise<ReturnType<typeof mount>> => {
+const mountViewWithQueryClient = async (
+  api: FakeApi,
+): Promise<{ wrapper: ReturnType<typeof mount>; queryClient: QueryClient }> => {
   const pinia = createPinia();
   setActivePinia(pinia);
   const store = useAppStore();
   store.api = api as unknown as ReturnType<typeof store.requireApi>;
 
   const router = buildRouter();
-  await router.push({ name: "secret-payload", params: { env: "dev", secretId: "stripe-api-key" } });
+  await router.push({
+    name: "secret-payload",
+    params: { env: "dev", secretId: "stripe-api-key" },
+  });
   await router.isReady();
 
   const queryClient = new QueryClient({
@@ -61,11 +78,18 @@ const mountView = async (api: FakeApi): Promise<ReturnType<typeof mount>> => {
     global: { plugins: [pinia, router, [VueQueryPlugin, { queryClient }]] },
   });
   await flushPromises();
-  return wrapper;
+  return { wrapper, queryClient };
 };
 
-const tab = (wrapper: ReturnType<typeof mount>, label: "Form" | "JSON" | ".env") =>
-  wrapper.findAll('[role="tab"]').find((btn) => btn.text() === label)!;
+const mountView = async (api: FakeApi): Promise<ReturnType<typeof mount>> => {
+  const mounted = await mountViewWithQueryClient(api);
+  return mounted.wrapper;
+};
+
+const tab = (
+  wrapper: ReturnType<typeof mount>,
+  label: "Form" | "JSON" | ".env",
+) => wrapper.findAll('[role="tab"]').find((btn) => btn.text() === label)!;
 
 const submitButton = (wrapper: ReturnType<typeof mount>) =>
   wrapper.findAll("button").find((btn) => btn.text() === "Replace payload")!;
@@ -77,6 +101,46 @@ const formInputs = (wrapper: ReturnType<typeof mount>) => {
 };
 
 describe("SecretPayload tabs", () => {
+  it("describes a first payload as activating the secret and returns its revision to the detail cache", async () => {
+    const activated = secretFixture({
+      controlVersionId: "ctl-2",
+      payloadVersionId: "pay-1",
+      payloadKeyCount: 1,
+      state: "ACTIVE",
+    });
+    const putPayload = vi.fn(async () => activated);
+    const { wrapper, queryClient } = await mountViewWithQueryClient({
+      getSecret: async () => secretFixture({ state: "PENDING_VALUE" }),
+      putPayload,
+    });
+
+    const inputs = formInputs(wrapper);
+    await inputs.key.setValue("TOKEN");
+    await inputs.value.setValue("first-secret-value");
+    await submitButton(wrapper).trigger("click");
+
+    expect(wrapper.text()).toContain("This is the first payload");
+    expect(wrapper.text()).toContain("no stored entries will be destroyed");
+    expect(wrapper.text()).not.toContain("predates entry counting");
+
+    const replacementButtons = wrapper
+      .findAll("button")
+      .filter((button) => button.text() === "Replace payload");
+    await replacementButtons[replacementButtons.length - 1]!.trigger("click");
+    await flushPromises();
+
+    expect(putPayload).toHaveBeenCalledWith(
+      "dev",
+      "stripe-api-key",
+      "ctl-1",
+      { TOKEN: { encoding: "utf8", value: "first-secret-value" } },
+      expect.any(String),
+    );
+    expect(
+      queryClient.getQueryData(["secret", "dev", "stripe-api-key"]),
+    ).toEqual(activated);
+  });
+
   it("defaults to the Form tab", async () => {
     const wrapper = await mountView(defaultApi());
 
@@ -152,7 +216,9 @@ describe("SecretPayload tabs", () => {
     await tab(wrapper, "JSON").trigger("click");
     await flushPromises();
 
-    await wrapper.find("textarea").setValue(JSON.stringify({ a: { encoding: "base64", value: "abc" } }));
+    await wrapper
+      .find("textarea")
+      .setValue(JSON.stringify({ a: { encoding: "base64", value: "abc" } }));
     await flushPromises();
 
     expect(wrapper.text()).toContain("canonical base64");

@@ -262,6 +262,10 @@ activity is visible in later pages.
 
 ### `GET /v1/admin/secrets/{secretId}`
 
+All administrator routes that address one secret require the secret's
+environment as the `environment` query parameter. Secret IDs are unique
+within an environment, not across the deployment.
+
 Returns the current immutable control revision—including metadata and ACL—but
 never loads or returns the payload. The `controlVersionId` is returned as the
 ETag and is the value required by a subsequent update. This route is intended
@@ -425,7 +429,7 @@ it to update metadata, ACL, or both. It does not decrypt the payload.
 Required headers: `Authorization`, `Idempotency-Key`, `If-Match`
 
 ```http
-PUT /v1/admin/secrets/database-credentials HTTP/1.1
+PUT /v1/admin/secrets/database-credentials?environment=prod HTTP/1.1
 If-Match: "ctl-01Jprevious"
 Idempotency-Key: a2176a0f-3a95-4167-8d58-b2cd9ebfbca4
 Content-Type: application/json
@@ -449,7 +453,7 @@ that points to the fresh payload revision. This activates an empty secret.
 Required headers: `Authorization`, `Idempotency-Key`, `If-Match`
 
 ```http
-PUT /v1/admin/secrets/database-credentials/payload HTTP/1.1
+PUT /v1/admin/secrets/database-credentials/payload?environment=prod HTTP/1.1
 If-Match: "ctl-01Jprevious"
 Idempotency-Key: 3e24149a-6d92-4c12-8b3f-a10d05072255
 Content-Type: application/json

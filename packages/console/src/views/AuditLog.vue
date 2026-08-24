@@ -11,14 +11,21 @@ const route = useRoute();
 const selectedDate = ref(new Date().toISOString().slice(0, 10));
 const routeSecretId =
   typeof route.query.secretId === "string" ? route.query.secretId : "";
+const routeEnvironment =
+  typeof route.query.environment === "string" ? route.query.environment : "";
 const secretId = ref(routeSecretId);
+const environment = ref(routeEnvironment);
 const appliedSecretId = ref(routeSecretId);
+const appliedEnvironment = ref(routeEnvironment);
 const pages = useCursorPages<AuditEvent>(async (cursor) => {
   const page = await store.requireApi().listAudit({
     date: selectedDate.value,
     ...(appliedSecretId.value.length === 0
       ? {}
       : { secretId: appliedSecretId.value }),
+    ...(appliedEnvironment.value.length === 0
+      ? {}
+      : { environment: appliedEnvironment.value }),
     cursor,
   });
   return { items: page.events, nextCursor: page.nextCursor };
@@ -31,6 +38,7 @@ const reload = (): void => {
 
 const applyFilter = (): void => {
   appliedSecretId.value = secretId.value.trim();
+  appliedEnvironment.value = environment.value.trim();
   reload();
 };
 
@@ -79,6 +87,16 @@ watch(selectedDate, reload, { immediate: true });
             autocomplete="off"
             placeholder="All secrets"
             class="w-44 rounded border border-line bg-surface px-2 py-1 text-sm text-ink"
+          />
+        </label>
+        <label class="grid gap-1 text-xs text-ink-muted">
+          Environment
+          <input
+            v-model="environment"
+            type="text"
+            autocomplete="off"
+            placeholder="All environments"
+            class="w-36 rounded border border-line bg-surface px-2 py-1 text-sm text-ink"
           />
         </label>
         <button

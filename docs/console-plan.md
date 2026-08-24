@@ -1079,7 +1079,7 @@ Two places the implementation deliberately diverged, both improvements:
   It is unnecessary for a greenfield deployment.
 - **B6 said not to add a time-ordered sort key** and to sort history in the
   handler. The implementation added a third sparse index, `secret-revision`,
-  keyed `revisionPk = SECRET#<id>` / `revisionSk = <createdAt>#<controlVersionId>`,
+  keyed `revisionPk = SECRET#<environment>#<id>` / `revisionSk = <createdAt>#<controlVersionId>`,
   and reads it with `ScanIndexForward: false`. That is strictly better: newest-first
   for free, and a bounded read that does not depend on partition size.
 

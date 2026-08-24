@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useQuery } from "@tanstack/vue-query";
 import { computed, onUnmounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import ErrorNotice from "../components/ErrorNotice.vue";
 import StateBadge from "../components/StateBadge.vue";
 import type { SecretReadResponse } from "../api/schemas";
@@ -8,10 +9,11 @@ import { useAppStore } from "../stores/app";
 
 const props = defineProps<{ env: string; secretId: string }>();
 const store = useAppStore();
+const route = useRoute();
 
 const { data, error, isFetching, refetch } = useQuery({
-  queryKey: computed(() => ["secret", props.secretId]),
-  queryFn: () => store.requireApi().getSecret(props.secretId),
+  queryKey: computed(() => ["secret", props.env, props.secretId]),
+  queryFn: () => store.requireApi().getSecret(props.env, props.secretId),
 });
 
 /**
@@ -27,7 +29,9 @@ const revealPayload = async (): Promise<void> => {
   payloadLoading.value = true;
   payloadError.value = undefined;
   try {
-    payload.value = await store.requireApi().getSecretPayload(props.secretId);
+    payload.value = await store
+      .requireApi()
+      .getSecretPayload(props.env, props.secretId);
   } catch (requestError) {
     payloadError.value = requestError;
   } finally {
@@ -42,9 +46,43 @@ const hidePayload = (): void => {
 
 onUnmounted(hidePayload);
 watch(
-  () => props.secretId,
+  () => [props.env, props.secretId],
   () => hidePayload(),
 );
+
+const queryValue = (name: string): string | undefined => {
+  const value = route.query[name];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+};
+
+const catalogReturnQuery = computed(() => ({
+  ...(queryValue("catalogFilter") === undefined
+    ? {}
+    : { catalogFilter: queryValue("catalogFilter") }),
+}));
+
+const catalogBackTo = computed(() => {
+  const path = queryValue("catalogPath");
+  return path === undefined
+    ? {
+        name: "secrets",
+        params: { env: props.env },
+        query: catalogReturnQuery.value,
+      }
+    : {
+        name: "secrets-browse",
+        params: { env: props.env, path: path.split("/") },
+        query: catalogReturnQuery.value,
+      };
+});
+
+const secretSubpageTo = (
+  name: "secret-metadata" | "secret-payload" | "secret-revisions",
+) => ({
+  name,
+  params: { env: props.env, secretId: props.secretId },
+  query: route.query,
+});
 
 // Links the path to where it actually lives in the tree — the folder view
 // this secret would show up under — rather than leaving it as inert text
@@ -52,7 +90,10 @@ watch(
 const pathTo = computed(() => {
   const path = data.value?.metadata.path;
   return path !== undefined && path.length > 0
-    ? { name: "secrets-browse", params: { env: props.env, path: path.split("/") } }
+    ? {
+        name: "secrets-browse",
+        params: { env: props.env, path: path.split("/") },
+      }
     : { name: "secrets", params: { env: props.env } };
 });
 </script>
@@ -61,25 +102,44 @@ const pathTo = computed(() => {
   <div class="space-y-4 text-sm">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <RouterLink class="text-xs text-accent hover:underline" :to="{ name: 'secrets', params: { env } }">
+        <RouterLink
+          class="text-xs text-accent hover:underline"
+          :to="catalogBackTo"
+        >
           ← Secrets
         </RouterLink>
         <h1 class="mono text-lg font-semibold">{{ secretId }}</h1>
       </div>
       <div class="flex flex-wrap gap-2">
-        <button class="rounded border border-line px-3 py-1" :disabled="isFetching" @click="refetch()">
+        <button
+          class="rounded border border-line px-3 py-1"
+          :disabled="isFetching"
+          @click="refetch()"
+        >
           {{ isFetching ? "Refreshing…" : "Refresh" }}
         </button>
-        <RouterLink class="rounded border border-line px-3 py-1" :to="{ name: 'secret-revisions', params: { env, secretId } }">
+        <RouterLink
+          class="rounded border border-line px-3 py-1"
+          :to="secretSubpageTo('secret-revisions')"
+        >
           History
         </RouterLink>
-        <RouterLink class="rounded border border-line px-3 py-1" :to="{ name: 'audit', query: { secretId } }">
+        <RouterLink
+          class="rounded border border-line px-3 py-1"
+          :to="{ name: 'audit', query: { environment: env, secretId } }"
+        >
           Audit log
         </RouterLink>
-        <RouterLink class="rounded border border-line px-3 py-1" :to="{ name: 'secret-metadata', params: { env, secretId } }">
+        <RouterLink
+          class="rounded border border-line px-3 py-1"
+          :to="secretSubpageTo('secret-metadata')"
+        >
           Edit metadata &amp; ACL
         </RouterLink>
-        <RouterLink class="rounded bg-accent px-3 py-1 text-white" :to="{ name: 'secret-payload', params: { env, secretId } }">
+        <RouterLink
+          class="rounded bg-accent px-3 py-1 text-white"
+          :to="secretSubpageTo('secret-payload')"
+        >
           Replace payload
         </RouterLink>
       </div>
@@ -106,9 +166,12 @@ const pathTo = computed(() => {
           <dt class="text-ink-muted">Created by</dt>
           <dd class="mono break-all">{{ data.createdBy.id }}</dd>
         </dl>
-        <p v-if="data.state === 'PENDING_VALUE'" class="mt-3 rounded bg-warn/10 p-2 text-xs text-warn">
-          This secret has no payload yet, so no consumer can read it. Set a payload to
-          activate it.
+        <p
+          v-if="data.state === 'PENDING_VALUE'"
+          class="mt-3 rounded bg-warn/10 p-2 text-xs text-warn"
+        >
+          This secret has no payload yet, so no consumer can read it. Set a
+          payload to activate it.
         </p>
       </section>
 
@@ -124,7 +187,7 @@ const pathTo = computed(() => {
             </RouterLink>
             <RouterLink
               class="text-accent hover:underline"
-              :to="{ name: 'secret-metadata', params: { env, secretId } }"
+              :to="secretSubpageTo('secret-metadata')"
             >
               Move
             </RouterLink>
@@ -137,31 +200,48 @@ const pathTo = computed(() => {
               v-for="(value, key) in data.metadata.tags ?? {}"
               :key="key"
               class="mr-1 inline-block rounded bg-line/40 px-1.5 py-0.5"
-            >{{ key }}:{{ value }}</span>
+              >{{ key }}:{{ value }}</span
+            >
             <span v-if="!data.metadata.tags" class="text-ink-muted">—</span>
           </div>
         </div>
         <p class="mt-3 text-xs text-ink-muted">
-          Paths and tags are organisational only. They never select a delivery target or
-          grant access.
+          Paths and tags are organisational only. They never select a delivery
+          target or grant access.
         </p>
       </section>
 
-      <section class="rounded border border-line bg-surface-raised p-4 md:col-span-2">
+      <section
+        class="rounded border border-line bg-surface-raised p-4 md:col-span-2"
+      >
         <h2 class="font-medium">Access ({{ data.acl.length }} of 40)</h2>
         <ul v-if="data.acl.length > 0" class="mt-2 space-y-1">
-          <li v-for="entry in data.acl" :key="entry.consumerId" class="flex items-center gap-2 text-xs">
+          <li
+            v-for="entry in data.acl"
+            :key="entry.consumerId"
+            class="flex items-center gap-2 text-xs"
+          >
             <RouterLink
               class="mono text-accent hover:underline"
-              :to="{ name: 'consumer', params: { env, consumerId: entry.consumerId } }"
-            >{{ entry.consumerId }}</RouterLink>
-            <span class="rounded bg-line/40 px-1.5 py-0.5">{{ entry.permissions.join(", ") }}</span>
+              :to="{
+                name: 'consumer',
+                params: { env, consumerId: entry.consumerId },
+              }"
+              >{{ entry.consumerId }}</RouterLink
+            >
+            <span class="rounded bg-line/40 px-1.5 py-0.5">{{
+              entry.permissions.join(", ")
+            }}</span>
           </li>
         </ul>
-        <p v-else class="mt-2 text-xs text-ink-muted">No consumer can read this secret.</p>
+        <p v-else class="mt-2 text-xs text-ink-muted">
+          No consumer can read this secret.
+        </p>
       </section>
 
-      <section class="rounded border border-line bg-surface-raised p-4 md:col-span-2">
+      <section
+        class="rounded border border-line bg-surface-raised p-4 md:col-span-2"
+      >
         <div class="flex flex-wrap items-center justify-between gap-2">
           <h2 class="font-medium">Payload</h2>
           <button
@@ -187,9 +267,8 @@ const pathTo = computed(() => {
             {{ data.payloadKeyCount }}
             {{ data.payloadKeyCount === 1 ? "entry" : "entries" }}.
           </template>
-          Revealing values is a deliberate, separately audited action. Values
-          remain only in this page until you hide them or leave it; replacing a
-          payload still replaces every entry at once.
+          Revealing values is a deliberate audited action. Values remain only in
+          this page until you hide them or leave it.
         </p>
         <ErrorNotice
           v-if="payloadError"
@@ -207,10 +286,16 @@ const pathTo = computed(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(entry, key) in payload.payload" :key="key" class="border-t border-line">
+              <tr
+                v-for="(entry, key) in payload.payload"
+                :key="key"
+                class="border-t border-line"
+              >
                 <td class="mono py-2 pr-3 align-top">{{ key }}</td>
                 <td class="mono py-2 pr-3 align-top">{{ entry.encoding }}</td>
-                <td class="mono whitespace-pre-wrap break-all py-2">{{ entry.value }}</td>
+                <td class="mono whitespace-pre-wrap break-all py-2">
+                  {{ entry.value }}
+                </td>
               </tr>
             </tbody>
           </table>

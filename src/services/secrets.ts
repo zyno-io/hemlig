@@ -43,6 +43,7 @@ export interface CreateSecretInput {
 
 export interface UpdateSecretInput {
   readonly secretId: string;
+  readonly environment: string;
   readonly expectedControlVersionId: string;
   readonly metadata?: SecretMetadata;
   readonly acl?: readonly Grant[];
@@ -100,13 +101,19 @@ export class SecretService {
   }
 
   /** Returns control-plane metadata and ACL only; it never loads a payload. */
-  public async getControlRevision(secretId: string): Promise<ControlRevision> {
-    const head = await this.repository.requireHead(secretId);
+  public async getControlRevision(
+    environment: string,
+    secretId: string,
+  ): Promise<ControlRevision> {
+    const head = await this.repository.requireHead(environment, secretId);
     return this.getControl(head);
   }
 
   public async update(input: UpdateSecretInput): Promise<ControlRevision> {
-    const head = await this.repository.requireHead(input.secretId);
+    const head = await this.repository.requireHead(
+      input.environment,
+      input.secretId,
+    );
     this.assertExpectedVersion(head, input.expectedControlVersionId);
     const currentControl = await this.getControl(head);
     const metadata = input.metadata ?? currentControl.metadata;
@@ -147,6 +154,7 @@ export class SecretService {
     };
     const priorAccess = await this.priorAccess(
       currentControl.acl,
+      head.environment,
       input.secretId,
     );
     await this.persistMutation({
@@ -170,6 +178,7 @@ export class SecretService {
   ): Promise<SecretReadResult> {
     const authorization = await this.repository.getAccessAndHead(
       consumerId,
+      consumerEnvironment,
       secretId,
     );
     const { access, head } = authorization;
@@ -198,7 +207,11 @@ export class SecretService {
         payloadVersionId: head.payloadVersionId,
       };
     }
-    const activePayload = await this.readActivePayload(secretId, head);
+    const activePayload = await this.readActivePayload(
+      consumerEnvironment,
+      secretId,
+      head,
+    );
     return { notModified: false, ...activePayload };
   }
 
@@ -208,15 +221,19 @@ export class SecretService {
    * this method keeps the same immutable-head and envelope binding checks used
    * for consumer delivery.
    */
-  public async readAdminPayload(secretId: string): Promise<ActiveSecretPayload> {
-    const head = await this.repository.requireHead(secretId);
+  public async readAdminPayload(
+    environment: string,
+    secretId: string,
+  ): Promise<ActiveSecretPayload> {
+    const head = await this.repository.requireHead(environment, secretId);
     if (head.state !== "ACTIVE") {
       throw notFound("The secret has no active payload.");
     }
-    return this.readActivePayload(secretId, head);
+    return this.readActivePayload(environment, secretId, head);
   }
 
   private async readActivePayload(
+    environment: string,
     secretId: string,
     head: HeadRecord,
   ): Promise<ActiveSecretPayload> {
@@ -246,7 +263,7 @@ export class SecretService {
       Parameters<EnvelopeCrypto["decrypt"]>[0]
     >(
       this.config.revisionBucketName,
-      payloadKey(secretId, head.payloadVersionId),
+      payloadKey(environment, secretId, head.payloadVersionId),
       payloadObjectVersionId,
     );
     if (
@@ -305,6 +322,7 @@ export class SecretService {
       expectedControlVersionId: input.expectedControlVersionId,
       control: input.control,
       controlKey: controlKey(
+        input.control.environment,
         input.control.secretId,
         input.control.controlVersionId,
       ),
@@ -316,6 +334,7 @@ export class SecretService {
           : {
               revision: input.payload,
               key: payloadKey(
+                input.control.environment,
                 input.control.secretId,
                 input.payload.payloadVersionId,
               ),
@@ -356,17 +375,18 @@ export class SecretService {
     }
     return this.objects.getJson<ControlRevision>(
       this.config.revisionBucketName,
-      controlKey(head.secretId, head.controlVersionId),
+      controlKey(head.environment, head.secretId, head.controlVersionId),
       head.controlObjectVersionId,
     );
   }
 
   private async priorAccess(
     acl: readonly Grant[],
+    environment: string,
     secretId: string,
   ): Promise<readonly AccessRecord[]> {
     const reads = acl.map(async (grant) =>
-      this.repository.getAccess(grant.consumerId, secretId),
+      this.repository.getAccess(grant.consumerId, environment, secretId),
     );
     const resolved = await Promise.all(reads);
     return resolved.filter((item): item is AccessRecord => item !== undefined);
@@ -405,7 +425,11 @@ export class SecretService {
       await this.objects.extendComplianceRetention(
         {
           bucket: this.config.revisionBucketName,
-          key: controlKey(head.secretId, head.controlVersionId),
+          key: controlKey(
+            head.environment,
+            head.secretId,
+            head.controlVersionId,
+          ),
           versionId: head.controlObjectVersionId,
           checksumSha256: "",
         },
@@ -419,7 +443,11 @@ export class SecretService {
       await this.objects.extendComplianceRetention(
         {
           bucket: this.config.revisionBucketName,
-          key: payloadKey(head.secretId, head.payloadVersionId),
+          key: payloadKey(
+            head.environment,
+            head.secretId,
+            head.payloadVersionId,
+          ),
           versionId: head.payloadObjectVersionId,
           checksumSha256: "",
         },
@@ -438,11 +466,15 @@ export class SecretService {
 }
 
 export const controlKey = (
+  environment: string,
   secretId: string,
   controlVersionId: string,
-): string => `secrets/${secretId}/control/${controlVersionId}.json`;
+): string =>
+  `secrets/${environment}/${secretId}/control/${controlVersionId}.json`;
 
 export const payloadKey = (
+  environment: string,
   secretId: string,
   payloadVersionId: string,
-): string => `secrets/${secretId}/payload/${payloadVersionId}.json`;
+): string =>
+  `secrets/${environment}/${secretId}/payload/${payloadVersionId}.json`;
