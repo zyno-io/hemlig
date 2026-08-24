@@ -12,7 +12,7 @@ COPY --from=build /workspace/packages/client/dist ./packages/client/dist
 COPY --from=build /workspace/packages/kubernetes-controller/package.json ./packages/kubernetes-controller/package.json
 COPY --from=build /workspace/packages/kubernetes-controller/dist ./packages/kubernetes-controller/dist
 # The Helm chart enforces runAsNonRoot.  Use the unprivileged account supplied
-# by the official Node image so Kubernetes can verify that constraint from the
-# image metadata before it starts the container.
-USER node
+# by the official Node image. Its numeric UID lets Kubernetes verify that
+# constraint from image metadata before it starts the container.
+USER 1000
 CMD ["node", "packages/kubernetes-controller/dist/main.js"]
