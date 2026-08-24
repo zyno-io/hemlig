@@ -91,24 +91,22 @@ describe("AgentGrantService", () => {
     ).toHaveBeenCalledWith(expect.any(String), "a".repeat(64));
   });
 
-  it("replays a consumed bootstrap only through the enrollment idempotency key", async () => {
+  it("replays a consumed bootstrap with the CSR-proven active identity", async () => {
     const repository = {
       getBootstrapCapability: jest.fn(async () => capability),
       getAgentGrant: jest.fn(async () => grant),
       activateAgentGrant: jest.fn(async () => undefined),
     } as unknown as DynamoRepository;
     const consumers = {
-      enroll: jest.fn(async () => ({
-        shouldWriteTerminalAudit: false,
-        result: {
-          consumerId: grant.consumerId,
-          environment: grant.environment,
-          rootFingerprint: "b".repeat(64),
-          apiFingerprint: "a".repeat(64),
-          apiCertificatePem: "public-certificate",
-          status: "ACTIVE" as const,
-        },
+      recoverActiveIdentity: jest.fn(async () => ({
+        consumerId: grant.consumerId,
+        environment: grant.environment,
+        rootFingerprint: "b".repeat(64),
+        apiFingerprint: "a".repeat(64),
+        apiCertificatePem: "public-certificate",
+        status: "ACTIVE" as const,
       })),
+      enroll: jest.fn(),
     } as unknown as ConsumerService;
     const notifications = {
       provision: jest.fn(async () => undefined),
@@ -123,10 +121,12 @@ describe("AgentGrantService", () => {
     const result = await service.redeem("hmlb_token", "same-csr");
 
     expect(result.apiFingerprint).toBe("a".repeat(64));
-    expect(consumers.enroll).toHaveBeenCalledWith(expect.objectContaining({
-      idempotencyKey: expect.stringMatching(/^redeem-/),
+    expect(consumers.recoverActiveIdentity).toHaveBeenCalledWith({
+      consumerId: grant.consumerId,
+      environment: grant.environment,
       apiCertificateSigningRequestPem: "same-csr",
-    }));
+    });
+    expect(consumers.enroll).not.toHaveBeenCalled();
     expect(notifications.provision).toHaveBeenCalledWith(expect.objectContaining({
       consumerId: grant.consumerId,
       certificateFingerprint: "a".repeat(64),

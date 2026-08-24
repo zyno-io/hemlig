@@ -147,14 +147,11 @@ export class AgentGrantService {
       consumerId: grant.consumerId,
       environment: grant.environment,
     };
-    const recovered =
-      grant.status === "PENDING"
-        ? await this.consumers.recoverActiveIdentity({
-            consumerId: grant.consumerId,
-            environment: grant.environment,
-            apiCertificateSigningRequestPem,
-          })
-        : undefined;
+    const recovered = await this.consumers.recoverActiveIdentity({
+      consumerId: grant.consumerId,
+      environment: grant.environment,
+      apiCertificateSigningRequestPem,
+    });
     const enrollment =
       recovered === undefined
         ? await this.consumers.enroll({
