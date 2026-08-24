@@ -244,9 +244,9 @@ destructive replacement without retaining or exposing payload key names.
 
 Every authenticated administrator may browse immutable application evidence for
 one UTC day. `date` defaults to the current UTC day. A page contains at most
-50 records in newest-first order; its cursor is signed, bound to the requesting
-administrator and date, and expires after 15 minutes. The console exposes this
-as the **Audit** tab.
+50 records in newest-first order; its opaque cursor is bound to the requesting
+administrator and date, with server-side state that expires after 15 minutes.
+The console exposes this as the **Audit** tab.
 
 Records contain only timestamp, correlation ID, actor, operation, outcome,
 safe target IDs, source IP when available, and a safe reason code. They never

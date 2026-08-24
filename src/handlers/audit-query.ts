@@ -51,7 +51,7 @@ export const handler = async (
     const decoded =
       rawCursor === undefined
         ? undefined
-        : app.cursors.decode(rawCursor, scope);
+        : await app.cursors.decode(rawCursor, scope);
     const page = await app.auditQueries.list(
       date,
       decoded?.lastEvaluatedKey?.continuationToken,
@@ -59,7 +59,7 @@ export const handler = async (
     const nextCursor =
       page.nextContinuationToken === undefined
         ? undefined
-        : app.cursors.encode({
+        : await app.cursors.encode({
             scope,
             lastEvaluatedKey: { continuationToken: page.nextContinuationToken },
             expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),

@@ -124,10 +124,10 @@ must never remove a `PREPARED` record that recovery still needs.
 | `SECRET#<id> / CONTROL#<id>`            | immutable metadata/ACL/state/payload-pointer revision, S3 version/checksum, and retention state                                                  |
 | `SECRET#<id> / PAYLOAD#<id>`            | encrypted-envelope workflow metadata, S3 version/checksum, and retention state                                                                   |
 | `IDENTITY#<der-sha256> / PROFILE`       | consumer/environment, leaf type, validity, active/revoked state                                                                                  |
-| `CONSUMER#<id> / PROFILE`               | immutable environment, SPIFFE identity, and enrollment state                                                                                    |
-| `CONSUMER#<id> / SECRET#<id>`           | current permission/revision/state; a retained `REVOKED` tombstone is the change feed                                                            |
-| `SYSTEM#ISSUER / PROFILE`               | one public issuing root, KMS-wrapped private-key envelope, fingerprint, and validity                                                            |
-| `TRUSTSTORE#ROOTS / ROOT#<fingerprint>` | public deployment-wide issuing root used by every consumer                                                                                      |
+| `CONSUMER#<id> / PROFILE`               | immutable environment, SPIFFE identity, and enrollment state                                                                                     |
+| `CONSUMER#<id> / SECRET#<id>`           | current permission/revision/state; a retained `REVOKED` tombstone is the change feed                                                             |
+| `SYSTEM#ISSUER / PROFILE`               | one public issuing root, KMS-wrapped private-key envelope, fingerprint, and validity                                                             |
+| `TRUSTSTORE#ROOTS / ROOT#<fingerprint>` | public deployment-wide issuing root used by every consumer                                                                                       |
 | `ENROLLMENT#<operation> / STATE`        | recoverable pending enrollment/leaf-issuance workflow                                                                                            |
 | `SYSTEM#TRUSTSTORE / STATE`             | singleton publication lease plus current/pending root set and version-pinned bundle                                                              |
 | `IDEMPOTENCY#<actor>#<key> / REQUEST`   | request digest, operation/response state, terminal audit event key/status, terminal cleanup TTL                                                  |
@@ -304,8 +304,9 @@ and only then returns the payload over mTLS.
 
 `GET /v1/changes` queries the consumer's `SECRET#` rows in secret-ID order and
 returns `{secretId, controlVersionId, payloadVersionId, state, changeKind}`
-with an opaque, HMAC-signed, short-lived pagination cursor bound to that
-consumer. A reconciliation cycle starts without a cursor and completes when
+with an opaque, short-lived pagination cursor bound to that consumer. Its
+server-side continuation state is held in the control table, not in a separate
+secret. A reconciliation cycle starts without a cursor and completes when
 `nextCursor` is absent. An active row tells the operator what it should have;
 a tombstone tells it to delete the operator-managed Kubernetes Secret. The
 caller does not receive metadata, ACLs, or payloads from this endpoint. It also
@@ -337,9 +338,12 @@ and API alias records to that existing zone. The FQDNs must be distinct and
 within `zoneDomain`; validation fails before synthesis otherwise.
 
 The CDK app injects the following runtime configuration. `apiFqdn` is the
-generic mTLS delivery endpoint (not a Kubernetes-only hostname). It generates the
-cursor HMAC value in Secrets Manager and passes the installer-supplied external
-OIDC issuer/audience and stable actor claim to the administrator JWT authorizer:
+generic mTLS delivery endpoint (not a Kubernetes-only hostname). Pagination
+cursors are opaque 256-bit tokens whose bounded server-side state is stored in
+the existing control table and expires through its TTL attribute. This avoids a
+separate secret or key-management path. The stack passes the installer-supplied
+external OIDC issuer/audience and stable actor claim to the administrator JWT
+authorizer:
 
 ```text
 AWS_REGION
@@ -356,16 +360,14 @@ AUDIT_BUCKET_NAME
 AUDIT_PREFIX
 DELIVERY_API_CUSTOM_DOMAIN_NAME
 DELIVERY_API_HOSTNAME
-CURSOR_HMAC_KEY
 ADMIN_JWT_ISSUER
 ADMIN_JWT_AUDIENCE
 ADMIN_ACTOR_SUBJECT_CLAIM
 MAX_PAYLOAD_BYTES=768000
 ```
 
-The generated cursor HMAC key is supplied to Lambda through encrypted
-CloudFormation configuration. The default administrator actor is the external
-provider's immutable `sub` claim. Function-specific IAM is split as follows:
+The default administrator actor is the external provider's immutable `sub`
+claim. Function-specific IAM is split as follows:
 
 - **admin:** table mutation; revision-control `GetObject`; control/payload
   `PutObject`; exact-current-version `GetObjectRetention`/`PutObjectRetention`;

@@ -26,12 +26,11 @@ const config: AppConfig = {
   payloadKmsKeyArn: "arn:aws:kms:us-east-1:111122223333:key/test",
   auditBucketName: "audit",
   auditPrefix: "audit",
-    deliveryApiCustomDomainName: "api.example.test",
-    deliveryApiHostname: "api.example.test",
+  deliveryApiCustomDomainName: "api.example.test",
+  deliveryApiHostname: "api.example.test",
   iotEndpoint: "iot.example.test",
   iotNotificationPolicyName: "test-agent-notifications",
   iotNotificationTopicPrefix: "hemlig/test/consumers",
-  cursorHmacKey: Buffer.alloc(32, 1),
   adminJwtIssuer: "https://issuer.example.test",
   adminJwtAudience: "hemlig",
   adminActorSubjectClaim: "sub",
@@ -73,7 +72,9 @@ describe("Hemlig issuer", () => {
     expect(issued.rootFingerprint).toBe(rootFingerprint);
     expect(issued.apiIdentity.certificatePem).toContain("BEGIN CERTIFICATE");
     const root = new X509Certificate(issuer?.rootCertificatePem as string);
-    const leaf = new X509Certificate(issued.apiIdentity.certificatePem as string);
+    const leaf = new X509Certificate(
+      issued.apiIdentity.certificatePem as string,
+    );
     const forgeRoot = forge.pki.certificateFromPem(
       issuer?.rootCertificatePem as string,
     );
@@ -83,12 +84,20 @@ describe("Hemlig issuer", () => {
     expect(leaf.checkIssued(root)).toBe(true);
     expect(leaf.verify(root.publicKey)).toBe(true);
     expect(leaf.keyUsage).toContain("1.3.6.1.5.5.7.3.2");
-    expect(leaf.subjectAltName).toContain("URI:spiffe://hemlig/consumer/prod-east");
-    expect(Number.parseInt(forgeRoot.serialNumber.slice(0, 2), 16)).toBeLessThan(128);
-    expect(Number.parseInt(forgeLeaf.serialNumber.slice(0, 2), 16)).toBeLessThan(128);
+    expect(leaf.subjectAltName).toContain(
+      "URI:spiffe://hemlig/consumer/prod-east",
+    );
+    expect(
+      Number.parseInt(forgeRoot.serialNumber.slice(0, 2), 16),
+    ).toBeLessThan(128);
+    expect(
+      Number.parseInt(forgeLeaf.serialNumber.slice(0, 2), 16),
+    ).toBeLessThan(128);
     expect(kms.send).toHaveBeenCalledTimes(2);
-    const generate = (kms.send as jest.Mock).mock.calls[0]?.[0] as GenerateDataKeyCommand;
-    const decrypt = (kms.send as jest.Mock).mock.calls[1]?.[0] as DecryptCommand;
+    const generate = (kms.send as jest.Mock).mock
+      .calls[0]?.[0] as GenerateDataKeyCommand;
+    const decrypt = (kms.send as jest.Mock).mock
+      .calls[1]?.[0] as DecryptCommand;
     expect(generate.input.EncryptionContext).toEqual({
       service: "hemlig",
       purpose: "issuer-ca",
@@ -101,7 +110,11 @@ describe("Hemlig issuer", () => {
   });
 
   it("rejects a non-CSR request before calling KMS", () => {
-    const service = new IssuerService({} as DynamoRepository, {} as KMSClient, config);
+    const service = new IssuerService(
+      {} as DynamoRepository,
+      {} as KMSClient,
+      config,
+    );
     expect(() => service.certificateRequestFingerprint("not a CSR")).toThrow(
       "apiCertificateSigningRequestPem",
     );

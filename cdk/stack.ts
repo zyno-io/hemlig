@@ -33,7 +33,6 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
-import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import {
   AwsCustomResource,
@@ -275,22 +274,6 @@ export class HemligStack extends Stack {
       aliasName: `alias/${prefix}-application`,
       targetKey: applicationKey,
     });
-    const cursorKey =
-      props.existingCursorHmacSecretArn === undefined
-        ? new secretsmanager.Secret(this, "CursorKey", {
-            secretName: `${prefix}/cursor-hmac`,
-            description: "Opaque cursor integrity key for Hemlig.",
-            generateSecretString: {
-              excludePunctuation: true,
-              passwordLength: 64,
-            },
-            removalPolicy: RemovalPolicy.RETAIN,
-          })
-        : secretsmanager.Secret.fromSecretCompleteArn(
-            this,
-            "CursorKey",
-            props.existingCursorHmacSecretArn,
-          );
     const certificate = new acm.Certificate(this, "ApiCertificate", {
       domainName: props.adminFqdn,
       subjectAlternativeNames: [props.apiFqdn],
@@ -331,7 +314,6 @@ export class HemligStack extends Stack {
       IOT_ENDPOINT: iotEndpoint,
       IOT_NOTIFICATION_POLICY_NAME: notificationPolicyName,
       IOT_NOTIFICATION_TOPIC_PREFIX: notificationTopicPrefix,
-      CURSOR_HMAC_KEY: cursorKey.secretValue.unsafeUnwrap(),
       ADMIN_JWT_ISSUER: props.oidcIssuer,
       ADMIN_JWT_AUDIENCE: props.oidcAudience,
       ADMIN_ACTOR_SUBJECT_CLAIM: props.oidcSubjectClaim,
@@ -394,6 +376,21 @@ export class HemligStack extends Stack {
     table.grantReadWriteData(notificationPublisherFunction);
     table.grantReadWriteData(recoveryFunction);
     table.grantReadWriteData(retentionFunction);
+    // The audit-query Lambda otherwise reads only the immutable audit bucket.
+    // It receives the minimum table access required for its own opaque
+    // pagination state and cannot read or write the rest of Hemlig's control
+    // plane.
+    auditQueryFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+        resources: [table.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": ["CURSOR#*"],
+          },
+        },
+      }),
+    );
     grantRevisionMutation(adminFunction, revisionBucket);
     grantRevisionMutation(consumerFunction, revisionBucket);
     revisionBucket.grantRead(consumerFunction);

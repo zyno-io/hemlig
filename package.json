@@ -26,7 +26,7 @@
     "cdk.json",
     "tsconfig.cdk.json",
     "openapi",
-    "docs",
+    "docs/**/*.md",
     "README.md",
     "PLAN.md",
     "SECURITY.md",

@@ -28,7 +28,6 @@ const config: AppConfig = {
   iotEndpoint: "iot.example.test",
   iotNotificationPolicyName: "test-agent-notifications",
   iotNotificationTopicPrefix: "hemlig/test/consumers",
-  cursorHmacKey: Buffer.alloc(32, 1),
   adminJwtIssuer: "https://issuer.example.test",
   adminJwtAudience: "hemlig",
   adminActorSubjectClaim: "sub",
@@ -137,7 +136,10 @@ describe("SecretService.read", () => {
       }),
     };
     const objects = {
-      getJson: jest.fn().mockResolvedValueOnce(control).mockResolvedValueOnce(payload),
+      getJson: jest
+        .fn()
+        .mockResolvedValueOnce(control)
+        .mockResolvedValueOnce(payload),
     };
     const crypto = {
       decrypt: jest.fn().mockResolvedValue({
@@ -252,10 +254,15 @@ describe("SecretService.readAdminPayload", () => {
   it("decrypts only the current immutable active payload", async () => {
     const repository = { requireHead: jest.fn().mockResolvedValue(head) };
     const objects = {
-      getJson: jest.fn().mockResolvedValueOnce(control).mockResolvedValueOnce(payload),
+      getJson: jest
+        .fn()
+        .mockResolvedValueOnce(control)
+        .mockResolvedValueOnce(payload),
     };
     const crypto = {
-      decrypt: jest.fn().mockResolvedValue({ PASSWORD: { encoding: "utf8", value: "value" } }),
+      decrypt: jest
+        .fn()
+        .mockResolvedValue({ PASSWORD: { encoding: "utf8", value: "value" } }),
     };
     const service = new SecretService(
       repository as never,
@@ -265,7 +272,9 @@ describe("SecretService.readAdminPayload", () => {
       {} as never,
     );
 
-    await expect(service.readAdminPayload("database-credentials")).resolves.toEqual({
+    await expect(
+      service.readAdminPayload("database-credentials"),
+    ).resolves.toEqual({
       controlVersionId: "ctl-current",
       payloadVersionId: "pay-current",
       payload: { PASSWORD: { encoding: "utf8", value: "value" } },
@@ -278,7 +287,9 @@ describe("SecretService.readAdminPayload", () => {
 
   it("does not decrypt a secret without an active payload", async () => {
     const repository = {
-      requireHead: jest.fn().mockResolvedValue({ ...head, state: "PENDING_VALUE" }),
+      requireHead: jest
+        .fn()
+        .mockResolvedValue({ ...head, state: "PENDING_VALUE" }),
     };
     const objects = { getJson: jest.fn() };
     const crypto = { decrypt: jest.fn() };
@@ -290,7 +301,9 @@ describe("SecretService.readAdminPayload", () => {
       {} as never,
     );
 
-    await expect(service.readAdminPayload("database-credentials")).rejects.toMatchObject({
+    await expect(
+      service.readAdminPayload("database-credentials"),
+    ).rejects.toMatchObject({
       code: "not_found",
     });
     expect(objects.getJson).not.toHaveBeenCalled();
@@ -309,9 +322,13 @@ describe("SecretService.update", () => {
       }),
       getAccess: jest.fn().mockResolvedValue(access),
       getIdempotency: jest.fn().mockResolvedValue(undefined),
-      prepareMutation: jest.fn().mockImplementation(async (prepared: { readonly control: ControlRevision }) => {
-        preparedControl = prepared.control;
-      }),
+      prepareMutation: jest
+        .fn()
+        .mockImplementation(
+          async (prepared: { readonly control: ControlRevision }) => {
+            preparedControl = prepared.control;
+          },
+        ),
       completeMutation: jest.fn().mockResolvedValue(undefined),
     };
     const objects = {

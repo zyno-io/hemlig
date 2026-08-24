@@ -101,7 +101,7 @@ know.
 | Consumer mutations replay the recorded result for the same key (`src/services/consumers.ts:359`)            | An ambiguous outcome may be retried with the same key                                              |
 | Control revisions are the optimistic-concurrency token                                                      | Every mutation carries `If-Match`; a `412` never auto-retries                                      |
 | Catalog pages are post-filtered after a `Limit: 100` read (`src/repositories/dynamo.ts:418-436`)            | A page may be empty and still have a cursor; never render "no results" before the cursor is absent |
-| Cursors are HMAC-bound to actor and filters, and expire in 15 minutes                                       | Any filter change resets pagination                                                                |
+| Opaque cursors are server-side, bound to actor and filters, and expire in 15 minutes                        | Any filter change resets pagination                                                                |
 | Every request writes audit objects into a seven-year Compliance archive (`src/handlers/admin.ts:24-38`)     | No polling, no background refetch, no N+1                                                          |
 | Administrator payload reads are explicit, audited requests                                                  | Keep plaintext component-local; never cache or auto-load it                                        |
 | The gateway rejects bad tokens with a bare `401` before Lambda                                              | `401` and `403` mean different things and get different handling                                   |
@@ -429,10 +429,10 @@ and should be corrected in the same change.
 }
 ```
 
-`environment` is required, matching the catalog route. The cursor is the same
-HMAC-signed, actor-bound, fifteen-minute construction the catalog uses
-(`src/services/cursor.ts`), with the environment in its scope string so it
-cannot be replayed across environments.
+`environment` is required, matching the catalog route. The opaque cursor uses
+server-side, actor-bound, fifteen-minute state (`src/services/cursor.ts`), with
+the environment in its scope string so it cannot be replayed across
+environments.
 
 `GET /v1/admin/consumers/{consumerId}`
 
@@ -831,10 +831,10 @@ reconciliation only to `409`, which was too narrow.
 
 ### Pagination
 
-The catalog cursor is HMAC-bound to the actor plus a hash of environment, path
-prefix, and tags, and expires after fifteen minutes. Any filter change resets
-to the first page rather than sending a cursor that will `400`. Forward-only:
-no page numbers, no jump-to-page.
+The catalog cursor is opaque and server-side, bound to the actor plus a hash of
+environment, path prefix, and tags, and expires after fifteen minutes. Any
+filter change resets to the first page rather than sending a cursor that will
+`400`. Forward-only: no page numbers, no jump-to-page.
 
 **A page can be empty and still have a `nextCursor`.** The query takes 100
 items then applies the `READY` and tag filters, so matches may be sparse. Keep

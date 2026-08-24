@@ -13,7 +13,7 @@ import type { DynamoRepository } from "../repositories/dynamo";
 import type { ObjectStore } from "../repositories/object-store";
 import type { AuditWriter } from "../services/audit";
 import type { ConsumerService } from "../services/consumers";
-import type { CursorCodec } from "../services/cursor";
+import type { CursorService } from "../services/cursor";
 import type { EnvironmentService } from "../services/environments";
 import type { FolderService } from "../services/folders";
 import type { SecretService } from "../services/secrets";
@@ -51,7 +51,6 @@ const config: AppConfig = {
   iotEndpoint: "iot.example.test",
   iotNotificationPolicyName: "test-agent-notifications",
   iotNotificationTopicPrefix: "hemlig/test/consumers",
-  cursorHmacKey: Buffer.alloc(32, 1),
   adminJwtIssuer: "https://issuer.example.test",
   adminJwtAudience: "hemlig",
   adminActorSubjectClaim: "sub",
@@ -124,7 +123,7 @@ describe("POST /v1/admin/issuer", () => {
       auditQueries: {} as Application["auditQueries"],
       agentGrants: {} as Application["agentGrants"],
       agents: {} as Application["agents"],
-      cursors: {} as unknown as CursorCodec,
+      cursors: {} as unknown as CursorService,
       environments: {} as unknown as EnvironmentService,
       folders: {} as unknown as FolderService,
       secrets: {} as unknown as SecretService,
@@ -236,7 +235,7 @@ describe("GET /v1/admin/secrets", () => {
       cursors: {
         encode: jest.fn(() => "opaque-cursor"),
         decode: jest.fn(() => undefined),
-      } as unknown as CursorCodec,
+      } as unknown as CursorService,
       environments: {
         list: listEnvironments,
         create: createEnvironment,
@@ -370,7 +369,7 @@ describe("/v1/admin/folders", () => {
       auditQueries: {} as Application["auditQueries"],
       agentGrants: {} as Application["agentGrants"],
       agents: {} as Application["agents"],
-      cursors: {} as unknown as CursorCodec,
+      cursors: {} as unknown as CursorService,
       environments: {} as unknown as EnvironmentService,
       folders: {
         create: createFolder,

@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import {
   CreateTableCommand,
   DescribeTableCommand,
@@ -214,8 +213,6 @@ const run = async (): Promise<void> => {
     IOT_ENDPOINT: "localhost",
     IOT_NOTIFICATION_POLICY_NAME: "ministack-notifications",
     IOT_NOTIFICATION_TOPIC_PREFIX: "hemlig/ministack/consumers",
-    CURSOR_HMAC_KEY:
-      process.env.CURSOR_HMAC_KEY ?? randomBytes(48).toString("base64"),
     ADMIN_JWT_ISSUER:
       process.env.ADMIN_JWT_ISSUER ?? "https://local.test/issuer",
     ADMIN_JWT_AUDIENCE: process.env.ADMIN_JWT_AUDIENCE ?? "hemlig-local",

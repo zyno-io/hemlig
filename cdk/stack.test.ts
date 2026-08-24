@@ -436,9 +436,9 @@ describe("HemligStack", () => {
     });
   });
 
-  it("adopts an explicitly supplied retained cursor key without creating a second secret", () => {
+  it("does not create a Secrets Manager secret for pagination", () => {
     const app = new App();
-    const stack = new HemligStack(app, "hml-adopted-cursor", {
+    const stack = new HemligStack(app, "hml-no-cursor-secret", {
       environmentName: "prod",
       adminFqdn: "admin.example.com",
       apiFqdn: "api.example.com",
@@ -446,10 +446,23 @@ describe("HemligStack", () => {
       oidcIssuer: "https://login.example.com/tenant/v2.0",
       oidcAudience: "hemlig-api",
       oidcSubjectClaim: "sub",
-      existingCursorHmacSecretArn:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:hml-prod/cursor-hmac-abc123",
     });
-    Template.fromStack(stack).resourceCountIs("AWS::SecretsManager::Secret", 0);
+    const template = Template.fromStack(stack);
+    template.resourceCountIs("AWS::SecretsManager::Secret", 0);
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: ["dynamodb:GetItem", "dynamodb:PutItem"],
+            Condition: {
+              "ForAllValues:StringLike": {
+                "dynamodb:LeadingKeys": ["CURSOR#*"],
+              },
+            },
+          }),
+        ]),
+      }),
+    });
   });
 
   it("adopts an explicitly supplied application key while still creating its alias", () => {

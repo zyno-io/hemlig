@@ -290,6 +290,7 @@ GSIs for scheduled work.
 | `CONSUMER#<id> / AGENT_GRANT`         | Prevents an agent identity from falling back to unscoped delivery     |
 | `BOOTSTRAP#<sha256> / STATE`          | Hash-only, expiring, one-use CSR redemption capability                |
 | `NOTIFICATION#<id> / EVENT`           | Pending/delivered MQTT hint; TTL begins only after terminal delivery  |
+| `CURSOR#<token> / STATE`              | Opaque, caller-bound pagination continuation; DynamoDB TTL after 15 minutes |
 | `WORKFLOW#DUE` GSI                    | Expired prepared workflow discovery                                   |
 | `RETENTION#DUE` GSI                   | Eligible non-head revision discovery                                  |
 | `CATALOG#<environment>` GSI           | Current `HEAD` records in path/secret order                           |
@@ -298,7 +299,9 @@ GSIs for scheduled work.
 | `SECRET#<id>` revision GSI            | Newest-first bounded control-revision management history              |
 
 `GET /v1/changes` is a paginated _current access snapshot_, not an event log.
-The cursor is HMAC-signed, bound to one consumer, and expires after 15 minutes.
+The cursor is an opaque 256-bit token, bound to one consumer, and expires after
+15 minutes. Its continuation state is server-side in the control table, so
+Hemlig needs no pagination-signing secret.
 
 ## Immediate notification path
 
@@ -347,7 +350,7 @@ locked retention, not hash-chain tamper evidence. See the
 administrator JWT authorization as other management routes, but only this role
 receives `s3:ListBucket` and `s3:GetObject` on the archive prefix. The normal
 administrator Lambda remains write-only. Querying one UTC day reads at most 50
-immutable records per page; a caller-bound signed cursor continues the page.
+immutable records per page; a caller-bound opaque cursor continues the page.
 The query Lambda writes its own audit events, preserving evidence of archive
 access without granting its archive-read permission to ordinary handlers.
 

@@ -1,5 +1,6 @@
 import {
   GetCommand,
+  PutCommand,
   QueryCommand,
   TransactWriteCommand,
   type DynamoDBDocumentClient,
@@ -23,21 +24,86 @@ const config: AppConfig = {
   payloadKmsKeyArn: "arn:aws:kms:us-east-1:111122223333:key/test",
   auditBucketName: "audit",
   auditPrefix: "audit",
-    deliveryApiCustomDomainName: "api.example.test",
-    deliveryApiHostname: "api.example.test",
+  deliveryApiCustomDomainName: "api.example.test",
+  deliveryApiHostname: "api.example.test",
   iotEndpoint: "iot.example.test",
   iotNotificationPolicyName: "test-agent-notifications",
   iotNotificationTopicPrefix: "hemlig/test/consumers",
-  cursorHmacKey: Buffer.alloc(32, 1),
   adminJwtIssuer: "https://issuer.example.test",
   adminJwtAudience: "hemlig",
   adminActorSubjectClaim: "sub",
   maxPayloadBytes: 768000,
 };
 
+describe("opaque cursor storage", () => {
+  const cursor = {
+    token: "A".repeat(43),
+    scope: "admin:actor:scope",
+    lastEvaluatedKey: { pk: "SECRET#payments-api", sk: "HEAD" },
+    expiresAt: "2026-08-23T00:15:00.000Z",
+    ttl: 1_787_438_500,
+  };
+
+  it("stores bounded cursor state with a collision guard", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+
+    await expect(repository.createCursor(cursor)).resolves.toBe(true);
+
+    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as PutCommand;
+    expect(command.input).toEqual({
+      TableName: "control",
+      Item: {
+        pk: `CURSOR#${cursor.token}`,
+        sk: "STATE",
+        scope: cursor.scope,
+        lastEvaluatedKey: cursor.lastEvaluatedKey,
+        expiresAt: cursor.expiresAt,
+        ttl: cursor.ttl,
+      },
+      ConditionExpression: "attribute_not_exists(pk)",
+    });
+  });
+
+  it("treats a token collision as retryable and decodes only valid stored state", async () => {
+    const collision = new Error("conditional write failed");
+    collision.name = "ConditionalCheckFailedException";
+    const dynamo = {
+      send: jest
+        .fn()
+        .mockRejectedValueOnce(collision)
+        .mockResolvedValueOnce({
+          Item: {
+            pk: `CURSOR#${cursor.token}`,
+            sk: "STATE",
+            scope: cursor.scope,
+            lastEvaluatedKey: cursor.lastEvaluatedKey,
+            expiresAt: cursor.expiresAt,
+            ttl: cursor.ttl,
+          },
+        }),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+
+    await expect(repository.createCursor(cursor)).resolves.toBe(false);
+    await expect(repository.getCursor(cursor.token)).resolves.toEqual(cursor);
+
+    const command = (dynamo.send as jest.Mock).mock.calls[1]?.[0] as GetCommand;
+    expect(command.input).toEqual({
+      TableName: "control",
+      Key: { pk: `CURSOR#${cursor.token}`, sk: "STATE" },
+      ConsistentRead: true,
+    });
+  });
+});
+
 describe("console management indexes", () => {
   it("does not rewrite unchanged consumer grants for a payload-only mutation", async () => {
-    const dynamo = { send: jest.fn().mockResolvedValue({}) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
     const control = {
       schemaVersion: 1 as const,
@@ -128,29 +194,44 @@ describe("console management indexes", () => {
 
     await repository.completeMutation(completed);
 
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as TransactWriteCommand;
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as TransactWriteCommand;
     const items = command.input.TransactItems ?? [];
-    const putItems = items.flatMap((item) => item.Put?.Item === undefined ? [] : [item.Put.Item]);
-    expect(putItems).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ pk: "CONSUMER#prod-east" }),
-      expect.objectContaining({ pk: "CONSUMER#prod-west" }),
-    ]));
-    expect(putItems).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        pk: expect.stringMatching(/^NOTIFICATION#/),
-        consumerIds: ["prod-east", "prod-west"],
-        kind: "secret.changed",
-        controlVersionId: "ctl-next",
-        payloadVersionId: "pay-next",
-      }),
-    ]));
+    const putItems = items.flatMap((item) =>
+      item.Put?.Item === undefined ? [] : [item.Put.Item],
+    );
+    expect(putItems).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ pk: "CONSUMER#prod-east" }),
+        expect.objectContaining({ pk: "CONSUMER#prod-west" }),
+      ]),
+    );
+    expect(putItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pk: expect.stringMatching(/^NOTIFICATION#/),
+          consumerIds: ["prod-east", "prod-west"],
+          kind: "secret.changed",
+          controlVersionId: "ctl-next",
+          payloadVersionId: "pay-next",
+        }),
+      ]),
+    );
   });
 
   it("atomically replaces a full ACL and emits grouped grant and revocation hints", async () => {
-    const dynamo = { send: jest.fn().mockResolvedValue({}) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
-    const revokedConsumerIds = Array.from({ length: 40 }, (_, index) => `old-${index}`);
-    const grantedConsumerIds = Array.from({ length: 40 }, (_, index) => `new-${index}`);
+    const revokedConsumerIds = Array.from(
+      { length: 40 },
+      (_, index) => `old-${index}`,
+    );
+    const grantedConsumerIds = Array.from(
+      { length: 40 },
+      (_, index) => `new-${index}`,
+    );
     const control = {
       schemaVersion: 1 as const,
       secretId: "payments-api",
@@ -240,44 +321,57 @@ describe("console management indexes", () => {
     await repository.completeMutation(completed);
 
     expect(dynamo.send).toHaveBeenCalledTimes(1);
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as TransactWriteCommand;
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as TransactWriteCommand;
     const items = command.input.TransactItems ?? [];
-    const putItems = items.flatMap((item) => item.Put?.Item === undefined ? [] : [item.Put.Item]);
-    const accessItems = putItems.filter((item) => String(item.pk).startsWith("CONSUMER#"));
-    const notifications = putItems.filter((item) => String(item.pk).startsWith("NOTIFICATION#"));
+    const putItems = items.flatMap((item) =>
+      item.Put?.Item === undefined ? [] : [item.Put.Item],
+    );
+    const accessItems = putItems.filter((item) =>
+      String(item.pk).startsWith("CONSUMER#"),
+    );
+    const notifications = putItems.filter((item) =>
+      String(item.pk).startsWith("NOTIFICATION#"),
+    );
 
     expect(items).toHaveLength(87);
     expect(accessItems).toHaveLength(80);
-    expect(accessItems).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        consumerId: grantedConsumerIds[0],
-        permissions: ["read"],
-        state: "ACTIVE",
-        controlVersionId: "ctl-next",
-        payloadVersionId: "pay-next",
-      }),
-      expect.objectContaining({
-        consumerId: revokedConsumerIds[0],
-        permissions: [],
-        state: "REVOKED",
-        controlVersionId: "ctl-next",
-        payloadVersionId: "pay-next",
-      }),
-    ]));
-    expect(notifications).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        consumerIds: grantedConsumerIds,
-        kind: "secret.changed",
-        controlVersionId: "ctl-next",
-        payloadVersionId: "pay-next",
-      }),
-      expect.objectContaining({
-        consumerIds: revokedConsumerIds,
-        kind: "secret.revoked",
-        controlVersionId: "ctl-next",
-      }),
-    ]));
-    const revocation = notifications.find((item) => item.kind === "secret.revoked");
+    expect(accessItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          consumerId: grantedConsumerIds[0],
+          permissions: ["read"],
+          state: "ACTIVE",
+          controlVersionId: "ctl-next",
+          payloadVersionId: "pay-next",
+        }),
+        expect.objectContaining({
+          consumerId: revokedConsumerIds[0],
+          permissions: [],
+          state: "REVOKED",
+          controlVersionId: "ctl-next",
+          payloadVersionId: "pay-next",
+        }),
+      ]),
+    );
+    expect(notifications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          consumerIds: grantedConsumerIds,
+          kind: "secret.changed",
+          controlVersionId: "ctl-next",
+          payloadVersionId: "pay-next",
+        }),
+        expect.objectContaining({
+          consumerIds: revokedConsumerIds,
+          kind: "secret.revoked",
+          controlVersionId: "ctl-next",
+        }),
+      ]),
+    );
+    const revocation = notifications.find(
+      (item) => item.kind === "secret.revoked",
+    );
     expect(revocation).not.toHaveProperty("payloadVersionId");
   });
 
@@ -286,18 +380,20 @@ describe("console management indexes", () => {
       send: jest
         .fn()
         .mockResolvedValueOnce({
-          Items: [{
-            pk: "CONSUMER#prod-east",
-            sk: "SECRET#payments-api",
-            consumerId: "prod-east",
-            secretId: "payments-api",
-            environment: "prod",
-            permissions: ["read"],
-            controlVersionId: "ctl-prior",
-            payloadVersionId: "pay-prior",
-            state: "ACTIVE",
-            changeKind: "secret.changed",
-          }],
+          Items: [
+            {
+              pk: "CONSUMER#prod-east",
+              sk: "SECRET#payments-api",
+              consumerId: "prod-east",
+              secretId: "payments-api",
+              environment: "prod",
+              permissions: ["read"],
+              controlVersionId: "ctl-prior",
+              payloadVersionId: "pay-prior",
+              state: "ACTIVE",
+              changeKind: "secret.changed",
+            },
+          ],
         })
         .mockResolvedValueOnce({
           Item: {
@@ -324,7 +420,9 @@ describe("console management indexes", () => {
   });
 
   it("stores environment definitions in a bounded, dedicated registry", async () => {
-    const dynamo = { send: jest.fn().mockResolvedValue({}) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
     const environment = {
       pk: "SYSTEM#ENVIRONMENTS" as const,
@@ -336,35 +434,41 @@ describe("console management indexes", () => {
 
     await repository.createEnvironment(environment);
 
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as TransactWriteCommand;
-    expect(command.input.TransactItems).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        Put: expect.objectContaining({
-          Item: environment,
-          ConditionExpression: "attribute_not_exists(pk)",
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as TransactWriteCommand;
+    expect(command.input.TransactItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Put: expect.objectContaining({
+            Item: environment,
+            ConditionExpression: "attribute_not_exists(pk)",
+          }),
         }),
-      }),
-      expect.objectContaining({
-        Update: expect.objectContaining({
-          Key: { pk: "SYSTEM#ENVIRONMENTS", sk: "STATE" },
-          ConditionExpression:
-            "attribute_not_exists(environmentCount) OR environmentCount < :maximum",
+        expect.objectContaining({
+          Update: expect.objectContaining({
+            Key: { pk: "SYSTEM#ENVIRONMENTS", sk: "STATE" },
+            ConditionExpression:
+              "attribute_not_exists(environmentCount) OR environmentCount < :maximum",
+          }),
         }),
-      }),
-    ]));
+      ]),
+    );
   });
 
   it("reads only environment records from the dedicated registry", async () => {
     const dynamo = {
       send: jest.fn().mockResolvedValue({
-        Items: [{ pk: "SYSTEM#ENVIRONMENTS", sk: "ENVIRONMENT#prod", name: "prod" }],
+        Items: [
+          { pk: "SYSTEM#ENVIRONMENTS", sk: "ENVIRONMENT#prod", name: "prod" },
+        ],
       }),
     } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
     await repository.listEnvironments();
 
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as QueryCommand;
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as QueryCommand;
     expect(command.input).toMatchObject({
       KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
       ExpressionAttributeValues: {
@@ -379,7 +483,11 @@ describe("console management indexes", () => {
   it("requires an exact environment definition", async () => {
     const dynamo = {
       send: jest.fn().mockResolvedValue({
-        Item: { pk: "SYSTEM#ENVIRONMENTS", sk: "ENVIRONMENT#prod", name: "prod" },
+        Item: {
+          pk: "SYSTEM#ENVIRONMENTS",
+          sk: "ENVIRONMENT#prod",
+          name: "prod",
+        },
       }),
     } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
@@ -394,12 +502,15 @@ describe("console management indexes", () => {
   });
 
   it("queries the environment-scoped consumer directory", async () => {
-    const dynamo = { send: jest.fn().mockResolvedValue({ Items: [] }) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({ Items: [] }),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
     await repository.listConsumers("prod");
 
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as QueryCommand;
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as QueryCommand;
     expect(command.input).toMatchObject({
       IndexName: "consumer-directory",
       KeyConditionExpression: "consumerDirectoryPk = :directory",
@@ -425,12 +536,15 @@ describe("console management indexes", () => {
         acl: [],
       },
     }));
-    const dynamo = { send: jest.fn().mockResolvedValue({ Items: revisions }) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({ Items: revisions }),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
     const page = await repository.listRecentControlRevisions("payments-api");
 
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as QueryCommand;
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as QueryCommand;
     expect(command.input).toMatchObject({
       IndexName: "secret-revision",
       KeyConditionExpression: "revisionPk = :secret",
@@ -445,7 +559,9 @@ describe("console management indexes", () => {
 
 describe("folder registry", () => {
   it("stores a folder record scoped to its environment, bounded by count", async () => {
-    const dynamo = { send: jest.fn().mockResolvedValue({}) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
     const folder = {
       pk: "FOLDER#prod",
@@ -458,44 +574,57 @@ describe("folder registry", () => {
 
     await repository.createFolder(folder);
 
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as TransactWriteCommand;
-    expect(command.input.TransactItems).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        Put: expect.objectContaining({
-          Item: folder,
-          ConditionExpression: "attribute_not_exists(pk)",
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as TransactWriteCommand;
+    expect(command.input.TransactItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Put: expect.objectContaining({
+            Item: folder,
+            ConditionExpression: "attribute_not_exists(pk)",
+          }),
         }),
-      }),
-      expect.objectContaining({
-        Update: expect.objectContaining({
-          Key: { pk: "FOLDER#prod", sk: "STATE" },
-          ConditionExpression:
-            "attribute_not_exists(folderCount) OR folderCount < :maximum",
-          ExpressionAttributeValues: expect.objectContaining({ ":maximum": 1000 }),
+        expect.objectContaining({
+          Update: expect.objectContaining({
+            Key: { pk: "FOLDER#prod", sk: "STATE" },
+            ConditionExpression:
+              "attribute_not_exists(folderCount) OR folderCount < :maximum",
+            ExpressionAttributeValues: expect.objectContaining({
+              ":maximum": 1000,
+            }),
+          }),
         }),
-      }),
-    ]));
+      ]),
+    );
   });
 
   it("surfaces a duplicate path or a full registry as a conflict", async () => {
     const dynamo = {
-      send: jest.fn().mockRejectedValue(new Error("ConditionalCheckFailedException")),
+      send: jest
+        .fn()
+        .mockRejectedValue(new Error("ConditionalCheckFailedException")),
     } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
-    await expect(repository.createFolder({
-      pk: "FOLDER#prod",
-      sk: "PATH#a",
-      environment: "prod",
-      path: "a",
-      createdAt: "2026-08-23T00:00:00.000Z",
-      createdBy: { type: "human", id: "admin-1" },
-    })).rejects.toMatchObject({ code: "conflict" });
+    await expect(
+      repository.createFolder({
+        pk: "FOLDER#prod",
+        sk: "PATH#a",
+        environment: "prod",
+        path: "a",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        createdBy: { type: "human", id: "admin-1" },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
   });
 
   it("reads a folder record by environment and exact path", async () => {
     const dynamo = {
-      send: jest.fn().mockResolvedValue({ Item: { pk: "FOLDER#prod", sk: "PATH#a", path: "a" } }),
+      send: jest
+        .fn()
+        .mockResolvedValue({
+          Item: { pk: "FOLDER#prod", sk: "PATH#a", path: "a" },
+        }),
     } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
@@ -517,7 +646,8 @@ describe("folder registry", () => {
 
     const folders = await repository.listFolders("prod");
 
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as QueryCommand;
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as QueryCommand;
     expect(command.input).toMatchObject({
       KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
       ExpressionAttributeValues: { ":pk": "FOLDER#prod", ":prefix": "PATH#" },
@@ -528,57 +658,83 @@ describe("folder registry", () => {
   });
 
   it("rejects a folder registry that exceeds its supported size", async () => {
-    const items = Array.from({ length: 1001 }, (_, index) => ({ path: `folder-${index}` }));
-    const dynamo = { send: jest.fn().mockResolvedValue({ Items: items }) } as unknown as DynamoDBDocumentClient;
+    const items = Array.from({ length: 1001 }, (_, index) => ({
+      path: `folder-${index}`,
+    }));
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({ Items: items }),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
-    await expect(repository.listFolders("prod")).rejects.toMatchObject({ code: "service_unavailable" });
+    await expect(repository.listFolders("prod")).rejects.toMatchObject({
+      code: "service_unavailable",
+    });
   });
 
   it("deletes a folder record and decrements its environment's count in one transaction", async () => {
-    const dynamo = { send: jest.fn().mockResolvedValue({}) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
     await repository.deleteFolder("prod", "a");
 
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as TransactWriteCommand;
-    expect(command.input.TransactItems).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        Delete: expect.objectContaining({
-          Key: { pk: "FOLDER#prod", sk: "PATH#a" },
-          ConditionExpression: "attribute_exists(pk)",
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as TransactWriteCommand;
+    expect(command.input.TransactItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Delete: expect.objectContaining({
+            Key: { pk: "FOLDER#prod", sk: "PATH#a" },
+            ConditionExpression: "attribute_exists(pk)",
+          }),
         }),
-      }),
-      expect.objectContaining({
-        Update: expect.objectContaining({
-          Key: { pk: "FOLDER#prod", sk: "STATE" },
-          UpdateExpression: "SET folderCount = folderCount - :one",
+        expect.objectContaining({
+          Update: expect.objectContaining({
+            Key: { pk: "FOLDER#prod", sk: "STATE" },
+            UpdateExpression: "SET folderCount = folderCount - :one",
+          }),
         }),
-      }),
-    ]));
+      ]),
+    );
   });
 
   it("reports occupancy when a READY secret sits at or beneath a path", async () => {
-    const dynamo = { send: jest.fn().mockResolvedValue({ Count: 1 }) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({ Count: 1 }),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
-    const occupied = await repository.hasSecretsAtOrBeneathPath("prod", "payments");
+    const occupied = await repository.hasSecretsAtOrBeneathPath(
+      "prod",
+      "payments",
+    );
 
     expect(occupied).toBe(true);
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as QueryCommand;
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as QueryCommand;
     expect(command.input).toMatchObject({
       IndexName: "catalog-path",
-      KeyConditionExpression: "catalogPk = :catalogPk AND begins_with(catalogSk, :prefix)",
-      ExpressionAttributeValues: { ":catalogPk": "CATALOG#prod", ":prefix": "PATH#payments/", ":ready": "READY" },
+      KeyConditionExpression:
+        "catalogPk = :catalogPk AND begins_with(catalogSk, :prefix)",
+      ExpressionAttributeValues: {
+        ":catalogPk": "CATALOG#prod",
+        ":prefix": "PATH#payments/",
+        ":ready": "READY",
+      },
       Select: "COUNT",
     });
   });
 
   it("reports no occupancy when no secret matches", async () => {
-    const dynamo = { send: jest.fn().mockResolvedValue({ Count: 0 }) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({ Count: 0 }),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
-    await expect(repository.hasSecretsAtOrBeneathPath("prod", "payments")).resolves.toBe(false);
+    await expect(
+      repository.hasSecretsAtOrBeneathPath("prod", "payments"),
+    ).resolves.toBe(false);
   });
 });
 
@@ -602,49 +758,118 @@ describe("secret tree browsing", () => {
 
   it("groups descendants by immediate segment, counts recursively, and keeps unpathed secrets at the root", async () => {
     const items = [
-      { secretId: "root-secret", environment: "prod", controlVersionId: "c1", state: "ACTIVE", metadata: {} },
-      { secretId: "paypal-key", environment: "prod", controlVersionId: "c2", state: "ACTIVE", metadata: { path: "payments" } },
-      { secretId: "stripe-key", environment: "prod", controlVersionId: "c3", state: "ACTIVE", metadata: { path: "payments/stripe" } },
-      { secretId: "aws-key", environment: "prod", controlVersionId: "c4", state: "ACTIVE", metadata: { path: "infra/aws" } },
+      {
+        secretId: "root-secret",
+        environment: "prod",
+        controlVersionId: "c1",
+        state: "ACTIVE",
+        metadata: {},
+      },
+      {
+        secretId: "paypal-key",
+        environment: "prod",
+        controlVersionId: "c2",
+        state: "ACTIVE",
+        metadata: { path: "payments" },
+      },
+      {
+        secretId: "stripe-key",
+        environment: "prod",
+        controlVersionId: "c3",
+        state: "ACTIVE",
+        metadata: { path: "payments/stripe" },
+      },
+      {
+        secretId: "aws-key",
+        environment: "prod",
+        controlVersionId: "c4",
+        state: "ACTIVE",
+        metadata: { path: "infra/aws" },
+      },
     ];
     const dynamo = mockTreeDynamo(items);
     const repository = new DynamoRepository(dynamo, config);
 
     const page = await repository.listSecretTree("prod", undefined);
 
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as QueryCommand;
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as QueryCommand;
     expect(command.input).toMatchObject({
       IndexName: "catalog-path",
-      KeyConditionExpression: "catalogPk = :catalogPk AND begins_with(catalogSk, :prefix)",
+      KeyConditionExpression:
+        "catalogPk = :catalogPk AND begins_with(catalogSk, :prefix)",
       FilterExpression: "#workflowState = :ready",
-      ExpressionAttributeValues: { ":catalogPk": "CATALOG#prod", ":prefix": "PATH#", ":ready": "READY" },
+      ExpressionAttributeValues: {
+        ":catalogPk": "CATALOG#prod",
+        ":prefix": "PATH#",
+        ":ready": "READY",
+      },
       Limit: 501,
     });
     expect(page.truncated).toBe(false);
-    expect(page.secrets.map((secret) => secret.secretId)).toEqual(["root-secret"]);
+    expect(page.secrets.map((secret) => secret.secretId)).toEqual([
+      "root-secret",
+    ]);
     expect(page.folders).toEqual([
       { segment: "infra", path: "infra", secretCount: 1, kind: "derived" },
-      { segment: "payments", path: "payments", secretCount: 2, kind: "derived" },
+      {
+        segment: "payments",
+        path: "payments",
+        secretCount: 2,
+        kind: "derived",
+      },
     ]);
   });
 
   it("returns only the exact-path secret and immediate child folders at a prefix", async () => {
     const items = [
-      { secretId: "paypal-key", environment: "prod", controlVersionId: "c1", state: "ACTIVE", metadata: { path: "payments" } },
-      { secretId: "stripe-key", environment: "prod", controlVersionId: "c2", state: "ACTIVE", metadata: { path: "payments/stripe" } },
-      { secretId: "stripe-live-key", environment: "prod", controlVersionId: "c3", state: "ACTIVE", metadata: { path: "payments/stripe/live" } },
+      {
+        secretId: "paypal-key",
+        environment: "prod",
+        controlVersionId: "c1",
+        state: "ACTIVE",
+        metadata: { path: "payments" },
+      },
+      {
+        secretId: "stripe-key",
+        environment: "prod",
+        controlVersionId: "c2",
+        state: "ACTIVE",
+        metadata: { path: "payments/stripe" },
+      },
+      {
+        secretId: "stripe-live-key",
+        environment: "prod",
+        controlVersionId: "c3",
+        state: "ACTIVE",
+        metadata: { path: "payments/stripe/live" },
+      },
     ];
     const dynamo = mockTreeDynamo(items);
     const repository = new DynamoRepository(dynamo, config);
 
     const page = await repository.listSecretTree("prod", "payments");
 
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as QueryCommand;
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as QueryCommand;
     expect(command.input).toMatchObject({
-      ExpressionAttributeValues: { ":catalogPk": "CATALOG#prod", ":prefix": "PATH#payments/", ":ready": "READY" },
+      ExpressionAttributeValues: {
+        ":catalogPk": "CATALOG#prod",
+        ":prefix": "PATH#payments/",
+        ":ready": "READY",
+      },
     });
-    expect(page.secrets.map((secret) => secret.secretId)).toEqual(["paypal-key"]);
-    expect(page.folders).toEqual([{ segment: "stripe", path: "payments/stripe", secretCount: 2, kind: "derived" }]);
+    expect(page.secrets.map((secret) => secret.secretId)).toEqual([
+      "paypal-key",
+    ]);
+    expect(page.folders).toEqual([
+      {
+        segment: "stripe",
+        path: "payments/stripe",
+        secretCount: 2,
+        kind: "derived",
+      },
+    ]);
   });
 
   it("caps the internal scan and reports truncated instead of returning a cursor", async () => {
@@ -666,62 +891,129 @@ describe("secret tree browsing", () => {
 
   it("returns an explicit empty folder record with secretCount 0", async () => {
     const folderItems = [
-      { pk: "FOLDER#prod", sk: "PATH#adyen", environment: "prod", path: "adyen", createdAt: "2026-08-23T00:00:00.000Z", createdBy: { type: "human", id: "admin-1" } },
+      {
+        pk: "FOLDER#prod",
+        sk: "PATH#adyen",
+        environment: "prod",
+        path: "adyen",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        createdBy: { type: "human", id: "admin-1" },
+      },
     ];
     const dynamo = mockTreeDynamo([], folderItems);
     const repository = new DynamoRepository(dynamo, config);
 
     const page = await repository.listSecretTree("prod", undefined);
 
-    expect(page.folders).toEqual([{ segment: "adyen", path: "adyen", secretCount: 0, kind: "explicit" }]);
+    expect(page.folders).toEqual([
+      { segment: "adyen", path: "adyen", secretCount: 0, kind: "explicit" },
+    ]);
   });
 
   it("merges an explicit folder record and a derived secret into one folder, not two", async () => {
     const secretItems = [
-      { secretId: "stripe-key", environment: "prod", controlVersionId: "c1", state: "ACTIVE", metadata: { path: "stripe" } },
+      {
+        secretId: "stripe-key",
+        environment: "prod",
+        controlVersionId: "c1",
+        state: "ACTIVE",
+        metadata: { path: "stripe" },
+      },
     ];
     const folderItems = [
-      { pk: "FOLDER#prod", sk: "PATH#stripe", environment: "prod", path: "stripe", createdAt: "2026-08-23T00:00:00.000Z", createdBy: { type: "human", id: "admin-1" } },
+      {
+        pk: "FOLDER#prod",
+        sk: "PATH#stripe",
+        environment: "prod",
+        path: "stripe",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        createdBy: { type: "human", id: "admin-1" },
+      },
     ];
     const dynamo = mockTreeDynamo(secretItems, folderItems);
     const repository = new DynamoRepository(dynamo, config);
 
     const page = await repository.listSecretTree("prod", undefined);
 
-    expect(page.folders).toEqual([{ segment: "stripe", path: "stripe", secretCount: 1, kind: "both" }]);
+    expect(page.folders).toEqual([
+      { segment: "stripe", path: "stripe", secretCount: 1, kind: "both" },
+    ]);
   });
 
   it("shows a folder record's implied ancestor as derived, then the record itself as explicit one level down", async () => {
     const folderItems = [
-      { pk: "FOLDER#prod", sk: "PATH#reporting/weekly", environment: "prod", path: "reporting/weekly", createdAt: "2026-08-23T00:00:00.000Z", createdBy: { type: "human", id: "admin-1" } },
+      {
+        pk: "FOLDER#prod",
+        sk: "PATH#reporting/weekly",
+        environment: "prod",
+        path: "reporting/weekly",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        createdBy: { type: "human", id: "admin-1" },
+      },
     ];
     const dynamo = mockTreeDynamo([], folderItems);
     const repository = new DynamoRepository(dynamo, config);
 
     const root = await repository.listSecretTree("prod", undefined);
-    expect(root.folders).toEqual([{ segment: "reporting", path: "reporting", secretCount: 0, kind: "derived" }]);
+    expect(root.folders).toEqual([
+      {
+        segment: "reporting",
+        path: "reporting",
+        secretCount: 0,
+        kind: "derived",
+      },
+    ]);
 
     const nested = await repository.listSecretTree("prod", "reporting");
-    expect(nested.folders).toEqual([{ segment: "weekly", path: "reporting/weekly", secretCount: 0, kind: "explicit" }]);
+    expect(nested.folders).toEqual([
+      {
+        segment: "weekly",
+        path: "reporting/weekly",
+        secretCount: 0,
+        kind: "explicit",
+      },
+    ]);
   });
 });
 
 describe("secret catalog search", () => {
   it("matches a secretId substring case-insensitively and composes with pathPrefix and tags", async () => {
     const items = [
-      { secretId: "stripe-live-key", environment: "prod", controlVersionId: "c1", state: "ACTIVE", metadata: { path: "payments", description: "unrelated" } },
-      { secretId: "paypal-key", environment: "prod", controlVersionId: "c2", state: "ACTIVE", metadata: { path: "payments" } },
+      {
+        secretId: "stripe-live-key",
+        environment: "prod",
+        controlVersionId: "c1",
+        state: "ACTIVE",
+        metadata: { path: "payments", description: "unrelated" },
+      },
+      {
+        secretId: "paypal-key",
+        environment: "prod",
+        controlVersionId: "c2",
+        state: "ACTIVE",
+        metadata: { path: "payments" },
+      },
     ];
-    const dynamo = { send: jest.fn().mockResolvedValue({ Items: items }) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({ Items: items }),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
-    const result = await repository.searchSecrets("prod", "payments", { owner: "payments" }, "STRIPE");
+    const result = await repository.searchSecrets(
+      "prod",
+      "payments",
+      { owner: "payments" },
+      "STRIPE",
+    );
 
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as QueryCommand;
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as QueryCommand;
     expect(command.input).toMatchObject({
       IndexName: "catalog-path",
-      KeyConditionExpression: "catalogPk = :catalogPk AND begins_with(catalogSk, :pathPrefix)",
-      FilterExpression: "#workflowState = :ready AND catalogTags.#tagKey0 = :tagValue0",
+      KeyConditionExpression:
+        "catalogPk = :catalogPk AND begins_with(catalogSk, :pathPrefix)",
+      FilterExpression:
+        "#workflowState = :ready AND catalogTags.#tagKey0 = :tagValue0",
       ExpressionAttributeValues: {
         ":catalogPk": "CATALOG#prod",
         ":pathPrefix": "PATH#payments/",
@@ -730,21 +1022,44 @@ describe("secret catalog search", () => {
       },
       Limit: 501,
     });
-    expect(result.secrets.map((secret) => secret.secretId)).toEqual(["stripe-live-key"]);
+    expect(result.secrets.map((secret) => secret.secretId)).toEqual([
+      "stripe-live-key",
+    ]);
     expect(result.truncated).toBe(false);
   });
 
   it("matches a metadata.description substring", async () => {
     const items = [
-      { secretId: "database-credentials", environment: "prod", controlVersionId: "c1", state: "ACTIVE", metadata: { description: "Stripe webhook signing secret" } },
-      { secretId: "other-secret", environment: "prod", controlVersionId: "c2", state: "ACTIVE", metadata: { description: "unrelated" } },
+      {
+        secretId: "database-credentials",
+        environment: "prod",
+        controlVersionId: "c1",
+        state: "ACTIVE",
+        metadata: { description: "Stripe webhook signing secret" },
+      },
+      {
+        secretId: "other-secret",
+        environment: "prod",
+        controlVersionId: "c2",
+        state: "ACTIVE",
+        metadata: { description: "unrelated" },
+      },
     ];
-    const dynamo = { send: jest.fn().mockResolvedValue({ Items: items }) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({ Items: items }),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
-    const result = await repository.searchSecrets("prod", undefined, {}, "webhook");
+    const result = await repository.searchSecrets(
+      "prod",
+      undefined,
+      {},
+      "webhook",
+    );
 
-    expect(result.secrets.map((secret) => secret.secretId)).toEqual(["database-credentials"]);
+    expect(result.secrets.map((secret) => secret.secretId)).toEqual([
+      "database-credentials",
+    ]);
   });
 
   it("caps the internal scan and reports truncated instead of returning a cursor", async () => {
@@ -755,10 +1070,17 @@ describe("secret catalog search", () => {
       state: "ACTIVE",
       metadata: {},
     }));
-    const dynamo = { send: jest.fn().mockResolvedValue({ Items: items }) } as unknown as DynamoDBDocumentClient;
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({ Items: items }),
+    } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
-    const result = await repository.searchSecrets("prod", undefined, {}, "stripe");
+    const result = await repository.searchSecrets(
+      "prod",
+      undefined,
+      {},
+      "stripe",
+    );
 
     expect(result.truncated).toBe(true);
     expect(result.secrets).toHaveLength(500);

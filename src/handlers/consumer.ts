@@ -25,7 +25,8 @@ export const handler = async (
     // An agent identity is deliberately unable to fall back to the generic
     // delivery routes: doing so would let a compromised namespace bypass its
     // remote AgentGrant path boundary by guessing a secret ID.
-    const isAgent = (await app.repository.getAgentGrantForConsumer(consumerId)) !== undefined;
+    const isAgent =
+      (await app.repository.getAgentGrantForConsumer(consumerId)) !== undefined;
     const operation = `${isAgent ? "agent" : "consumer"}${event.requestContext.http.method.toLowerCase()}:${event.rawPath}`;
     setAuditContext({
       actor,
@@ -42,16 +43,20 @@ export const handler = async (
     const secretMatch = /^\/v1\/secrets\/([a-z][a-z0-9-]{2,63})$/.exec(
       event.rawPath,
     );
-    const agentSecretMatch = /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})$/.exec(
-      event.rawPath,
-    );
-    const agentPayloadMatch = /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})\/payload$/.exec(
-      event.rawPath,
-    );
-    const agentControlMatch = /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})\/control$/.exec(
-      event.rawPath,
-    );
-    if (event.requestContext.http.method === "GET" && event.rawPath === "/v1/agent/config") {
+    const agentSecretMatch =
+      /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})$/.exec(event.rawPath);
+    const agentPayloadMatch =
+      /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})\/payload$/.exec(
+        event.rawPath,
+      );
+    const agentControlMatch =
+      /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})\/control$/.exec(
+        event.rawPath,
+      );
+    if (
+      event.requestContext.http.method === "GET" &&
+      event.rawPath === "/v1/agent/config"
+    ) {
       const grant = await app.agents.config(consumerId, environment);
       await app.audit.write({
         correlationId,
@@ -84,7 +89,10 @@ export const handler = async (
         },
       });
     }
-    if (event.requestContext.http.method === "POST" && event.rawPath === "/v1/agent/secrets") {
+    if (
+      event.requestContext.http.method === "POST" &&
+      event.rawPath === "/v1/agent/secrets"
+    ) {
       const key = requireIdempotencyKey(event.headers["idempotency-key"]);
       const body = parseObjectBody(event.body);
       const control = await app.agents.create({
@@ -95,10 +103,21 @@ export const handler = async (
         actor,
         idempotencyKey: key,
       });
-      await agentMutationAudit(app, correlationId, actor, operation, event, control.secretId, control.controlVersionId);
+      await agentMutationAudit(
+        app,
+        correlationId,
+        actor,
+        operation,
+        event,
+        control.secretId,
+        control.controlVersionId,
+      );
       return json(201, control, { etag: control.controlVersionId });
     }
-    if (event.requestContext.http.method === "GET" && agentControlMatch !== null) {
+    if (
+      event.requestContext.http.method === "GET" &&
+      agentControlMatch !== null
+    ) {
       const control = await app.agents.control(
         consumerId,
         environment,
@@ -117,12 +136,20 @@ export const handler = async (
         outcome: "succeeded",
         actor,
         operation,
-        target: { secretId: control.secretId, controlVersionId: control.controlVersionId },
+        target: {
+          secretId: control.secretId,
+          controlVersionId: control.controlVersionId,
+        },
         sourceIp: event.requestContext.http.sourceIp,
       });
-      return json(200, agentControlResponse(control), { etag: control.controlVersionId });
+      return json(200, agentControlResponse(control), {
+        etag: control.controlVersionId,
+      });
     }
-    if (event.requestContext.http.method === "PUT" && agentSecretMatch !== null) {
+    if (
+      event.requestContext.http.method === "PUT" &&
+      agentSecretMatch !== null
+    ) {
       const key = requireIdempotencyKey(event.headers["idempotency-key"]);
       const body = parseObjectBody(event.body);
       const control = await app.agents.update({
@@ -130,14 +157,27 @@ export const handler = async (
         environment,
         secretId: agentSecretMatch[1] as string,
         expectedControlVersionId: requireIfMatch(event.headers["if-match"]),
-        ...(body.metadata === undefined ? {} : { metadata: parseMetadata(body.metadata) }),
+        ...(body.metadata === undefined
+          ? {}
+          : { metadata: parseMetadata(body.metadata) }),
         actor,
         idempotencyKey: key,
       });
-      await agentMutationAudit(app, correlationId, actor, operation, event, control.secretId, control.controlVersionId);
+      await agentMutationAudit(
+        app,
+        correlationId,
+        actor,
+        operation,
+        event,
+        control.secretId,
+        control.controlVersionId,
+      );
       return json(200, control, { etag: control.controlVersionId });
     }
-    if (event.requestContext.http.method === "PUT" && agentPayloadMatch !== null) {
+    if (
+      event.requestContext.http.method === "PUT" &&
+      agentPayloadMatch !== null
+    ) {
       const key = requireIdempotencyKey(event.headers["idempotency-key"]);
       const body = parseObjectBody(event.body);
       const control = await app.agents.update({
@@ -149,7 +189,15 @@ export const handler = async (
         actor,
         idempotencyKey: key,
       });
-      await agentMutationAudit(app, correlationId, actor, operation, event, control.secretId, control.controlVersionId);
+      await agentMutationAudit(
+        app,
+        correlationId,
+        actor,
+        operation,
+        event,
+        control.secretId,
+        control.controlVersionId,
+      );
       return json(200, control, { etag: control.controlVersionId });
     }
     if (
@@ -165,41 +213,42 @@ export const handler = async (
         permission: "read",
         sourceIp: event.requestContext.http.sourceIp,
       });
-      const result = (isAgent || agentSecretMatch !== null)
-        ? await app.agents.read(
-          consumerId,
-          environment,
-          secretId,
-          ifNoneMatch,
-          async () => {
-            await app.audit.write({
-              correlationId,
-              outcome: "authorized",
-              actor,
-              operation,
-              target: { secretId },
-              permission: "read",
-              sourceIp: event.requestContext.http.sourceIp,
-            });
-          },
-        )
-        : await app.secrets.read(
-        consumerId,
-        environment,
-        secretId,
-        ifNoneMatch,
-        async () => {
-          await app.audit.write({
-            correlationId,
-            outcome: "authorized",
-            actor,
-            operation,
-            target: { secretId },
-            permission: "read",
-            sourceIp: event.requestContext.http.sourceIp,
-          });
-        },
-        );
+      const result =
+        isAgent || agentSecretMatch !== null
+          ? await app.agents.read(
+              consumerId,
+              environment,
+              secretId,
+              ifNoneMatch,
+              async () => {
+                await app.audit.write({
+                  correlationId,
+                  outcome: "authorized",
+                  actor,
+                  operation,
+                  target: { secretId },
+                  permission: "read",
+                  sourceIp: event.requestContext.http.sourceIp,
+                });
+              },
+            )
+          : await app.secrets.read(
+              consumerId,
+              environment,
+              secretId,
+              ifNoneMatch,
+              async () => {
+                await app.audit.write({
+                  correlationId,
+                  outcome: "authorized",
+                  actor,
+                  operation,
+                  target: { secretId },
+                  permission: "read",
+                  sourceIp: event.requestContext.http.sourceIp,
+                });
+              },
+            );
       await app.audit.write({
         correlationId,
         outcome: "succeeded",
@@ -239,22 +288,22 @@ export const handler = async (
       const decoded =
         rawCursor === undefined
           ? undefined
-          : app.cursors.decode(rawCursor, consumerId);
+          : await app.cursors.decode(rawCursor, consumerId);
       const page = isAgent
         ? await app.agents.listChanges(
-          consumerId,
-          environment,
-          decoded?.lastEvaluatedKey,
-        )
+            consumerId,
+            environment,
+            decoded?.lastEvaluatedKey,
+          )
         : await app.repository.listAccess(
-          consumerId,
-          environment,
-          decoded?.lastEvaluatedKey,
-        );
+            consumerId,
+            environment,
+            decoded?.lastEvaluatedKey,
+          );
       const nextCursor =
         page.nextCursor === undefined
           ? undefined
-          : app.cursors.encode({
+          : await app.cursors.encode({
               scope: consumerId,
               lastEvaluatedKey: JSON.parse(page.nextCursor) as Record<
                 string,
@@ -294,7 +343,10 @@ const parseObjectBody = (body: string | undefined): Record<string, unknown> => {
   return parsed;
 };
 
-const requiredString = (body: Record<string, unknown>, name: string): string => {
+const requiredString = (
+  body: Record<string, unknown>,
+  name: string,
+): string => {
   const value = body[name];
   if (typeof value !== "string" || value.length === 0) {
     throw badRequest(`${name} is required.`);
@@ -304,7 +356,9 @@ const requiredString = (body: Record<string, unknown>, name: string): string => 
 
 const requireIdempotencyKey = (value: string | undefined): string => {
   if (value === undefined || value.length < 8 || value.length > 128) {
-    throw badRequest("Idempotency-Key is required and must be 8-128 characters.");
+    throw badRequest(
+      "Idempotency-Key is required and must be 8-128 characters.",
+    );
   }
   return value;
 };
@@ -343,12 +397,18 @@ const agentMutationAudit = async (
   });
 };
 
-const agentControlResponse = (control: import("../domain/types").ControlRevision): Record<string, unknown> => ({
+const agentControlResponse = (
+  control: import("../domain/types").ControlRevision,
+): Record<string, unknown> => ({
   secretId: control.secretId,
   environment: control.environment,
   controlVersionId: control.controlVersionId,
-  ...(control.payloadVersionId === undefined ? {} : { payloadVersionId: control.payloadVersionId }),
-  ...(control.payloadKeyCount === undefined ? {} : { payloadKeyCount: control.payloadKeyCount }),
+  ...(control.payloadVersionId === undefined
+    ? {}
+    : { payloadVersionId: control.payloadVersionId }),
+  ...(control.payloadKeyCount === undefined
+    ? {}
+    : { payloadKeyCount: control.payloadKeyCount }),
   state: control.state,
   metadata: control.metadata,
 });

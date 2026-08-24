@@ -34,6 +34,7 @@ import type {
   TruststoreRootRecord,
   WorkflowState,
 } from "../domain/types";
+import type { StoredCursor } from "../services/cursor";
 import { isoNow, newId } from "../util/encoding";
 
 export interface StoredWorkflow {
@@ -161,6 +162,74 @@ export class DynamoRepository {
     return response.Item as HeadRecord | undefined;
   }
 
+  /**
+   * Pagination state is opaque to callers and expires through the table's TTL
+   * attribute. A conditional put turns the already negligible 256-bit token
+   * collision chance into a retry rather than a state overwrite.
+   */
+  public async createCursor(cursor: StoredCursor): Promise<boolean> {
+    try {
+      await this.dynamo.send(
+        new PutCommand({
+          TableName: this.config.controlTableName,
+          Item: {
+            pk: cursorPk(cursor.token),
+            sk: "STATE",
+            scope: cursor.scope,
+            ...(cursor.lastEvaluatedKey === undefined
+              ? {}
+              : { lastEvaluatedKey: cursor.lastEvaluatedKey }),
+            expiresAt: cursor.expiresAt,
+            ttl: cursor.ttl,
+          },
+          ConditionExpression: "attribute_not_exists(pk)",
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (isConditionalCheckFailure(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  public async getCursor(token: string): Promise<StoredCursor | undefined> {
+    const response = await this.dynamo.send(
+      new GetCommand({
+        TableName: this.config.controlTableName,
+        Key: { pk: cursorPk(token), sk: "STATE" },
+        ConsistentRead: true,
+      }),
+    );
+    if (response.Item === undefined) {
+      return undefined;
+    }
+    const item = response.Item;
+    if (
+      typeof item.scope !== "string" ||
+      typeof item.expiresAt !== "string" ||
+      typeof item.ttl !== "number" ||
+      (item.lastEvaluatedKey !== undefined &&
+        (item.lastEvaluatedKey === null ||
+          typeof item.lastEvaluatedKey !== "object" ||
+          Array.isArray(item.lastEvaluatedKey)))
+    ) {
+      return undefined;
+    }
+    return {
+      token,
+      scope: item.scope,
+      ...(item.lastEvaluatedKey === undefined
+        ? {}
+        : {
+            lastEvaluatedKey: item.lastEvaluatedKey as Record<string, string>,
+          }),
+      expiresAt: item.expiresAt,
+      ttl: item.ttl,
+    };
+  }
+
   public async listEnvironments(): Promise<readonly EnvironmentRecord[]> {
     const response = await this.dynamo.send(
       new QueryCommand({
@@ -178,7 +247,9 @@ export class DynamoRepository {
       response.LastEvaluatedKey !== undefined ||
       (response.Items?.length ?? 0) > maximumEnvironments
     ) {
-      throw serviceUnavailable("The environment registry exceeds its supported size.");
+      throw serviceUnavailable(
+        "The environment registry exceeds its supported size.",
+      );
     }
     return (response.Items ?? []) as EnvironmentRecord[];
   }
@@ -197,7 +268,9 @@ export class DynamoRepository {
     return response.Item as EnvironmentRecord;
   }
 
-  public async createEnvironment(environment: EnvironmentRecord): Promise<void> {
+  public async createEnvironment(
+    environment: EnvironmentRecord,
+  ): Promise<void> {
     try {
       await this.dynamo.send(
         new TransactWriteCommand({
@@ -252,7 +325,9 @@ export class DynamoRepository {
    * somehow exceeded its own creation-time cap is a service error, not a
    * silently truncated page.
    */
-  public async listFolders(environment: string): Promise<readonly FolderRecord[]> {
+  public async listFolders(
+    environment: string,
+  ): Promise<readonly FolderRecord[]> {
     const response = await this.dynamo.send(
       new QueryCommand({
         TableName: this.config.controlTableName,
@@ -269,7 +344,9 @@ export class DynamoRepository {
       response.LastEvaluatedKey !== undefined ||
       (response.Items?.length ?? 0) > maximumFolders
     ) {
-      throw serviceUnavailable("The folder registry for this environment exceeds its supported size.");
+      throw serviceUnavailable(
+        "The folder registry for this environment exceeds its supported size.",
+      );
     }
     return (response.Items ?? []) as FolderRecord[];
   }
@@ -346,7 +423,9 @@ export class DynamoRepository {
         }),
       );
     } catch {
-      throw conflict("The folder record could not be deleted; it may already be gone.");
+      throw conflict(
+        "The folder record could not be deleted; it may already be gone.",
+      );
     }
   }
 
@@ -449,7 +528,9 @@ export class DynamoRepository {
       }),
     );
     const grantId = mapping.Item?.grantId;
-    return typeof grantId === "string" ? this.getAgentGrant(grantId) : undefined;
+    return typeof grantId === "string"
+      ? this.getAgentGrant(grantId)
+      : undefined;
   }
 
   public async createAgentGrant(grant: AgentGrantRecord): Promise<void> {
@@ -495,7 +576,9 @@ export class DynamoRepository {
         }),
       );
     } catch (error) {
-      throw conflict(`Could not create bootstrap capability: ${errorMessage(error)}`);
+      throw conflict(
+        `Could not create bootstrap capability: ${errorMessage(error)}`,
+      );
     }
   }
 
@@ -517,7 +600,10 @@ export class DynamoRepository {
     fingerprint: string,
   ): Promise<void> {
     const grant = await this.getAgentGrant(grantId);
-    if (grant?.status === "ACTIVE" && grant.activatedFingerprint === fingerprint) {
+    if (
+      grant?.status === "ACTIVE" &&
+      grant.activatedFingerprint === fingerprint
+    ) {
       return;
     }
     try {
@@ -547,7 +633,10 @@ export class DynamoRepository {
     fingerprint: string,
   ): Promise<void> {
     const record = await this.getBootstrapCapability(tokenHash);
-    if (record?.status === "CONSUMED" && record.consumedFingerprint === fingerprint) {
+    if (
+      record?.status === "CONSUMED" &&
+      record.consumedFingerprint === fingerprint
+    ) {
       return;
     }
     try {
@@ -568,7 +657,9 @@ export class DynamoRepository {
         }),
       );
     } catch (error) {
-      throw conflict(`Could not consume bootstrap capability: ${errorMessage(error)}`);
+      throw conflict(
+        `Could not consume bootstrap capability: ${errorMessage(error)}`,
+      );
     }
   }
 
@@ -579,7 +670,8 @@ export class DynamoRepository {
         new UpdateCommand({
           TableName: this.config.controlTableName,
           Key: { pk: notificationPk(eventId), sk: "EVENT" },
-          UpdateExpression: "SET #status = :delivered, deliveredAt = :deliveredAt, ttl = :ttl",
+          UpdateExpression:
+            "SET #status = :delivered, deliveredAt = :deliveredAt, ttl = :ttl",
           ConditionExpression: "#status = :pending",
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: {
@@ -858,7 +950,9 @@ export class DynamoRepository {
    * grant for the current snapshot lets payload writes advance one HEAD and
    * one grouped outbox event instead of rewriting every authorized consumer.
    */
-  private async currentAccessSnapshot(access: AccessRecord): Promise<AccessRecord> {
+  private async currentAccessSnapshot(
+    access: AccessRecord,
+  ): Promise<AccessRecord> {
     if (!access.permissions.includes("read") || access.state === "REVOKED") {
       return access;
     }
@@ -932,7 +1026,10 @@ export class DynamoRepository {
     pathPrefix: string | undefined,
     tags: Readonly<Record<string, string>>,
     query: string,
-  ): Promise<{ readonly secrets: readonly HeadRecord[]; readonly truncated: boolean }> {
+  ): Promise<{
+    readonly secrets: readonly HeadRecord[];
+    readonly truncated: boolean;
+  }> {
     const filter = catalogFilter(environment, pathPrefix, tags);
     const response = await this.dynamo.send(
       new QueryCommand({
@@ -948,12 +1045,16 @@ export class DynamoRepository {
     );
     const items = (response.Items ?? []) as HeadRecord[];
     const truncated =
-      items.length > maximumBoundedScan || response.LastEvaluatedKey !== undefined;
+      items.length > maximumBoundedScan ||
+      response.LastEvaluatedKey !== undefined;
     const needle = query.toLowerCase();
-    const secrets = items.slice(0, maximumBoundedScan).filter((secret) =>
-      secret.secretId.toLowerCase().includes(needle) ||
-      (secret.metadata?.description ?? "").toLowerCase().includes(needle),
-    );
+    const secrets = items
+      .slice(0, maximumBoundedScan)
+      .filter(
+        (secret) =>
+          secret.secretId.toLowerCase().includes(needle) ||
+          (secret.metadata?.description ?? "").toLowerCase().includes(needle),
+      );
     return { secrets, truncated };
   }
 
@@ -1050,12 +1151,17 @@ export class DynamoRepository {
     const explicitPaths = new Set(folderRecords.map((folder) => folder.path));
     const folders = [...folderEntries.entries()]
       .map(([segment, { secretCount }]): SecretTreeFolder => {
-        const path = pathPrefix === undefined ? segment : `${pathPrefix}/${segment}`;
+        const path =
+          pathPrefix === undefined ? segment : `${pathPrefix}/${segment}`;
         return {
           segment,
           path,
           secretCount,
-          kind: explicitPaths.has(path) ? (secretCount > 0 ? "both" : "explicit") : "derived",
+          kind: explicitPaths.has(path)
+            ? secretCount > 0
+              ? "both"
+              : "explicit"
+            : "derived",
         };
       })
       .sort((left, right) => left.segment.localeCompare(right.segment));
@@ -1067,13 +1173,18 @@ export class DynamoRepository {
   public async listConsumers(
     environment: string,
     exclusiveStartKey?: Record<string, string>,
-  ): Promise<{ readonly consumers: readonly ConsumerRecord[]; readonly nextCursor?: string }> {
+  ): Promise<{
+    readonly consumers: readonly ConsumerRecord[];
+    readonly nextCursor?: string;
+  }> {
     const response = await this.dynamo.send(
       new QueryCommand({
         TableName: this.config.controlTableName,
         IndexName: this.config.consumerDirectoryIndex,
         KeyConditionExpression: "consumerDirectoryPk = :directory",
-        ExpressionAttributeValues: { ":directory": consumerDirectoryPk(environment) },
+        ExpressionAttributeValues: {
+          ":directory": consumerDirectoryPk(environment),
+        },
         ExclusiveStartKey: exclusiveStartKey,
         Limit: 100,
       }),
@@ -1090,7 +1201,10 @@ export class DynamoRepository {
   public async listConsumerApiIdentities(
     consumerId: string,
     exclusiveStartKey?: Record<string, string>,
-  ): Promise<{ readonly identities: readonly IdentityRecord[]; readonly nextCursor?: string }> {
+  ): Promise<{
+    readonly identities: readonly IdentityRecord[];
+    readonly nextCursor?: string;
+  }> {
     const response = await this.dynamo.send(
       new QueryCommand({
         TableName: this.config.controlTableName,
@@ -1115,7 +1229,9 @@ export class DynamoRepository {
     };
   }
 
-  public async countActiveConsumerApiIdentities(consumerId: string): Promise<number> {
+  public async countActiveConsumerApiIdentities(
+    consumerId: string,
+  ): Promise<number> {
     let count = 0;
     let exclusiveStartKey: Record<string, unknown> | undefined;
     const now = isoNow();
@@ -1125,7 +1241,8 @@ export class DynamoRepository {
           TableName: this.config.controlTableName,
           IndexName: this.config.consumerIdentityIndex,
           KeyConditionExpression: "identityConsumerPk = :consumer",
-          FilterExpression: "#status = :active AND kind = :api AND notAfter > :now",
+          FilterExpression:
+            "#status = :active AND kind = :api AND notAfter > :now",
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: {
             ":consumer": identityConsumerPk(consumerId),
@@ -1138,7 +1255,8 @@ export class DynamoRepository {
         }),
       );
       count += response.Count ?? 0;
-      exclusiveStartKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;
+      exclusiveStartKey = response.LastEvaluatedKey as
+        Record<string, unknown> | undefined;
     } while (exclusiveStartKey !== undefined);
     return count;
   }
@@ -1147,7 +1265,9 @@ export class DynamoRepository {
    * The revision GSI is chronologically ordered, letting this fixed-size
    * response contain the newest revisions rather than an arbitrary UUID slice.
    */
-  public async listRecentControlRevisions(secretId: string): Promise<RevisionHistoryPage> {
+  public async listRecentControlRevisions(
+    secretId: string,
+  ): Promise<RevisionHistoryPage> {
     const response = await this.dynamo.send(
       new QueryCommand({
         TableName: this.config.controlTableName,
@@ -1160,11 +1280,12 @@ export class DynamoRepository {
     );
     const revisions = (response.Items ?? [])
       .slice(0, maximumRevisionHistory)
-      .filter((item): item is StoredControlRevision =>
-        typeof item === "object" &&
-        item !== null &&
-        "serialized" in item &&
-        typeof (item as { serialized?: unknown }).serialized === "object",
+      .filter(
+        (item): item is StoredControlRevision =>
+          typeof item === "object" &&
+          item !== null &&
+          "serialized" in item &&
+          typeof (item as { serialized?: unknown }).serialized === "object",
       ) as StoredControlRevision[];
     return {
       revisions,
@@ -1344,7 +1465,8 @@ export class DynamoRepository {
           TableName: this.config.controlTableName,
           Key: { pk: `IDENTITY#${operation.apiFingerprint}`, sk: "PROFILE" },
           UpdateExpression: "SET #status = :active",
-          ConditionExpression: "#status = :pending AND consumerId = :consumerId",
+          ConditionExpression:
+            "#status = :pending AND consumerId = :consumerId",
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: {
             ":active": "ACTIVE",
@@ -1423,7 +1545,8 @@ export class DynamoRepository {
           TableName: this.config.controlTableName,
           Key: { pk: `IDENTITY#${operation.apiFingerprint}`, sk: "PROFILE" },
           UpdateExpression: "SET #status = :failed",
-          ConditionExpression: "#status = :pending AND consumerId = :consumerId",
+          ConditionExpression:
+            "#status = :pending AND consumerId = :consumerId",
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: {
             ":failed": "FAILED",
@@ -1993,11 +2116,14 @@ const agentGrantPk = (grantId: string): string => `AGENT_GRANT#${grantId}`;
 
 const bootstrapPk = (tokenHash: string): string => `BOOTSTRAP#${tokenHash}`;
 
+const cursorPk = (token: string): string => `CURSOR#${token}`;
+
 const environmentsPk = "SYSTEM#ENVIRONMENTS";
 
 const environmentSk = (name: string): string => `ENVIRONMENT#${name}`;
 
-export const folderPk = (environment: string): string => `FOLDER#${environment}`;
+export const folderPk = (environment: string): string =>
+  `FOLDER#${environment}`;
 
 const folderSk = (path: string): string => `PATH#${path}`;
 
@@ -2013,8 +2139,10 @@ export const consumerDirectoryPk = (environment: string): string =>
 export const identityConsumerPk = (consumerId: string): string =>
   `CONSUMER#${consumerId}`;
 
-export const identityConsumerSk = (notAfter: string, fingerprint: string): string =>
-  `${notAfter}#${fingerprint}`;
+export const identityConsumerSk = (
+  notAfter: string,
+  fingerprint: string,
+): string => `${notAfter}#${fingerprint}`;
 
 export const catalogSk = (path: string | undefined, secretId: string): string =>
   `PATH#${path ?? "_"}\/SECRET#${secretId}`;
@@ -2030,7 +2158,10 @@ const catalogPathPrefix = (path: string | undefined): string =>
  * (`path === pathPrefix`) is handled by each caller before reaching here,
  * since that case means "this level itself", not a child of it.
  */
-const childSegment = (path: string, pathPrefix: string | undefined): string | undefined => {
+const childSegment = (
+  path: string,
+  pathPrefix: string | undefined,
+): string | undefined => {
   if (pathPrefix === undefined) {
     return path.split("/")[0];
   }
@@ -2066,7 +2197,11 @@ const catalogFilter = (
     expressionAttributeValues[valueName] = value;
     filters.push(`catalogTags.${keyName} = ${valueName}`);
   }
-  return { expressionAttributeNames, expressionAttributeValues, filterExpression: filters.join(" AND ") };
+  return {
+    expressionAttributeNames,
+    expressionAttributeValues,
+    filterExpression: filters.join(" AND "),
+  };
 };
 
 const workflowItem = (
@@ -2077,7 +2212,10 @@ const workflowItem = (
   checksumSha256: string,
   expiresAt: string,
   serialized: object,
-  revisionIndex?: { readonly createdAt: string; readonly controlVersionId: string },
+  revisionIndex?: {
+    readonly createdAt: string;
+    readonly controlVersionId: string;
+  },
 ): Record<string, unknown> => ({
   pk: secretPk(secretId),
   sk,
@@ -2199,15 +2337,21 @@ const notificationItemsFor = (
 ): NotificationOutboxRecord[] => {
   const currentRecipients = accessChanged
     ? accessItems
-      .filter((access) => access.permissions.includes("read") && access.state !== "REVOKED")
-      .map((access) => access.consumerId)
+        .filter(
+          (access) =>
+            access.permissions.includes("read") && access.state !== "REVOKED",
+        )
+        .map((access) => access.consumerId)
     : control.acl
-      .filter((grant) => grant.permissions.includes("read"))
-      .map((grant) => grant.consumerId);
+        .filter((grant) => grant.permissions.includes("read"))
+        .map((grant) => grant.consumerId);
   const revokedRecipients = accessChanged
     ? accessItems
-      .filter((access) => !access.permissions.includes("read") || access.state === "REVOKED")
-      .map((access) => access.consumerId)
+        .filter(
+          (access) =>
+            !access.permissions.includes("read") || access.state === "REVOKED",
+        )
+        .map((access) => access.consumerId)
     : [];
   return [
     notificationOutboxRecord(control, "secret.changed", currentRecipients),

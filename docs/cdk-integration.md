@@ -208,12 +208,11 @@ It contains no `iot:Publish`, wildcard topic, Shadow, Jobs, or AWS credential
 permission. The mTLS leaf is the same locally generated keypair used for
 Hemlig's `apiFqdn`; there is no second KMS key or second private key.
 
-`existingCursorHmacSecretArn` is normally omitted: Hemlig creates a retained
-`hml-<environment>/cursor-hmac` secret. Supply it only to adopt that exact
-secret after a failed first CloudFormation creation where an organization SCP
-retains the generated key and forbids deleting it. The imported secret remains
-outside the replacement stack's lifecycle; do not point it at a secret from a
-different Hemlig deployment.
+Pagination does not create or consume a Secrets Manager secret. Hemlig stores
+each opaque 256-bit pagination token and its continuation state in the existing
+control table, bound to its caller scope and expiring through DynamoDB TTL after
+15 minutes. The audit-query Lambda is limited to `GetItem` and `PutItem` for
+`CURSOR#*` table keys; its existing audit-bucket access remains separate.
 
 `existingApplicationKeyArn` follows the same narrowly scoped recovery rule for
 the one Hemlig application CMK. Hemlig imports that exact key and creates the

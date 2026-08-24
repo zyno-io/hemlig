@@ -23,7 +23,6 @@ const config: AppConfig = {
   iotEndpoint: "iot.example.test",
   iotNotificationPolicyName: "test-agent-notifications",
   iotNotificationTopicPrefix: "hemlig/test/consumers",
-  cursorHmacKey: Buffer.alloc(32, 1),
   adminJwtIssuer: "https://issuer.example.test",
   adminJwtAudience: "hemlig",
   adminActorSubjectClaim: "sub",
