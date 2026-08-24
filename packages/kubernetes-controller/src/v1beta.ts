@@ -252,10 +252,10 @@ export class HemligV1BetaController {
         environment: agentConfig.environment,
         grantId: agentConfig.grant.grantId,
         conditions: [readyCondition("IdentityReady", "Bootstrap identity is active and scoped by Hemlig.")],
-      });
+      }, resource.status);
       return { resource, provider, client, config: agentConfig, ...identity };
     } catch (error) {
-      await this.setFailure(namespace, consumerPlural, name, resource.metadata.generation, error);
+      await this.setFailure(namespace, consumerPlural, name, resource.metadata.generation, resource.status, error);
       return undefined;
     }
   }
@@ -381,7 +381,7 @@ export class HemligV1BetaController {
     const namespace = required(resource.metadata.namespace, "import namespace");
     const name = required(resource.metadata.name, "import name");
     if (consumer === undefined) {
-      await this.setFailure(namespace, importPlural, name, resource.metadata.generation,
+      await this.setFailure(namespace, importPlural, name, resource.metadata.generation, resource.status,
         new ReconcileError("ConsumerNotReady", "The referenced HemligConsumer is not ready."));
       return;
     }
@@ -418,17 +418,17 @@ export class HemligV1BetaController {
         controlVersionId: remote.controlVersionId,
         payloadVersionId: remote.payloadVersionId,
         conditions: [readyCondition("TargetReady", "Secret materialized from Hemlig.")],
-      });
+      }, resource.status);
     } catch (error) {
       if (error instanceof HemligError && (error.status === 403 || error.status === 404)) {
         await this.removeOwnedImport(resource);
         await this.setStatus(namespace, importPlural, name, {
           observedGeneration: resource.metadata.generation,
           conditions: [falseCondition("AccessRevoked", "Hemlig no longer grants this import.")],
-        });
+        }, resource.status);
         return;
       }
-      await this.setFailure(namespace, importPlural, name, resource.metadata.generation, error);
+      await this.setFailure(namespace, importPlural, name, resource.metadata.generation, resource.status, error);
     }
   }
 
@@ -439,7 +439,7 @@ export class HemligV1BetaController {
     const namespace = required(resource.metadata.namespace, "export namespace");
     const name = required(resource.metadata.name, "export name");
     if (consumer === undefined) {
-      await this.setFailure(namespace, exportPlural, name, resource.metadata.generation,
+      await this.setFailure(namespace, exportPlural, name, resource.metadata.generation, resource.status,
         new ReconcileError("ConsumerNotReady", "The referenced HemligConsumer is not ready."));
       return;
     }
@@ -498,9 +498,9 @@ export class HemligV1BetaController {
         payloadVersionId: written.payloadVersionId,
         sourceChecksum: checksum,
         conditions: [readyCondition("RemoteReady", "Source Secret was written through the scoped agent API.")],
-      });
+      }, resource.status);
     } catch (error) {
-      await this.setFailure(namespace, exportPlural, name, resource.metadata.generation, error);
+      await this.setFailure(namespace, exportPlural, name, resource.metadata.generation, resource.status, error);
     }
   }
 
@@ -614,6 +614,7 @@ export class HemligV1BetaController {
     plural: string,
     name: string,
     generation: number | undefined,
+    currentStatus: ReconciliationStatus | undefined,
     error: unknown,
   ): Promise<void> {
     const reason = error instanceof ReconcileError ? error.reason : "ReconcileFailed";
@@ -625,7 +626,7 @@ export class HemligV1BetaController {
     await this.setStatus(namespace, plural, name, {
       observedGeneration: generation,
       conditions: [falseCondition(reason, message)],
-    });
+    }, currentStatus);
   }
 
   private async setStatus(
@@ -633,7 +634,11 @@ export class HemligV1BetaController {
     plural: string,
     name: string,
     status: ReconciliationStatus,
+    currentStatus: ReconciliationStatus | undefined,
   ): Promise<void> {
+    if (reconciliationStatusEqual(currentStatus, status)) {
+      return;
+    }
     await this.custom.patchNamespacedCustomObjectStatus({
       group,
       version,
@@ -767,6 +772,25 @@ const generateCsr = (): { readonly privateKeyPem: string; readonly csrPem: strin
 
 const metadataEqual = (left: SecretMetadata, right: SecretMetadata): boolean =>
   stableJson(left) === stableJson(right);
+
+const reconciliationStatusEqual = (
+  current: ReconciliationStatus | undefined,
+  desired: ReconciliationStatus,
+): boolean =>
+  current !== undefined &&
+  stableJson(normalizeReconciliationStatus(current)) === stableJson(normalizeReconciliationStatus(desired));
+
+const normalizeReconciliationStatus = (status: ReconciliationStatus): Omit<ReconciliationStatus, "conditions"> & {
+  readonly conditions?: readonly Omit<Condition, "lastTransitionTime">[];
+} => ({
+  ...status,
+  conditions: status.conditions?.map((condition) => ({
+    type: condition.type,
+    status: condition.status,
+    reason: condition.reason,
+    message: condition.message,
+  })),
+});
 
 const stableJson = (value: unknown): string => JSON.stringify(sortValue(value));
 

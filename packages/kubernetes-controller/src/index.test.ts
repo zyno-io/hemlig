@@ -43,6 +43,16 @@ test("recognizes only the exact import owner", () => {
 
 test("writes reconciliation status as JSON Patch", async () => {
   const statusPatches: unknown[] = [];
+  const consumer = {
+    apiVersion: "hemlig.io/v1beta1" as const,
+    kind: "HemligConsumer" as const,
+    metadata: { generation: 1, name: "sentinel", namespace: "hemlig-sentinel" },
+    spec: {
+      bootstrapTokenRef: { key: "token", name: "bootstrap" },
+      identity: { secretName: "identity" },
+      providerRef: "missing",
+    },
+  };
   const custom = {
     async listClusterCustomObject(): Promise<unknown> {
       return { items: [] };
@@ -50,21 +60,16 @@ test("writes reconciliation status as JSON Patch", async () => {
     async listCustomObjectForAllNamespaces(input: { readonly plural: string }): Promise<unknown> {
       return {
         items: input.plural === "hemligconsumers"
-          ? [{
-              apiVersion: "hemlig.io/v1beta1",
-              kind: "HemligConsumer",
-              metadata: { generation: 1, name: "sentinel", namespace: "hemlig-sentinel" },
-              spec: {
-                bootstrapTokenRef: { key: "token", name: "bootstrap" },
-                identity: { secretName: "identity" },
-                providerRef: "missing",
-              },
-            }]
+          ? [consumer]
           : [],
       };
     },
     async patchNamespacedCustomObjectStatus(input: unknown): Promise<unknown> {
       statusPatches.push(input);
+      const patch = input as {
+        readonly body: readonly [{ readonly value: Record<string, unknown> }];
+      };
+      Object.assign(consumer, { status: patch.body[0].value });
       return {};
     },
   };
@@ -74,6 +79,7 @@ test("writes reconciliation status as JSON Patch", async () => {
     { intervalMilliseconds: 60_000, sourceDebounceMilliseconds: 250 },
   );
 
+  await controller.reconcileAll();
   await controller.reconcileAll();
 
   assert.equal(statusPatches.length, 1);
