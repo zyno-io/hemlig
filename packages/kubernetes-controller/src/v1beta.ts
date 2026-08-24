@@ -27,6 +27,7 @@ const importPlural = "hemligsecretimports";
 const exportPlural = "hemligsecretexports";
 const controllerLabel = "hemlig.io/managed-by";
 const consumerOwnerAnnotation = "hemlig.io/consumer-owner";
+const identityCsrDataKey = "hemlig.io.csr";
 
 export interface ObjectMeta {
   readonly name?: string;
@@ -284,7 +285,7 @@ export class HemligV1BetaController {
       ? await this.createPendingIdentity(resource, provider, owner)
       : identity;
     const privateKey = requiredData(pending, "tls.key");
-    const csr = requiredData(pending, "hemlig.io/csr");
+    const csr = requiredData(pending, identityCsrDataKey);
     const token = await this.bootstrapToken(resource, namespace);
     const bootstrap = new HemligClient(
       new URL(provider.spec.bootstrapUrl),
@@ -342,7 +343,7 @@ export class HemligV1BetaController {
       type: "Opaque",
       data: {
         "tls.key": Buffer.from(generated.privateKeyPem, "utf8").toString("base64"),
-        "hemlig.io/csr": Buffer.from(generated.csrPem, "utf8").toString("base64"),
+        [identityCsrDataKey]: Buffer.from(generated.csrPem, "utf8").toString("base64"),
       },
     };
     try {
