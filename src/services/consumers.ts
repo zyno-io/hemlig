@@ -454,8 +454,8 @@ export class ConsumerService {
       }),
     );
     if (
-      current.MutualTlsAuthentication?.TruststoreUri !== uri ||
-      current.MutualTlsAuthentication.TruststoreVersion !== truststore.versionId
+      !truststoreMatches(current, uri, truststore.versionId) &&
+      !truststoreUpdateInProgress(current)
     ) {
       await this.apiGateway.send(
         new UpdateDomainNameCommand({
@@ -598,6 +598,15 @@ const truststoreMatches = (
     authentication?.TruststoreVersion === versionId
   );
 };
+
+const truststoreUpdateInProgress = (domain: {
+  readonly DomainNameConfigurations?: readonly {
+    readonly DomainNameStatus?: string;
+  }[];
+}): boolean =>
+  (domain.DomainNameConfigurations ?? []).some(
+    (configuration) => configuration.DomainNameStatus === "UPDATING",
+  );
 
 const delay = async (milliseconds: number): Promise<void> =>
   new Promise((resolve) => {

@@ -93,6 +93,57 @@ describe("consumer certificate lifecycle idempotency", () => {
     );
   });
 
+  it("does not restart an API Gateway truststore update already in progress", async () => {
+    jest.useFakeTimers();
+    try {
+      const repository = {
+        getTruststoreState: jest.fn(async () => ({
+          currentTruststoreKey: "truststores/bundles/current.pem",
+          currentTruststoreVersionId: "version-current",
+        })),
+      } as unknown as DynamoRepository;
+      const apiGateway = {
+        send: jest.fn(async (command: unknown) => {
+          if (command instanceof GetDomainNameCommand) {
+            return {
+              DomainNameConfigurations: [{ DomainNameStatus: "UPDATING" }],
+            };
+          }
+          throw new Error(
+            "UpdateDomainName must not be called while updating.",
+          );
+        }),
+      } as unknown as ApiGatewayV2Client;
+      const service = new ConsumerService(
+        repository,
+        {} as ObjectStore,
+        apiGateway,
+        {} as IssuerService,
+        {
+          deliveryApiCustomDomainName: "api.example.test",
+          truststoreBucketName: "truststores",
+        } as AppConfig,
+        {} as EnvironmentService,
+      );
+
+      const reconciliation = service.reconcileTruststore();
+      const rejection = expect(reconciliation).rejects.toMatchObject({
+        code: "service_unavailable",
+      });
+      await jest.runAllTimersAsync();
+      await rejection;
+
+      expect(apiGateway.send).toHaveBeenCalledTimes(5);
+      expect(
+        (apiGateway.send as jest.Mock).mock.calls.every(
+          ([command]) => command instanceof GetDomainNameCommand,
+        ),
+      ).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("returns the persisted winning leaf when concurrent CSR rotations race", async () => {
     const consumer: ConsumerRecord = {
       pk: "CONSUMER#prod-east",
