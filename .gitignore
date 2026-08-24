@@ -6,6 +6,7 @@ coverage/
 .env
 .ministack/
 .yarn/install-state.gz
+*.tsbuildinfo
 .playwright-mcp/
 docs/.mdxserve/
 hemlig-kubernetes-controller-plan.png
