@@ -63,6 +63,19 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
+/* Native date controls otherwise keep a dark calendar icon in Chrome/Safari
+ * when the console is rendered in its dark theme. */
+@media (prefers-color-scheme: dark) {
+  .date-input {
+    color-scheme: dark;
+  }
+
+  .date-input::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+    opacity: 0.85;
+  }
+}
+
 code,
 pre,
 .mono {

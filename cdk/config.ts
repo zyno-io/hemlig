@@ -25,7 +25,7 @@ export interface DeploymentConfig {
   /** OAuth client id the console SPA authenticates as; required when consoleFqdn is configured. */
   readonly oidcClientId?: string;
   readonly existingHostedZoneId?: string;
-  /** Existing Hemlig application CMK to adopt after a retained failed creation. */
+  /** Existing Hemlig application CMK to adopt instead of creating a new key. */
   readonly existingApplicationKeyArn?: string;
   /**
    * CDK bootstrap qualifier to reuse for the optional sibling console-certificate

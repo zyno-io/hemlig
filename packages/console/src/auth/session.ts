@@ -4,6 +4,8 @@ import type { TokenSource } from "../api/client";
 
 export interface Session {
   readonly subject: string;
+  /** The OIDC email claim, when the provider chooses to issue one. */
+  readonly email?: string;
   readonly displayName?: string;
 }
 
@@ -95,10 +97,17 @@ class OidcDriver implements AuthDriver {
     this.token = user.access_token;
     this.expiresAt = (user.expires_at ?? 0) * 1000;
     const claims = user.profile as Record<string, unknown>;
+    const email = typeof claims.email === "string" ? claims.email : undefined;
     return {
       subject: user.profile.sub,
+      ...(email === undefined ? {} : { email }),
       displayName:
-        typeof claims.name === "string" ? claims.name : user.profile.preferred_username,
+        email ??
+        (typeof user.profile.preferred_username === "string"
+          ? user.profile.preferred_username
+          : typeof claims.name === "string"
+            ? claims.name
+            : undefined),
       token: this.token,
     };
   }

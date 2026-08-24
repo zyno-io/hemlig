@@ -270,8 +270,8 @@ except the buckets, which you will not be able to empty.
 
 ## Teardown
 
-Stateful resources use `RemovalPolicy.RETAIN` and the stack attaches no
-auto-delete custom resource, so `cdk destroy` leaves the buckets, table, and KMS
-key behind by design. The Object Lock buckets cannot be emptied until their
-retention expires. Budget for that before you start, rather than discovering it
+Resources use `RemovalPolicy.DESTROY`; the non-locked truststore and console
+buckets are emptied automatically during `cdk destroy`. The Object Lock buckets
+cannot be emptied until their retention expires, so their deletion can still
+block teardown. Budget for that before you start, rather than discovering it
 afterwards.

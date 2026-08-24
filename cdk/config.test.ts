@@ -126,7 +126,7 @@ describe("deploymentConfigFromContext", () => {
     expect(config.bootstrapQualifier).toBe("hmlsec01");
   });
 
-  it("accepts an existing application key ARN for a retained-resource recovery", () => {
+  it("accepts an existing application key ARN for explicit key adoption", () => {
     const config = deploymentConfigFromContext(
       context({
         adminFqdn: "admin.example.com",

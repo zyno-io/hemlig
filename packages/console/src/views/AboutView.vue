@@ -1,7 +1,15 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { useAppStore } from "../stores/app";
 
 const store = useAppStore();
+const signedInAs = computed(
+  () =>
+    store.session?.email ??
+    store.session?.displayName ??
+    store.session?.subject ??
+    "—",
+);
 
 const excluded = [
   [
@@ -27,7 +35,11 @@ const excluded = [
         <dt class="text-ink-muted">Authentication</dt>
         <dd class="mono">{{ store.config?.auth.mode }}</dd>
         <dt class="text-ink-muted">Signed in as</dt>
-        <dd class="mono">{{ store.session?.subject ?? "—" }}</dd>
+        <dd class="mono break-all">{{ signedInAs }}</dd>
+        <template v-if="store.session?.email !== undefined">
+          <dt class="text-ink-muted">OIDC subject</dt>
+          <dd class="mono break-all">{{ store.session.subject }}</dd>
+        </template>
       </dl>
     </section>
 

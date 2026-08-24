@@ -126,7 +126,8 @@ export class HemligStack extends Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
-      removalPolicy: RemovalPolicy.RETAIN,
+      autoDeleteObjects: true,
+      removalPolicy: RemovalPolicy.DESTROY,
       versioned: true,
     });
     const table = new dynamodb.Table(this, "ControlTable", {
@@ -136,7 +137,7 @@ export class HemligStack extends Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.AWS_MANAGED,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
-      removalPolicy: RemovalPolicy.RETAIN,
+      removalPolicy: RemovalPolicy.DESTROY,
       timeToLiveAttribute: "ttl",
       stream: dynamodb.StreamViewType.NEW_IMAGE,
     });
@@ -208,7 +209,7 @@ export class HemligStack extends Stack {
         ? new kms.Key(this, "ApplicationKey", {
             description: `Application envelope key for ${prefix}`,
             enableKeyRotation: true,
-            removalPolicy: RemovalPolicy.RETAIN,
+            removalPolicy: RemovalPolicy.DESTROY,
           })
         : kms.Key.fromKeyArn(
             this,
@@ -518,7 +519,7 @@ export class HemligStack extends Stack {
         queueName: `${prefix}-notification-dlq`,
         encryption: sqs.QueueEncryption.SQS_MANAGED,
         retentionPeriod: Duration.days(14),
-        removalPolicy: RemovalPolicy.RETAIN,
+        removalPolicy: RemovalPolicy.DESTROY,
       },
     );
     new cloudwatch.Alarm(this, "NotificationDeadLetterAlarm", {
@@ -807,7 +808,8 @@ export class HemligStack extends Stack {
       enforceSSL: true,
       versioned: true,
       // Static assets, not evidence: unlike the revision/audit buckets, no Object Lock.
-      removalPolicy: RemovalPolicy.RETAIN,
+      autoDeleteObjects: true,
+      removalPolicy: RemovalPolicy.DESTROY,
       // Versioned with prune: false, so a superseded asset version is never deleted
       // by the deployment itself; without this it accumulates forever.
       lifecycleRules: [{ noncurrentVersionExpiration: Duration.days(30) }],
@@ -1139,7 +1141,9 @@ const immutableBucket = (
     enforceSSL: true,
     objectLockDefaultRetention: s3.ObjectLockRetention.compliance(retention),
     objectLockEnabled: true,
-    removalPolicy: RemovalPolicy.RETAIN,
+    // Object Lock still prevents deletion until every compliance retention
+    // period has elapsed; that service guardrail cannot be bypassed by CDK.
+    removalPolicy: RemovalPolicy.DESTROY,
     versioned: true,
   });
 
@@ -1241,7 +1245,7 @@ const accessLogGroup = (
   new logs.LogGroup(scope, id, {
     logGroupName,
     retention: logs.RetentionDays.ONE_YEAR,
-    removalPolicy: RemovalPolicy.RETAIN,
+    removalPolicy: RemovalPolicy.DESTROY,
   });
 
 const accessLogSettings = (

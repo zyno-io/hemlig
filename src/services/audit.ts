@@ -1,6 +1,7 @@
 import type { AppConfig } from "../aws/config";
 import type { Actor } from "../domain/types";
 import { badRequest } from "../domain/errors";
+import { assertIdentifier } from "../domain/validation";
 import { isoNow, newId, stableJson } from "../util/encoding";
 import type { ObjectStore } from "../repositories/object-store";
 
@@ -64,6 +65,7 @@ export class AuditQueryService {
   public async list(
     date: string,
     continuationToken?: string,
+    secretId?: string,
   ): Promise<AuditPage> {
     const page = await this.objectStore.listKeys(
       this.config.auditBucketName,
@@ -75,11 +77,18 @@ export class AuditQueryService {
       this.objectStore.getJson<AuditEvent>(this.config.auditBucketName, key),
     );
     const events = await Promise.all(reads);
+    const matched =
+      secretId === undefined
+        ? events
+        : events.filter((event) => event.target?.secretId === secretId);
     return {
       date,
       // New records have reverse-chronological key prefixes. Sorting by
       // the evidence timestamp also makes a mixed legacy/new page clear.
-      events: events.sort((left, right) => right.at.localeCompare(left.at)),
+      // A filter is applied only after one bounded S3 page is read. This
+      // preserves the archive's bounded, cursor-driven access pattern rather
+      // than scanning an unbounded day to fill a page of matches.
+      events: matched.sort((left, right) => right.at.localeCompare(left.at)),
       ...(page.nextContinuationToken === undefined
         ? {}
         : { nextContinuationToken: page.nextContinuationToken }),
@@ -103,6 +112,16 @@ export const parseAuditDate = (
     throw badRequest("date must be a real UTC calendar date.");
   }
   return date;
+};
+
+export const parseAuditSecretId = (
+  value: string | undefined,
+): string | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  assertIdentifier(value, "secretId");
+  return value;
 };
 
 const auditObjectKey = (auditPrefix: string, event: AuditEvent): string => {

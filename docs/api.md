@@ -240,17 +240,23 @@ destructive replacement without retaining or exposing payload key names.
 
 ## Administrator routes
 
-### `GET /v1/admin/audit?date=<YYYY-MM-DD>&cursor=<opaque>`
+### `GET /v1/admin/audit?date=<YYYY-MM-DD>&secretId=<id>&cursor=<opaque>`
 
 Every authenticated administrator may browse immutable application evidence for
-one UTC day. `date` defaults to the current UTC day. A page contains at most
-50 records in newest-first order; its opaque cursor is bound to the requesting
-administrator and date, with server-side state that expires after 15 minutes.
-The console exposes this as the **Audit** tab.
+one UTC day. `date` defaults to the current UTC day. An optional `secretId`
+returns only records whose safe target ID exactly matches that secret. A page
+contains at most 50 records in newest-first order; its opaque cursor is bound
+to the requesting administrator, date, and filter, with server-side state that
+expires after 15 minutes. The console exposes this as the **Audit** tab and
+links each secret detail page to its filtered view.
 
 Records contain only timestamp, correlation ID, actor, operation, outcome,
 safe target IDs, source IP when available, and a safe reason code. They never
 contain plaintext payloads, request bodies, tokens, or certificate material.
+The immutable actor ID is the configured OIDC subject claim (`sub` by default).
+When the access token contains an `email` claim, new records also carry it as a
+display-only point-in-time label; it never takes part in authorization or
+idempotency.
 Reading the archive itself creates ordinary audit events, so audit-browser
 activity is visible in later pages.
 

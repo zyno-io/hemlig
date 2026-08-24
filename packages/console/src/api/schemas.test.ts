@@ -130,7 +130,11 @@ describe("auditPage", () => {
           at: "2026-08-23T10:00:00.000Z",
           correlationId: "corr-1",
           outcome: "succeeded",
-          actor: { type: "human", id: "admin-1" },
+          actor: {
+            type: "human",
+            id: "admin-1",
+            email: "admin@example.test",
+          },
           operation: "adminget:/v1/admin/secrets",
           target: { secretId: "payments-api" },
         },
@@ -140,6 +144,7 @@ describe("auditPage", () => {
     });
 
     expect(page.events[0]).toMatchObject({
+      actor: { email: "admin@example.test" },
       operation: "adminget:/v1/admin/secrets",
       target: { secretId: "payments-api" },
     });

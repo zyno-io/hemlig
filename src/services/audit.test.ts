@@ -1,6 +1,11 @@
 import type { AppConfig } from "../aws/config";
 import type { ObjectStore } from "../repositories/object-store";
-import { AuditQueryService, AuditWriter, parseAuditDate } from "./audit";
+import {
+  AuditQueryService,
+  AuditWriter,
+  parseAuditDate,
+  parseAuditSecretId,
+} from "./audit";
 
 const config: AppConfig = {
   region: "us-east-1",
@@ -90,10 +95,52 @@ describe("audit archive", () => {
     expect(page.nextContinuationToken).toBe("next-token");
   });
 
+  it("filters one bounded archive page by its exact secret target", async () => {
+    const objects = {
+      listKeys: jest.fn().mockResolvedValue({
+        keys: ["audit/2026/08/23/first.json", "audit/2026/08/23/second.json"],
+        nextContinuationToken: "next-token",
+      }),
+      getJson: jest
+        .fn()
+        .mockResolvedValueOnce({
+          eventId: "other-secret",
+          at: "2026-08-23T10:00:00.000Z",
+          correlationId: "corr-other",
+          outcome: "succeeded",
+          actor: { type: "human", id: "admin-1" },
+          operation: "adminget:/v1/admin/secrets",
+          target: { secretId: "other-secret" },
+        })
+        .mockResolvedValueOnce({
+          eventId: "payments-api",
+          at: "2026-08-23T09:00:00.000Z",
+          correlationId: "corr-payments",
+          outcome: "succeeded",
+          actor: { type: "human", id: "admin-1" },
+          operation: "adminget:/v1/admin/secrets",
+          target: { secretId: "payments-api" },
+        }),
+    };
+    const query = new AuditQueryService(
+      objects as unknown as ObjectStore,
+      config,
+    );
+
+    const page = await query.list("2026-08-23", undefined, "payments-api");
+
+    expect(page.events.map((event) => event.eventId)).toEqual(["payments-api"]);
+    expect(page.nextContinuationToken).toBe("next-token");
+    expect(objects.getJson).toHaveBeenCalledTimes(2);
+  });
+
   it("accepts only real UTC calendar dates", () => {
     expect(parseAuditDate("2026-08-23")).toBe("2026-08-23");
     expect(() => parseAuditDate("2026-02-30")).toThrow(
       "real UTC calendar date",
     );
+    expect(parseAuditSecretId("payments-api")).toBe("payments-api");
+    expect(parseAuditSecretId(undefined)).toBeUndefined();
+    expect(() => parseAuditSecretId("Payments_API")).toThrow("secretId");
   });
 });

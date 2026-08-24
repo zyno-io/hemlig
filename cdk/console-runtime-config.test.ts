@@ -28,6 +28,7 @@ describe("consoleRuntimeConfig", () => {
       expect(parsed.auth.scopes).toEqual([
         "openid",
         "profile",
+        "email",
         "api://hemlig-api/hemlig.admin",
       ]);
     }

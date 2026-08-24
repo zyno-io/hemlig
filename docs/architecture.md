@@ -381,8 +381,10 @@ The installer must delegate a created zone's output name servers at the parent
 zone or registrar. With an existing zone ID, ACM validation and API aliases are
 created directly in that zone.
 
-Stateful resources use `RemovalPolicy.RETAIN`; the stack never uses an S3
-auto-delete custom resource. Roles are separated: admin can generate payload
+Resources use `RemovalPolicy.DESTROY`; the non-locked truststore and console
+buckets use automatic object deletion during stack teardown. Object Lock still
+prevents removal of evidence before its compliance retention expires. Roles are
+separated: admin can generate payload
 data keys and decrypt issuer envelopes and current payloads only with their
 respective required contexts; consumer can decrypt referenced payloads;
 application roles receive only `PutObject` access to the audit prefix. The

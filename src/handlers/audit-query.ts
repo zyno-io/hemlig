@@ -6,8 +6,8 @@ import type {
 import { humanActorFromEvent } from "../auth/actors";
 import { badRequest } from "../domain/errors";
 import { json } from "../http/responses";
-import { parseAuditDate } from "../services/audit";
-import { isoNow } from "../util/encoding";
+import { parseAuditDate, parseAuditSecretId } from "../services/audit";
+import { isoNow, sha256Hex, stableJson } from "../util/encoding";
 import { withErrorResponse } from "./shared";
 
 /**
@@ -46,7 +46,9 @@ export const handler = async (
       throw badRequest("The requested audit route is not supported.");
     }
     const date = parseAuditDate(event.queryStringParameters?.date);
-    const scope = `admin:audit:${actor.id}:${date}`;
+    const secretId = parseAuditSecretId(event.queryStringParameters?.secretId);
+    const filterScope = sha256Hex(stableJson({ date, secretId }));
+    const scope = `admin:audit:${actor.id}:${filterScope}`;
     const rawCursor = event.queryStringParameters?.cursor;
     const decoded =
       rawCursor === undefined
@@ -55,6 +57,7 @@ export const handler = async (
     const page = await app.auditQueries.list(
       date,
       decoded?.lastEvaluatedKey?.continuationToken,
+      secretId,
     );
     const nextCursor =
       page.nextContinuationToken === undefined
@@ -69,7 +72,10 @@ export const handler = async (
       outcome: "succeeded",
       actor,
       operation,
-      target: { date },
+      target: {
+        date,
+        ...(secretId === undefined ? {} : { secretId }),
+      },
       sourceIp,
     });
     return json(200, {

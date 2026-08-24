@@ -125,13 +125,18 @@ describe("HemligApi transport", () => {
     );
 
     await expect(
-      api.listAudit({ date: "2026-08-23", cursor: "signed-prior" }),
+      api.listAudit({
+        date: "2026-08-23",
+        secretId: "payments-api",
+        cursor: "signed-prior",
+      }),
     ).resolves.toMatchObject({
       nextCursor: "signed-next",
     });
     const request = fetchMock.mock.calls[0]?.[0];
     expect(request?.pathname).toBe("/v1/admin/audit");
     expect(request?.searchParams.get("date")).toBe("2026-08-23");
+    expect(request?.searchParams.get("secretId")).toBe("payments-api");
     expect(request?.searchParams.get("cursor")).toBe("signed-prior");
   });
 

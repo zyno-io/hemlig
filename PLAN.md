@@ -398,8 +398,9 @@ Block Public Access, and HTTPS-only bucket policies. It creates one application
 CMK shared by payload and issuer envelopes,
 HTTP API v2 routes with an external-OIDC JWT authorizer, custom-domain DNS/ACM,
 and scheduled recovery and retention invocations. Both HTTP APIs disable their
-default execute-api endpoint. Stateful resources use `RemovalPolicy.RETAIN`,
-and no S3 auto-delete custom resource is permitted.
+default execute-api endpoint. Resources use `RemovalPolicy.DESTROY`; the
+non-locked truststore and console buckets are emptied automatically during
+stack deletion. Object Lock still controls deletion of evidence objects.
 
 The runtime role needs permission to update the consumer-domain truststore;
 that is application lifecycle behavior, not a deployment pipeline privilege.

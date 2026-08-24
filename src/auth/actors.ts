@@ -51,9 +51,21 @@ export const humanActorFromEvent = (event: APIGatewayProxyEventV2WithJWTAuthoriz
     if (config.adminExpectedTenantId !== undefined && tenant !== config.adminExpectedTenantId) {
         throw forbidden('The administrator JWT tenant is not permitted.');
     }
+    // This is display-only evidence. Authorization, idempotency, and durable
+    // ownership continue to use the configured stable subject claim above.
+    const email = claim(claims, 'email');
     return tenant === undefined
-        ? { type: 'human', id: subject }
-        : { type: 'human', id: subject, tenantId: tenant };
+        ? {
+            type: 'human',
+            id: subject,
+            ...(email === undefined ? {} : { email }),
+        }
+        : {
+            type: 'human',
+            id: subject,
+            tenantId: tenant,
+            ...(email === undefined ? {} : { email }),
+        };
 };
 
 export const consumerActorFromEvent = async (

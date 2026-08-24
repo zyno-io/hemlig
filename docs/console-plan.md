@@ -941,7 +941,8 @@ max-age.
 console is enabled.
 
 - **S3 bucket.** Private, `BLOCK_ALL`, S3-managed encryption, versioned,
-  `enforceSSL`, `RETAIN`. No Object Lock — static assets are not evidence.
+  `enforceSSL`, `DESTROY`, with automatic object deletion. No Object Lock —
+  static assets are not evidence.
 - **CloudFront.** Origin Access Control via
   `S3BucketOrigin.withOriginAccessControl`, HTTP/2 and HTTP/3, minimum TLS
   1.2_2021, `defaultRootObject: index.html`, 403/404 rewritten to

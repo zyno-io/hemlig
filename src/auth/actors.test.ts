@@ -57,6 +57,24 @@ describe("humanActorFromEvent", () => {
     expect(actor).toEqual({ type: "human", id: "external-subject" });
   });
 
+  it("records an optional email only as an administrator display label", () => {
+    const actor = humanActorFromEvent(
+      jwtEvent({
+        iss: "https://issuer.example.test",
+        aud: "hemlig-api",
+        sub: "external-subject",
+        email: "admin@example.test",
+      }),
+      config,
+    );
+
+    expect(actor).toEqual({
+      type: "human",
+      id: "external-subject",
+      email: "admin@example.test",
+    });
+  });
+
   it("uses aud in preference to client_id when both claims are present", () => {
     expect(() =>
       humanActorFromEvent(

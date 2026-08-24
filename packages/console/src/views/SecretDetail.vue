@@ -73,6 +73,9 @@ const pathTo = computed(() => {
         <RouterLink class="rounded border border-line px-3 py-1" :to="{ name: 'secret-revisions', params: { env, secretId } }">
           History
         </RouterLink>
+        <RouterLink class="rounded border border-line px-3 py-1" :to="{ name: 'audit', query: { secretId } }">
+          Audit log
+        </RouterLink>
         <RouterLink class="rounded border border-line px-3 py-1" :to="{ name: 'secret-metadata', params: { env, secretId } }">
           Edit metadata &amp; ACL
         </RouterLink>

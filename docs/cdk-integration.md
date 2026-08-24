@@ -69,7 +69,10 @@ To allow a separately hosted browser console, add `consoleFqdn`, the exact
 single-token `oidcAdminScope` carried in the access token (for example
 `hemlig.admin`), and `oidcConsoleAccessScope`, the resource-qualified scope the
 browser requests (for example `api://<Entra API application ID>/hemlig.admin`).
-They must be used together. `oidcAdminRole` is optional but recommended for identity providers
+They must be used together. The console also requests the standard OIDC
+`email` scope for display only; providers may omit the claim, and Hemlig still
+uses the configured immutable subject claim for authorization and records of
+ownership. `oidcAdminRole` is optional but recommended for identity providers
 that issue application roles: Hemlig rechecks that token role in Lambda after
 API Gateway has validated issuer, audience, and scope. The stack then permits only `https://<consoleFqdn>` through the admin
 API CORS configuration, exposes `ETag`, creates an unauthenticated `OPTIONS
@@ -163,9 +166,11 @@ servers from the parent zone is the only DNS action outside the stack. When
 `existingHostedZoneId` is supplied, it creates ACM validation and API alias
 records in that zone.
 
-The stack retains all stateful resources and never attaches an S3 auto-delete
-custom resource. The revision bucket uses a 90-day Object Lock Compliance
-default, and the audit bucket uses seven years. It creates exactly one
+The stack uses `RemovalPolicy.DESTROY`. Its non-locked truststore and console
+buckets are emptied automatically during teardown. The revision bucket uses a
+90-day Object Lock Compliance default, and the audit bucket uses seven years;
+those compliance locks still prevent deletion before their retention expires.
+It creates exactly one
 customer-managed **application CMK** (`alias/hml-<environment>-application`).
 Payload envelope generation, payload decryption, and the online issuer-root
 envelope all use that same key. The consumer Lambda has `kms:Decrypt` only when
@@ -214,8 +219,8 @@ control table, bound to its caller scope and expiring through DynamoDB TTL after
 15 minutes. The audit-query Lambda is limited to `GetItem` and `PutItem` for
 `CURSOR#*` table keys; its existing audit-bucket access remains separate.
 
-`existingApplicationKeyArn` follows the same narrowly scoped recovery rule for
-the one Hemlig application CMK. Hemlig imports that exact key and creates the
+`existingApplicationKeyArn` supports explicitly adopting the one Hemlig
+application CMK. Hemlig imports that exact key and creates the
 normal `alias/hml-<environment>-application` alias; it never creates a second
 payload or issuer key.
 

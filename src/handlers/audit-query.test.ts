@@ -5,6 +5,7 @@ import type {
 import type { Application } from "../app";
 import type { AppConfig } from "../aws/config";
 import { errorResponse } from "../http/responses";
+import { sha256Hex, stableJson } from "../util/encoding";
 
 jest.mock("./shared", () => ({ withErrorResponse: jest.fn() }));
 
@@ -118,10 +119,12 @@ describe("GET /v1/admin/audit", () => {
   it("reads a signed, date-scoped archive page and records the read", async () => {
     const response = await handler(buildEvent({ date: "2026-08-23" }));
 
-    expect(list).toHaveBeenCalledWith("2026-08-23", undefined);
+    expect(list).toHaveBeenCalledWith("2026-08-23", undefined, undefined);
     expect(encode).toHaveBeenCalledWith(
       expect.objectContaining({
-        scope: "admin:audit:admin-1:2026-08-23",
+        scope: `admin:audit:admin-1:${sha256Hex(
+          stableJson({ date: "2026-08-23", secretId: undefined }),
+        )}`,
         lastEvaluatedKey: { continuationToken: "s3-next" },
       }),
     );
@@ -147,6 +150,37 @@ describe("GET /v1/admin/audit", () => {
 
   it("rejects an invalid UTC date before reading the archive", async () => {
     const response = await handler(buildEvent({ date: "2026-02-30" }));
+
+    expect(response.statusCode).toBe(400);
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("filters a signed archive page by one secret ID", async () => {
+    const response = await handler(
+      buildEvent({ date: "2026-08-23", secretId: "payments-api" }),
+    );
+
+    expect(list).toHaveBeenCalledWith("2026-08-23", undefined, "payments-api");
+    expect(encode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: `admin:audit:admin-1:${sha256Hex(
+          stableJson({ date: "2026-08-23", secretId: "payments-api" }),
+        )}`,
+      }),
+    );
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "succeeded",
+        target: { date: "2026-08-23", secretId: "payments-api" },
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("rejects an invalid secret filter before reading the archive", async () => {
+    const response = await handler(
+      buildEvent({ date: "2026-08-23", secretId: "Payments_API" }),
+    );
 
     expect(response.statusCode).toBe(400);
     expect(list).not.toHaveBeenCalled();

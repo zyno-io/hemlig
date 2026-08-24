@@ -44,6 +44,11 @@ export type EnrollmentOperationType = 'consumer.enroll';
 export interface Actor {
     readonly type: 'human' | 'consumer' | 'system';
     readonly id: string;
+    /**
+     * Point-in-time display email from an administrator's verified OIDC token.
+     * The immutable `id` remains the configured, stable subject claim.
+     */
+    readonly email?: string;
     readonly tenantId?: string;
     readonly consumerId?: string;
     readonly environment?: EnvironmentName;

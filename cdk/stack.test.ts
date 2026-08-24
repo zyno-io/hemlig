@@ -64,6 +64,16 @@ describe("HemligStack", () => {
     }
     template.resourceCountIs("AWS::S3::Bucket", 4);
     template.resourceCountIs("AWS::KMS::Key", 1);
+    const resources = template.toJSON().Resources as Record<
+      string,
+      { readonly DeletionPolicy?: string; readonly UpdateReplacePolicy?: string }
+    >;
+    const retainedResources = Object.entries(resources).filter(
+      ([, resource]) =>
+        resource.DeletionPolicy === "Retain" ||
+        resource.UpdateReplacePolicy === "Retain",
+    );
+    expect(retainedResources).toEqual([]);
     template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
       DisableExecuteApiEndpoint: true,
     });

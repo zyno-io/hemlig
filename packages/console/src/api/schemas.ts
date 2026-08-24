@@ -7,6 +7,7 @@ import { z } from "zod";
 export const actor = z.object({
   type: z.enum(["human", "consumer", "system"]),
   id: z.string(),
+  email: z.string().max(320).optional(),
   tenantId: z.string().optional(),
   consumerId: z.string().optional(),
   environment: z.string().optional(),

@@ -277,10 +277,12 @@ export class HemligApi {
 
   /**
    * Reads immutable application evidence through the dedicated archive-query
-   * route. A cursor is bound to both this administrator and one UTC date.
+   * route. A cursor is bound to this administrator, one UTC date, and any
+   * exact secret filter.
    */
   public listAudit(input: {
     date: string;
+    secretId?: string;
     cursor?: string;
   }): Promise<s.AuditPage> {
     return this.request(s.auditPage, "/v1/admin/audit", {

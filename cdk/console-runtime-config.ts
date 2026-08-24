@@ -17,6 +17,8 @@ export const consoleRuntimeConfig = (input: ConsoleRuntimeConfigInput) => ({
     mode: "oidc" as const,
     authority: input.oidcIssuer,
     clientId: input.oidcClientId,
-    scopes: ["openid", "profile", input.oidcConsoleAccessScope],
+    // `email` is a display-only claim. The API continues to authorize and
+    // persist the configured immutable subject claim, normally `sub`.
+    scopes: ["openid", "profile", "email", input.oidcConsoleAccessScope],
   },
 });
