@@ -613,17 +613,23 @@ export const handler = async (
       const secretMatch = new RegExp(
         `^/v1/admin/secrets/(${secretIdRoutePart})$`,
       ).exec(decodedPath);
-      const revisionMatch = new RegExp(
-        `^/v1/admin/secrets/(${secretIdRoutePart})/revisions$`,
-      ).exec(decodedPath);
-      const payloadMatch = new RegExp(
-        `^/v1/admin/secrets/(${secretIdRoutePart})/payload$`,
-      ).exec(decodedPath);
+      // Do not capture a suffix route with the general secret-ID expression:
+      // its slash segments are otherwise greedy and would make `payload` or
+      // `revisions` part of the secret ID. Extract the fixed terminal suffix
+      // first, then validate the remaining ID independently.
+      const revisionSecretId = secretIdFromSuffixedPath(
+        decodedPath,
+        "/revisions",
+      );
+      const payloadSecretId = secretIdFromSuffixedPath(
+        decodedPath,
+        "/payload",
+      );
       if (
         event.requestContext.http.method === "GET" &&
-        revisionMatch !== null
+        revisionSecretId !== undefined
       ) {
-        const secretId = revisionMatch[1] as string;
+        const secretId = revisionSecretId;
         const environment = requireQueryString(event, "environment");
         const current = await app.secrets.getControlRevision(
           environment,
@@ -664,7 +670,12 @@ export const handler = async (
           generatedAt: isoNow(),
         });
       }
-      if (event.requestContext.http.method === "GET" && secretMatch !== null) {
+      if (
+        event.requestContext.http.method === "GET" &&
+        secretMatch !== null &&
+        payloadSecretId === undefined &&
+        revisionSecretId === undefined
+      ) {
         const environment = requireQueryString(event, "environment");
         const control = await app.secrets.getControlRevision(
           environment,
@@ -684,8 +695,11 @@ export const handler = async (
         });
         return json(200, control, { etag: control.controlVersionId });
       }
-      if (event.requestContext.http.method === "GET" && payloadMatch !== null) {
-        const secretId = payloadMatch[1] as string;
+      if (
+        event.requestContext.http.method === "GET" &&
+        payloadSecretId !== undefined
+      ) {
+        const secretId = payloadSecretId;
         const environment = requireQueryString(event, "environment");
         setAuditContext({
           actor,
@@ -723,7 +737,12 @@ export const handler = async (
           { etag: payload.controlVersionId },
         );
       }
-      if (event.requestContext.http.method === "PUT" && secretMatch !== null) {
+      if (
+        event.requestContext.http.method === "PUT" &&
+        secretMatch !== null &&
+        payloadSecretId === undefined &&
+        revisionSecretId === undefined
+      ) {
         const key = requireIdempotencyKey(event.headers["idempotency-key"]);
         const body = parseObjectBody(event.body);
         const environment = requireQueryString(event, "environment");
@@ -761,11 +780,14 @@ export const handler = async (
           () => json(200, control, { etag: control.controlVersionId }),
         );
       }
-      if (event.requestContext.http.method === "PUT" && payloadMatch !== null) {
+      if (
+        event.requestContext.http.method === "PUT" &&
+        payloadSecretId !== undefined
+      ) {
         const key = requireIdempotencyKey(event.headers["idempotency-key"]);
         const body = parseObjectBody(event.body);
         const environment = requireQueryString(event, "environment");
-        const secretId = payloadMatch[1] as string;
+        const secretId = payloadSecretId;
         setAuditContext({
           actor,
           operation,
@@ -823,6 +845,20 @@ const requiredString = (
 };
 
 const secretIdRoutePart = "[a-z][a-z0-9-]{2,63}(?:/[a-z][a-z0-9-]{2,63})*";
+
+const secretIdFromSuffixedPath = (
+  decodedPath: string,
+  suffix: "/payload" | "/revisions",
+): string | undefined => {
+  const prefix = "/v1/admin/secrets/";
+  if (!decodedPath.startsWith(prefix) || !decodedPath.endsWith(suffix)) {
+    return undefined;
+  }
+  const secretId = decodedPath.slice(prefix.length, -suffix.length);
+  return new RegExp(`^${secretIdRoutePart}$`).test(secretId)
+    ? secretId
+    : undefined;
+};
 
 const decodeRequestPath = (value: string): string => {
   try {

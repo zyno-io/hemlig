@@ -388,4 +388,56 @@ describe("slash-separated admin secret IDs", () => {
       "payments/stripe/api-key",
     );
   });
+
+  it("does not treat the payload route suffix as part of the secret ID", async () => {
+    const readAdminPayload = jest.fn(async (environment, secretId) => ({
+      controlVersionId: "ctl-1",
+      payloadVersionId: "pvl-1",
+      environment,
+      secretId,
+      payload: { value: { encoding: "utf8", value: "test" } },
+    }));
+    const app = {
+      config,
+      audit: {
+        write: jest.fn(async (event: Record<string, unknown>) => ({
+          eventId: "evt-1",
+          at: "2026-08-23T00:00:00.000Z",
+          ...event,
+        })),
+      },
+      secrets: { readAdminPayload },
+    } as unknown as Application;
+    withErrorResponse.mockImplementation(
+      async (
+        event: APIGatewayProxyEventV2,
+        action: (
+          application: Application,
+          correlationId: string,
+          setAuditContext: (context: unknown) => void,
+        ) => Promise<APIGatewayProxyStructuredResultV2>,
+      ) => {
+        try {
+          return await action(app, "corr-1", () => undefined);
+        } catch (error) {
+          return errorResponse(error, "corr-1");
+        }
+      },
+    );
+
+    const response = await handler(
+      buildEvent(
+        "GET",
+        "/v1/admin/secrets/platform%2Fstorage%2Fcephfs%2Ftrusted/payload",
+        {},
+        { environment: "staging" },
+      ),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(readAdminPayload).toHaveBeenCalledWith(
+      "staging",
+      "platform/storage/cephfs/trusted",
+    );
+  });
 });
