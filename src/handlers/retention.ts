@@ -14,8 +14,23 @@ export const handler: Handler = async (): Promise<void> => {
     if (identity === undefined) {
       continue;
     }
-    const { environment, secretId } = identity;
-    const head = await app.repository.getHead(environment, secretId);
+    const head = await app.repository.getHeadBySecretUid(identity.secretUid);
+    const serialized = workflow.serialized as
+      | { readonly environment?: unknown; readonly secretId?: unknown }
+      | undefined;
+    const environment =
+      head?.environment ??
+      (typeof serialized?.environment === "string"
+        ? serialized.environment
+        : undefined);
+    const secretId =
+      head?.secretId ??
+      (typeof serialized?.secretId === "string"
+        ? serialized.secretId
+        : undefined);
+    if (environment === undefined || secretId === undefined) {
+      continue;
+    }
     if (isCurrent(workflow.sk, head)) {
       continue;
     }

@@ -23,8 +23,9 @@ shared client, Kubernetes import/export controller, and Pulumi provider.
 The current implementation provides the payload/control-revision workflow,
 KMS AES-256-GCM envelope codec, conditional immutable S3 writes, DynamoDB
 leases/idempotency records, mTLS fingerprint authorization, OIDC actor
-extraction, secret create/update/payload endpoints, organizational path/tag
-catalog browsing, consumer reads/changes, immutable audit writes, and scheduled
+extraction, secret create/update/payload/archive endpoints, organizational
+path/tag catalog browsing (with an explicit archived view), consumer
+reads/changes, immutable audit writes, and scheduled
 recovery/retention.
 
 It also supports CSR-based consumer enrollment: Hemlig creates one online,
@@ -43,6 +44,7 @@ without an isolated AWS acceptance test for your OIDC and mTLS configuration.
 - [HTTP API reference](docs/api.md)
 - [OpenAPI 3.1 contract](openapi/consumer-secrets.yaml)
 - [CDK deployment guide](docs/cdk-integration.md)
+- [Secret UID upgrade guide](docs/upgrade-secret-uids.md)
 - [Threat model](docs/threat-model.md)
 - [Monorepo and integration packages](docs/monorepo.md)
 - [Management console plan](docs/console-plan.md)

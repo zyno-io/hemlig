@@ -1,19 +1,38 @@
 <script setup lang="ts">
-import { useQuery } from "@tanstack/vue-query";
+import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, onUnmounted, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import ErrorNotice from "../components/ErrorNotice.vue";
 import StateBadge from "../components/StateBadge.vue";
 import type { SecretReadResponse } from "../api/schemas";
 import { useAppStore } from "../stores/app";
 
-const props = defineProps<{ env: string; secretId: string }>();
+const props = defineProps<{
+  env: string;
+  secretId: string;
+  archivedSecretUid?: string;
+}>();
 const store = useAppStore();
 const route = useRoute();
+const router = useRouter();
+const queryClient = useQueryClient();
+const isArchivedView = computed(() => props.archivedSecretUid !== undefined);
 
 const { data, error, isFetching, refetch } = useQuery({
-  queryKey: computed(() => ["secret", props.env, props.secretId]),
-  queryFn: () => store.requireApi().getSecret(props.env, props.secretId),
+  queryKey: computed(() => [
+    "secret",
+    props.env,
+    props.secretId,
+    props.archivedSecretUid,
+  ]),
+  queryFn: () => {
+    if (props.archivedSecretUid !== undefined) {
+      return store
+        .requireApi()
+        .getArchivedSecret(props.env, props.archivedSecretUid);
+    }
+    return store.requireApi().getSecret(props.env, props.secretId);
+  },
 });
 
 /**
@@ -59,6 +78,7 @@ const catalogReturnQuery = computed(() => ({
   ...(queryValue("catalogFilter") === undefined
     ? {}
     : { catalogFilter: queryValue("catalogFilter") }),
+  ...(isArchivedView.value ? { archived: "true" } : {}),
 }));
 
 const catalogBackTo = computed(() => {
@@ -84,20 +104,66 @@ const secretSubpageTo = (
   query: route.query,
 });
 
+const archiving = ref(false);
+const archiveError = ref<unknown>();
+
+const archiveSecret = async (): Promise<void> => {
+  if (data.value === undefined || isArchivedView.value || archiving.value) {
+    return;
+  }
+  if (
+    !window.confirm(
+      `Archive ${data.value.secretId}? It will disappear from active searches and its ID can be reused.`,
+    )
+  ) {
+    return;
+  }
+  archiving.value = true;
+  archiveError.value = undefined;
+  try {
+    await store
+      .requireApi()
+      .archiveSecret(
+        props.env,
+        props.secretId,
+        data.value.controlVersionId,
+        crypto.randomUUID(),
+      );
+    queryClient.removeQueries({ queryKey: ["secrets-tree", props.env] });
+    queryClient.removeQueries({ queryKey: ["secrets-search", props.env] });
+    await router.push(catalogBackTo.value);
+  } catch (requestError) {
+    archiveError.value = requestError;
+  } finally {
+    archiving.value = false;
+  }
+};
+
 const folderPath = (secretId: string): string | undefined => {
   const separator = secretId.lastIndexOf("/");
   return separator === -1 ? undefined : secretId.slice(0, separator);
 };
 
+const displayedSecretId = computed(() =>
+  isArchivedView.value
+    ? (data.value?.secretId ?? props.secretId)
+    : props.secretId,
+);
+
 // A secret's prefix is its folder. It is identity, not editable metadata.
 const pathTo = computed(() => {
-  const path = folderPath(props.secretId);
+  const path = folderPath(displayedSecretId.value);
   return path !== undefined && path.length > 0
     ? {
         name: "secrets-browse",
         params: { env: props.env, path: path.split("/") },
+        query: isArchivedView.value ? { archived: "true" } : {},
       }
-    : { name: "secrets", params: { env: props.env } };
+    : {
+        name: "secrets",
+        params: { env: props.env },
+        query: isArchivedView.value ? { archived: "true" } : {},
+      };
 });
 </script>
 
@@ -111,7 +177,7 @@ const pathTo = computed(() => {
         >
           ← Secrets
         </RouterLink>
-        <h1 class="mono text-lg font-semibold">{{ secretId }}</h1>
+        <h1 class="mono text-lg font-semibold">{{ displayedSecretId }}</h1>
       </div>
       <div class="flex flex-wrap gap-2">
         <button
@@ -122,33 +188,46 @@ const pathTo = computed(() => {
           {{ isFetching ? "Refreshing…" : "Refresh" }}
         </button>
         <RouterLink
+          v-if="!isArchivedView"
           class="rounded border border-line px-3 py-1"
           :to="secretSubpageTo('secret-revisions')"
         >
           History
         </RouterLink>
         <RouterLink
+          v-if="!isArchivedView"
           class="rounded border border-line px-3 py-1"
           :to="{ name: 'audit', query: { environment: env, secretId } }"
         >
           Audit log
         </RouterLink>
         <RouterLink
+          v-if="!isArchivedView"
           class="rounded border border-line px-3 py-1"
           :to="secretSubpageTo('secret-metadata')"
         >
           Edit metadata &amp; ACL
         </RouterLink>
         <RouterLink
+          v-if="!isArchivedView"
           class="rounded bg-accent px-3 py-1 text-white"
           :to="secretSubpageTo('secret-payload')"
         >
           Replace payload
         </RouterLink>
+        <button
+          v-if="!isArchivedView"
+          class="rounded border border-danger px-3 py-1 text-danger disabled:opacity-50"
+          :disabled="archiving || !data"
+          @click="archiveSecret"
+        >
+          {{ archiving ? "Archiving…" : "Archive secret" }}
+        </button>
       </div>
     </div>
 
     <ErrorNotice v-if="error" :error="error" />
+    <ErrorNotice v-else-if="archiveError" :error="archiveError" />
 
     <div v-else-if="data" class="grid gap-4 md:grid-cols-2">
       <section class="rounded border border-line bg-surface-raised p-4">
@@ -176,6 +255,13 @@ const pathTo = computed(() => {
           This secret has no payload yet, so no consumer can read it. Set a
           payload to activate it.
         </p>
+        <p
+          v-else-if="data.state === 'ARCHIVED'"
+          class="mt-3 rounded bg-line/40 p-2 text-xs text-ink-muted"
+        >
+          This immutable record is archived. Its former secret ID may now be
+          used by a new active secret.
+        </p>
       </section>
 
       <section class="rounded border border-line bg-surface-raised p-4">
@@ -186,7 +272,7 @@ const pathTo = computed(() => {
           <dt class="text-ink-muted">Folder</dt>
           <dd>
             <RouterLink class="mono text-accent hover:underline" :to="pathTo">
-              {{ folderPath(secretId) ?? "Root" }}
+              {{ folderPath(displayedSecretId) ?? "Root" }}
             </RouterLink>
           </dd>
         </dl>
@@ -237,6 +323,7 @@ const pathTo = computed(() => {
       </section>
 
       <section
+        v-if="!isArchivedView"
         class="rounded border border-line bg-surface-raised p-4 md:col-span-2"
       >
         <div class="flex flex-wrap items-center justify-between gap-2">

@@ -8,7 +8,6 @@ import type {
   SecretMetadata,
   SecretPayload,
 } from "../domain/types";
-import { secretIdIsWithinPrefixes } from "../domain/validation";
 import type { DynamoRepository } from "../repositories/dynamo";
 import type { SecretReadResult, SecretService } from "./secrets";
 
@@ -26,7 +25,8 @@ export interface AgentSecretWriteInput {
 /**
  * Performs the remote authorization that a Kubernetes namespace cannot enforce
  * by itself. An AgentGrant is required in addition to the ordinary per-secret
- * ACL, and the secret-ID prefix check happens before decryption or mutation.
+ * ACL, and the immutable secret-UID check happens before decryption or
+ * mutation. The public secret ID remains only a route and display name.
  */
 export class AgentService {
   public constructor(
@@ -66,7 +66,7 @@ export class AgentService {
   /**
    * A write-capable exporter needs the current ETag and its own allowed
    * metadata to converge safely, but never needs an administrator ACL view or
-   * a plaintext payload. This remains secret-ID-scoped before it returns anything.
+   * a plaintext payload. This remains UID-scoped before it returns anything.
    */
   public async control(
     consumerId: string,
@@ -108,17 +108,14 @@ export class AgentService {
     );
     const candidates = await Promise.all(
       page.changes.map(async (change) => {
-        const head = await this.repository.getHead(
-          environment,
-          change.secretId,
-        );
+        const head = await this.repository.getHeadBySecretUid(change.secretUid);
         if (head === undefined || head.environment !== environment) {
           return undefined;
         }
         if (this.isWithinReadScope(head, grant)) {
           return change;
         }
-        // A secret that moves out of a grant's prefix must converge just like
+        // A secret removed from a grant's exact allowlist must converge just like
         // an ACL revocation: the namespace may already have materialized it,
         // but must not learn anything about its new location or payload.
         return {
@@ -136,24 +133,6 @@ export class AgentService {
       ),
       nextCursor: page.nextCursor,
     };
-  }
-
-  public async create(input: AgentSecretWriteInput): Promise<ControlRevision> {
-    const grant = await this.requireCapability(
-      input.consumerId,
-      input.environment,
-      "write",
-    );
-    const metadata = input.metadata ?? {};
-    this.requireWriteScope({ secretId: input.secretId, metadata }, grant);
-    return this.secrets.create({
-      secretId: input.secretId,
-      environment: input.environment,
-      metadata,
-      acl: [{ consumerId: input.consumerId, permissions: ["read"] }],
-      actor: input.actor,
-      idempotencyKey: input.idempotencyKey,
-    });
   }
 
   public async update(input: AgentSecretWriteInput): Promise<ControlRevision> {
@@ -216,66 +195,36 @@ export class AgentService {
     return grant;
   }
 
-  private requireSecretId(secretId: string, prefixes: readonly string[]): void {
-    if (!secretIdIsWithinPrefixes(secretId, prefixes)) {
-      throw forbidden("The agent grant does not allow this secret ID.");
+  private requireSecretUid(
+    secretUid: string | undefined,
+    allowed: readonly string[] | undefined,
+  ): void {
+    if (secretUid === undefined || allowed?.includes(secretUid) !== true) {
+      throw forbidden("The agent grant does not allow this secret.");
     }
   }
 
   private requireReadScope(
-    control: { readonly metadata?: SecretMetadata; readonly secretId: string },
+    control: { readonly secretUid?: string },
     grant: AgentGrantRecord,
   ): void {
-    if (grant.readSecretIdPrefixes !== undefined) {
-      this.requireSecretId(control.secretId, grant.readSecretIdPrefixes);
-      return;
-    }
-    this.requireLegacyPath(control, grant.readPathPrefixes ?? []);
+    this.requireSecretUid(control.secretUid, grant.readSecretUids);
   }
 
   private requireWriteScope(
-    control: { readonly metadata?: SecretMetadata; readonly secretId: string },
+    control: { readonly secretUid?: string },
     grant: AgentGrantRecord,
   ): void {
-    if (grant.writeSecretIdPrefixes !== undefined) {
-      this.requireSecretId(control.secretId, grant.writeSecretIdPrefixes);
-      return;
-    }
-    this.requireLegacyPath(control, grant.writePathPrefixes ?? []);
+    this.requireSecretUid(control.secretUid, grant.writeSecretUids);
   }
 
   private isWithinReadScope(
-    control: { readonly metadata?: SecretMetadata; readonly secretId: string },
+    control: { readonly secretUid?: string },
     grant: AgentGrantRecord,
   ): boolean {
-    if (grant.readSecretIdPrefixes !== undefined) {
-      return secretIdIsWithinPrefixes(
-        control.secretId,
-        grant.readSecretIdPrefixes,
-      );
-    }
-    const legacyPath = (control.metadata as { readonly path?: string }).path;
-    return (grant.readPathPrefixes ?? []).some(
-      (prefix) =>
-        legacyPath === prefix || legacyPath?.startsWith(`${prefix}/`) === true,
+    return (
+      control.secretUid !== undefined &&
+      grant.readSecretUids?.includes(control.secretUid) === true
     );
-  }
-
-  private requireLegacyPath(
-    control: { readonly metadata?: SecretMetadata },
-    prefixes: readonly string[],
-  ): void {
-    const legacyPath = (
-      control.metadata as { readonly path?: string } | undefined
-    )?.path;
-    if (
-      !prefixes.some(
-        (prefix) =>
-          legacyPath === prefix ||
-          legacyPath?.startsWith(`${prefix}/`) === true,
-      )
-    ) {
-      throw forbidden("The agent grant does not allow this secret ID.");
-    }
   }
 }

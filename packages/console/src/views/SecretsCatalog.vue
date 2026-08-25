@@ -92,6 +92,7 @@ const props = defineProps<{ env: string; path?: string[] }>();
 const store = useAppStore();
 const route = useRoute();
 const router = useRouter();
+const showArchived = computed(() => route.query.archived === "true");
 
 const currentPath = computed(() =>
   (props.path ?? []).filter((s) => s.length > 0).join("/"),
@@ -101,6 +102,7 @@ const breadcrumbs = computed(() => pathSegments(currentPath.value));
 const crumbTo = (path: string) => ({
   name: "secrets-browse",
   params: { env: props.env, path: path.split("/") },
+  query: showArchived.value ? { archived: "true" } : {},
 });
 
 // Carries the folder currently being browsed into the create form as a query
@@ -118,6 +120,7 @@ const treeQueryKey = computed(() => [
   "secrets-tree",
   props.env,
   currentPath.value,
+  showArchived.value,
 ]);
 
 // One bounded, complete level of the tree. Reactive to env/path through the
@@ -129,6 +132,7 @@ const tree = useQuery({
     store.requireApi().getSecretsTree({
       environment: props.env,
       pathPrefix: currentPath.value || undefined,
+      archived: showArchived.value,
     }),
 });
 
@@ -258,18 +262,51 @@ const tagsParam = computed(() =>
 // A detail route cannot infer the catalog state it came from: a search is
 // local UI state and a folder is represented by another route. Carry the
 // small, safe return context explicitly so its back link restores either.
-const secretTo = (secretId: string) => ({
-  name: "secret",
-  params: { env: props.env, secretId },
-  query: {
-    ...(currentPath.value.length === 0
-      ? {}
-      : { catalogPath: currentPath.value }),
-    ...(appliedInput.value.length === 0
-      ? {}
-      : { catalogFilter: appliedInput.value }),
-  },
-});
+const secretTo = (secret: CatalogEntry) => {
+  if (showArchived.value && secret.secretUid !== undefined) {
+    return {
+      name: "archived-secret",
+      params: { env: props.env, secretUid: secret.secretUid },
+      query: {
+        ...(currentPath.value.length === 0
+          ? {}
+          : { catalogPath: currentPath.value }),
+        ...(appliedInput.value.length === 0
+          ? {}
+          : { catalogFilter: appliedInput.value }),
+        archived: "true",
+      },
+    };
+  }
+  return {
+    name: "secret",
+    params: { env: props.env, secretId: secret.secretId },
+    query: {
+      ...(currentPath.value.length === 0
+        ? {}
+        : { catalogPath: currentPath.value }),
+      ...(appliedInput.value.length === 0
+        ? {}
+        : { catalogFilter: appliedInput.value }),
+    },
+  };
+};
+
+const toggleArchived = async (): Promise<void> => {
+  await router.push({
+    name: currentPath.value.length === 0 ? "secrets" : "secrets-browse",
+    params:
+      currentPath.value.length === 0
+        ? { env: props.env }
+        : { env: props.env, path: currentPath.value.split("/") },
+    query: {
+      ...(appliedInput.value.length === 0
+        ? {}
+        : { catalogFilter: appliedInput.value }),
+      ...(showArchived.value ? {} : { archived: "true" }),
+    },
+  });
+};
 
 // The tree route has no tag filter and no search box, so any filter switches
 // the view into a flat result list instead of the folder tree. Which flat
@@ -301,11 +338,12 @@ const flatPages = useCursorPages<CatalogEntry>(async (cursor) => {
     pathPrefix: currentPath.value || undefined,
     tags: tagsParam.value || undefined,
     cursor,
+    archived: showArchived.value,
   });
   return { items: page.secrets, nextCursor: page.nextCursor };
 });
 
-watch([view, tagsParam, () => props.env, currentPath], () => {
+watch([view, tagsParam, () => props.env, currentPath, showArchived], () => {
   if (view.value === "tags") {
     flatPages.reset();
     void flatPages.loadMore();
@@ -325,12 +363,14 @@ const searchResults = useQuery({
     props.env,
     appliedFilter.value.text,
     tagsParam.value,
+    showArchived.value,
   ]),
   queryFn: () =>
     store.requireApi().listSecrets({
       environment: props.env,
       q: appliedFilter.value.text,
       tags: tagsParam.value || undefined,
+      archived: showArchived.value,
     }),
   enabled: computed(() => view.value === "search"),
 });
@@ -340,7 +380,7 @@ const searchResults = useQuery({
 // from under it (environment switch, browser back/forward, a pasted URL),
 // re-scoping it silently would be more surprising than dropping back to
 // browsing at the new location.
-watch([() => props.env, currentPath], () => {
+watch([() => props.env, currentPath, showArchived], () => {
   if (hasFilter.value) {
     backToBrowsing();
   }
@@ -398,7 +438,11 @@ const tagRejection = computed(() =>
         >
           <RouterLink
             class="hover:text-accent hover:underline"
-            :to="{ name: 'secrets', params: { env } }"
+            :to="{
+              name: 'secrets',
+              params: { env },
+              query: showArchived ? { archived: 'true' } : {},
+            }"
             @click="backToBrowsing"
           >
             root
@@ -436,6 +480,14 @@ const tagRejection = computed(() =>
         <button
           class="rounded border border-line px-3 py-1"
           type="button"
+          @click="toggleArchived"
+        >
+          {{ showArchived ? "Show active" : "Show archived" }}
+        </button>
+        <button
+          v-if="!showArchived"
+          class="rounded border border-line px-3 py-1"
+          type="button"
           @click="newFolderOpen = !newFolderOpen"
         >
           New folder
@@ -450,7 +502,7 @@ const tagRejection = computed(() =>
     </div>
 
     <div
-      v-if="newFolderOpen"
+      v-if="newFolderOpen && !showArchived"
       class="flex flex-wrap items-end gap-2 rounded border border-line bg-surface-raised p-3 text-xs"
     >
       <label class="flex flex-col gap-1">
@@ -516,7 +568,7 @@ const tagRejection = computed(() =>
     >
       Showing a flat, tag-filtered result list under
       <span class="mono">{{ currentPath || "the root" }}</span> — not the folder
-      tree.
+      {{ showArchived ? "archived catalog." : "tree." }}
       <button class="text-accent underline" @click="backToBrowsing">
         Back to browsing
       </button>
@@ -525,8 +577,8 @@ const tagRejection = computed(() =>
       v-else-if="view === 'search'"
       class="rounded border border-accent/40 bg-accent/5 p-2 text-xs"
     >
-      Showing search results across all of <span class="mono">{{ env }}</span> —
-      every path, not just
+      Showing {{ showArchived ? "archived " : "" }}search results across all of
+      <span class="mono">{{ env }}</span> — every path, not just
       <span class="mono">{{ currentPath || "the root" }}</span
       >.
       <button class="text-accent underline" @click="backToBrowsing">
@@ -593,13 +645,13 @@ const tagRejection = computed(() =>
           <tbody>
             <tr
               v-for="secret in tree.data.value.secrets"
-              :key="secret.secretId"
+              :key="secret.secretUid ?? secret.secretId"
               class="border-b border-line/60"
             >
               <td class="py-2 pr-3">
                 <RouterLink
                   class="mono text-accent hover:underline"
-                  :to="secretTo(secret.secretId)"
+                  :to="secretTo(secret)"
                 >
                   {{ secret.secretId }}
                 </RouterLink>
@@ -664,13 +716,13 @@ const tagRejection = computed(() =>
         <tbody>
           <tr
             v-for="secret in flatPages.items.value"
-            :key="secret.secretId"
+            :key="secret.secretUid ?? secret.secretId"
             class="border-b border-line/60"
           >
             <td class="py-2 pr-3">
               <RouterLink
                 class="text-accent hover:underline"
-                :to="secretTo(secret.secretId)"
+                :to="secretTo(secret)"
               >
                 {{ secret.secretId }}
               </RouterLink>
@@ -793,13 +845,13 @@ const tagRejection = computed(() =>
           <tbody>
             <tr
               v-for="secret in searchResults.data.value.secrets"
-              :key="secret.secretId"
+              :key="secret.secretUid ?? secret.secretId"
               class="border-b border-line/60"
             >
               <td class="py-2 pr-3">
                 <RouterLink
                   class="text-accent hover:underline"
-                  :to="secretTo(secret.secretId)"
+                  :to="secretTo(secret)"
                 >
                   {{ secret.secretId }}
                 </RouterLink>

@@ -81,16 +81,20 @@ export const handler: Handler = async (): Promise<void> => {
     if (identity === undefined) {
       continue;
     }
-    const { environment, secretId } = identity;
+    const head = await app.repository.getHeadBySecretUid(identity.secretUid);
+    if (head === undefined) {
+      continue;
+    }
+    const { environment, secretId } = head;
     const abortedCreate = await app.repository.abortPreparedCreate(
       environment,
       secretId,
+      identity.secretUid,
       operationId,
     );
     if (!abortedCreate) {
       const releasedLease = await app.repository.releaseLease(
-        environment,
-        secretId,
+        identity.secretUid,
         operationId,
       );
       if (!releasedLease) {

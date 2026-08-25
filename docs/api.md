@@ -65,7 +65,7 @@ the publication lease.
 Kubernetes and other constrained automation must not hold an administrator
 OIDC token. An administrator first creates an **AgentGrant** with a new
 consumer ID, one environment, `read` and/or `write` capability, and explicit
-canonical secret-ID prefixes. It then issues a single-use, 30-minute bootstrap
+canonical secret IDs. It then issues a single-use, 30-minute bootstrap
 capability. Hemlig stores only its SHA-256 digest.
 
 ```http
@@ -85,11 +85,12 @@ IoT Core for its private notification topic. The bootstrap value can never be
 used as a general API token.
 
 An active agent identity cannot bypass its grant by calling ordinary delivery
-endpoints: Hemlig applies its AgentGrant prefix check there too. A prefix
-matches only the exact secret ID or a child segment (`payments`
-matches `payments/api`, never `payments-prod`). Empty/root
-prefixes are never agent-authorized. This is independent of console folders,
-which are always derived from the slash-separated secret ID.
+endpoints: Hemlig applies its AgentGrant UID-bound allowlist there too. The
+administrator selects exact IDs, and Hemlig records their current immutable
+UIDs. Each selection authorizes that one secret only; a folder name never
+implicitly authorizes its children, and archiving then reusing an ID does not
+transfer the grant. This is independent of console folders, which are
+always derived from the slash-separated secret ID.
 
 ## Common behavior
 
@@ -271,6 +272,10 @@ ETag and is the value required by a subsequent update. This route is intended
 for declarative consumers such as the Kubernetes export controller and Pulumi
 provider to converge against the current control-plane state.
 
+Archived records are deliberately not addressable by this reusable name. Use
+`GET /v1/admin/archived-secrets/{secretUid}?environment=...` to inspect an
+archived control revision by its immutable UID.
+
 ### `GET /v1/admin/secrets/{secretId}/payload`
 
 Decrypts and returns the current `ACTIVE` payload to an authenticated
@@ -291,6 +296,9 @@ material, or certificate material. `environment` is required. `pathPrefix` is
 an optional secret-ID prefix; `tags` is an optional comma-separated list of
 exact `key:value` terms, combined with AND. Results are sorted by folder then
 secret ID and paginated through an opaque cursor bound to the administrator.
+By default this endpoint reads only active catalog entries. Add
+`archived=true` to query the separate archived catalog; `q`, `pathPrefix`, and
+`tags` then apply only within that archived result set.
 
 ```http
 GET /v1/admin/secrets?environment=prod&pathPrefix=payments&tags=owner:payments,system:billing HTTP/1.1
@@ -311,6 +319,11 @@ It must be 1–128 characters and not only whitespace.
 
 ```http
 GET /v1/admin/secrets?environment=prod&pathPrefix=payments&q=stripe HTTP/1.1
+Authorization: Bearer <JWT>
+```
+
+```http
+GET /v1/admin/secrets?environment=prod&archived=true&q=stripe HTTP/1.1
 Authorization: Bearer <JWT>
 ```
 
@@ -337,6 +350,7 @@ that archive write for every directory it opened; this route paginates the
 underlying catalog-path index internally and returns one bounded page
 instead. `environment` is required; `pathPrefix` is an optional canonical
 path prefix, identical in format to `GET /v1/admin/secrets`.
+Pass `archived=true` to build the same bounded tree from archived records only.
 
 ```http
 GET /v1/admin/secrets/tree?environment=prod&pathPrefix=payments HTTP/1.1
@@ -425,6 +439,23 @@ Content-Type: application/json
 
 Either field may be omitted to retain its current value. Success is `200 OK`
 with the replacement control revision and new ETag. A stale ETag is `412`.
+
+### `POST /v1/admin/secrets/{secretId}/archive`
+
+Archives the current secret identity without deleting immutable revision
+objects. It requires `Authorization`, `Idempotency-Key`, and `If-Match`. The
+archive control revision has `state: ARCHIVED` and an empty ACL; all prior
+readers receive revocation tombstones. The transition atomically removes the
+live name lookup and moves the head to the archived catalog, so active catalog
+browsing and searches no longer return it and a new secret may immediately
+reuse the same `secretId` in the environment. Archived details are addressed
+by `secretUid`, never by the reusable name.
+
+```http
+POST /v1/admin/secrets/database-credentials/archive?environment=prod HTTP/1.1
+If-Match: "ctl-01Jprevious"
+Idempotency-Key: 6f6253ba-b2ec-4aed-a216-8d2f4b4cbb8c
+```
 
 ### `PUT /v1/admin/secrets/{secretId}/payload`
 
@@ -553,15 +584,15 @@ enroll a consumer yet. `consumerId` must be unused; `environment` must exist.
   "consumerId": "prod-payments",
   "environment": "prod",
   "capabilities": ["read", "write"],
-  "readSecretIdPrefixes": ["payments/production"],
-  "writeSecretIdPrefixes": ["payments/production"],
+  "readSecretIds": ["payments/production/stripe-api-key"],
+  "writeSecretIds": ["payments/production/stripe-api-key"],
   "displayName": "Payments namespace"
 }
 ```
 
-Secret-ID prefix lists have one to twenty unique canonical prefixes and are
-required exactly when their matching capability is present. They are an
-authorization boundary. A grant is `PENDING` until bootstrap
+Secret-ID lists have one to twenty unique canonical IDs and are required
+exactly when their matching capability is present. They are an authorization
+boundary. A grant is `PENDING` until bootstrap
 completes, then becomes `ACTIVE`; it cannot silently fall back to a broad
 consumer identity.
 
@@ -641,21 +672,21 @@ operator-managed Kubernetes Secret. This endpoint is not a durable event log.
 
 These are mTLS delivery routes for an active AgentGrant only. A normal consumer
 may not use them, and an agent cannot use normal consumer routes to escape its
-prefix scope. All secret reads still require the agent's regular per-secret
-read ACL in addition to its path scope; agent writes can only affect their
-write path scope and can never modify an ACL.
+UID-bound exact-secret scope. All secret reads still require the agent's regular
+per-secret read ACL in addition to that scope; agent writes can only affect
+their selected secret UIDs and can never modify an ACL.
 
-| Route                                      | Purpose                                                                                                                             |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /v1/agent/config`                     | Returns the active grant's safe scope and the exact AWS IoT endpoint/client/topic.                                                  |
-| `GET /v1/agent/secrets/{secretId}`         | Conditional payload read within read scope.                                                                                         |
-| `GET /v1/agent/secrets/{secretId}/control` | Returns only agent-visible metadata and ETag, including for a write-only exporter.                                                  |
-| `POST /v1/agent/secrets`                   | Creates a path-scoped empty secret with the caller's initial read ACL.                                                              |
-| `PUT /v1/agent/secrets/{secretId}`         | Updates agent-allowed metadata with `If-Match`.                                                                                     |
-| `PUT /v1/agent/secrets/{secretId}/payload` | Replaces payload with `If-Match`.                                                                                                   |
-| `GET /v1/changes`                          | Returns the path-filtered current snapshot; an out-of-scope move is represented as `secret.revoked` so the local target is removed. |
+| Route                                      | Purpose                                                                                                                              |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /v1/agent/config`                     | Returns the active grant's safe scope and the exact AWS IoT endpoint/client/topic.                                                   |
+| `GET /v1/agent/secrets/{secretId}`         | Conditional payload read within read scope.                                                                                          |
+| `GET /v1/agent/secrets/{secretId}/control` | Returns only agent-visible metadata and ETag, including for a write-only exporter.                                                   |
+| `PUT /v1/agent/secrets/{secretId}`         | Updates agent-allowed metadata with `If-Match`.                                                                                      |
+| `PUT /v1/agent/secrets/{secretId}/payload` | Replaces payload with `If-Match`.                                                                                                    |
+| `GET /v1/changes`                          | Returns the exact-secret current snapshot; an out-of-scope change is represented as `secret.revoked` so the local target is removed. |
 
-Agent payload/control writes require `Idempotency-Key`; updates also require
+An administrator must create the secret and select it in the AgentGrant before
+an agent can update it. Agent payload/control writes require `Idempotency-Key`; updates also require
 `If-Match`. The MQTT topic carries only `schemaVersion`, kind, secret ID, and
 revision IDs with QoS 1. It has no payload, data key, path, ACL, token, or
 certificate. Treat it solely as a trigger to fetch authoritative mTLS state;

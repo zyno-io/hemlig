@@ -2,7 +2,7 @@ Hemlig controller has been installed.
 
 This release watches Hemlig custom resources and Secrets cluster-wide. Its
 ClusterRole is therefore intentionally broad. Review its Kubernetes RBAC as
-well as each HemligProvider namespace selector and remote AgentGrant path
+well as each HemligProvider namespace selector and remote AgentGrant exact-secret
 scope before creating HemligConsumer resources.
 
 Install the HemligProvider, HemligConsumer, HemligSecretImport, and

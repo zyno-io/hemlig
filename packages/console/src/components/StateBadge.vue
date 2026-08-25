@@ -10,6 +10,8 @@ const tone = computed(() => {
     case "PENDING_VALUE":
     case "PENDING":
       return "bg-warn/15 text-warn";
+    case "ARCHIVED":
+      return "bg-line/40 text-ink-muted";
     case "REVOKED":
     case "FAILED":
     case "EXPIRED":
@@ -21,5 +23,7 @@ const tone = computed(() => {
 </script>
 
 <template>
-  <span class="rounded px-2 py-0.5 text-xs font-medium" :class="tone">{{ state }}</span>
+  <span class="rounded px-2 py-0.5 text-xs font-medium" :class="tone">{{
+    state
+  }}</span>
 </template>

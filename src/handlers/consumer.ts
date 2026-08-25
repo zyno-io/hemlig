@@ -24,7 +24,7 @@ export const handler = async (
     }
     // An agent identity is deliberately unable to fall back to the generic
     // delivery routes: doing so would let a compromised namespace bypass its
-    // remote AgentGrant path boundary by guessing a secret ID.
+    // remote AgentGrant exact-ID boundary by guessing a secret ID.
     const isAgent =
       (await app.repository.getAgentGrantForConsumer(consumerId)) !== undefined;
     const operation = `${isAgent ? "agent" : "consumer"}${event.requestContext.http.method.toLowerCase()}:${event.rawPath}`;
@@ -79,8 +79,10 @@ export const handler = async (
         grant: {
           grantId: grant.grantId,
           capabilities: grant.capabilities,
-          readSecretIdPrefixes: grant.readSecretIdPrefixes ?? [],
-          writeSecretIdPrefixes: grant.writeSecretIdPrefixes ?? [],
+          readSecretIds: grant.readSecretIds,
+          readSecretUids: grant.readSecretUids,
+          writeSecretIds: grant.writeSecretIds,
+          writeSecretUids: grant.writeSecretUids,
         },
         mqtt: {
           endpoint: app.config.iotEndpoint,
@@ -88,32 +90,6 @@ export const handler = async (
           topic: `${app.config.iotNotificationTopicPrefix}/${grant.consumerId}`,
         },
       });
-    }
-    if (
-      event.requestContext.http.method === "POST" &&
-      event.rawPath === "/v1/agent/secrets"
-    ) {
-      const key = requireIdempotencyKey(event.headers["idempotency-key"]);
-      const body = parseObjectBody(event.body);
-      const control = await app.agents.create({
-        consumerId,
-        environment,
-        secretId: requiredString(body, "secretId"),
-        metadata: parseMetadata(body.metadata),
-        actor,
-        idempotencyKey: key,
-      });
-      await agentMutationAudit(
-        app,
-        correlationId,
-        actor,
-        operation,
-        event,
-        environment,
-        control.secretId,
-        control.controlVersionId,
-      );
-      return json(201, control, { etag: control.controlVersionId });
     }
     if (
       event.requestContext.http.method === "GET" &&

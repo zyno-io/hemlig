@@ -64,6 +64,18 @@ const routes: RouteRecordRaw[] = [
     }),
   },
   {
+    // An archived secret is addressed by immutable UID: after archiving, its
+    // original secretId is intentionally available for a new active secret.
+    path: "/e/:env/secrets/archived/:secretUid",
+    name: "archived-secret",
+    component: () => import("../views/SecretDetail.vue"),
+    props: (route) => ({
+      env: route.params.env,
+      secretId: firstQueryValue(route.query.secretId) ?? "Archived secret",
+      archivedSecretUid: route.params.secretUid,
+    }),
+  },
+  {
     path: "/e/:env/secrets/:secretId(.*)",
     name: "secret",
     component: () => import("../views/SecretDetail.vue"),

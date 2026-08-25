@@ -39,6 +39,7 @@
     "backfill:console-indexes": "yarn build && node dist/scripts/backfill-console-indexes.js",
     "backfill:secret-id-folders": "yarn build && node dist/scripts/backfill-secret-id-folders.js",
     "migrate:secret-identity": "yarn build && node dist/scripts/migrate-secret-identity.js",
+    "migrate:secret-uids": "yarn build && node dist/scripts/migrate-secret-uids.js",
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "build:all": "yarn workspaces foreach -A --topological run build",
     "build:cdk": "yarn workspace @hemlig/console build && rm -rf dist-cdk && tsc -p tsconfig.cdk.json && cp -R packages/console/dist dist-cdk/console-dist",

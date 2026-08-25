@@ -50,6 +50,7 @@ describe("EnvelopeCrypto", () => {
       { PASSWORD: { encoding: "utf8", value: "correct horse battery staple" } },
       {
         environment: "staging",
+        secretUid: "sec-123",
         secretId: "sec-example",
         payloadVersionId: "pay-example",
       },
@@ -68,10 +69,12 @@ describe("EnvelopeCrypto", () => {
     expect(generate.input.EncryptionContext).toMatchObject({
       service: "hemlig",
       purpose: "secret-payload",
+      secretUid: "sec-123",
     });
     expect(decrypt.input.EncryptionContext).toMatchObject({
       service: "hemlig",
       purpose: "secret-payload",
+      secretUid: "sec-123",
     });
   });
 
@@ -91,6 +94,7 @@ describe("EnvelopeCrypto", () => {
       { TOKEN: { encoding: "utf8", value: "not logged" } },
       {
         environment: "production",
+        secretUid: "sec-456",
         secretId: "sec-example",
         payloadVersionId: "pay-one",
       },
@@ -99,5 +103,40 @@ describe("EnvelopeCrypto", () => {
     );
     const rebound = { ...revision, payloadVersionId: "pay-two" };
     await expect(crypto.decrypt(rebound)).rejects.toThrow();
+  });
+
+  it("decrypts immutable pre-migration revisions with their legacy KMS context", async () => {
+    const key = Buffer.alloc(32, 7);
+    const kms = {
+      send: jest
+        .fn()
+        .mockResolvedValueOnce({
+          Plaintext: key,
+          CiphertextBlob: Buffer.from("encrypted-key"),
+        })
+        .mockResolvedValueOnce({ Plaintext: key }),
+    } as unknown as KMSClient;
+    const crypto = new EnvelopeCrypto(kms, config);
+    const revision = await crypto.encrypt(
+      { TOKEN: { encoding: "utf8", value: "legacy-value" } },
+      {
+        environment: "production",
+        secretId: "legacy-secret",
+        payloadVersionId: "pay-legacy",
+      },
+      { type: "human", id: "operator-1" },
+      "2026-08-22T00:00:00.000Z",
+    );
+    const payload = await crypto.decrypt({ ...revision, secretUid: undefined });
+
+    expect(payload).toEqual({
+      TOKEN: { encoding: "utf8", value: "legacy-value" },
+    });
+    const generate = (kms.send as jest.Mock).mock
+      .calls[0]?.[0] as GenerateDataKeyCommand;
+    expect(generate.input.EncryptionContext).toMatchObject({
+      secretId: "legacy-secret",
+    });
+    expect(generate.input.EncryptionContext).not.toHaveProperty("secretUid");
   });
 });

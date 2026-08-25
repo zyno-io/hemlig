@@ -1,4 +1,7 @@
-import type { AgentGrantRecord, BootstrapCapabilityRecord } from "../domain/types";
+import type {
+  AgentGrantRecord,
+  BootstrapCapabilityRecord,
+} from "../domain/types";
 import type { DynamoRepository } from "../repositories/dynamo";
 import type { AgentNotificationService } from "./agent-notifications";
 import type { ConsumerService } from "./consumers";
@@ -12,8 +15,10 @@ const grant: AgentGrantRecord = {
   consumerId: "payments-agent",
   environment: "prod",
   capabilities: ["read"],
-  readSecretIdPrefixes: ["payments"],
-  writeSecretIdPrefixes: [],
+  readSecretIds: ["payments/api-key"],
+  readSecretUids: ["sec-payments-api-key"],
+  writeSecretIds: [],
+  writeSecretUids: [],
   status: "ACTIVE",
   createdAt: "2026-08-23T00:00:00.000Z",
   createdBy: { type: "human", id: "admin" },
@@ -127,15 +132,19 @@ describe("AgentGrantService", () => {
       apiCertificateSigningRequestPem: "same-csr",
     });
     expect(consumers.enroll).not.toHaveBeenCalled();
-    expect(notifications.provision).toHaveBeenCalledWith(expect.objectContaining({
-      consumerId: grant.consumerId,
-      certificateFingerprint: "a".repeat(64),
-    }));
-    expect((repository as unknown as { consumeBootstrapCapability?: jest.Mock }).consumeBootstrapCapability)
-      .toBeUndefined();
+    expect(notifications.provision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        consumerId: grant.consumerId,
+        certificateFingerprint: "a".repeat(64),
+      }),
+    );
+    expect(
+      (repository as unknown as { consumeBootstrapCapability?: jest.Mock })
+        .consumeBootstrapCapability,
+    ).toBeUndefined();
   });
 
-  it("requires a distinct canonical prefix for each active capability", async () => {
+  it("requires a distinct exact secret ID for each active capability", async () => {
     const repository = {
       getConsumer: jest.fn(async () => undefined),
       createAgentGrant: jest.fn(async () => undefined),
@@ -150,19 +159,67 @@ describe("AgentGrantService", () => {
       {} as AgentNotificationService,
     );
 
-    await expect(service.create({
+    await expect(
+      service.create({
+        consumerId: "payments-agent",
+        environment: "prod",
+        capabilities: ["read"],
+        readSecretIds: ["payments/api-key", "payments/api-key"],
+        writeSecretIds: [],
+        actor: { type: "human", id: "admin" },
+      }),
+    ).rejects.toThrow("duplicate");
+  });
+
+  it("resolves selected secret IDs to immutable UIDs when creating a grant", async () => {
+    const repository = {
+      getConsumer: jest.fn(async () => undefined),
+      requireHead: jest.fn(async (_environment: string, secretId: string) => ({
+        secretUid: `sec-${secretId.replaceAll("/", "-")}`,
+      })),
+      createAgentGrant: jest.fn(async () => undefined),
+    } as unknown as DynamoRepository;
+    const environments = {
+      require: jest.fn(async () => undefined),
+    } as unknown as EnvironmentService;
+    const service = new AgentGrantService(
+      repository,
+      {} as ConsumerService,
+      environments,
+      {} as AgentNotificationService,
+    );
+
+    const created = await service.create({
       consumerId: "payments-agent",
       environment: "prod",
-      capabilities: ["read"],
-      readSecretIdPrefixes: ["payments", "payments"],
-      writeSecretIdPrefixes: [],
+      capabilities: ["read", "write"],
+      readSecretIds: ["payments/api-key"],
+      writeSecretIds: ["payments/api-key", "payments/rotate-key"],
       actor: { type: "human", id: "admin" },
-    })).rejects.toThrow("duplicate");
+    });
+
+    expect(created.readSecretIds).toEqual(["payments/api-key"]);
+    expect(created.readSecretUids).toEqual(["sec-payments-api-key"]);
+    expect(created.writeSecretIds).toEqual([
+      "payments/api-key",
+      "payments/rotate-key",
+    ]);
+    expect(created.writeSecretUids).toEqual([
+      "sec-payments-api-key",
+      "sec-payments-rotate-key",
+    ]);
+    expect(
+      (repository as unknown as { createAgentGrant: jest.Mock })
+        .createAgentGrant,
+    ).toHaveBeenCalledWith(created);
   });
 
   it("updates the policy of an active grant without replacing its identity", async () => {
     const repository = {
       getAgentGrant: jest.fn(async () => grant),
+      requireHead: jest.fn(async (_environment: string, secretId: string) => ({
+        secretUid: `sec-${secretId.replaceAll("/", "-")}`,
+      })),
       updateAgentGrant: jest.fn(async () => undefined),
     } as unknown as DynamoRepository;
     const service = new AgentGrantService(
@@ -174,18 +231,27 @@ describe("AgentGrantService", () => {
 
     const updated = await service.update(grant.grantId, {
       capabilities: ["read"],
-      readSecretIdPrefixes: ["platform/hemlig/integration", "platform/gitlab-agents/staging"],
-      writeSecretIdPrefixes: [],
+      readSecretIds: [
+        "platform/hemlig/integration",
+        "platform/gitlab-agents/staging",
+      ],
+      writeSecretIds: [],
       displayName: "Staging trusted cluster consumer",
     });
 
     expect(updated.grantId).toBe(grant.grantId);
     expect(updated.consumerId).toBe(grant.consumerId);
-    expect(updated.readSecretIdPrefixes).toEqual([
+    expect(updated.readSecretIds).toEqual([
       "platform/gitlab-agents/staging",
       "platform/hemlig/integration",
     ]);
-    expect((repository as unknown as { updateAgentGrant: jest.Mock }).updateAgentGrant)
-      .toHaveBeenCalledWith(updated, false);
+    expect(updated.readSecretUids).toEqual([
+      "sec-platform-gitlab-agents-staging",
+      "sec-platform-hemlig-integration",
+    ]);
+    expect(
+      (repository as unknown as { updateAgentGrant: jest.Mock })
+        .updateAgentGrant,
+    ).toHaveBeenCalledWith(updated, false);
   });
 });

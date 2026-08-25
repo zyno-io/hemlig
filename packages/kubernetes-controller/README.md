@@ -17,7 +17,7 @@ The resource topology is intentionally split:
 - `HemligSecretImport` materializes a granted remote payload into an exact-owned
   Kubernetes Secret.
 - `HemligSecretExport` pushes an application-owned source Secret through the
-  consumer's remote write path scope. It cannot set ACLs.
+  consumer's remote write exact-secret scope. It cannot set ACLs.
 
 The controller watches CRs, namespaces, and Secrets. Source changes debounce
 for 250 ms; MQTT QoS 1 hints trigger prompt remote pulls. A ten-minute snapshot
@@ -39,7 +39,7 @@ helm upgrade --install hemlig-controller zyno/hemlig-controller \
 The chart installs the CRDs by default. Its current ClusterRole is deliberately
 cluster-wide: the controller lists and watches Hemlig resources and source
 Secrets across namespaces. `HemligProvider` namespace selectors and the remote
-`AgentGrant` path scope still constrain which remote secret keyspaces a
+`AgentGrant` exact-secret scope still constrains which remote secrets a
 namespace can use, but they do not narrow this Kubernetes RBAC grant. Review
 that grant before installing it. Namespace-restricted Kubernetes RBAC depends
 on a controller runtime that can limit discovery and watches to an explicit
@@ -92,10 +92,12 @@ spec:
   metadata: { description: Payments API }
 ```
 
-The administrator-side AgentGrant must give this consumer compatible
-`payments/production` read/write secret-ID prefixes. Remote Hemlig authorization is the
-keyspace boundary: Kubernetes RBAC alone cannot expand it. An export rejects an
-import-managed source, and an import refuses to overwrite a user-owned target.
+The administrator-side AgentGrant must explicitly select
+`payments/production/api-key` and `payments/production/api-key-source` for the
+appropriate read/write capabilities. Hemlig resolves those selections to
+immutable UIDs, so Kubernetes RBAC alone cannot expand them. An export rejects
+an import-managed source, and an import refuses to overwrite a user-owned
+target.
 
 By default, `consumerRef` resolves only inside the import or export namespace.
 This is the normal one-consumer-per-namespace model. A platform may instead use
@@ -111,7 +113,7 @@ spec:
 
 This is an explicit trust-boundary decision: every namespace allowed to refer
 to that consumer shares its mTLS identity and the union of its remote
-AgentGrant paths. The consumer's bootstrap Secret and identity Secret always
+AgentGrant exact-secret selections. The consumer's bootstrap Secret and identity Secret always
 remain in the consumer's own namespace.
 
 Build from the monorepo root:

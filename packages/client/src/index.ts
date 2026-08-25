@@ -17,12 +17,13 @@ export interface Grant {
 }
 
 export interface ControlRevision {
+  readonly secretUid: string;
   readonly secretId: string;
   readonly environment: string;
   readonly controlVersionId: string;
   readonly payloadVersionId?: string;
   readonly payloadKeyCount?: number;
-  readonly state: "PENDING_VALUE" | "ACTIVE" | "REVOKED";
+  readonly state: "PENDING_VALUE" | "ACTIVE" | "REVOKED" | "ARCHIVED";
   readonly metadata: SecretMetadata;
   readonly acl?: readonly Grant[];
 }
@@ -42,6 +43,7 @@ export interface AdminSecretPayloadResponse {
 }
 
 export interface SecretCatalogEntry {
+  readonly secretUid: string;
   readonly secretId: string;
   readonly environment: string;
   readonly controlVersionId: string;
@@ -140,8 +142,10 @@ export interface AgentGrant {
   readonly consumerId: string;
   readonly environment: string;
   readonly capabilities: readonly ("read" | "write")[];
-  readonly readSecretIdPrefixes: readonly string[];
-  readonly writeSecretIdPrefixes: readonly string[];
+  readonly readSecretIds: readonly string[];
+  readonly readSecretUids: readonly string[];
+  readonly writeSecretIds: readonly string[];
+  readonly writeSecretUids: readonly string[];
   readonly displayName?: string;
   readonly status: "PENDING" | "ACTIVE";
   readonly createdAt: string;
@@ -167,8 +171,10 @@ export interface AgentConfig {
     AgentGrant,
     | "grantId"
     | "capabilities"
-    | "readSecretIdPrefixes"
-    | "writeSecretIdPrefixes"
+    | "readSecretIds"
+    | "readSecretUids"
+    | "writeSecretIds"
+    | "writeSecretUids"
   >;
   readonly mqtt: AgentMqttConfig;
 }
@@ -180,8 +186,10 @@ export interface AgentBootstrapResult extends ConsumerProvisioningResult {
     | "consumerId"
     | "environment"
     | "capabilities"
-    | "readSecretIdPrefixes"
-    | "writeSecretIdPrefixes"
+    | "readSecretIds"
+    | "readSecretUids"
+    | "writeSecretIds"
+    | "writeSecretUids"
   >;
 }
 
@@ -315,22 +323,6 @@ export class HemligClient {
     return this.request("GET", withQuery("/v1/changes", { cursor }));
   }
 
-  public async createAgentSecret(
-    input: {
-      readonly secretId: string;
-      readonly metadata: SecretMetadata;
-    },
-    idempotencyKey: string,
-  ): Promise<ControlRevision> {
-    return this.request(
-      "POST",
-      "/v1/agent/secrets",
-      undefined,
-      input,
-      idempotencyKey,
-    );
-  }
-
   public async updateAgentSecret(
     secretId: string,
     controlVersionId: string,
@@ -377,6 +369,21 @@ export class HemligClient {
     );
   }
 
+  /** Reads an archived secret using its immutable UID because its old ID can be reused. */
+  public async getArchivedAdminSecret(
+    token: string,
+    environment: string,
+    secretUid: string,
+  ): Promise<ControlRevision> {
+    return this.request(
+      "GET",
+      withQuery(`/v1/admin/archived-secrets/${encodeURIComponent(secretUid)}`, {
+        environment,
+      }),
+      token,
+    );
+  }
+
   public async getAdminSecretPayload(
     token: string,
     environment: string,
@@ -398,6 +405,7 @@ export class HemligClient {
       readonly pathPrefix?: string;
       readonly tags?: Readonly<Record<string, string>>;
       readonly cursor?: string;
+      readonly archived?: boolean;
     },
   ): Promise<SecretCatalogPage> {
     const tags =
@@ -414,6 +422,7 @@ export class HemligClient {
         pathPrefix: query.pathPrefix,
         tags,
         cursor: query.cursor,
+        archived: query.archived ? "true" : undefined,
       }),
       token,
     );
@@ -495,8 +504,8 @@ export class HemligClient {
       readonly consumerId: string;
       readonly environment: string;
       readonly capabilities: readonly ("read" | "write")[];
-      readonly readSecretIdPrefixes?: readonly string[];
-      readonly writeSecretIdPrefixes?: readonly string[];
+      readonly readSecretIds?: readonly string[];
+      readonly writeSecretIds?: readonly string[];
       readonly displayName?: string;
     },
   ): Promise<AgentGrant> {
@@ -508,8 +517,8 @@ export class HemligClient {
     grantId: string,
     input: {
       readonly capabilities: readonly ("read" | "write")[];
-      readonly readSecretIdPrefixes?: readonly string[];
-      readonly writeSecretIdPrefixes?: readonly string[];
+      readonly readSecretIds?: readonly string[];
+      readonly writeSecretIds?: readonly string[];
       readonly displayName?: string;
     },
   ): Promise<AgentGrant> {
@@ -547,6 +556,25 @@ export class HemligClient {
       }),
       token,
       input,
+      idempotencyKey,
+      controlVersionId,
+    );
+  }
+
+  public async archiveAdminSecret(
+    token: string,
+    environment: string,
+    secretId: string,
+    controlVersionId: string,
+    idempotencyKey: string,
+  ): Promise<ControlRevision> {
+    return this.request(
+      "POST",
+      withQuery(`/v1/admin/secrets/${encodeURIComponent(secretId)}/archive`, {
+        environment,
+      }),
+      token,
+      undefined,
       idempotencyKey,
       controlVersionId,
     );

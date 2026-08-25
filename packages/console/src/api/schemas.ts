@@ -23,10 +23,17 @@ export const grant = z.object({
   permissions: z.array(z.literal("read")),
 });
 
-export const secretState = z.enum(["PENDING_VALUE", "ACTIVE", "REVOKED"]);
+export const secretState = z.enum([
+  "PENDING_VALUE",
+  "ACTIVE",
+  "REVOKED",
+  "ARCHIVED",
+]);
 
 export const controlRevision = z.object({
   schemaVersion: z.literal(1),
+  // Optional only while older deployments are being migrated.
+  secretUid: z.string().optional(),
   secretId: z.string(),
   controlVersionId: z.string(),
   payloadVersionId: z.string().optional(),
@@ -50,6 +57,7 @@ export const secretReadResponse = z.object({
 });
 
 export const catalogEntry = z.object({
+  secretUid: z.string().optional(),
   secretId: z.string(),
   environment: z.string(),
   controlVersionId: z.string(),

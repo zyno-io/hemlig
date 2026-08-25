@@ -195,8 +195,10 @@ test("bootstrap redemption uses its one-use authorization scheme rather than bea
             consumerId: "payments-agent",
             environment: "prod",
             capabilities: ["read"],
-            readSecretIdPrefixes: ["payments"],
-            writeSecretIdPrefixes: [],
+            readSecretIds: ["payments"],
+            readSecretUids: ["sec-payments"],
+            writeSecretIds: [],
+            writeSecretUids: [],
           },
         },
       };

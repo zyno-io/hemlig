@@ -193,6 +193,8 @@ describe("GET /v1/admin/secrets", () => {
   let listEnvironments: jest.Mock;
   let createEnvironment: jest.Mock;
   let requireEnvironment: jest.Mock;
+  let archiveSecret: jest.Mock;
+  let getArchivedControlRevision: jest.Mock;
 
   beforeEach(() => {
     listSecrets = jest.fn(async () => ({
@@ -211,9 +213,34 @@ describe("GET /v1/admin/secrets", () => {
       createdAt: "2026-08-23T00:00:00.000Z",
       createdBy: { type: "human", id: "admin-1" },
     }));
+    archiveSecret = jest.fn(async (input) => ({
+      schemaVersion: 1,
+      secretUid: "sec-payments",
+      secretId: input.secretId,
+      controlVersionId: "ctl-archived",
+      environment: input.environment,
+      state: "ARCHIVED",
+      createdAt: "2026-08-25T00:00:00.000Z",
+      createdBy: input.actor,
+      metadata: {},
+      acl: [],
+    }));
+    getArchivedControlRevision = jest.fn(async (environment, secretUid) => ({
+      schemaVersion: 1,
+      secretUid,
+      secretId: "payments-api",
+      controlVersionId: "ctl-archived",
+      environment,
+      state: "ARCHIVED",
+      createdAt: "2026-08-25T00:00:00.000Z",
+      createdBy: { type: "human", id: "admin-1" },
+      metadata: {},
+      acl: [],
+    }));
     const repository = {
       listSecrets,
       searchSecrets,
+      markAuditSucceeded: jest.fn(async () => undefined),
     } as unknown as DynamoRepository;
     fakeApp = {
       config,
@@ -238,7 +265,10 @@ describe("GET /v1/admin/secrets", () => {
         create: createEnvironment,
         require: requireEnvironment,
       } as unknown as EnvironmentService,
-      secrets: {} as unknown as SecretService,
+      secrets: {
+        archive: archiveSecret,
+        getArchivedControlRevision,
+      } as unknown as SecretService,
       consumers: {} as unknown as ConsumerService,
       clients: {} as unknown as AwsClients,
     };
@@ -275,12 +305,33 @@ describe("GET /v1/admin/secrets", () => {
       "payments",
       {},
       "stripe",
+      false,
     );
     expect(listSecrets).not.toHaveBeenCalled();
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body as string) as Record<string, unknown>;
     expect(body.truncated).toBe(true);
     expect(body.nextCursor).toBeUndefined();
+  });
+
+  it("queries only the archive catalog when archived=true", async () => {
+    const response = await handler(
+      buildEvent(
+        "GET",
+        "/v1/admin/secrets",
+        {},
+        { environment: "test", q: "stripe", archived: "true" },
+      ),
+    );
+
+    expect(searchSecrets).toHaveBeenCalledWith(
+      "test",
+      undefined,
+      {},
+      "stripe",
+      true,
+    );
+    expect(response.statusCode).toBe(200);
   });
 
   it("keeps the existing cursor-paginated behavior unchanged when q is absent", async () => {
@@ -298,6 +349,48 @@ describe("GET /v1/admin/secrets", () => {
     const body = JSON.parse(response.body as string) as Record<string, unknown>;
     expect(body.nextCursor).toBe("opaque-cursor");
     expect(body.truncated).toBeUndefined();
+  });
+
+  it("archives by name with an ETag and returns the immutable archived revision", async () => {
+    const response = await handler(
+      buildEvent(
+        "POST",
+        "/v1/admin/secrets/payments-api/archive",
+        { "idempotency-key": "archive-payments-api", "if-match": "ctl-1" },
+        { environment: "test" },
+      ),
+    );
+
+    expect(archiveSecret).toHaveBeenCalledWith({
+      secretId: "payments-api",
+      environment: "test",
+      expectedControlVersionId: "ctl-1",
+      actor: { type: "human", id: "admin-1" },
+      idempotencyKey: "archive-payments-api",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers?.etag).toBe("ctl-archived");
+    expect(JSON.parse(response.body as string)).toMatchObject({
+      state: "ARCHIVED",
+      acl: [],
+    });
+  });
+
+  it("reads archive details by UID instead of its reusable secret ID", async () => {
+    const response = await handler(
+      buildEvent(
+        "GET",
+        "/v1/admin/archived-secrets/sec-payments-123",
+        {},
+        { environment: "test" },
+      ),
+    );
+
+    expect(getArchivedControlRevision).toHaveBeenCalledWith(
+      "test",
+      "sec-payments-123",
+    );
+    expect(response.statusCode).toBe(200);
   });
 
   it("lists administrator-defined environments and creates a new one", async () => {
@@ -439,5 +532,86 @@ describe("slash-separated admin secret IDs", () => {
       "staging",
       "platform/storage/cephfs/trusted",
     );
+  });
+});
+
+describe("AgentGrant exact secret IDs", () => {
+  it("forwards exact allowlists and never reintroduces prefix fields", async () => {
+    const create = jest.fn(
+      async (input: {
+        readonly consumerId: string;
+        readonly environment: string;
+        readonly capabilities: readonly string[];
+        readonly readSecretIds: readonly string[];
+        readonly writeSecretIds: readonly string[];
+        readonly actor: unknown;
+      }) => ({
+        grantId: "grant-payments",
+        consumerId: input.consumerId,
+        environment: input.environment,
+        capabilities: input.capabilities,
+        readSecretIds: input.readSecretIds,
+        readSecretUids: ["sec-payments-stripe-api-key"],
+        writeSecretIds: input.writeSecretIds,
+        writeSecretUids: [],
+        status: "PENDING",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        createdBy: input.actor,
+      }),
+    );
+    const app = {
+      config,
+      audit: {
+        write: jest.fn(async (event: Record<string, unknown>) => ({
+          eventId: "evt-1",
+          at: "2026-08-23T00:00:00.000Z",
+          ...event,
+        })),
+      },
+      agentGrants: { create },
+    } as unknown as Application;
+    withErrorResponse.mockImplementation(
+      async (
+        event: APIGatewayProxyEventV2,
+        action: (
+          application: Application,
+          correlationId: string,
+          setAuditContext: (context: unknown) => void,
+        ) => Promise<APIGatewayProxyStructuredResultV2>,
+      ) => {
+        try {
+          return await action(app, "corr-1", () => undefined);
+        } catch (error) {
+          return errorResponse(error, "corr-1");
+        }
+      },
+    );
+
+    const response = await handler({
+      ...buildEvent("POST", "/v1/admin/agent-grants"),
+      body: JSON.stringify({
+        consumerId: "payments-agent",
+        environment: "prod",
+        capabilities: ["read"],
+        readSecretIds: ["payments/stripe-api-key"],
+        writeSecretIds: [],
+      }),
+    });
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        readSecretIds: ["payments/stripe-api-key"],
+        writeSecretIds: [],
+      }),
+    );
+    const body = JSON.parse(response.body as string) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      readSecretIds: ["payments/stripe-api-key"],
+      readSecretUids: ["sec-payments-stripe-api-key"],
+      writeSecretIds: [],
+      writeSecretUids: [],
+    });
+    expect(body.readSecretIdPrefixes).toBeUndefined();
+    expect(body.writeSecretIdPrefixes).toBeUndefined();
   });
 });

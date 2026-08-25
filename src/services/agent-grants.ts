@@ -10,7 +10,7 @@ import type {
 import {
   assertIdentifier,
   parseAgentCapabilities,
-  parseAgentSecretIdPrefixes,
+  parseAgentSecretIds,
 } from "../domain/validation";
 import type { DynamoRepository } from "../repositories/dynamo";
 import { isoNow, newId, sha256Hex } from "../util/encoding";
@@ -22,16 +22,16 @@ export interface CreateAgentGrantInput {
   readonly consumerId: string;
   readonly environment: string;
   readonly capabilities: unknown;
-  readonly readSecretIdPrefixes: unknown;
-  readonly writeSecretIdPrefixes: unknown;
+  readonly readSecretIds: unknown;
+  readonly writeSecretIds: unknown;
   readonly displayName?: unknown;
   readonly actor: Actor;
 }
 
 export interface UpdateAgentGrantInput {
   readonly capabilities: unknown;
-  readonly readSecretIdPrefixes: unknown;
-  readonly writeSecretIdPrefixes: unknown;
+  readonly readSecretIds: unknown;
+  readonly writeSecretIds: unknown;
   readonly displayName?: unknown;
 }
 
@@ -48,8 +48,10 @@ export interface BootstrapRedemptionResult extends ConsumerProvisioningResult {
     | "consumerId"
     | "environment"
     | "capabilities"
-    | "readSecretIdPrefixes"
-    | "writeSecretIdPrefixes"
+    | "readSecretIds"
+    | "readSecretUids"
+    | "writeSecretIds"
+    | "writeSecretUids"
   >;
 }
 
@@ -71,18 +73,20 @@ export class AgentGrantService {
       );
     }
     const capabilities = parseAgentCapabilities(input.capabilities);
-    const readSecretIdPrefixes = capabilities.includes("read")
-      ? parseAgentSecretIdPrefixes(
-          input.readSecretIdPrefixes,
-          "readSecretIdPrefixes",
-        )
-      : emptyPrefixes(input.readSecretIdPrefixes, "readSecretIdPrefixes");
-    const writeSecretIdPrefixes = capabilities.includes("write")
-      ? parseAgentSecretIdPrefixes(
-          input.writeSecretIdPrefixes,
-          "writeSecretIdPrefixes",
-        )
-      : emptyPrefixes(input.writeSecretIdPrefixes, "writeSecretIdPrefixes");
+    const readSecretIds = capabilities.includes("read")
+      ? parseAgentSecretIds(input.readSecretIds, "readSecretIds")
+      : emptySecretIds(input.readSecretIds, "readSecretIds");
+    const writeSecretIds = capabilities.includes("write")
+      ? parseAgentSecretIds(input.writeSecretIds, "writeSecretIds")
+      : emptySecretIds(input.writeSecretIds, "writeSecretIds");
+    const readSecretUids = await this.resolveSecretUids(
+      input.environment,
+      readSecretIds,
+    );
+    const writeSecretUids = await this.resolveSecretUids(
+      input.environment,
+      writeSecretIds,
+    );
     if (
       input.displayName !== undefined &&
       (typeof input.displayName !== "string" ||
@@ -101,8 +105,10 @@ export class AgentGrantService {
       consumerId: input.consumerId,
       environment: input.environment,
       capabilities,
-      readSecretIdPrefixes,
-      writeSecretIdPrefixes,
+      readSecretIds,
+      readSecretUids,
+      writeSecretIds,
+      writeSecretUids,
       ...(input.displayName === undefined
         ? {}
         : { displayName: input.displayName }),
@@ -124,18 +130,20 @@ export class AgentGrantService {
       throw notFound("The requested agent grant was not found.");
     }
     const capabilities = parseAgentCapabilities(input.capabilities);
-    const readSecretIdPrefixes = capabilities.includes("read")
-      ? parseAgentSecretIdPrefixes(
-          input.readSecretIdPrefixes,
-          "readSecretIdPrefixes",
-        )
-      : emptyPrefixes(input.readSecretIdPrefixes, "readSecretIdPrefixes");
-    const writeSecretIdPrefixes = capabilities.includes("write")
-      ? parseAgentSecretIdPrefixes(
-          input.writeSecretIdPrefixes,
-          "writeSecretIdPrefixes",
-        )
-      : emptyPrefixes(input.writeSecretIdPrefixes, "writeSecretIdPrefixes");
+    const readSecretIds = capabilities.includes("read")
+      ? parseAgentSecretIds(input.readSecretIds, "readSecretIds")
+      : emptySecretIds(input.readSecretIds, "readSecretIds");
+    const writeSecretIds = capabilities.includes("write")
+      ? parseAgentSecretIds(input.writeSecretIds, "writeSecretIds")
+      : emptySecretIds(input.writeSecretIds, "writeSecretIds");
+    const readSecretUids = await this.resolveSecretUids(
+      existing.environment,
+      readSecretIds,
+    );
+    const writeSecretUids = await this.resolveSecretUids(
+      existing.environment,
+      writeSecretIds,
+    );
     if (
       input.displayName !== undefined &&
       (typeof input.displayName !== "string" ||
@@ -149,8 +157,10 @@ export class AgentGrantService {
     const updated: AgentGrantRecord = {
       ...existing,
       capabilities,
-      readSecretIdPrefixes,
-      writeSecretIdPrefixes,
+      readSecretIds,
+      readSecretUids,
+      writeSecretIds,
+      writeSecretUids,
       ...(input.displayName === undefined
         ? {}
         : { displayName: input.displayName }),
@@ -274,14 +284,31 @@ export class AgentGrantService {
         consumerId: grant.consumerId,
         environment: grant.environment,
         capabilities: grant.capabilities,
-        readSecretIdPrefixes: grant.readSecretIdPrefixes ?? [],
-        writeSecretIdPrefixes: grant.writeSecretIdPrefixes ?? [],
+        readSecretIds: grant.readSecretIds,
+        readSecretUids: grant.readSecretUids,
+        writeSecretIds: grant.writeSecretIds,
+        writeSecretUids: grant.writeSecretUids,
       },
     };
   }
+
+  /** Resolves public IDs once, at policy write time, to immutable targets. */
+  private async resolveSecretUids(
+    environment: string,
+    secretIds: readonly string[],
+  ): Promise<readonly string[]> {
+    const heads = await Promise.all(
+      secretIds.map(async (secretId) =>
+        this.repository.requireHead(environment, secretId),
+      ),
+    );
+    return heads
+      .map((head) => head.secretUid)
+      .sort((left, right) => left.localeCompare(right));
+  }
 }
 
-const emptyPrefixes = (value: unknown, field: string): readonly string[] => {
+const emptySecretIds = (value: unknown, field: string): readonly string[] => {
   if (value === undefined) {
     return [];
   }

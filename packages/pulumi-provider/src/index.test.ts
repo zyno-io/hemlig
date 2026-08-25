@@ -38,8 +38,8 @@ function agentGrantInputs(
     consumerId: "staging-hemlig-sentinel",
     environment: "staging",
     capabilities: ["read"],
-    readSecretIdPrefixes: ["platform/hemlig/integration"],
-    writeSecretIdPrefixes: [],
+    readSecretIds: ["platform/hemlig/integration"],
+    writeSecretIds: [],
     displayName: "Staging Hemlig Pulumi sentinel",
     bootstrapGeneration: "1",
     ...overrides,
@@ -82,6 +82,7 @@ test("metadata-only updates preserve the current immutable payload revision", as
         throw new Error("create must not be called during update");
       },
       getAdminSecret: async () => ({
+        secretUid: "sec-pulumi",
         secretId: "platform-hemlig-pulumi-sentinel",
         environment: "staging",
         controlVersionId: "ctl-current",
@@ -94,6 +95,7 @@ test("metadata-only updates preserve the current immutable payload revision", as
       updateAdminSecret: async () => {
         metadataUpdates += 1;
         return {
+          secretUid: "sec-pulumi",
           secretId: "platform-hemlig-pulumi-sentinel",
           environment: "staging",
           controlVersionId: "ctl-metadata",
@@ -133,6 +135,7 @@ test("payload updates write exactly one new revision", async () => {
         throw new Error("create must not be called during update");
       },
       getAdminSecret: async () => ({
+        secretUid: "sec-pulumi",
         secretId: "platform-hemlig-pulumi-sentinel",
         environment: "staging",
         controlVersionId: "ctl-current",
@@ -150,6 +153,7 @@ test("payload updates write exactly one new revision", async () => {
       putAdminPayload: async () => {
         payloadWrites += 1;
         return {
+          secretUid: "sec-pulumi",
           secretId: "platform-hemlig-pulumi-sentinel",
           environment: "staging",
           controlVersionId: "ctl-payload",
@@ -188,8 +192,10 @@ test("creates one pending agent grant and one bootstrap capability", async () =>
           consumerId: "staging-hemlig-sentinel",
           environment: "staging",
           capabilities: ["read"] as const,
-          readSecretIdPrefixes: ["platform/hemlig/integration"],
-          writeSecretIdPrefixes: [],
+          readSecretIds: ["platform/hemlig/integration"],
+          readSecretUids: ["sec-platform-hemlig-integration"],
+          writeSecretIds: [],
+          writeSecretUids: [],
           displayName: "Staging Hemlig Pulumi sentinel",
           status: "PENDING" as const,
           createdAt: "2026-08-23T00:00:00.000Z",
@@ -279,8 +285,10 @@ test("updates an active AgentGrant policy without re-enrolling its consumer", as
           consumerId: "staging-hemlig-sentinel",
           environment: "staging",
           capabilities: input.capabilities,
-          readSecretIdPrefixes: input.readSecretIdPrefixes ?? [],
-          writeSecretIdPrefixes: input.writeSecretIdPrefixes ?? [],
+          readSecretIds: input.readSecretIds ?? [],
+          readSecretUids: [],
+          writeSecretIds: input.writeSecretIds ?? [],
+          writeSecretUids: [],
           displayName: input.displayName,
           status: "ACTIVE",
           createdAt: "2026-08-23T00:00:00.000Z",
@@ -300,7 +308,7 @@ test("updates an active AgentGrant policy without re-enrolling its consumer", as
     "grant-staging-hemlig-sentinel",
     oldInputs,
     agentGrantInputs({
-      readSecretIdPrefixes: [
+      readSecretIds: [
         "platform/hemlig/integration",
         "platform/gitlab-agents/staging",
       ],

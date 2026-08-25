@@ -112,6 +112,9 @@ export const handler = async (
         );
         const tags = parseCatalogTagFilters(event.queryStringParameters?.tags);
         const q = parseCatalogSearchQuery(event.queryStringParameters?.q);
+        const archived = parseArchivedQuery(
+          event.queryStringParameters?.archived,
+        );
         if (q !== undefined) {
           // The plain catalog page below applies its filters (workflowState,
           // tags) after a bounded read, so a page can come back empty while
@@ -126,6 +129,7 @@ export const handler = async (
             pathPrefix,
             tags,
             q,
+            archived,
           );
           await app.audit.write({
             correlationId,
@@ -143,7 +147,7 @@ export const handler = async (
           });
         }
         const rawCursor = event.queryStringParameters?.cursor;
-        const cursorScope = `admin:${actor.id}:${sha256Hex(stableJson({ environment, pathPrefix, tags }))}`;
+        const cursorScope = `admin:${actor.id}:${sha256Hex(stableJson({ environment, pathPrefix, tags, archived }))}`;
         const decoded =
           rawCursor === undefined
             ? undefined
@@ -153,6 +157,7 @@ export const handler = async (
           pathPrefix,
           tags,
           decoded?.lastEvaluatedKey,
+          archived,
         );
         const nextCursor =
           page.nextCursor === undefined
@@ -222,9 +227,13 @@ export const handler = async (
         const pathPrefix = parseCatalogPathPrefix(
           event.queryStringParameters?.pathPrefix,
         );
+        const archived = parseArchivedQuery(
+          event.queryStringParameters?.archived,
+        );
         const tree = await app.repository.listSecretTree(
           environment,
           pathPrefix,
+          archived,
         );
         await app.audit.write({
           correlationId,
@@ -236,6 +245,7 @@ export const handler = async (
         return json(200, {
           environment,
           ...(pathPrefix === undefined ? {} : { pathPrefix }),
+          ...(archived ? { archived: true } : {}),
           folders: tree.folders,
           secrets: tree.secrets.map((secret) => secretCatalogEntry(secret)),
           truncated: tree.truncated,
@@ -251,8 +261,8 @@ export const handler = async (
           consumerId: requiredString(body, "consumerId"),
           environment: requiredString(body, "environment"),
           capabilities: body.capabilities,
-          readSecretIdPrefixes: body.readSecretIdPrefixes,
-          writeSecretIdPrefixes: body.writeSecretIdPrefixes,
+          readSecretIds: body.readSecretIds,
+          writeSecretIds: body.writeSecretIds,
           ...(body.displayName === undefined
             ? {}
             : { displayName: body.displayName }),
@@ -281,8 +291,8 @@ export const handler = async (
           agentGrantMatch[1] as string,
           {
             capabilities: body.capabilities,
-            readSecretIdPrefixes: body.readSecretIdPrefixes,
-            writeSecretIdPrefixes: body.writeSecretIdPrefixes,
+            readSecretIds: body.readSecretIds,
+            writeSecretIds: body.writeSecretIds,
             ...(body.displayName === undefined
               ? {}
               : { displayName: body.displayName }),
@@ -610,6 +620,32 @@ export const handler = async (
           : response();
       }
       const decodedPath = decodeRequestPath(event.rawPath);
+      const archivedSecretMatch = new RegExp(
+        "^/v1/admin/archived-secrets/(sec-[a-z0-9-]{3,127})$",
+      ).exec(decodedPath);
+      if (
+        event.requestContext.http.method === "GET" &&
+        archivedSecretMatch !== null
+      ) {
+        const environment = requireQueryString(event, "environment");
+        const control = await app.secrets.getArchivedControlRevision(
+          environment,
+          archivedSecretMatch[1] as string,
+        );
+        await app.audit.write({
+          correlationId,
+          outcome: "succeeded",
+          actor,
+          operation,
+          target: {
+            environment,
+            secretId: control.secretId,
+            controlVersionId: control.controlVersionId,
+          },
+          sourceIp: event.requestContext.http.sourceIp,
+        });
+        return json(200, control, { etag: control.controlVersionId });
+      }
       const secretMatch = new RegExp(
         `^/v1/admin/secrets/(${secretIdRoutePart})$`,
       ).exec(decodedPath);
@@ -621,10 +657,42 @@ export const handler = async (
         decodedPath,
         "/revisions",
       );
-      const payloadSecretId = secretIdFromSuffixedPath(
-        decodedPath,
-        "/payload",
-      );
+      const payloadSecretId = secretIdFromSuffixedPath(decodedPath, "/payload");
+      const archiveSecretId = secretIdFromSuffixedPath(decodedPath, "/archive");
+      if (
+        event.requestContext.http.method === "POST" &&
+        archiveSecretId !== undefined
+      ) {
+        const key = requireIdempotencyKey(event.headers["idempotency-key"]);
+        const environment = requireQueryString(event, "environment");
+        setAuditContext({
+          actor,
+          operation,
+          target: { environment, secretId: archiveSecretId },
+          sourceIp: event.requestContext.http.sourceIp,
+        });
+        const control = await app.secrets.archive({
+          secretId: archiveSecretId,
+          environment,
+          expectedControlVersionId: requireIfMatch(event.headers["if-match"]),
+          actor,
+          idempotencyKey: key,
+        });
+        return await humanOperation(
+          app,
+          actor,
+          key,
+          correlationId,
+          operation,
+          event.requestContext.http.sourceIp,
+          {
+            environment: control.environment,
+            secretId: control.secretId,
+            controlVersionId: control.controlVersionId,
+          },
+          () => json(200, control, { etag: control.controlVersionId }),
+        );
+      }
       if (
         event.requestContext.http.method === "GET" &&
         revisionSecretId !== undefined
@@ -674,7 +742,8 @@ export const handler = async (
         event.requestContext.http.method === "GET" &&
         secretMatch !== null &&
         payloadSecretId === undefined &&
-        revisionSecretId === undefined
+        revisionSecretId === undefined &&
+        archiveSecretId === undefined
       ) {
         const environment = requireQueryString(event, "environment");
         const control = await app.secrets.getControlRevision(
@@ -741,7 +810,8 @@ export const handler = async (
         event.requestContext.http.method === "PUT" &&
         secretMatch !== null &&
         payloadSecretId === undefined &&
-        revisionSecretId === undefined
+        revisionSecretId === undefined &&
+        archiveSecretId === undefined
       ) {
         const key = requireIdempotencyKey(event.headers["idempotency-key"]);
         const body = parseObjectBody(event.body);
@@ -848,7 +918,7 @@ const secretIdRoutePart = "[a-z][a-z0-9-]{2,63}(?:/[a-z][a-z0-9-]{2,63})*";
 
 const secretIdFromSuffixedPath = (
   decodedPath: string,
-  suffix: "/payload" | "/revisions",
+  suffix: "/payload" | "/revisions" | "/archive",
 ): string | undefined => {
   const prefix = "/v1/admin/secrets/";
   if (!decodedPath.startsWith(prefix) || !decodedPath.endsWith(suffix)) {
@@ -858,6 +928,16 @@ const secretIdFromSuffixedPath = (
   return new RegExp(`^${secretIdRoutePart}$`).test(secretId)
     ? secretId
     : undefined;
+};
+
+const parseArchivedQuery = (value: string | undefined): boolean => {
+  if (value === undefined || value === "false") {
+    return false;
+  }
+  if (value === "true") {
+    return true;
+  }
+  throw badRequest("archived must be true or false.");
 };
 
 const decodeRequestPath = (value: string): string => {
@@ -935,6 +1015,7 @@ const apiIdentityDetail = (
 });
 
 const secretCatalogEntry = (secret: HeadRecord): Record<string, unknown> => ({
+  secretUid: secret.secretUid,
   secretId: secret.secretId,
   environment: secret.environment,
   controlVersionId: secret.controlVersionId,
@@ -960,8 +1041,10 @@ const agentGrantResponse = (
   consumerId: grant.consumerId,
   environment: grant.environment,
   capabilities: grant.capabilities,
-  readSecretIdPrefixes: grant.readSecretIdPrefixes ?? [],
-  writeSecretIdPrefixes: grant.writeSecretIdPrefixes ?? [],
+  readSecretIds: grant.readSecretIds,
+  readSecretUids: grant.readSecretUids,
+  writeSecretIds: grant.writeSecretIds,
+  writeSecretUids: grant.writeSecretUids,
   ...(grant.displayName === undefined
     ? {}
     : { displayName: grant.displayName }),

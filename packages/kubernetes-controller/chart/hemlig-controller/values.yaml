@@ -1,6 +1,6 @@
 # This release profile deliberately has cluster-wide Kubernetes RBAC. The
 # current controller discovers Hemlig resources across namespaces and watches
-# source Secrets globally. Hemlig AgentGrant path scopes and HemligProvider
+# source Secrets globally. Hemlig AgentGrant exact-secret scopes and HemligProvider
 # namespace selectors still bound remote secret access, but are not a
 # replacement for reviewing this Kubernetes permission grant.
 replicaCount: 1

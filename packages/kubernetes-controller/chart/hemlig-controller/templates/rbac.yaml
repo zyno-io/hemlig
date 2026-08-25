@@ -1,7 +1,7 @@
 {{- if .Values.rbac.create }}
 # The controller currently reconciles the Hemlig CRs and source/target Secrets
 # across namespaces, so this role is intentionally cluster-scoped. The remote
-# HemligProvider selector and AgentGrant path scope remain separate controls.
+# HemligProvider selector and AgentGrant exact-secret scope remain separate controls.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

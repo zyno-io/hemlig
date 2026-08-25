@@ -45,6 +45,7 @@ export class HemligApi {
     tags?: string;
     q?: string;
     cursor?: string;
+    archived?: boolean;
   }): Promise<s.CatalogPage> {
     return this.request(s.catalogPage, "/v1/admin/secrets", {
       query: {
@@ -53,6 +54,7 @@ export class HemligApi {
         tags: input.tags,
         q: input.q,
         cursor: input.cursor,
+        archived: input.archived ? "true" : undefined,
       },
     });
   }
@@ -66,9 +68,14 @@ export class HemligApi {
   public getSecretsTree(input: {
     environment: string;
     pathPrefix?: string;
+    archived?: boolean;
   }): Promise<s.SecretTreePage> {
     return this.request(s.secretTreePage, "/v1/admin/secrets/tree", {
-      query: { environment: input.environment, pathPrefix: input.pathPrefix },
+      query: {
+        environment: input.environment,
+        pathPrefix: input.pathPrefix,
+        archived: input.archived ? "true" : undefined,
+      },
     });
   }
 
@@ -79,6 +86,18 @@ export class HemligApi {
     return this.request(
       s.controlRevision,
       `/v1/admin/secrets/${encode(secretId)}`,
+      { query: { environment } },
+    );
+  }
+
+  /** Archived identities are addressed by UID because their old name is reusable. */
+  public getArchivedSecret(
+    environment: string,
+    secretUid: string,
+  ): Promise<s.ControlRevision> {
+    return this.request(
+      s.controlRevision,
+      `/v1/admin/archived-secrets/${encode(secretUid)}`,
       { query: { environment } },
     );
   }
@@ -135,6 +154,24 @@ export class HemligApi {
         method: "PUT",
         query: { environment },
         body: input,
+        idempotencyKey,
+        ifMatch: controlVersionId,
+      },
+    );
+  }
+
+  public archiveSecret(
+    environment: string,
+    secretId: string,
+    controlVersionId: string,
+    idempotencyKey: string,
+  ): Promise<s.ControlRevision> {
+    return this.request(
+      s.controlRevision,
+      `/v1/admin/secrets/${encode(secretId)}/archive`,
+      {
+        method: "POST",
+        query: { environment },
         idempotencyKey,
         ifMatch: controlVersionId,
       },

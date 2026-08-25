@@ -52,6 +52,14 @@ export interface UpdateSecretInput {
   readonly idempotencyKey: string;
 }
 
+export interface ArchiveSecretInput {
+  readonly secretId: string;
+  readonly environment: string;
+  readonly expectedControlVersionId: string;
+  readonly actor: Actor;
+  readonly idempotencyKey: string;
+}
+
 export interface SecretReadResult {
   readonly notModified: boolean;
   readonly controlVersionId: string;
@@ -82,6 +90,7 @@ export class SecretService {
     const now = isoNow();
     const control: ControlRevision = {
       schemaVersion: 1,
+      secretUid: `sec-${newId()}`,
       secretId,
       controlVersionId: `ctl-${newId()}`,
       environment: input.environment,
@@ -132,6 +141,7 @@ export class SecretService {
         input.payload,
         {
           environment: head.environment,
+          secretUid: head.secretUid,
           secretId: input.secretId,
           payloadVersionId,
         },
@@ -141,6 +151,7 @@ export class SecretService {
     }
     const control: ControlRevision = {
       schemaVersion: 1,
+      secretUid: head.secretUid,
       secretId: input.secretId,
       controlVersionId: `ctl-${newId()}`,
       payloadVersionId,
@@ -169,6 +180,60 @@ export class SecretService {
     return control;
   }
 
+  /**
+   * Archives one immutable identity. The external name lookup is removed only
+   * when the archival control revision commits, which makes the name reusable
+   * without ever confusing existing revisions or access grants with a later
+   * secret that has the same name.
+   */
+  public async archive(input: ArchiveSecretInput): Promise<ControlRevision> {
+    const head = await this.repository.requireHead(
+      input.environment,
+      input.secretId,
+    );
+    this.assertExpectedVersion(head, input.expectedControlVersionId);
+    const currentControl = await this.getControl(head);
+    const control: ControlRevision = {
+      ...currentControl,
+      secretUid: head.secretUid,
+      controlVersionId: `ctl-${newId()}`,
+      state: "ARCHIVED",
+      createdAt: isoNow(),
+      createdBy: input.actor,
+      // An archive is deliberately not an authorization mechanism. Removing
+      // every grant makes the mutation publish durable revocations before the
+      // live name becomes available for a new secret.
+      acl: [],
+    };
+    const priorAccess = await this.priorAccess(
+      currentControl.acl,
+      head.environment,
+      input.secretId,
+    );
+    await this.persistMutation({
+      control,
+      actor: input.actor,
+      idempotencyKey: input.idempotencyKey,
+      expectedControlVersionId: input.expectedControlVersionId,
+      priorHead: head,
+      priorAccess,
+      archive: true,
+    });
+    return control;
+  }
+
+  /** Reads a historical archive entry by its immutable identity, not its reusable name. */
+  public async getArchivedControlRevision(
+    environment: string,
+    secretUid: string,
+  ): Promise<ControlRevision> {
+    const head = await this.repository.requireHeadBySecretUid(secretUid);
+    if (head.environment !== environment || head.state !== "ARCHIVED") {
+      throw notFound("The requested archived secret was not found.");
+    }
+    return this.getControl(head);
+  }
+
   public async read(
     consumerId: string,
     consumerEnvironment: string,
@@ -185,6 +250,7 @@ export class SecretService {
     if (
       access === undefined ||
       access.environment !== consumerEnvironment ||
+      access.secretId !== secretId ||
       !access.permissions.includes("read") ||
       access.state === "REVOKED"
     ) {
@@ -193,6 +259,8 @@ export class SecretService {
     if (
       head === undefined ||
       head.environment !== access.environment ||
+      head.secretId !== secretId ||
+      head.secretUid !== access.secretUid ||
       head.state !== "ACTIVE"
     ) {
       throw forbidden();
@@ -243,6 +311,8 @@ export class SecretService {
     const control = await this.getControl(head);
     if (
       control.schemaVersion !== 1 ||
+      (control.secretUid !== undefined &&
+        control.secretUid !== head.secretUid) ||
       control.secretId !== secretId ||
       control.environment !== head.environment ||
       control.controlVersionId !== head.controlVersionId ||
@@ -254,20 +324,22 @@ export class SecretService {
       );
     }
     const payloadObjectVersionId = head.payloadObjectVersionId;
-    if (payloadObjectVersionId === undefined) {
+    const payloadObjectKey = head.payloadObjectKey;
+    if (
+      payloadObjectVersionId === undefined ||
+      payloadObjectKey === undefined
+    ) {
       throw serviceUnavailable(
         "The secret payload does not have an immutable object version.",
       );
     }
     const payload = await this.objects.getJson<
       Parameters<EnvelopeCrypto["decrypt"]>[0]
-    >(
-      this.config.revisionBucketName,
-      payloadKey(environment, secretId, head.payloadVersionId),
-      payloadObjectVersionId,
-    );
+    >(this.config.revisionBucketName, payloadObjectKey, payloadObjectVersionId);
     if (
       payload.schemaVersion !== 1 ||
+      (payload.secretUid !== undefined &&
+        payload.secretUid !== head.secretUid) ||
       payload.secretId !== secretId ||
       payload.environment !== head.environment ||
       payload.payloadVersionId !== head.payloadVersionId
@@ -292,6 +364,7 @@ export class SecretService {
     readonly expectedControlVersionId?: string;
     readonly priorHead?: HeadRecord;
     readonly priorAccess?: readonly AccessRecord[];
+    readonly archive?: true;
   }): Promise<void> {
     const idempotency = await this.repository.getIdempotency(
       input.actor,
@@ -299,6 +372,12 @@ export class SecretService {
     );
     if (idempotency !== undefined) {
       throw conflict("This idempotency key has already been used.");
+    }
+    const secretUid = input.control.secretUid;
+    if (secretUid === undefined) {
+      throw serviceUnavailable(
+        "The secret mutation does not have an internal ID.",
+      );
     }
     const operationId = newId();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -318,14 +397,12 @@ export class SecretService {
         }),
       ),
       secretId: input.control.secretId,
+      secretUid,
       environment: input.control.environment,
       expectedControlVersionId: input.expectedControlVersionId,
+      ...(input.archive === true ? { archive: true as const } : {}),
       control: input.control,
-      controlKey: controlKey(
-        input.control.environment,
-        input.control.secretId,
-        input.control.controlVersionId,
-      ),
+      controlKey: controlKey(secretUid, input.control.controlVersionId),
       controlChecksumSha256: sha256Base64(controlBytes),
       controlBytes,
       payload:
@@ -333,11 +410,7 @@ export class SecretService {
           ? undefined
           : {
               revision: input.payload,
-              key: payloadKey(
-                input.control.environment,
-                input.control.secretId,
-                input.payload.payloadVersionId,
-              ),
+              key: payloadKey(secretUid, input.payload.payloadVersionId),
               checksumSha256: sha256Base64(payloadBytes),
               bytes: payloadBytes,
             },
@@ -368,16 +441,20 @@ export class SecretService {
   }
 
   private async getControl(head: HeadRecord): Promise<ControlRevision> {
-    if (head.controlObjectVersionId === undefined) {
+    if (
+      head.controlObjectVersionId === undefined ||
+      head.controlObjectKey === undefined
+    ) {
       throw serviceUnavailable(
         "The secret control revision does not have an immutable object version.",
       );
     }
-    return this.objects.getJson<ControlRevision>(
+    const control = await this.objects.getJson<ControlRevision>(
       this.config.revisionBucketName,
-      controlKey(head.environment, head.secretId, head.controlVersionId),
+      head.controlObjectKey,
       head.controlObjectVersionId,
     );
+    return { ...control, secretUid: head.secretUid };
   }
 
   private async priorAccess(
@@ -421,15 +498,14 @@ export class SecretService {
       return;
     }
     const retainUntil = new Date(Date.now() + 91 * 24 * 60 * 60 * 1000);
-    if (head.controlObjectVersionId !== undefined) {
+    if (
+      head.controlObjectVersionId !== undefined &&
+      head.controlObjectKey !== undefined
+    ) {
       await this.objects.extendComplianceRetention(
         {
           bucket: this.config.revisionBucketName,
-          key: controlKey(
-            head.environment,
-            head.secretId,
-            head.controlVersionId,
-          ),
+          key: head.controlObjectKey,
           versionId: head.controlObjectVersionId,
           checksumSha256: "",
         },
@@ -438,16 +514,13 @@ export class SecretService {
     }
     if (
       head.payloadVersionId !== undefined &&
-      head.payloadObjectVersionId !== undefined
+      head.payloadObjectVersionId !== undefined &&
+      head.payloadObjectKey !== undefined
     ) {
       await this.objects.extendComplianceRetention(
         {
           bucket: this.config.revisionBucketName,
-          key: payloadKey(
-            head.environment,
-            head.secretId,
-            head.payloadVersionId,
-          ),
+          key: head.payloadObjectKey,
           versionId: head.payloadObjectVersionId,
           checksumSha256: "",
         },
@@ -466,15 +539,11 @@ export class SecretService {
 }
 
 export const controlKey = (
-  environment: string,
-  secretId: string,
+  secretUid: string,
   controlVersionId: string,
-): string =>
-  `secrets/${environment}/${secretId}/control/${controlVersionId}.json`;
+): string => `secrets/${secretUid}/control/${controlVersionId}.json`;
 
 export const payloadKey = (
-  environment: string,
-  secretId: string,
+  secretUid: string,
   payloadVersionId: string,
-): string =>
-  `secrets/${environment}/${secretId}/payload/${payloadVersionId}.json`;
+): string => `secrets/${secretUid}/payload/${payloadVersionId}.json`;

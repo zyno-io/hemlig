@@ -73,8 +73,8 @@ export interface HemligAgentGrantArgs {
   readonly consumerId: pulumi.Input<string>;
   readonly environment: pulumi.Input<string>;
   readonly capabilities: pulumi.Input<readonly ("read" | "write")[]>;
-  readonly readSecretIdPrefixes: pulumi.Input<readonly string[]>;
-  readonly writeSecretIdPrefixes: pulumi.Input<readonly string[]>;
+  readonly readSecretIds: pulumi.Input<readonly string[]>;
+  readonly writeSecretIds: pulumi.Input<readonly string[]>;
   readonly displayName: pulumi.Input<string>;
   /** Bump only before enrollment to replace an expired bootstrap capability. */
   readonly bootstrapGeneration: pulumi.Input<string>;
@@ -86,8 +86,8 @@ export interface ResolvedAgentGrantInputs {
   readonly consumerId: string;
   readonly environment: string;
   readonly capabilities: readonly ("read" | "write")[];
-  readonly readSecretIdPrefixes: readonly string[];
-  readonly writeSecretIdPrefixes: readonly string[];
+  readonly readSecretIds: readonly string[];
+  readonly writeSecretIds: readonly string[];
   readonly displayName: string;
   readonly bootstrapGeneration: string;
 }
@@ -286,8 +286,8 @@ export class HemligAgentGrantProvider
       consumerId: inputs.consumerId,
       environment: inputs.environment,
       capabilities: inputs.capabilities,
-      readSecretIdPrefixes: inputs.readSecretIdPrefixes,
-      writeSecretIdPrefixes: inputs.writeSecretIdPrefixes,
+      readSecretIds: inputs.readSecretIds,
+      writeSecretIds: inputs.writeSecretIds,
       displayName: inputs.displayName,
     });
     const capability = await client.issueBootstrapCapability(
@@ -324,8 +324,8 @@ export class HemligAgentGrantProvider
     const adminToken = this.adminTokenFor();
     const policyChanged = [
       "capabilities",
-      "readSecretIdPrefixes",
-      "writeSecretIdPrefixes",
+      "readSecretIds",
+      "writeSecretIds",
       "displayName",
     ].some(
       (property) =>
@@ -338,8 +338,8 @@ export class HemligAgentGrantProvider
         olds.grantId,
         {
           capabilities: news.capabilities,
-          readSecretIdPrefixes: news.readSecretIdPrefixes,
-          writeSecretIdPrefixes: news.writeSecretIdPrefixes,
+          readSecretIds: news.readSecretIds,
+          writeSecretIds: news.writeSecretIds,
           displayName: news.displayName,
         },
       );

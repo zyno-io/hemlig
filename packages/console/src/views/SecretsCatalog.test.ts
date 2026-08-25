@@ -77,6 +77,24 @@ describe("parseCatalogFilter", () => {
   });
 });
 
+describe("archived catalog mode", () => {
+  it("passes archived=true to the tree read only when the URL opts in", async () => {
+    const getSecretsTree = vi.fn(async () => emptyTreePage);
+
+    await mountCatalog(
+      defaultApi({ getSecretsTree }),
+      { env: "dev" },
+      { archived: "true" },
+    );
+
+    expect(getSecretsTree).toHaveBeenCalledWith({
+      environment: "dev",
+      pathPrefix: undefined,
+      archived: true,
+    });
+  });
+});
+
 const emptyTreePage: SecretTreePage = {
   environment: "dev",
   folders: [],

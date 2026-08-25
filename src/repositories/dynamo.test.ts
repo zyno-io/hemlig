@@ -110,9 +110,7 @@ describe("secret ID catalog index", () => {
     expect(catalogSk("payments/stripe/api-key")).toBe(
       "PATH#payments/stripe/SECRET#payments/stripe/api-key",
     );
-    expect(catalogSk("root-secret")).toBe(
-      "PATH#_/SECRET#root-secret",
-    );
+    expect(catalogSk("root-secret")).toBe("PATH#_/SECRET#root-secret");
   });
 });
 
@@ -152,9 +150,11 @@ describe("console management indexes", () => {
       actor: { type: "human", id: "admin-1" },
       requestDigest: `digest-${environment}`,
       secretId: "shared-secret",
+      secretUid: `sec-${environment}`,
       environment,
       control: {
         schemaVersion: 1,
+        secretUid: `sec-${environment}`,
         secretId: "shared-secret",
         controlVersionId: `ctl-${environment}`,
         environment,
@@ -164,7 +164,7 @@ describe("console management indexes", () => {
         metadata: {},
         acl: [],
       },
-      controlKey: `secrets/${environment}/shared-secret/control.json`,
+      controlKey: `secrets/sec-${environment}/control.json`,
       controlChecksumSha256: "checksum",
       controlBytes: Buffer.from("control"),
       expiresAt: "2026-08-24T00:10:00.000Z",
@@ -183,8 +183,27 @@ describe("console management indexes", () => {
         .find((item) => item.sk === "HEAD");
     });
     expect(heads).toEqual([
-      expect.objectContaining({ pk: "SECRET#dev#shared-secret" }),
-      expect.objectContaining({ pk: "SECRET#prod#shared-secret" }),
+      expect.objectContaining({ pk: "SECRET#sec-dev" }),
+      expect.objectContaining({ pk: "SECRET#sec-prod" }),
+    ]);
+    const lookups = (dynamo.send as jest.Mock).mock.calls.map(([command]) => {
+      const transaction = command as TransactWriteCommand;
+      const items = transaction.input.TransactItems ?? [];
+      return items
+        .flatMap((item) =>
+          item.Put?.Item === undefined ? [] : [item.Put.Item],
+        )
+        .find((item) => item.sk === "LOOKUP");
+    });
+    expect(lookups).toEqual([
+      expect.objectContaining({
+        pk: "SECRET_NAME#dev#shared-secret",
+        secretUid: "sec-dev",
+      }),
+      expect.objectContaining({
+        pk: "SECRET_NAME#prod#shared-secret",
+        secretUid: "sec-prod",
+      }),
     ]);
   });
 
@@ -195,6 +214,7 @@ describe("console management indexes", () => {
     const repository = new DynamoRepository(dynamo, config);
     const control = {
       schemaVersion: 1 as const,
+      secretUid: "sec-payments",
       secretId: "payments-api",
       controlVersionId: "ctl-next",
       payloadVersionId: "pay-next",
@@ -211,8 +231,9 @@ describe("console management indexes", () => {
     };
     const priorAccess = control.acl.map((grant) => ({
       pk: `CONSUMER#${grant.consumerId}`,
-      sk: "SECRET#prod#payments-api",
+      sk: "SECRET#prod#sec-payments",
       consumerId: grant.consumerId,
+      secretUid: "sec-payments",
       secretId: "payments-api",
       environment: "prod",
       permissions: ["read"] as const,
@@ -228,6 +249,7 @@ describe("console management indexes", () => {
         actor: { type: "human", id: "admin-1" },
         requestDigest: "digest",
         secretId: control.secretId,
+        secretUid: "sec-payments",
         environment: control.environment,
         expectedControlVersionId: "ctl-prior",
         control,
@@ -237,6 +259,7 @@ describe("console management indexes", () => {
         payload: {
           revision: {
             schemaVersion: 1,
+            secretUid: "sec-payments",
             secretId: control.secretId,
             payloadVersionId: "pay-next",
             environment: control.environment,
@@ -269,8 +292,9 @@ describe("console management indexes", () => {
         checksumSha256: "checksum-payload",
       },
       priorHead: {
-        pk: "SECRET#prod#payments-api",
+        pk: "SECRET#sec-payments",
         sk: "HEAD",
+        secretUid: "sec-payments",
         secretId: "payments-api",
         environment: "prod",
         controlVersionId: "ctl-prior",
@@ -322,6 +346,7 @@ describe("console management indexes", () => {
     );
     const control = {
       schemaVersion: 1 as const,
+      secretUid: "sec-payments",
       secretId: "payments-api",
       controlVersionId: "ctl-next",
       payloadVersionId: "pay-next",
@@ -343,6 +368,7 @@ describe("console management indexes", () => {
         actor: { type: "human", id: "admin-1" },
         requestDigest: "digest",
         secretId: control.secretId,
+        secretUid: "sec-payments",
         environment: control.environment,
         expectedControlVersionId: "ctl-prior",
         control,
@@ -352,6 +378,7 @@ describe("console management indexes", () => {
         payload: {
           revision: {
             schemaVersion: 1,
+            secretUid: "sec-payments",
             secretId: control.secretId,
             payloadVersionId: "pay-next",
             environment: control.environment,
@@ -384,8 +411,9 @@ describe("console management indexes", () => {
         checksumSha256: "checksum-payload",
       },
       priorHead: {
-        pk: "SECRET#prod#payments-api",
+        pk: "SECRET#sec-payments",
         sk: "HEAD",
+        secretUid: "sec-payments",
         secretId: "payments-api",
         environment: "prod",
         controlVersionId: "ctl-prior",
@@ -394,8 +422,9 @@ describe("console management indexes", () => {
       },
       priorAccess: revokedConsumerIds.map((consumerId) => ({
         pk: `CONSUMER#${consumerId}`,
-        sk: "SECRET#prod#payments-api",
+        sk: "SECRET#prod#sec-payments",
         consumerId,
+        secretUid: "sec-payments",
         secretId: "payments-api",
         environment: "prod",
         permissions: ["read"] as const,
@@ -507,6 +536,246 @@ describe("console management indexes", () => {
     ]);
   });
 
+  it("turns a still-stored grant into a revocation when its UID head is archived", async () => {
+    const dynamo = {
+      send: jest
+        .fn()
+        .mockResolvedValueOnce({
+          Items: [
+            {
+              pk: "CONSUMER#prod-east",
+              sk: "SECRET#prod#sec-payments",
+              consumerId: "prod-east",
+              secretUid: "sec-payments",
+              secretId: "payments-api",
+              environment: "prod",
+              permissions: ["read"],
+              controlVersionId: "ctl-prior",
+              payloadVersionId: "pay-prior",
+              state: "ACTIVE",
+              changeKind: "secret.changed",
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          Item: {
+            pk: "SECRET#sec-payments",
+            sk: "HEAD",
+            secretUid: "sec-payments",
+            secretId: "payments-api",
+            environment: "prod",
+            controlVersionId: "ctl-archived",
+            state: "ARCHIVED",
+          },
+        }),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+
+    const page = await repository.listAccess("prod-east", "prod");
+
+    expect(page.changes).toEqual([
+      expect.objectContaining({
+        permissions: [],
+        payloadVersionId: undefined,
+        state: "REVOKED",
+        changeKind: "secret.revoked",
+      }),
+    ]);
+  });
+
+  it("prefers the live UID over an archived revocation when a secret ID is reused", async () => {
+    const dynamo = {
+      send: jest
+        .fn()
+        .mockResolvedValueOnce({
+          Items: [
+            {
+              pk: "CONSUMER#prod-east",
+              sk: "SECRET#prod#sec-archived",
+              consumerId: "prod-east",
+              secretUid: "sec-archived",
+              secretId: "payments-api",
+              environment: "prod",
+              permissions: [],
+              controlVersionId: "ctl-archived",
+              state: "REVOKED",
+              changeKind: "secret.revoked",
+            },
+            {
+              pk: "CONSUMER#prod-east",
+              sk: "SECRET#prod#sec-reused",
+              consumerId: "prod-east",
+              secretUid: "sec-reused",
+              secretId: "payments-api",
+              environment: "prod",
+              permissions: ["read"],
+              controlVersionId: "ctl-created",
+              payloadVersionId: "pay-created",
+              state: "ACTIVE",
+              changeKind: "secret.changed",
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          Item: {
+            pk: "SECRET#sec-reused",
+            sk: "HEAD",
+            secretUid: "sec-reused",
+            secretId: "payments-api",
+            environment: "prod",
+            controlVersionId: "ctl-current",
+            payloadVersionId: "pay-current",
+            state: "ACTIVE",
+          },
+        })
+        .mockResolvedValueOnce({
+          Item: {
+            pk: "SECRET_NAME#prod#payments-api",
+            sk: "LOOKUP",
+            secretUid: "sec-reused",
+          },
+        }),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+
+    const page = await repository.listAccess("prod-east", "prod");
+
+    expect(page.changes).toEqual([
+      expect.objectContaining({
+        secretUid: "sec-reused",
+        state: "ACTIVE",
+        controlVersionId: "ctl-current",
+        payloadVersionId: "pay-current",
+      }),
+    ]);
+  });
+
+  it("archives atomically by moving the catalog head, revoking grants, and deleting only its name lookup", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    const control = {
+      schemaVersion: 1 as const,
+      secretUid: "sec-payments",
+      secretId: "payments-api",
+      controlVersionId: "ctl-archived",
+      payloadVersionId: "pay-current",
+      payloadKeyCount: 1,
+      environment: "prod",
+      state: "ARCHIVED" as const,
+      createdAt: "2026-08-24T00:00:00.000Z",
+      createdBy: { type: "human" as const, id: "admin-1" },
+      metadata: { description: "old payments API" },
+      acl: [],
+    };
+    const completed: CompletedMutation = {
+      prepared: {
+        operationId: "archive-op",
+        idempotencyKey: "archive-payments-api",
+        actor: { type: "human", id: "admin-1" },
+        requestDigest: "digest",
+        secretId: control.secretId,
+        secretUid: control.secretUid,
+        environment: control.environment,
+        expectedControlVersionId: "ctl-current",
+        archive: true,
+        control,
+        controlKey: "secrets/sec-payments/control/ctl-archived.json",
+        controlChecksumSha256: "checksum",
+        controlBytes: Buffer.from("control"),
+        expiresAt: "2026-08-24T00:10:00.000Z",
+      },
+      controlObject: {
+        bucket: "revisions",
+        key: "secrets/sec-payments/control/ctl-archived.json",
+        versionId: "control-version",
+        checksumSha256: "checksum",
+      },
+      priorHead: {
+        pk: "SECRET#sec-payments",
+        sk: "HEAD",
+        secretUid: "sec-payments",
+        secretId: "payments-api",
+        environment: "prod",
+        controlVersionId: "ctl-current",
+        payloadVersionId: "pay-current",
+        state: "ACTIVE",
+      },
+      priorAccess: [
+        {
+          pk: "CONSUMER#prod-east",
+          sk: "SECRET#prod#sec-payments",
+          consumerId: "prod-east",
+          secretUid: "sec-payments",
+          secretId: "payments-api",
+          environment: "prod",
+          permissions: ["read"],
+          controlVersionId: "ctl-current",
+          payloadVersionId: "pay-current",
+          state: "ACTIVE",
+          changeKind: "secret.changed",
+        },
+      ],
+    };
+
+    await repository.completeMutation(completed);
+
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as TransactWriteCommand;
+    const items = command.input.TransactItems ?? [];
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Update: expect.objectContaining({
+            Key: { pk: "SECRET#sec-payments", sk: "HEAD" },
+            ExpressionAttributeValues: expect.objectContaining({
+              ":catalogPk": "ARCHIVED_CATALOG#prod",
+              ":state": "ARCHIVED",
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          Delete: expect.objectContaining({
+            Key: {
+              pk: "SECRET_NAME#prod#payments-api",
+              sk: "LOOKUP",
+            },
+            ConditionExpression: "secretUid = :secretUid",
+            ExpressionAttributeValues: { ":secretUid": "sec-payments" },
+          }),
+        }),
+        expect.objectContaining({
+          Put: expect.objectContaining({
+            Item: expect.objectContaining({
+              pk: "CONSUMER#prod-east",
+              permissions: [],
+              state: "REVOKED",
+              changeKind: "secret.revoked",
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          Put: expect.objectContaining({
+            Item: expect.objectContaining({
+              consumerIds: ["prod-east"],
+              kind: "secret.revoked",
+            }),
+          }),
+        }),
+      ]),
+    );
+    expect(items).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Put: expect.objectContaining({
+            Item: expect.objectContaining({ kind: "secret.changed" }),
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("stores environment definitions in a bounded, dedicated registry", async () => {
     const dynamo = {
       send: jest.fn().mockResolvedValue({}),
@@ -609,7 +878,7 @@ describe("console management indexes", () => {
 
   it("returns newest-first revision history and marks an extra record as truncated", async () => {
     const revisions = Array.from({ length: 501 }, (_, index) => ({
-      pk: "SECRET#prod#payments-api",
+      pk: "SECRET#sec-payments",
       sk: `CONTROL#ctl-${index}`,
       workflowState: "READY",
       serialized: {
@@ -625,7 +894,21 @@ describe("console management indexes", () => {
       },
     }));
     const dynamo = {
-      send: jest.fn().mockResolvedValue({ Items: revisions }),
+      send: jest
+        .fn()
+        .mockResolvedValueOnce({ Item: { secretUid: "sec-payments" } })
+        .mockResolvedValueOnce({
+          Item: {
+            pk: "SECRET#sec-payments",
+            sk: "HEAD",
+            secretUid: "sec-payments",
+            secretId: "payments-api",
+            environment: "prod",
+            controlVersionId: "ctl-current",
+            state: "ACTIVE",
+          },
+        })
+        .mockResolvedValueOnce({ Items: revisions }),
     } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
 
@@ -635,11 +918,11 @@ describe("console management indexes", () => {
     );
 
     const command = (dynamo.send as jest.Mock).mock
-      .calls[0]?.[0] as QueryCommand;
+      .calls[2]?.[0] as QueryCommand;
     expect(command.input).toMatchObject({
       IndexName: "secret-revision",
       KeyConditionExpression: "revisionPk = :secret",
-      ExpressionAttributeValues: { ":secret": "SECRET#prod#payments-api" },
+      ExpressionAttributeValues: { ":secret": "SECRET#sec-payments" },
       Limit: 501,
       ScanIndexForward: false,
     });
@@ -652,7 +935,9 @@ describe("secret tree browsing", () => {
   const mockTreeDynamo = (
     secretItems: readonly Record<string, unknown>[],
   ): DynamoDBDocumentClient =>
-    ({ send: jest.fn(async () => ({ Items: secretItems })) }) as unknown as DynamoDBDocumentClient;
+    ({
+      send: jest.fn(async () => ({ Items: secretItems })),
+    }) as unknown as DynamoDBDocumentClient;
 
   it("groups descendants by immediate segment, counts recursively, and keeps unpathed secrets at the root", async () => {
     const items = [
@@ -718,6 +1003,20 @@ describe("secret tree browsing", () => {
         kind: "derived",
       },
     ]);
+  });
+
+  it("uses the separate archive catalog partition only when explicitly requested", async () => {
+    const dynamo = mockTreeDynamo([]);
+    const repository = new DynamoRepository(dynamo, config);
+
+    await repository.listSecretTree("prod", undefined, true);
+
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as QueryCommand;
+    expect(command.input.ExpressionAttributeValues).toMatchObject({
+      ":catalogPk": "ARCHIVED_CATALOG#prod",
+      ":prefix": "PATH#",
+    });
   });
 
   it("returns only the exact-path secret and immediate child folders at a prefix", async () => {
@@ -787,7 +1086,6 @@ describe("secret tree browsing", () => {
     expect(page.truncated).toBe(true);
     expect(page.secrets).toHaveLength(500);
   });
-
 });
 
 describe("secret catalog search", () => {
@@ -874,6 +1172,22 @@ describe("secret catalog search", () => {
     expect(result.secrets.map((secret) => secret.secretId)).toEqual([
       "database-credentials",
     ]);
+  });
+
+  it("searches archived records only when archived is explicitly true", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({ Items: [] }),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+
+    await repository.searchSecrets("prod", undefined, {}, "legacy", true);
+
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as QueryCommand;
+    expect(command.input.ExpressionAttributeValues).toMatchObject({
+      ":catalogPk": "ARCHIVED_CATALOG#prod",
+      ":pathPrefix": "PATH#",
+    });
   });
 
   it("caps the internal scan and reports truncated instead of returning a cursor", async () => {

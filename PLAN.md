@@ -55,7 +55,7 @@ consumer-side write/publication API, and hash-chained audit seals are excluded.
    metadata required by the operator.
 4. Encrypt each revision with a fresh 256-bit KMS data key and AES-256-GCM.
    Bind both KMS encryption context and GCM additional authenticated data to
-   `{service, purpose=secret-payload, environment, secretId, payloadVersionId}`. Store the encrypted
+   `{service, purpose=secret-payload, environment, secretUid, payloadVersionId}`. Store the encrypted
    data key, 96-bit IV, authentication tag, ciphertext, and ciphertext-object
    SHA-256; discard plaintext data-key bytes immediately.
 5. Split immutable secret state into control and payload revisions, each at a
@@ -118,19 +118,20 @@ for recovery; TTL is set only after an idempotency or workflow record has
 reached a terminal state and its documented cleanup delay has elapsed. TTL
 must never remove a `PREPARED` record that recovery still needs.
 
-| Key                                         | Role                                                                                                                                |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `SECRET#<environment>#<id> / HEAD`          | current control/payload versions, state, write lease, and current path/tag catalog projection; the control version is the HTTP ETag |
-| `SECRET#<environment>#<id> / CONTROL#<id>`  | immutable metadata/ACL/state/payload-pointer revision, S3 version/checksum, and retention state                                     |
-| `SECRET#<environment>#<id> / PAYLOAD#<id>`  | encrypted-envelope workflow metadata, S3 version/checksum, and retention state                                                      |
-| `IDENTITY#<der-sha256> / PROFILE`           | consumer/environment, leaf type, validity, active/revoked state                                                                     |
-| `CONSUMER#<id> / PROFILE`                   | immutable environment, SPIFFE identity, and enrollment state                                                                        |
-| `CONSUMER#<id> / SECRET#<environment>#<id>` | current permission/revision/state; a retained `REVOKED` tombstone is the change feed                                                |
-| `SYSTEM#ISSUER / PROFILE`                   | one public issuing root, KMS-wrapped private-key envelope, fingerprint, and validity                                                |
-| `TRUSTSTORE#ROOTS / ROOT#<fingerprint>`     | public deployment-wide issuing root used by every consumer                                                                          |
-| `ENROLLMENT#<operation> / STATE`            | recoverable pending enrollment/leaf-issuance workflow                                                                               |
-| `SYSTEM#TRUSTSTORE / STATE`                 | singleton publication lease plus current/pending root set and version-pinned bundle                                                 |
-| `IDEMPOTENCY#<actor>#<key> / REQUEST`       | request digest, operation/response state, terminal audit event key/status, terminal cleanup TTL                                     |
+| Key                                          | Role                                                                                                                                |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `SECRET#<uid> / HEAD`                        | current control/payload versions, state, write lease, and current path/tag catalog projection; the control version is the HTTP ETag |
+| `SECRET#<uid> / CONTROL#<id>`                | immutable metadata/ACL/state/payload-pointer revision, S3 version/checksum, and retention state                                     |
+| `SECRET#<uid> / PAYLOAD#<id>`                | encrypted-envelope workflow metadata, S3 version/checksum, and retention state                                                      |
+| `SECRET_NAME#<environment>#<id> / LOOKUP`    | external name to immutable UID lookup                                                                                               |
+| `IDENTITY#<der-sha256> / PROFILE`            | consumer/environment, leaf type, validity, active/revoked state                                                                     |
+| `CONSUMER#<id> / PROFILE`                    | immutable environment, SPIFFE identity, and enrollment state                                                                        |
+| `CONSUMER#<id> / SECRET#<environment>#<uid>` | current permission/revision/state; a retained `REVOKED` tombstone is the change feed                                                |
+| `SYSTEM#ISSUER / PROFILE`                    | one public issuing root, KMS-wrapped private-key envelope, fingerprint, and validity                                                |
+| `TRUSTSTORE#ROOTS / ROOT#<fingerprint>`      | public deployment-wide issuing root used by every consumer                                                                          |
+| `ENROLLMENT#<operation> / STATE`             | recoverable pending enrollment/leaf-issuance workflow                                                                               |
+| `SYSTEM#TRUSTSTORE / STATE`                  | singleton publication lease plus current/pending root set and version-pinned bundle                                                 |
+| `IDEMPOTENCY#<actor>#<key> / REQUEST`        | request digest, operation/response state, terminal audit event key/status, terminal cleanup TTL                                     |
 
 Three sparse GSIs support scheduled/catalog work without a table scan:
 `WORKFLOW#DUE` orders non-terminal secret and enrollment preparations by lease
@@ -152,8 +153,8 @@ with a ten-consumer ACL cap.
 Secret revisions use:
 
 ```text
-secrets/<environment>/<secret-id>/control/<control-version-id>.json
-secrets/<environment>/<secret-id>/payload/<payload-version-id>.json
+secrets/<secret-uid>/control/<control-version-id>.json
+secrets/<secret-uid>/payload/<payload-version-id>.json
 ```
 
 Every object is written conditionally with `If-None-Match: *` and an S3
@@ -246,6 +247,12 @@ required for all mutations. An ACL/metadata edit creates a new control revision
 that retains the existing payload pointer. A payload update creates a fresh
 payload revision and a new control revision pointing to it. The service never
 decrypts an old payload just to update its ACL or description.
+
+`POST /v1/admin/secrets/{secretId}/archive` creates an `ARCHIVED` control
+revision with an empty ACL, moves its UID-backed head to the archive catalog,
+and deletes the live name lookup in the same final DynamoDB transaction. The
+secret ID is therefore immediately reusable by a different UID, while archived
+details remain addressable only by the original UID.
 
 For every secret mutation:
 

@@ -111,11 +111,11 @@ know.
 
 Neither side builds these, because the API excludes them by design.
 
-| Not built                | Reason                                                                   |
-| ------------------------ | ------------------------------------------------------------------------ |
-| Secret deletion          | No delete route. Retirement is ACL removal plus the `REVOKED` tombstone. |
-| Issuer-root rotation     | Excluded from v0.2; needs a reviewed overlap protocol.                   |
-| Consumer-side operations | The consumer API is mTLS-only and has no write surface.                  |
+| Not built                | Reason                                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Secret deletion          | No destructive delete route. Archive removes it from active catalog/search results, revokes its ACL, and releases the secret ID for reuse. |
+| Issuer-root rotation     | Excluded from v0.2; needs a reviewed overlap protocol.                                                                                     |
+| Consumer-side operations | The consumer API is mTLS-only and has no write surface.                                                                                    |
 
 Each gets an explicit empty state that explains the absence, not a disabled
 button that implies a missing permission.

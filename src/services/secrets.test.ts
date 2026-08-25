@@ -35,22 +35,26 @@ const config: AppConfig = {
 };
 
 const head: HeadRecord = {
-  pk: "SECRET#prod#database-credentials",
+  pk: "SECRET#sec-database",
   sk: "HEAD",
+  secretUid: "sec-database",
   secretId: "database-credentials",
   environment: "prod",
   controlVersionId: "ctl-current",
   controlObjectVersionId: "ctl-object-version",
+  controlObjectKey: "secrets/sec-database/control/ctl-current.json",
   payloadVersionId: "pay-current",
   payloadKeyCount: 2,
   payloadObjectVersionId: "pay-object-version",
+  payloadObjectKey: "secrets/sec-database/payload/pay-current.json",
   state: "ACTIVE",
 };
 
 const access: AccessRecord = {
   pk: "CONSUMER#prod-east",
-  sk: "SECRET#prod#database-credentials",
+  sk: "SECRET#prod#sec-database",
   consumerId: "prod-east",
+  secretUid: "sec-database",
   secretId: "database-credentials",
   environment: "prod",
   permissions: ["read"],
@@ -362,5 +366,149 @@ describe("SecretService.update", () => {
     });
 
     expect(preparedControl?.payloadKeyCount).toBe(2);
+  });
+});
+
+describe("SecretService.archive", () => {
+  it("writes an archived control revision with no ACL and preserves the UID-backed payload history", async () => {
+    let prepared:
+      | {
+          readonly archive?: true;
+          readonly control: ControlRevision;
+          readonly payload?: unknown;
+          readonly controlKey: string;
+        }
+      | undefined;
+    let completedPriorAccess: readonly AccessRecord[] | undefined;
+    const repository = {
+      requireHead: jest.fn().mockResolvedValue(head),
+      getIdempotency: jest.fn().mockResolvedValue(undefined),
+      getAccess: jest.fn().mockResolvedValue(access),
+      prepareMutation: jest
+        .fn()
+        .mockImplementation(
+          async (value: {
+            readonly archive?: true;
+            readonly control: ControlRevision;
+            readonly payload?: unknown;
+            readonly controlKey: string;
+          }) => {
+            prepared = value;
+          },
+        ),
+      completeMutation: jest
+        .fn()
+        .mockImplementation(
+          async (value: { readonly priorAccess: readonly AccessRecord[] }) => {
+            completedPriorAccess = value.priorAccess;
+          },
+        ),
+    };
+    const objects = {
+      getJson: jest.fn().mockResolvedValue(control),
+      putImmutable: jest.fn().mockResolvedValue({
+        bucket: "revisions",
+        key: "secrets/sec-database/control/ctl-archived.json",
+        versionId: "archived-control-version",
+        checksumSha256: "checksum",
+      }),
+      extendComplianceRetention: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new SecretService(
+      repository as never,
+      objects as never,
+      {} as never,
+      config,
+      {} as never,
+    );
+
+    const result = await service.archive({
+      secretId: "database-credentials",
+      environment: "prod",
+      expectedControlVersionId: "ctl-current",
+      actor: { type: "human", id: "admin" },
+      idempotencyKey: "archive-database-credentials",
+    });
+
+    expect(result).toMatchObject({
+      secretUid: "sec-database",
+      secretId: "database-credentials",
+      state: "ARCHIVED",
+      payloadVersionId: "pay-current",
+      payloadKeyCount: 2,
+      acl: [],
+    });
+    expect(prepared).toMatchObject({
+      archive: true,
+      control: expect.objectContaining({
+        secretUid: "sec-database",
+        state: "ARCHIVED",
+        acl: [],
+      }),
+      controlKey: expect.stringMatching(
+        /^secrets\/sec-database\/control\/ctl-/,
+      ),
+      payload: undefined,
+    });
+    expect(completedPriorAccess).toEqual([access]);
+    expect(objects.extendComplianceRetention).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "secrets/sec-database/control/ctl-current.json",
+      }),
+      expect.any(Date),
+    );
+    expect(objects.extendComplianceRetention).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "secrets/sec-database/payload/pay-current.json",
+      }),
+      expect.any(Date),
+    );
+  });
+
+  it("requires the current ETag before it reads or archives the control revision", async () => {
+    const repository = {
+      requireHead: jest.fn().mockResolvedValue(head),
+    };
+    const objects = { getJson: jest.fn() };
+    const service = new SecretService(
+      repository as never,
+      objects as never,
+      {} as never,
+      config,
+      {} as never,
+    );
+
+    await expect(
+      service.archive({
+        secretId: "database-credentials",
+        environment: "prod",
+        expectedControlVersionId: "ctl-stale",
+        actor: { type: "human", id: "admin" },
+        idempotencyKey: "archive-stale-version",
+      }),
+    ).rejects.toMatchObject({ code: "precondition_failed" });
+    expect(objects.getJson).not.toHaveBeenCalled();
+  });
+
+  it("reads an archived control document by UID only in its own environment", async () => {
+    const archivedHead = { ...head, state: "ARCHIVED" as const };
+    const repository = {
+      requireHeadBySecretUid: jest.fn().mockResolvedValue(archivedHead),
+    };
+    const objects = { getJson: jest.fn().mockResolvedValue(control) };
+    const service = new SecretService(
+      repository as never,
+      objects as never,
+      {} as never,
+      config,
+      {} as never,
+    );
+
+    await expect(
+      service.getArchivedControlRevision("prod", "sec-database"),
+    ).resolves.toMatchObject({ secretUid: "sec-database" });
+    await expect(
+      service.getArchivedControlRevision("other", "sec-database"),
+    ).rejects.toMatchObject({ code: "not_found" });
   });
 });

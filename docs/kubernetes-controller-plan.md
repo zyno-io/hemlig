@@ -10,7 +10,7 @@ parallel AWS deployment.
 
 The controller has two deliberately one-way functions:
 
-- **Import:** an mTLS-authorized, path-scoped namespace agent reads an
+- **Import:** an mTLS-authorized, exact-secret namespace agent reads an
   already-granted Hemlig payload and materializes a Kubernetes Secret.
 - **Export:** that same namespace agent writes a Kubernetes Secret to its
   permitted Hemlig keyspace. It cannot alter another namespace's keyspace,
@@ -22,29 +22,29 @@ from treating its own materialized output as a new remote payload.
 
 The current v1alpha1 controller proves basic pull/push behavior, conditional
 consumer reads, and target ownership. It does not yet have bootstrap
-capabilities, path-scoped agent authorization, automatic enrollment, watches,
+capabilities, exact-secret agent authorization, automatic enrollment, watches,
 leader election, MQTT notifications, or a Helm chart. The target is a
 documented v1beta1 API and a 0.2.0 controller release. v1alpha1 remains served
 during one migration release but is not extended further.
 
 ## Fixed decisions
 
-| Decision                | Chosen design                                                                                                                                       | Why                                                                                                                              |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Node version            | Node 24 everywhere: engine constraints, controller image, Lambda runtime, and esbuild target                                                        | A single supported runtime avoids development, container, and Lambda drift.                                                      |
-| API topology            | A cluster-scoped HemligProvider plus namespaced HemligConsumer, HemligSecretImport, and HemligSecretExport                                          | Separates public endpoint configuration from namespace workloads and supports more than one Hemlig installation per cluster.     |
-| Administrator access    | The controller receives no administrator OIDC token, client secret, or token-file path                                                              | A namespace controller must not hold a credential able to manage every Hemlig secret.                                            |
-| Bootstrap               | An administrator creates a one-time opaque bootstrap capability for an AgentGrant; the controller redeems it once with a locally generated CSR      | The capability can activate one pre-scoped identity only. It cannot browse, read, write, or manage arbitrary secrets.            |
-| Namespace authorization | Each AgentGrant binds consumer identity, environment, read prefixes, write prefixes, and capabilities; Hemlig enforces it before payload read/write | Kubernetes namespaces and RBAC alone cannot constrain a remote credential.                                                       |
-| Identity                | One mTLS consumer identity per HemligConsumer, normally per namespace and environment; an explicit opt-in permits one shared cluster consumer       | A shared identity is reserved for trusted cluster services and carries the union of their granted paths.                         |
-| Enrollment              | The controller generates a 3072-bit RSA key and CSR, Hemlig signs it, registers it for MQTT, and the controller writes a kubernetes.io/tls Secret   | The private key is generated and retained in the cluster; it is never sent to Hemlig or placed in CR status.                     |
-| Import source of truth  | Hemlig consumer API plus the current-access snapshot                                                                                                | ACL revocation is a security event, so the controller can remove previously materialized targets.                                |
-| Export source of truth  | The referenced Kubernetes Secret                                                                                                                    | Kubernetes data is authoritative for an export; remote drift is reconciled back to it.                                           |
-| Target writes           | Full replacement only on an exact import-owner marker                                                                                               | No merge behavior, clobbering, or ownership takeover of a user-owned Secret.                                                     |
-| Delete behavior         | A remote revocation always deletes the exact managed target; CR deletion retains it by default and supports explicit Delete                         | Revocation must remove plaintext promptly. Removing a CR is an administrative hand-off, not proof that data should be destroyed. |
-| Change detection        | Kubernetes watches immediately enqueue exports; AWS IoT Core MQTT notifications immediately enqueue imports                                         | Both directions converge in seconds while periodic snapshots remain the correctness backstop.                                    |
-| Deployment              | The reusable Hemlig CDK construct owns AWS resources, IAM, stream mappings, alarms, and IoT policy; the chart owns Kubernetes resources             | Installers provision one reviewed topology instead of reimplementing AWS security policy per cluster.                            |
-| Packaging               | OCI image, Helm chart, raw generated CRDs, and Kind plus MiniStack tests                                                                            | A cluster operator should be installable without depending on the AWS/CDK consumer repository.                                   |
+| Decision                | Chosen design                                                                                                                                                     | Why                                                                                                                              |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Node version            | Node 24 everywhere: engine constraints, controller image, Lambda runtime, and esbuild target                                                                      | A single supported runtime avoids development, container, and Lambda drift.                                                      |
+| API topology            | A cluster-scoped HemligProvider plus namespaced HemligConsumer, HemligSecretImport, and HemligSecretExport                                                        | Separates public endpoint configuration from namespace workloads and supports more than one Hemlig installation per cluster.     |
+| Administrator access    | The controller receives no administrator OIDC token, client secret, or token-file path                                                                            | A namespace controller must not hold a credential able to manage every Hemlig secret.                                            |
+| Bootstrap               | An administrator creates a one-time opaque bootstrap capability for an AgentGrant; the controller redeems it once with a locally generated CSR                    | The capability can activate one pre-scoped identity only. It cannot browse, read, write, or manage arbitrary secrets.            |
+| Namespace authorization | Each AgentGrant binds consumer identity, environment, exact read/write secrets, and capabilities; Hemlig enforces immutable UID targets before payload read/write | Kubernetes namespaces and RBAC alone cannot constrain a remote credential.                                                       |
+| Identity                | One mTLS consumer identity per HemligConsumer, normally per namespace and environment; an explicit opt-in permits one shared cluster consumer                     | A shared identity is reserved for trusted cluster services and carries the union of their granted exact secrets.                 |
+| Enrollment              | The controller generates a 3072-bit RSA key and CSR, Hemlig signs it, registers it for MQTT, and the controller writes a kubernetes.io/tls Secret                 | The private key is generated and retained in the cluster; it is never sent to Hemlig or placed in CR status.                     |
+| Import source of truth  | Hemlig consumer API plus the current-access snapshot                                                                                                              | ACL revocation is a security event, so the controller can remove previously materialized targets.                                |
+| Export source of truth  | The referenced Kubernetes Secret                                                                                                                                  | Kubernetes data is authoritative for an export; remote drift is reconciled back to it.                                           |
+| Target writes           | Full replacement only on an exact import-owner marker                                                                                                             | No merge behavior, clobbering, or ownership takeover of a user-owned Secret.                                                     |
+| Delete behavior         | A remote revocation always deletes the exact managed target; CR deletion retains it by default and supports explicit Delete                                       | Revocation must remove plaintext promptly. Removing a CR is an administrative hand-off, not proof that data should be destroyed. |
+| Change detection        | Kubernetes watches immediately enqueue exports; AWS IoT Core MQTT notifications immediately enqueue imports                                                       | Both directions converge in seconds while periodic snapshots remain the correctness backstop.                                    |
+| Deployment              | The reusable Hemlig CDK construct owns AWS resources, IAM, stream mappings, alarms, and IoT policy; the chart owns Kubernetes resources                           | Installers provision one reviewed topology instead of reimplementing AWS security policy per cluster.                            |
+| Packaging               | OCI image, Helm chart, raw generated CRDs, and Kind plus MiniStack tests                                                                                          | A cluster operator should be installable without depending on the AWS/CDK consumer repository.                                   |
 
 ## Architecture and trust boundaries
 
@@ -72,8 +72,9 @@ administrators create consumer, import, and export resources only in a matching
 namespace.
 
 An administrator creates an AgentGrant in Hemlig. The grant is the durable
-remote policy record: it fixes a consumer ID, environment, read/write path
-prefixes, and capabilities. The administrator then mints a short-lived,
+remote policy record: it fixes a consumer ID, environment, exact read/write
+secret selections, and capabilities. Hemlig resolves each selection to its
+immutable UID. The administrator then mints a short-lived,
 single-use bootstrap capability for that grant and places the returned opaque
 value in a Secret in the intended namespace. That is the only secret the
 controller needs before enrollment.
@@ -173,7 +174,7 @@ A successful enrollment in the current controller:
    key and public CSR. A retry therefore submits the exact same CSR; the token
    is never exposed through status or logs.
 4. Redeems the capability. Hemlig consumes it atomically and returns the leaf,
-   grant ID, consumer ID, environment, and allowed prefixes.
+   grant ID, consumer ID, environment, and allowed exact secret selections.
 5. Atomically creates a kubernetes.io/tls Secret containing tls.crt and tls.key
    with exact consumer-owner, provider, grant, and fingerprint annotations.
 6. Verifies `GET /v1/agent/config` using that leaf, obtains the exact MQTT
@@ -261,9 +262,9 @@ rejects a source carrying any Hemlig import-management marker, which prevents
 feedback loops even if a user tries to export an import target.
 
 The export has no environment or ACL field. Hemlig derives the environment from
-the mTLS AgentGrant and requires its secret ID to fall beneath one of that
-grant's write prefixes. On first creation Hemlig adds read access for the same
-consumer automatically. The namespace agent cannot grant a second consumer,
+the mTLS AgentGrant and requires its already-created secret's immutable UID to
+appear in that grant's exact write-secret list. The namespace agent cannot
+grant a second consumer,
 remove a grant, or edit an ACL; administrators retain those operations through
 the administrator API and Pulumi provider.
 
@@ -297,17 +298,18 @@ keeps remote policy approval with the people and tools that administer Hemlig.
   "consumerId": "prod-payments",
   "environment": "prod",
   "capabilities": ["read", "write"],
-  "readSecretIdPrefixes": ["payments/production"],
-  "writeSecretIdPrefixes": ["payments/production"],
+  "readSecretIds": ["payments/production/api-key"],
+  "writeSecretIds": ["payments/production/api-key"],
   "displayName": "payments namespace in prod cluster"
 }
 ```
 
-Secret-ID authorization is segment-aware: a prefix matches the exact ID or an
-ID starting with that prefix followed by a slash. Empty/root prefixes are
-rejected. An mTLS agent may read only when its AgentGrant has read scope for
-the secret ID and the secret ACL grants its consumer read. It may write only
-when its AgentGrant has write scope for the secret ID.
+Secret authorization is exact and UID-bound. Administrators select canonical
+secret IDs, which Hemlig resolves and stores as immutable UIDs. An mTLS agent
+may read only when its AgentGrant contains the secret UID and the secret ACL
+grants its consumer read. It may write only when its AgentGrant contains the
+secret UID. A folder name never grants access to its children, and a reused ID
+does not inherit an archived secret's authorization.
 
 Administrators create/update AgentGrants with ETags and issue bootstrap
 capabilities from them. The returned token is a cryptographically random,
@@ -340,7 +342,6 @@ After redemption, the controller uses these mTLS agent routes:
 | GET /v1/changes                        | read       | Rebuild current access snapshot after connect and on scheduled resync. |
 | GET /v1/secrets/secretId               | read       | Conditional pull with If-None-Match.                                   |
 | GET /v1/agent/config                   | read       | Validate grant/scope and obtain public MQTT connection metadata.       |
-| POST /v1/agent/secrets                 | write      | Create a path-scoped secret with caller's initial read grant.          |
 | PUT /v1/agent/secrets/secretId         | write      | Update allowed metadata with ETag.                                     |
 | PUT /v1/agent/secrets/secretId/payload | write      | Replace payload with ETag and idempotency.                             |
 | POST /v1/agent/identities/rotate       | read       | Rotate only caller's mTLS/MQTT leaf.                                   |
@@ -426,7 +427,7 @@ The IoT policy uses an attached Thing and exact connection/client identity. It
 permits only Connect with the fixed client ID plus Subscribe and Receive for one
 grant notification topic. It grants no Publish, retained messages, wildcard
 consumer topics, shadow operations, Jobs, or AWS API access. Broker policy is
-defense in depth; Hemlig still validates mTLS identity, AgentGrant paths, and
+defense in depth; Hemlig still validates mTLS identity, AgentGrant UIDs, and
 ACLs before every data operation.
 
 Each client certificate must be registered with AWS IoT to communicate, and AWS
@@ -495,8 +496,9 @@ Conditions use stable reasons so alerting does not parse human strings.
 | NotificationUnavailable   | Consumer                 | MQTT certificate/topic/session is not ready. Periodic snapshot still converges.                              |
 | TargetOwnershipConflict   | Import                   | Target is foreign, altered, or immutable. Pick another target or deliberately remove it.                     |
 | AccessRevoked             | Import                   | Hemlig no longer grants consumer; managed local target was removed.                                          |
-| PathNotPermitted          | Import, export           | AgentGrant denies secret path. Change administrator-managed grant, not CR.                                   |
+| SecretNotPermitted        | Import, export           | AgentGrant denies the exact secret. Change administrator-managed grant, not CR.                              |
 | SourceNotFound            | Export                   | Referenced source Secret does not exist.                                                                     |
+| RemoteSecretNotFound      | Export                   | Create the remote secret and select it in the AgentGrant before export.                                      |
 | SourceIsImportManaged     | Export                   | A loop was blocked; choose application-owned source.                                                         |
 | RemoteAlreadyExists       | Export                   | Set explicit Adopt only after confirming ownership.                                                          |
 | RemoteConflict            | Export                   | Another permitted writer changed control state repeatedly. Resolve ownership.                                |
@@ -513,7 +515,7 @@ The planned Helm chart creates two profiles:
 | Profile | Kubernetes permissions                                                                               | Remote Hemlig permission                                                                |
 | ------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | import  | Read exact bootstrap/identity Secrets, manage import targets, read Hemlig CR/status, leases, watches | Bootstrap redemption once, then mTLS read/snapshot/MQTT receive within AgentGrant scope |
-| export  | Import profile plus read allowed source Secrets and mTLS agent writes within AgentGrant scope        | Bootstrap redemption once, then mTLS path-scoped export writes                          |
+| export  | Import profile plus read allowed source Secrets and mTLS agent writes within AgentGrant scope        | Bootstrap redemption once, then mTLS exact-secret export writes                         |
 
 The export profile does not add administrator API access. It differs only by
 permission to read source Secret data in permitted Kubernetes namespaces.
@@ -557,11 +559,12 @@ logging.
       operations.
 - [x] Add explicit unauthenticated bootstrap redemption route before the JWT
       default route, with tight validation/replay/throttle controls.
-- [x] Add mTLS agent config and path-scoped secret create/update/payload routes;
-      keep ACL changes administrator-only. Agent self-identity rotation remains
+- [x] Add mTLS agent config and exact-secret update/payload routes; keep ACL
+      changes administrator-only and require administrator-created secrets.
+      Agent self-identity rotation remains
       pending.
-- [x] Enforce segment-aware read/write prefixes plus normal consumer ACL checks
-      before every path-dependent operation.
+- [x] Enforce UID-bound exact read/write grants plus normal consumer ACL checks
+      before every secret operation.
 - [x] Add current snapshot and bootstrap/agent response types to @hemlig/client.
       The controller must consume canonical contracts rather than duplicate HTTP
       shapes.
@@ -657,10 +660,10 @@ following hold:
 - A HemligConsumer retains a locally generated private key, receives only its
   granted mTLS/MQTT identity, and rotates its leaf without exposing private
   material outside its TLS Secret.
-- A namespace agent can neither read nor write a secret whose canonical path is
-  outside AgentGrant scope, even when it guesses a valid secret ID.
-- An export cannot alter ACLs or cross its write prefix; first creation grants
-  only its own consumer read access.
+- A namespace agent can neither read nor write a secret outside AgentGrant
+  scope, even when it guesses a valid or later-reused secret ID.
+- An export cannot alter ACLs or write a secret outside its exact UID grant; an
+  administrator creates and selects the remote secret first.
 - An import creates and updates only its exact-owned target; remote ACL
   revocation deletes that target; a network failure does not.
 - An imported Secret cannot be exported, and a user-owned target cannot be

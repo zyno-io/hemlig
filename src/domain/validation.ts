@@ -91,21 +91,17 @@ export const parseCatalogPathPrefix = (
   return value;
 };
 
-/**
- * A namespace-agent boundary is always explicit: an omitted or root prefix
- * would make the capability effectively administrative.  Prefix matching is
- * segment-aware so `payments` never authorizes `payments-prod`.
- */
-export const parseAgentSecretIdPrefixes = (
+/** A namespace-agent boundary is an explicit, bounded set of exact IDs. */
+export const parseAgentSecretIds = (
   value: unknown,
   field: string,
 ): readonly string[] => {
   if (!Array.isArray(value) || value.length === 0 || value.length > 20) {
     throw badRequest(
-      `${field} must contain between one and twenty canonical paths.`,
+      `${field} must contain between one and twenty canonical secret IDs.`,
     );
   }
-  const prefixes = value.map((entry) => {
+  const secretIds = value.map((entry) => {
     if (
       typeof entry !== "string" ||
       entry.length > 256 ||
@@ -117,10 +113,10 @@ export const parseAgentSecretIdPrefixes = (
     }
     return entry;
   });
-  if (new Set(prefixes).size !== prefixes.length) {
-    throw badRequest(`${field} must not contain duplicate paths.`);
+  if (new Set(secretIds).size !== secretIds.length) {
+    throw badRequest(`${field} must not contain duplicate secret IDs.`);
   }
-  return [...prefixes].sort((left, right) => left.localeCompare(right));
+  return [...secretIds].sort((left, right) => left.localeCompare(right));
 };
 
 export const parseAgentCapabilities = (
@@ -140,14 +136,6 @@ export const parseAgentCapabilities = (
   }
   return [...capabilities].sort();
 };
-
-export const secretIdIsWithinPrefixes = (
-  secretId: string,
-  prefixes: readonly string[],
-): boolean =>
-  prefixes.some(
-    (prefix) => secretId === prefix || secretId.startsWith(`${prefix}/`),
-  );
 
 export const parseCatalogSearchQuery = (
   value: string | undefined,

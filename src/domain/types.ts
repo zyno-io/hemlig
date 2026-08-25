@@ -16,7 +16,7 @@ export type AgentCapability = "read" | "write";
 
 export type AgentGrantStatus = "PENDING" | "ACTIVE";
 
-export type SecretState = "PENDING_VALUE" | "ACTIVE" | "REVOKED";
+export type SecretState = "PENDING_VALUE" | "ACTIVE" | "REVOKED" | "ARCHIVED";
 
 export type WorkflowState =
   "PREPARED" | "READY" | "RETRYABLE" | "FAILED" | "DELETED";
@@ -61,6 +61,8 @@ export interface Grant {
 
 export interface ControlRevision {
   readonly schemaVersion: 1;
+  /** Present on UID-native revisions; legacy revisions remain readable. */
+  readonly secretUid?: string;
   readonly secretId: string;
   readonly controlVersionId: string;
   readonly payloadVersionId?: string;
@@ -84,6 +86,8 @@ export interface EncryptedPayload {
 
 export interface PayloadRevision {
   readonly schemaVersion: 1;
+  /** Present on UID-native revisions; legacy revisions remain decryptable. */
+  readonly secretUid?: string;
   readonly secretId: string;
   readonly payloadVersionId: string;
   readonly environment: EnvironmentName;
@@ -95,12 +99,17 @@ export interface PayloadRevision {
 export interface HeadRecord {
   readonly pk: string;
   readonly sk: "HEAD";
+  readonly secretUid: string;
   readonly secretId: string;
   readonly environment: EnvironmentName;
   readonly controlVersionId: string;
   readonly controlObjectVersionId?: string;
+  /** Exact immutable object key; preserves legacy revision locations after migration. */
+  readonly controlObjectKey?: string;
   readonly payloadVersionId?: string;
   readonly payloadObjectVersionId?: string;
+  /** Exact immutable object key; preserves legacy revision locations after migration. */
+  readonly payloadObjectKey?: string;
   readonly payloadKeyCount?: number;
   readonly state: SecretState;
   readonly metadata?: SecretMetadata;
@@ -116,6 +125,7 @@ export interface AccessRecord {
   readonly pk: string;
   readonly sk: string;
   readonly consumerId: string;
+  readonly secretUid: string;
   readonly secretId: string;
   readonly environment: EnvironmentName;
   readonly permissions: readonly Permission[];
@@ -188,8 +198,9 @@ export interface ConsumerRecord {
 
 /**
  * Administrator-owned remote policy for an enrolled namespace agent.  The
- * Secret-ID prefixes are part of authorization; every agent route enforces
- * them before payload access or mutation. The ID is also the catalog path.
+ * Exact secret IDs are retained for administrator-facing selection and
+ * display. Authorization is bound to immutable secret UIDs, so archiving and
+ * reusing an external secret ID cannot extend an existing agent grant.
  */
 export interface AgentGrantRecord {
   readonly pk: string;
@@ -198,16 +209,14 @@ export interface AgentGrantRecord {
   readonly consumerId: string;
   readonly environment: EnvironmentName;
   readonly capabilities: readonly AgentCapability[];
-  /** Required for every grant created or updated by this release. */
-  readonly readSecretIdPrefixes?: readonly string[];
-  /** Required for every grant created or updated by this release. */
-  readonly writeSecretIdPrefixes?: readonly string[];
-  /**
-   * One-release compatibility for grants written before secret-ID scopes.
-   * An update removes these values; no new grant persists them.
-   */
-  readonly readPathPrefixes?: readonly string[];
-  readonly writePathPrefixes?: readonly string[];
+  /** Required exactly when `read` is a capability. */
+  readonly readSecretIds: readonly string[];
+  /** Immutable IDs corresponding to the administrator-selected read secrets. */
+  readonly readSecretUids: readonly string[];
+  /** Required exactly when `write` is a capability. */
+  readonly writeSecretIds: readonly string[];
+  /** Immutable IDs corresponding to the administrator-selected write secrets. */
+  readonly writeSecretUids: readonly string[];
   readonly displayName?: string;
   readonly status: AgentGrantStatus;
   readonly createdAt: string;

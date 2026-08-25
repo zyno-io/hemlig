@@ -64,12 +64,12 @@ identity row.
 
 ## Authentication and trust boundaries
 
-| Caller            | Authentication                                                         | Rights                                                      |
-| ----------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Administrator     | External OIDC JWT, immutable configured actor claim (`sub` by default) | Secret mutation                                             |
-| Consumer operator | Client certificate DER SHA-256 fingerprint in DynamoDB                 | Its allowed active secret reads and current access snapshot |
-| Namespace agent   | One-use bootstrap capability, then the same mTLS leaf plus AgentGrant  | Only its configured read/write path prefixes and MQTT topic |
-| Worker            | EventBridge/Lambda execution role                                      | Recovery or retention only                                  |
+| Caller            | Authentication                                                         | Rights                                                          |
+| ----------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Administrator     | External OIDC JWT, immutable configured actor claim (`sub` by default) | Secret mutation                                                 |
+| Consumer operator | Client certificate DER SHA-256 fingerprint in DynamoDB                 | Its allowed active secret reads and current access snapshot     |
+| Namespace agent   | One-use bootstrap capability, then the same mTLS leaf plus AgentGrant  | Only its configured exact read/write secret UIDs and MQTT topic |
+| Worker            | EventBridge/Lambda execution role                                      | Recovery or retention only                                      |
 
 API Gateway verifies the administrator JWT, and the handler verifies its issuer
 and audience again before using the configured subject claim for the audit
@@ -89,11 +89,13 @@ identity's environment.
 
 An AgentGrant is created by the administrator API before the namespace gets a
 credential. It names exactly one as-yet unused consumer ID, environment,
-capabilities, and canonical read/write path prefixes. Its mapping is stored
+capabilities, and canonical read/write secret IDs. At policy write time those
+names resolve to immutable UIDs, which are the stored authorization targets.
+Its mapping is stored
 beside the consumer identity, so any identity that has ever been an agent is
 forced through AgentGrant checks even if it calls an ordinary consumer route.
-This prevents a compromised controller from bypassing prefix enforcement by
-guessing a known secret ID.
+This prevents a compromised controller from bypassing exact-secret enforcement
+by guessing a known secret ID, including an ID later reused after archival.
 
 The bootstrap capability is a random 256-bit `hmlb_` value, stored only as a
 SHA-256 digest with a thirty-minute expiry. It accepts one CSR and no caller
@@ -104,12 +106,11 @@ marked active, the bootstrap Lambda registers the public leaf with AWS IoT,
 attaches it to the consumer-named Thing and the CDK-created receive-only policy.
 The cluster retains the private key; neither Hemlig nor IoT creates one.
 
-Agent reads need both current ACL read access and an in-scope metadata path.
-Agent writes must be in the write path scope and cannot change ACLs. An
-unpathed secret is never agent-visible. A secret moved outside an existing
-read prefix appears in the agent's access snapshot as `secret.revoked`, so an
-already materialized Kubernetes Secret is removed without disclosing the new
-path or payload.
+Agent reads need both current ACL read access and exact membership in the
+read allowlist. Agent writes need exact write membership and cannot change
+ACLs. A secret removed from a read allowlist appears in the agent's access
+snapshot as `secret.revoked`, so an already materialized Kubernetes Secret is
+removed without disclosing payload material.
 
 ### Enrollment trust boundary
 
@@ -178,6 +179,7 @@ defense against invalid stored state and future root-overlap work.
 ```text
 POST secret -> PENDING_VALUE
 PUT payload -> ACTIVE
+POST archive -> ARCHIVED (empty ACL; former name is reusable)
 ACL removes a consumer -> that consumer receives a retained REVOKED tombstone
 ```
 
@@ -188,9 +190,17 @@ Each mutation creates a fresh immutable control revision. A payload mutation
 also creates a payload revision:
 
 ```text
-secrets/<environment>/<secret-id>/control/<control-version-id>.json
-secrets/<environment>/<secret-id>/payload/<payload-version-id>.json
+secrets/<secret-uid>/control/<control-version-id>.json
+secrets/<secret-uid>/payload/<payload-version-id>.json
 ```
+
+Each secret receives a random immutable `secretUid` at creation. The external
+`secretId` remains unique within its environment and is used in HTTP paths and
+the catalog, but DynamoDB records, new revision paths, and new payload KMS
+bindings use the UID. This separation is what permits a future rename without
+moving revision history. Archiving moves the UID-backed head to a separate
+catalog partition and releases only the external name lookup, so a later
+secret with the same name cannot be confused with archived revision history.
 
 A control revision contains metadata, ACL, state, actor, timestamp, and its
 payload-version pointer. A payload revision has only an encrypted envelope.
@@ -245,7 +255,9 @@ plaintext data-key buffer in process.
 
 KMS encryption context and GCM additional authenticated data both bind the
 ciphertext to `service=hemlig`, `purpose=secret-payload`, environment, secret
-ID, and payload version ID.
+UID, and payload version ID. Immutable revisions created before the UID
+migration retain their original secret-ID binding and are handled as a
+read-only compatibility case.
 Before decrypting, the consumer handler also requires the retrieved control and
 payload documents to repeat the secret ID, environment, and exact versions from
 the transactionally read authorization/head snapshot. A mismatched document,
@@ -276,30 +288,31 @@ delete a different version.
 One on-demand DynamoDB table uses `pk`/`sk`, point-in-time recovery, and sparse
 GSIs for scheduled work.
 
-| Key                                             | Purpose                                                                     |
-| ----------------------------------------------- | --------------------------------------------------------------------------- |
-| `SECRET#<environment>#<id> / HEAD`              | Current revisions, state, write lease                                       |
-| `SECRET#<environment>#<id> / CONTROL#<version>` | Control workflow/object metadata                                            |
-| `SECRET#<environment>#<id> / PAYLOAD#<version>` | Payload workflow/object metadata                                            |
-| `CONSUMER#<id> / SECRET#<environment>#<id>`     | Current grant or `REVOKED` tombstone                                        |
-| `CONSUMER#<id> / PROFILE`                       | Immutable consumer environment/URI identity and activation state            |
-| `IDENTITY#<sha256> / PROFILE`                   | Consumer API leaf identity and validity                                     |
-| `SYSTEM#ISSUER / PROFILE`                       | One public root, KMS-wrapped private-key envelope, and root validity        |
-| `TRUSTSTORE#ROOTS / ROOT#<sha256>`              | The public deployment-wide issuing-root truststore anchor                   |
-| `ENROLLMENT#<operation> / STATE`                | Recoverable enrollment state and truststore publication due time            |
-| `SYSTEM#TRUSTSTORE / STATE`                     | Singleton publication lease and current/pending version-pinned bundle       |
-| `IDEMPOTENCY#<actor> / REQUEST#<key>`           | Mutation state and terminal-audit marker                                    |
-| `AGENT_GRANT#<id> / PROFILE`                    | Administrator-owned path/capability boundary and activation state           |
-| `CONSUMER#<id> / AGENT_GRANT`                   | Prevents an agent identity from falling back to unscoped delivery           |
-| `BOOTSTRAP#<sha256> / STATE`                    | Hash-only, expiring, one-use CSR redemption capability                      |
-| `NOTIFICATION#<id> / EVENT`                     | Pending/delivered MQTT hint; TTL begins only after terminal delivery        |
-| `CURSOR#<token> / STATE`                        | Opaque, caller-bound pagination continuation; DynamoDB TTL after 15 minutes |
-| `WORKFLOW#DUE` GSI                              | Expired prepared workflow discovery                                         |
-| `RETENTION#DUE` GSI                             | Eligible non-head revision discovery                                        |
-| `CATALOG#<environment>` GSI                     | Current `HEAD` records in path/secret order                                 |
-| `CONSUMERS#<environment>` GSI                   | Administrative consumer profiles in consumer-ID order                       |
-| `CONSUMER#<id>` identity GSI                    | Administrative API leaves in expiration order                               |
-| `SECRET#<environment>#<id>` revision GSI        | Newest-first bounded control-revision management history                    |
+| Key                                          | Purpose                                                                     |
+| -------------------------------------------- | --------------------------------------------------------------------------- |
+| `SECRET#<uid> / HEAD`                        | Current revisions, state, write lease                                       |
+| `SECRET#<uid> / CONTROL#<version>`           | Control workflow/object metadata                                            |
+| `SECRET#<uid> / PAYLOAD#<version>`           | Payload workflow/object metadata                                            |
+| `SECRET_NAME#<environment>#<id> / LOOKUP`    | External name to immutable UID lookup                                       |
+| `CONSUMER#<id> / SECRET#<environment>#<uid>` | Current grant or `REVOKED` tombstone                                        |
+| `CONSUMER#<id> / PROFILE`                    | Immutable consumer environment/URI identity and activation state            |
+| `IDENTITY#<sha256> / PROFILE`                | Consumer API leaf identity and validity                                     |
+| `SYSTEM#ISSUER / PROFILE`                    | One public root, KMS-wrapped private-key envelope, and root validity        |
+| `TRUSTSTORE#ROOTS / ROOT#<sha256>`           | The public deployment-wide issuing-root truststore anchor                   |
+| `ENROLLMENT#<operation> / STATE`             | Recoverable enrollment state and truststore publication due time            |
+| `SYSTEM#TRUSTSTORE / STATE`                  | Singleton publication lease and current/pending version-pinned bundle       |
+| `IDEMPOTENCY#<actor> / REQUEST#<key>`        | Mutation state and terminal-audit marker                                    |
+| `AGENT_GRANT#<id> / PROFILE`                 | Administrator-owned path/capability boundary and activation state           |
+| `CONSUMER#<id> / AGENT_GRANT`                | Prevents an agent identity from falling back to unscoped delivery           |
+| `BOOTSTRAP#<sha256> / STATE`                 | Hash-only, expiring, one-use CSR redemption capability                      |
+| `NOTIFICATION#<id> / EVENT`                  | Pending/delivered MQTT hint; TTL begins only after terminal delivery        |
+| `CURSOR#<token> / STATE`                     | Opaque, caller-bound pagination continuation; DynamoDB TTL after 15 minutes |
+| `WORKFLOW#DUE` GSI                           | Expired prepared workflow discovery                                         |
+| `RETENTION#DUE` GSI                          | Eligible non-head revision discovery                                        |
+| `CATALOG#<environment>` GSI                  | Current `HEAD` records in path/secret order                                 |
+| `CONSUMERS#<environment>` GSI                | Administrative consumer profiles in consumer-ID order                       |
+| `CONSUMER#<id>` identity GSI                 | Administrative API leaves in expiration order                               |
+| `SECRET#<uid>` revision GSI                  | Newest-first bounded control-revision management history                    |
 
 `GET /v1/changes` is a paginated _current access snapshot_, not an event log.
 The cursor is an opaque 256-bit token, bound to one consumer, and expires after

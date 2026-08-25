@@ -79,6 +79,59 @@ describe("HemligApi transport", () => {
     expect(calls[0]?.cache).toBe("no-store");
   });
 
+  it("archives with the current ETag and targets the dedicated archive route", async () => {
+    const fetchMock = vi.fn(async (_url: URL, _options?: RequestInit) =>
+      jsonOk({
+        schemaVersion: 1,
+        secretUid: "sec-payments",
+        secretId: "payments-api",
+        controlVersionId: "ctl-archived",
+        environment: "dev",
+        state: "ARCHIVED",
+        createdAt: "2026-08-25T00:00:00.000Z",
+        createdBy: { type: "human", id: "a" },
+        metadata: {},
+        acl: [],
+      }),
+    );
+    const api = new HemligApi(
+      config,
+      tokens,
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await api.archiveSecret("dev", "payments-api", "ctl-1", "archive-key");
+
+    const request = fetchMock.mock.calls[0]?.[0];
+    const options = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(request?.pathname).toBe("/v1/admin/secrets/payments-api/archive");
+    expect(request?.searchParams.get("environment")).toBe("dev");
+    expect(options.method).toBe("POST");
+    const headers = options.headers as Record<string, string>;
+    expect(headers["idempotency-key"]).toBe("archive-key");
+    expect(headers["if-match"]).toBe('"ctl-1"');
+  });
+
+  it("queries archived catalog entries only when the caller opts in", async () => {
+    const fetchMock = vi.fn(async (_url: URL, _options?: RequestInit) =>
+      jsonOk({ secrets: [], generatedAt: "2026-08-25T00:00:00.000Z" }),
+    );
+    const api = new HemligApi(
+      config,
+      tokens,
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await api.listSecrets({
+      environment: "dev",
+      q: "payments",
+      archived: true,
+    });
+
+    const request = fetchMock.mock.calls[0]?.[0];
+    expect(request?.searchParams.get("archived")).toBe("true");
+  });
+
   it("reads the current payload through the authenticated administrator route", async () => {
     const fetchMock = vi.fn(async (_url: URL, _options?: RequestInit) =>
       jsonOk({
