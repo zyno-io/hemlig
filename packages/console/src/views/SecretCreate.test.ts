@@ -46,26 +46,26 @@ const mountView = async (
   return { wrapper };
 };
 
-const folderInput = (wrapper: Awaited<ReturnType<typeof mountView>>["wrapper"]) =>
-  wrapper.find('input[placeholder="payments/stripe/production"]');
+const secretIdInput = (wrapper: Awaited<ReturnType<typeof mountView>>["wrapper"]) =>
+  wrapper.find('input[placeholder="payments/stripe/api-key"]');
 
-describe("SecretCreate folder prefill", () => {
-  it("prefills the folder field with the path being browsed", async () => {
+describe("SecretCreate folder prefix", () => {
+  it("prefixes the secret ID with the folder being browsed", async () => {
     const { wrapper } = await mountView({ env: "dev", path: "payments/stripe" });
 
-    expect((folderInput(wrapper).element as HTMLInputElement).value).toBe("payments/stripe");
+    expect((secretIdInput(wrapper).element as HTMLInputElement).value).toBe("payments/stripe/");
   });
 
-  it("prefills nothing when creating from the root", async () => {
+  it("leaves the ID empty when creating from the root", async () => {
     const { wrapper } = await mountView({ env: "dev" });
 
-    expect((folderInput(wrapper).element as HTMLInputElement).value).toBe("");
+    expect((secretIdInput(wrapper).element as HTMLInputElement).value).toBe("");
   });
 
-  it("leaves the prefilled folder editable rather than locking it", async () => {
+  it("leaves the prefixed secret ID editable", async () => {
     const { wrapper } = await mountView({ env: "dev", path: "payments/stripe" });
 
-    expect(folderInput(wrapper).attributes("disabled")).toBeUndefined();
-    expect(folderInput(wrapper).attributes("readonly")).toBeUndefined();
+    expect(secretIdInput(wrapper).attributes("disabled")).toBeUndefined();
+    expect(secretIdInput(wrapper).attributes("readonly")).toBeUndefined();
   });
 });

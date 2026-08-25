@@ -1,20 +1,12 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { metadataPath, tagKey, tagValue } from "../api/payload";
+import { tagKey, tagValue } from "../api/payload";
 
 export interface MetadataDraft {
   description: string;
-  path: string;
   tags: { id: string; key: string; value: string }[];
 }
 
 const model = defineModel<MetadataDraft>({ required: true });
-
-const pathError = computed(() =>
-  model.value.path.length > 0 && !metadataPath.test(model.value.path)
-    ? "Lowercase, slash-delimited segments only."
-    : undefined,
-);
 
 const tagError = (tag: { key: string; value: string }): string | undefined => {
   if (tag.key.length === 0 && tag.value.length === 0) {
@@ -36,20 +28,6 @@ const addTag = (): void => {
 
 <template>
   <div class="space-y-3">
-    <label class="block">
-      <span class="text-xs text-ink-muted">Folder</span>
-      <input
-        v-model="model.path"
-        maxlength="256"
-        placeholder="payments/stripe/production"
-        class="mono mt-1 w-full rounded border border-line bg-surface px-2 py-1"
-      />
-      <span v-if="pathError" class="text-xs text-danger">{{ pathError }}</span>
-      <span v-else class="text-xs text-ink-muted">
-        Changing this moves the secret to a different folder in the tree.
-      </span>
-    </label>
-    <slot name="after-path" />
     <label class="block">
       <span class="text-xs text-ink-muted">Description</span>
       <textarea
@@ -85,8 +63,8 @@ const addTag = (): void => {
       </button>
     </div>
     <p class="text-xs text-ink-muted">
-      Paths and tags are organisational only. They never select a delivery target or
-      grant access.
+      Tags are organisational only. They never select a delivery target or
+      grant access. Folders are derived from slash-separated secret IDs.
     </p>
   </div>
 </template>

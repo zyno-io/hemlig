@@ -3,6 +3,7 @@ import type { AgentCapability, Grant, SecretEntry, SecretMetadata, SecretPayload
 
 const secretEntryKey = /^[A-Za-z0-9._-]+$/;
 const identifier = /^[a-z][a-z0-9-]{2,63}$/;
+const secretIdentifier = /^[a-z][a-z0-9-]{2,63}(?:\/[a-z][a-z0-9-]{2,63})*$/;
 const environmentName = /^[a-z][a-z0-9-]{0,63}$/;
 const metadataPath = /^[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*$/;
 const tagKey = /^[a-z][a-z0-9-]{0,31}$/;
@@ -15,6 +16,17 @@ const maximumAclGrants = 40;
 export const assertIdentifier = (value: string, field: string): void => {
     if (!identifier.test(value)) {
         throw badRequest(`${field} must be 3-64 lowercase letters, numbers, or hyphens and start with a letter.`);
+    }
+};
+
+/**
+ * Secret IDs are hierarchical names. Every segment deliberately keeps the
+ * established identifier grammar; the separator only creates a catalog
+ * folder. This rejects a leading/trailing slash and empty (`//`) segment.
+ */
+export const assertSecretIdentifier = (value: string, field: string): void => {
+    if (value.length > 256 || !secretIdentifier.test(value)) {
+        throw badRequest(`${field} must be slash-delimited lowercase identifiers (3-64 characters per segment), with no leading, trailing, or repeated slash.`);
     }
 };
 
@@ -46,8 +58,8 @@ export const parseCatalogPathPrefix = (value: string | undefined): string | unde
     if (value === undefined) {
         return undefined;
     }
-    if (value.length === 0 || value.length > 256 || !metadataPath.test(value)) {
-        throw badRequest('pathPrefix must be a lowercase slash-delimited path of at most 256 characters.');
+    if (value.length === 0 || value.length > 256 || !secretIdentifier.test(value)) {
+        throw badRequest('pathPrefix must be a slash-delimited secret ID prefix, with 3-64 lowercase identifier characters per segment.');
     }
     return value;
 };
@@ -93,28 +105,6 @@ export const pathIsWithinPrefixes = (
     path: string | undefined,
     prefixes: readonly string[],
 ): boolean => path !== undefined && prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
-
-/**
- * A folder's path is a real, administrator-defined location, not merely a
- * filter prefix -- so unlike parseCatalogPathPrefix's caller-facing prefix,
- * undefined/missing is rejected rather than treated as "no prefix". This
- * still delegates the grammar itself to parseCatalogPathPrefix so folders
- * and secrets share exactly one path grammar instead of two that could
- * drift apart.
- */
-export const assertFolderPath = (value: unknown): string => {
-    if (typeof value !== 'string') {
-        throw badRequest('path is required and must be a lowercase slash-delimited path of at most 256 characters.');
-    }
-    const parsed = parseCatalogPathPrefix(value);
-    if (parsed === undefined) {
-        // Unreachable in practice: parseCatalogPathPrefix only returns
-        // undefined for literal `undefined`, already excluded above. Kept
-        // explicit so the return type is `string` without an unsafe cast.
-        throw badRequest('path is required and must be a lowercase slash-delimited path of at most 256 characters.');
-    }
-    return parsed;
-};
 
 export const parseCatalogSearchQuery = (value: string | undefined): string | undefined => {
     if (value === undefined) {

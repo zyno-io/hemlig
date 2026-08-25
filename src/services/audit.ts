@@ -1,7 +1,7 @@
 import type { AppConfig } from "../aws/config";
 import type { Actor } from "../domain/types";
 import { badRequest } from "../domain/errors";
-import { assertEnvironmentName, assertIdentifier } from "../domain/validation";
+import { assertEnvironmentName, assertSecretIdentifier } from "../domain/validation";
 import { isoNow, newId, stableJson } from "../util/encoding";
 import type { ObjectStore } from "../repositories/object-store";
 
@@ -123,7 +123,7 @@ export const parseAuditSecretId = (
   if (value === undefined) {
     return undefined;
   }
-  assertIdentifier(value, "secretId");
+  assertSecretIdentifier(value, "secretId");
   return value;
 };
 

@@ -67,7 +67,7 @@ describe("secretTreePage", () => {
           segment: "stripe",
           path: "payments/stripe",
           secretCount: 12,
-          kind: "both",
+          kind: "derived",
         },
       ],
       secrets: [catalogEntryFixture],
@@ -78,7 +78,7 @@ describe("secretTreePage", () => {
     expect(page.folders[0]).toMatchObject({
       segment: "stripe",
       secretCount: 12,
-      kind: "both",
+      kind: "derived",
     });
     expect(page.secrets[0]?.secretId).toBe("stripe-api-key");
     // `truncated` is the only signal a level was capped rather than complete;

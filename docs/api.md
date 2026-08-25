@@ -76,7 +76,7 @@ Content-Type: application/json
 { "apiCertificateSigningRequestPem": "-----BEGIN CERTIFICATE REQUEST-----…" }
 ```
 
-The route receives no desired consumer ID, environment, ACL, path, or endpoint
+The route receives no desired consumer ID, environment, ACL, metadata path, or endpoint
 from the caller. Those values come only from the pre-created AgentGrant. It
 returns the public mTLS leaf and the fixed grant scope. A retry with the same
 CSR returns the same enrollment result after a lost response; a different CSR
@@ -86,9 +86,10 @@ used as a general API token.
 
 An active agent identity cannot bypass its grant by calling ordinary delivery
 endpoints: Hemlig applies its AgentGrant prefix check there too. A prefix
-matches only the exact path or a child segment (`payments` matches
-`payments/api`, never `payments-prod`). Missing paths and empty/root prefixes
-are never agent-authorized.
+matches only the exact authorization path or a child segment (`payments`
+matches `payments/api`, never `payments-prod`). Missing paths and empty/root
+prefixes are never agent-authorized. This is independent of console folders,
+which are always derived from the slash-separated secret ID.
 
 ## Common behavior
 
@@ -133,12 +134,20 @@ payload or persist it in an HTTP cache.
 
 ### Identifiers
 
-Secret IDs and consumer IDs must match:
+Consumer IDs must match:
 
 ```text
 ^[a-z][a-z0-9-]{2,63}$
 ```
 
+Secret IDs use the same segment grammar, but may contain `/` between
+segments (maximum 256 characters overall):
+
+```text
+^[a-z][a-z0-9-]{2,63}(/[a-z][a-z0-9-]{2,63})*$
+```
+
+This rejects leading and trailing slashes and empty segments (`//`).
 `POST /v1/admin/secrets` requires a caller-supplied `secretId`.
 
 ### Environments
@@ -153,20 +162,10 @@ environments.
 
 ### Folders
 
-A folder is otherwise only a path prefix derived from `metadata.path` on the
-secrets `GET /v1/admin/secrets/tree` finds beneath it, so an empty one cannot
-exist on its own. Administrators lay out an organizational structure ahead of
-filling it with `POST /v1/admin/folders`, keyed by `environment` (which must
-already be defined) and `path`, using the same canonical, lowercase,
-slash-delimited grammar as `metadata.path` and `pathPrefix`. Creating
-`payments/stripe/production` creates a record only for that exact path;
-Hemlig never materializes `payments` or `payments/stripe` as separate
-records, because the tree route already derives every intermediate segment
-from the paths it observes -- a second, explicit record for the same
-intermediate folder would be a second source of truth for it. The registry
-supports up to 1,000 folder records per environment. `DELETE
-/v1/admin/folders` removes a record without ever touching a secret; see
-below.
+A folder is the parent prefix of a slash-separated secret ID. For example,
+`payments/stripe/api-key` appears under `payments/stripe`. Folders are not
+stored independently: an empty folder disappears until a secret exists below
+it. The console's **New folder** flow only prefixes the ID of the next secret.
 
 ### Metadata and ACL
 
@@ -179,12 +178,13 @@ below.
 }
 ```
 
-`description` is optional and at most 1,024 characters. `path` is an optional canonical, lowercase,
-slash-delimited organizational location (up to 256 characters), for example
-`payments/stripe/production`. `tags` is an optional map of up to 20 lowercase
-keys to short exact-match values, for example `owner: payments` and
-`system: billing`. Paths and tags are returned only to administrators; they
-never select a delivery target, grant access, or appear in the consumer API.
+`description` is optional and at most 1,024 characters. `tags` is an optional
+map of up to 20 lowercase keys to short exact-match values, for example
+`owner: payments` and `system: billing`. Tags are returned only to
+administrators; they never select a delivery target, grant access, or appear
+in the consumer API. `metadata.path` remains an agent-authorization scope for
+existing Kubernetes integrations; it does not affect the catalog hierarchy and
+the console does not edit it. Folders always come from the secret ID.
 
 An ACL has zero to forty unique consumers and only supports the `read` permission.
 Every grant must identify an already-enrolled, active consumer in the same
@@ -289,8 +289,8 @@ secret without an active payload returns `404`.
 
 Browses organizational metadata without returning payloads, ACLs, encryption
 material, or certificate material. `environment` is required. `pathPrefix` is
-an optional canonical path prefix; `tags` is an optional comma-separated list
-of exact `key:value` terms, combined with AND. Results are sorted by path then
+an optional secret-ID prefix; `tags` is an optional comma-separated list of
+exact `key:value` terms, combined with AND. Results are sorted by folder then
 secret ID and paginated through an opaque cursor bound to the administrator.
 
 ```http
@@ -353,13 +353,7 @@ Authorization: Bearer <JWT>
       "segment": "stripe",
       "path": "payments/stripe",
       "secretCount": 12,
-      "kind": "both"
-    },
-    {
-      "segment": "adyen",
-      "path": "payments/adyen",
-      "secretCount": 0,
-      "kind": "explicit"
+      "kind": "derived"
     }
   ],
   "secrets": [],
@@ -368,26 +362,14 @@ Authorization: Bearer <JWT>
 }
 ```
 
-`folders` is the union of every immediate child segment below `pathPrefix`
-implied by a secret's `metadata.path` and every explicit folder record
-(`POST /v1/admin/folders`), deduplicated by path, each with `secretCount`
-computed recursively over its whole subtree. `kind` says which source(s)
-produced it: `explicit` means an administrator created a folder record at
-exactly that path and no secret currently implies it (`secretCount` is then
-`0` -- an empty folder an administrator laid out ahead of filling it);
-`derived` means no record exists at exactly that path and it appears only
-because a secret's path equals or nests beneath it, or because a deeper
-explicit record implies it; `both` means a record exists at exactly that
-path and `secretCount` is greater than zero. `secretCount` counts only
-actual `READY` secrets; folder records are never counted as secrets.
-`secrets` lists only secrets whose path equals `pathPrefix` exactly; at the
-root (no `pathPrefix`), that means secrets with no path at all. This route
-scans an internally bounded number of catalog records rather than exposing a
-cursor: `truncated: true` means the page stopped early and the tree below it
-is incomplete, not that more pages are available to fetch. The folder-record
-union adds a second, separately bounded internal query (up to 1,000 records
-per environment); it does not affect `truncated`, which continues to reflect
-only the secret scan's bound.
+`folders` contains every immediate child segment below `pathPrefix` implied by
+a slash-separated secret ID. `kind` is always `derived`, and `secretCount` is
+computed recursively over each subtree. `secrets` lists only secrets whose ID
+parent equals `pathPrefix` exactly; at the root (no `pathPrefix`), that means
+IDs without a slash. This route uses the catalog-path index and scans an
+internally bounded number of catalog records rather than exposing a cursor:
+`truncated: true` means the page stopped early and the tree below it is
+incomplete, not that more pages are available to fetch.
 
 ### `GET /v1/admin/secrets/{secretId}/revisions`
 
@@ -468,38 +450,6 @@ Content-Type: application/json
 
 Returns `200 OK`, a new `controlVersionId`, a new `payloadVersionId`,
 `state: ACTIVE`, and the new ETag. Hemlig never echoes the plaintext payload.
-
-### `POST /v1/admin/folders`
-
-Creates one explicit, empty folder record. `environment` must already be
-defined; `path` uses the same grammar as `metadata.path`. See
-[Folders](#folders) for why creating a nested path never materializes its
-intermediate segments as separate records.
-
-```http
-POST /v1/admin/folders HTTP/1.1
-Content-Type: application/json
-
-{ "environment": "prod", "path": "payments/adyen" }
-```
-
-Returns `201 Created` with the folder record. A duplicate path in the same
-environment, or an at-capacity registry, is `409 conflict`, consistent with
-`POST /v1/admin/environments`. Unlike secret and consumer mutations, this
-route does not require `Idempotency-Key`: like environment creation, a
-retried call fails deterministically with `409` instead of risking a
-duplicate side effect, so there is nothing here for a dedup key to protect.
-
-### `DELETE /v1/admin/folders?environment=<env>&path=<path>`
-
-Deletes an explicit folder record. It never touches a secret. It returns
-`409 conflict` when any secret's path equals `path` exactly or is nested
-beneath it: deleting the record would not remove the folder from the tree,
-since `GET /v1/admin/secrets/tree` would still derive it from that secret.
-It returns `404 not_found` when no folder record exists at exactly `path`,
-even if the tree still shows it as a derived folder -- there is nothing to
-delete. Success is `204 No Content`. Like folder creation, this route does
-not require `Idempotency-Key`.
 
 ### Consumer enrollment and certificates
 

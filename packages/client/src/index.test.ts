@@ -104,6 +104,40 @@ test("administrator payload reads use the authenticated administrator route", as
   assert.equal(requests[0]?.headers?.authorization, "Bearer token");
 });
 
+test("secret paths encode hierarchical IDs as one URL parameter", async () => {
+  const requests: TransportRequest[] = [];
+  const transport: HemligTransport = {
+    request: async (request) => {
+      requests.push(request);
+      return {
+        status: 200,
+        headers: {},
+        body: {
+          secretId: "payments/stripe/api-key",
+          controlVersionId: "ctl-current",
+          payloadVersionId: "pay-current",
+          payload: {},
+        },
+      };
+    },
+  };
+  const client = new HemligClient(
+    new URL("https://admin.example.com"),
+    transport,
+  );
+
+  await client.getAdminSecretPayload(
+    "token",
+    "prod",
+    "payments/stripe/api-key",
+  );
+
+  assert.equal(
+    requests[0]?.url.pathname,
+    "/v1/admin/secrets/payments%2Fstripe%2Fapi-key/payload",
+  );
+});
+
 test("API identity revocation uses DELETE and requires a caller-provided idempotency key", async () => {
   const requests: TransportRequest[] = [];
   const transport: HemligTransport = {

@@ -20,7 +20,7 @@ const secretFixture = (overrides: Partial<ControlRevision> = {}): ControlRevisio
   state: "ACTIVE",
   createdAt: "2026-08-23T00:00:00.000Z",
   createdBy: { type: "human", id: "admin" },
-  metadata: { path: "payments/stripe" },
+  metadata: {},
   acl: [],
   ...overrides,
 });
@@ -66,34 +66,11 @@ const mountView = async (api: FakeApi): Promise<{ wrapper: ReturnType<typeof mou
   return { wrapper };
 };
 
-const folderInput = (wrapper: Awaited<ReturnType<typeof mountView>>["wrapper"]) =>
-  wrapper.find('input[placeholder="payments/stripe/production"]');
-
-describe("SecretMetadata move notice", () => {
-  it("shows nothing when the folder is unchanged", async () => {
+describe("SecretMetadata folders", () => {
+  it("does not present folder metadata as an editable field", async () => {
     const { wrapper } = await mountView(defaultApi());
 
-    expect(wrapper.text()).not.toContain("Moving from");
-  });
-
-  it("shows the before/after once the folder differs from what was loaded", async () => {
-    const { wrapper } = await mountView(defaultApi());
-
-    await folderInput(wrapper).setValue("payments/adyen");
-    await flushPromises();
-
-    expect(wrapper.text()).toContain("Moving from");
-    expect(wrapper.text()).toContain("payments/stripe");
-    expect(wrapper.text()).toContain("payments/adyen");
-  });
-
-  it("renders the move-to-root wording when the folder is cleared", async () => {
-    const { wrapper } = await mountView(defaultApi());
-
-    await folderInput(wrapper).setValue("");
-    await flushPromises();
-
-    expect(wrapper.text()).toContain("Moving from");
-    expect(wrapper.text()).toContain("the root");
+    expect(wrapper.text()).not.toContain("Changing this moves the secret");
+    expect(wrapper.find('input[placeholder="payments/stripe/production"]').exists()).toBe(false);
   });
 });

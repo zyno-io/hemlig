@@ -9,21 +9,6 @@ export interface EnvironmentRecord {
     readonly createdBy: Actor;
 }
 
-/**
- * Administrator-defined organizational folder, independent of any secret.
- * Only ever created at the exact path an administrator names -- intermediate
- * segments (e.g. `a` and `a/b` when creating `a/b/c`) are never materialised
- * as records; see FolderService and DynamoRepository#listSecretTree for why.
- */
-export interface FolderRecord {
-    readonly pk: string;
-    readonly sk: string;
-    readonly environment: EnvironmentName;
-    readonly path: string;
-    readonly createdAt: string;
-    readonly createdBy: Actor;
-}
-
 export type Permission = 'read';
 
 /** Capabilities granted to a non-administrator Hemlig agent identity. */
@@ -63,7 +48,7 @@ export type SecretPayload = Readonly<Record<string, SecretEntry>>;
 
 export interface SecretMetadata {
     readonly description?: string;
-    /** Canonical, slash-delimited organizational location. It has no authorization meaning. */
+    /** Agent-authorization path; it does not affect the catalog hierarchy. */
     readonly path?: string;
     /** Bounded, exact-match organizational labels. They have no authorization meaning. */
     readonly tags?: Readonly<Record<string, string>>;
@@ -203,8 +188,8 @@ export interface ConsumerRecord {
 
 /**
  * Administrator-owned remote policy for an enrolled namespace agent.  The
- * path prefixes are part of authorization, unlike organizational metadata on
- * a secret; every agent route enforces them before payload access or mutation.
+ * Metadata path prefixes are part of authorization; every agent route
+ * enforces them before payload access or mutation.
  */
 export interface AgentGrantRecord {
     readonly pk: string;

@@ -140,11 +140,12 @@ describe("SecretDetail path", () => {
     );
   });
 
-  it("links the path to its folder in the browse tree", async () => {
+  it("links the secret ID prefix to its folder in the browse tree", async () => {
     const { wrapper } = await mountView({
-      getSecret: async () =>
-        secretFixture({ metadata: { path: "payments/stripe" } }),
+      getSecret: async () => secretFixture(),
     });
+    await wrapper.setProps({ secretId: "payments/stripe/stripe-api-key" });
+    await flushPromises();
 
     const link = wrapper
       .findAll("a")
@@ -165,17 +166,13 @@ describe("SecretDetail path", () => {
     expect(link?.attributes("href")).toBe("/e/dev/secrets");
   });
 
-  it("offers a Move affordance to the metadata editor", async () => {
+  it("does not offer metadata as a way to move folders", async () => {
     const { wrapper } = await mountView({
-      getSecret: async () =>
-        secretFixture({ metadata: { path: "payments/stripe" } }),
+      getSecret: async () => secretFixture(),
     });
 
     const move = wrapper.findAll("a").find((a) => a.text() === "Move");
-    expect(move).toBeDefined();
-    expect(move?.attributes("href")).toBe(
-      "/e/dev/secrets/stripe-api-key/metadata",
-    );
+    expect(move).toBeUndefined();
   });
 
   it("reveals the current payload only after the explicit audited action", async () => {

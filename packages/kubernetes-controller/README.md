@@ -77,7 +77,7 @@ metadata:
   namespace: payments
 spec:
   consumerRef: payments
-  secretId: payments-api
+  secretId: payments/production/api-key
   target: { name: payments-api, type: Opaque }
 ---
 apiVersion: hemlig.io/v1beta1
@@ -87,7 +87,7 @@ metadata:
   namespace: payments
 spec:
   consumerRef: payments
-  secretId: payments-api-source
+  secretId: payments/production/api-key-source
   source: { name: payments-api-source }
   metadata: { path: payments/production, description: Payments API }
 ```

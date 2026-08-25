@@ -84,11 +84,14 @@ const secretSubpageTo = (
   query: route.query,
 });
 
-// Links the path to where it actually lives in the tree — the folder view
-// this secret would show up under — rather than leaving it as inert text
-// with no route out of this screen.
+const folderPath = (secretId: string): string | undefined => {
+  const separator = secretId.lastIndexOf("/");
+  return separator === -1 ? undefined : secretId.slice(0, separator);
+};
+
+// A secret's prefix is its folder. It is identity, not editable metadata.
 const pathTo = computed(() => {
-  const path = data.value?.metadata.path;
+  const path = folderPath(props.secretId);
   return path !== undefined && path.length > 0
     ? {
         name: "secrets-browse",
@@ -180,16 +183,10 @@ const pathTo = computed(() => {
         <dl class="mt-3 grid grid-cols-[10rem_1fr] gap-y-1 text-xs">
           <dt class="text-ink-muted">Description</dt>
           <dd>{{ data.metadata.description ?? "—" }}</dd>
-          <dt class="text-ink-muted">Path</dt>
-          <dd class="flex items-center gap-2">
+          <dt class="text-ink-muted">Folder</dt>
+          <dd>
             <RouterLink class="mono text-accent hover:underline" :to="pathTo">
-              {{ data.metadata.path ?? "Root" }}
-            </RouterLink>
-            <RouterLink
-              class="text-accent hover:underline"
-              :to="secretSubpageTo('secret-metadata')"
-            >
-              Move
+              {{ folderPath(secretId) ?? "Root" }}
             </RouterLink>
           </dd>
         </dl>
@@ -206,8 +203,8 @@ const pathTo = computed(() => {
           </div>
         </div>
         <p class="mt-3 text-xs text-ink-muted">
-          Paths and tags are organisational only. They never select a delivery
-          target or grant access.
+          Folders are derived from the secret ID. Tags are organisational only
+          and never select a delivery target or grant access.
         </p>
       </section>
 

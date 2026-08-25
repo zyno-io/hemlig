@@ -6,7 +6,6 @@ import type {
 import type { Application } from "../app";
 import type { AwsClients } from "../aws/clients";
 import type { AppConfig } from "../aws/config";
-import { badRequest, conflict, notFound } from "../domain/errors";
 import type { IssuerRecord } from "../domain/types";
 import { errorResponse } from "../http/responses";
 import type { DynamoRepository } from "../repositories/dynamo";
@@ -15,7 +14,6 @@ import type { AuditWriter } from "../services/audit";
 import type { ConsumerService } from "../services/consumers";
 import type { CursorService } from "../services/cursor";
 import type { EnvironmentService } from "../services/environments";
-import type { FolderService } from "../services/folders";
 import type { SecretService } from "../services/secrets";
 
 // admin.ts resolves its Application through getApplication(), a module-level
@@ -125,7 +123,6 @@ describe("POST /v1/admin/issuer", () => {
       agents: {} as Application["agents"],
       cursors: {} as unknown as CursorService,
       environments: {} as unknown as EnvironmentService,
-      folders: {} as unknown as FolderService,
       secrets: {} as unknown as SecretService,
       consumers: {} as unknown as ConsumerService,
       clients: { kms } as unknown as AwsClients,
@@ -241,7 +238,6 @@ describe("GET /v1/admin/secrets", () => {
         create: createEnvironment,
         require: requireEnvironment,
       } as unknown as EnvironmentService,
-      folders: {} as unknown as FolderService,
       secrets: {} as unknown as SecretService,
       consumers: {} as unknown as ConsumerService,
       clients: {} as unknown as AwsClients,
@@ -336,194 +332,60 @@ describe("GET /v1/admin/secrets", () => {
   });
 });
 
-describe("/v1/admin/folders", () => {
-  let fakeApp: Application;
-  let createFolder: jest.Mock;
-  let removeFolder: jest.Mock;
-
-  beforeEach(() => {
-    createFolder = jest.fn(
-      async (input: {
-        environment: string;
-        path: unknown;
-        actor: unknown;
-      }) => ({
-        environment: input.environment,
-        path: input.path,
-        createdAt: "2026-08-23T00:00:00.000Z",
-        createdBy: { type: "human", id: "admin-1" },
-      }),
-    );
-    removeFolder = jest.fn(async () => undefined);
-    fakeApp = {
+describe("slash-separated admin secret IDs", () => {
+  it("decodes a slash-separated ID from the request path", async () => {
+    const getControlRevision = jest.fn(async (environment, secretId) => ({
+      schemaVersion: 1,
+      secretId,
+      controlVersionId: "ctl-1",
+      environment,
+      state: "ACTIVE",
+      createdAt: "2026-08-23T00:00:00.000Z",
+      createdBy: { type: "human", id: "admin-1" },
+      metadata: {},
+      acl: [],
+    }));
+    const app = {
       config,
-      repository: {} as unknown as DynamoRepository,
-      objects: {} as unknown as ObjectStore,
       audit: {
         write: jest.fn(async (event: Record<string, unknown>) => ({
           eventId: "evt-1",
           at: "2026-08-23T00:00:00.000Z",
           ...event,
         })),
-      } as unknown as AuditWriter,
-      auditQueries: {} as Application["auditQueries"],
-      agentGrants: {} as Application["agentGrants"],
-      agents: {} as Application["agents"],
-      cursors: {} as unknown as CursorService,
-      environments: {} as unknown as EnvironmentService,
-      folders: {
-        create: createFolder,
-        remove: removeFolder,
-      } as unknown as FolderService,
-      secrets: {} as unknown as SecretService,
-      consumers: {} as unknown as ConsumerService,
-      clients: {} as unknown as AwsClients,
-    };
+      },
+      secrets: { getControlRevision },
+    } as unknown as Application;
     withErrorResponse.mockImplementation(
       async (
         event: APIGatewayProxyEventV2,
         action: (
-          app: Application,
+          application: Application,
           correlationId: string,
           setAuditContext: (context: unknown) => void,
         ) => Promise<APIGatewayProxyStructuredResultV2>,
       ) => {
         try {
-          return await action(fakeApp, "corr-1", () => undefined);
+          return await action(app, "corr-1", () => undefined);
         } catch (error) {
           return errorResponse(error, "corr-1");
         }
       },
     );
-  });
 
-  it("creates a folder and returns 201", async () => {
-    const event = {
-      ...buildEvent("POST", "/v1/admin/folders"),
-      body: JSON.stringify({ environment: "prod", path: "payments/adyen" }),
-    };
-
-    const response = await handler(event);
-
-    expect(createFolder).toHaveBeenCalledWith({
-      environment: "prod",
-      path: "payments/adyen",
-      actor: { type: "human", id: "admin-1" },
-    });
-    expect(response.statusCode).toBe(201);
-    expect(JSON.parse(response.body as string)).toMatchObject({
-      environment: "prod",
-      path: "payments/adyen",
-    });
-  });
-
-  it("returns 409 when the folder already exists or the registry is full", async () => {
-    createFolder.mockRejectedValueOnce(
-      conflict("The folder already exists or the registry is full."),
-    );
-    const event = {
-      ...buildEvent("POST", "/v1/admin/folders"),
-      body: JSON.stringify({ environment: "prod", path: "payments" }),
-    };
-
-    const response = await handler(event);
-
-    expect(response.statusCode).toBe(409);
-    expect(JSON.parse(response.body as string)).toMatchObject({
-      error: { code: "conflict" },
-    });
-  });
-
-  it("rejects an unknown environment the same way other scoped routes do", async () => {
-    createFolder.mockRejectedValueOnce(
-      notFound("The requested environment is not configured."),
-    );
-    const event = {
-      ...buildEvent("POST", "/v1/admin/folders"),
-      body: JSON.stringify({ environment: "missing", path: "payments" }),
-    };
-
-    const response = await handler(event);
-
-    expect(response.statusCode).toBe(404);
-    expect(JSON.parse(response.body as string)).toMatchObject({
-      error: { code: "not_found" },
-    });
-  });
-
-  it("rejects an invalid path", async () => {
-    createFolder.mockRejectedValueOnce(
-      badRequest(
-        "path must be a lowercase slash-delimited path of at most 256 characters.",
+    const response = await handler(
+      buildEvent(
+        "GET",
+        "/v1/admin/secrets/payments%2Fstripe%2Fapi-key",
+        {},
+        { environment: "prod" },
       ),
     );
-    const event = {
-      ...buildEvent("POST", "/v1/admin/folders"),
-      body: JSON.stringify({ environment: "prod", path: "Payments" }),
-    };
 
-    const response = await handler(event);
-
-    expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.body as string)).toMatchObject({
-      error: { code: "bad_request" },
-    });
-  });
-
-  it("deletes an empty folder and returns 204", async () => {
-    const event = buildEvent(
-      "DELETE",
-      "/v1/admin/folders",
-      {},
-      { environment: "prod", path: "payments/adyen" },
+    expect(response.statusCode).toBe(200);
+    expect(getControlRevision).toHaveBeenCalledWith(
+      "prod",
+      "payments/stripe/api-key",
     );
-
-    const response = await handler(event);
-
-    expect(removeFolder).toHaveBeenCalledWith({
-      environment: "prod",
-      path: "payments/adyen",
-    });
-    expect(response.statusCode).toBe(204);
-  });
-
-  it("returns 409 when the folder is not empty", async () => {
-    removeFolder.mockRejectedValueOnce(
-      conflict(
-        "The folder is not empty: a secret exists at this path or nested beneath it.",
-      ),
-    );
-    const event = buildEvent(
-      "DELETE",
-      "/v1/admin/folders",
-      {},
-      { environment: "prod", path: "payments" },
-    );
-
-    const response = await handler(event);
-
-    expect(response.statusCode).toBe(409);
-    expect(JSON.parse(response.body as string)).toMatchObject({
-      error: { code: "conflict" },
-    });
-  });
-
-  it("returns 404 when the path is only a derived folder, not a record", async () => {
-    removeFolder.mockRejectedValueOnce(
-      notFound("No folder record exists at this path."),
-    );
-    const event = buildEvent(
-      "DELETE",
-      "/v1/admin/folders",
-      {},
-      { environment: "prod", path: "payments" },
-    );
-
-    const response = await handler(event);
-
-    expect(response.statusCode).toBe(404);
-    expect(JSON.parse(response.body as string)).toMatchObject({
-      error: { code: "not_found" },
-    });
   });
 });

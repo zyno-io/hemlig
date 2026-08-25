@@ -115,7 +115,7 @@ const run = async (): Promise<void> => {
     { API_TOKEN: { encoding: "utf8", value: "not-logged" } },
     {
       environment: "local",
-      secretId: "sec-local",
+      secretId: "testing/ministack/sec-local",
       payloadVersionId: "pay-local",
     },
     { type: "system", id: "ministack-verify" },
@@ -125,7 +125,7 @@ const run = async (): Promise<void> => {
   const bytes = Buffer.from(stableJson(revision), "utf8");
   const object = await objects.putImmutable(
     bucket,
-    "secrets/local/sec-local/payload/pay-local.json",
+    "secrets/local/testing/ministack/sec-local/payload/pay-local.json",
     bytes,
   );
   const existingObject = await objects.putImmutableOrGet(
@@ -153,20 +153,19 @@ const run = async (): Promise<void> => {
         Put: {
           TableName: table,
           Item: {
-            pk: "SECRET#local#sec-local",
+            pk: "SECRET#local#testing/ministack/sec-local",
             sk: "HEAD",
-            secretId: "sec-local",
+            secretId: "testing/ministack/sec-local",
             environment: "local",
             controlVersionId: "ctl-local",
             state: "ACTIVE",
             workflowState: "READY",
             metadata: {
               description: "Local MiniStack secret",
-              path: "testing/ministack",
               tags: { owner: "platform" },
             },
             catalogPk: "CATALOG#local",
-            catalogSk: "PATH#testing/ministack/SECRET#sec-local",
+            catalogSk: "PATH#testing/ministack/SECRET#testing/ministack/sec-local",
             catalogTags: { owner: "platform" },
           },
           ConditionExpression: "attribute_not_exists(pk)",
@@ -211,14 +210,14 @@ const run = async (): Promise<void> => {
         Put: {
           TableName: table,
           Item: {
-            pk: "SECRET#local#sec-local",
+            pk: "SECRET#local#testing/ministack/sec-local",
             sk: "CONTROL#ctl-local",
             workflowState: "READY",
-            revisionPk: "SECRET#local#sec-local",
+            revisionPk: "SECRET#local#testing/ministack/sec-local",
             revisionSk: "2026-08-22T00:00:00.000Z#ctl-local",
             serialized: {
               schemaVersion: 1,
-              secretId: "sec-local",
+              secretId: "testing/ministack/sec-local",
               controlVersionId: "ctl-local",
               payloadKeyCount: 1,
               environment: "local",
@@ -240,7 +239,7 @@ const run = async (): Promise<void> => {
   });
   if (
     catalog.secrets.length !== 1 ||
-    catalog.secrets[0]?.secretId !== "sec-local"
+    catalog.secrets[0]?.secretId !== "testing/ministack/sec-local"
   ) {
     throw new Error(
       "Catalog path/tag query did not return the expected secret.",
@@ -260,7 +259,7 @@ const run = async (): Promise<void> => {
   }
   const revisions = await repository.listRecentControlRevisions(
     "local",
-    "sec-local",
+    "testing/ministack/sec-local",
   );
   if (revisions.revisions[0]?.serialized.controlVersionId !== "ctl-local") {
     throw new Error(

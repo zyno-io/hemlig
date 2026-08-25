@@ -10,7 +10,6 @@ import { AgentService } from "./services/agents";
 import { ConsumerService } from "./services/consumers";
 import { CursorService } from "./services/cursor";
 import { EnvironmentService } from "./services/environments";
-import { FolderService } from "./services/folders";
 import { IssuerService } from "./services/issuer";
 import { SecretService } from "./services/secrets";
 
@@ -24,7 +23,6 @@ export interface Application {
   readonly agents: AgentService;
   readonly cursors: CursorService;
   readonly environments: EnvironmentService;
-  readonly folders: FolderService;
   readonly secrets: SecretService;
   readonly consumers: ConsumerService;
   readonly clients: AwsClients;
@@ -64,7 +62,6 @@ export const createApplication = (config: AppConfig): Application => {
     auditQueries: new AuditQueryService(objects, config),
     cursors: new CursorService(repository),
     environments,
-    folders: new FolderService(repository, environments),
     secrets,
     consumers,
     agents: new AgentService(repository, secrets),

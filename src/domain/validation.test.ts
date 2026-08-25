@@ -1,4 +1,11 @@
-import { parseCatalogTagFilters, parseGrants, parseMetadata, parsePayload } from './validation';
+import {
+    assertSecretIdentifier,
+    parseCatalogPathPrefix,
+    parseCatalogTagFilters,
+    parseGrants,
+    parseMetadata,
+    parsePayload,
+} from './validation';
 
 describe('secret validation', () => {
     it('accepts string and explicitly base64 entries', () => {
@@ -21,7 +28,7 @@ describe('secret validation', () => {
         ])).toThrow('zero and 40');
     });
 
-    it('accepts bounded organizational paths and tags', () => {
+    it('keeps agent authorization paths separate from catalog folders', () => {
         expect(parseMetadata({
             path: 'payments/stripe/production',
             tags: { owner: 'payments', system: 'billing' },
@@ -33,6 +40,18 @@ describe('secret validation', () => {
             owner: 'payments',
             system: 'billing',
         });
+    });
+
+    it('accepts slash-separated secret IDs but rejects empty path segments', () => {
+        expect(() => assertSecretIdentifier('payments/stripe/api-key', 'secretId')).not.toThrow();
+        expect(() => assertSecretIdentifier('/payments/api-key', 'secretId')).toThrow('leading');
+        expect(() => assertSecretIdentifier('payments/api-key/', 'secretId')).toThrow('trailing');
+        expect(() => assertSecretIdentifier('payments//api-key', 'secretId')).toThrow('repeated');
+    });
+
+    it('uses the same secret-ID grammar for catalog prefixes', () => {
+        expect(parseCatalogPathPrefix('payments/stripe')).toBe('payments/stripe');
+        expect(() => parseCatalogPathPrefix('payments//stripe')).toThrow('pathPrefix');
     });
 
     it('rejects ambiguous organizational tags', () => {

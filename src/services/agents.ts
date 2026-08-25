@@ -138,15 +138,15 @@ export class AgentService {
   }
 
   public async create(input: AgentSecretWriteInput): Promise<ControlRevision> {
-    const metadata = input.metadata;
-    if (metadata === undefined) {
-      throw forbidden("An agent-created secret requires path metadata.");
-    }
     const grant = await this.requireCapability(
       input.consumerId,
       input.environment,
       "write",
     );
+    const metadata = input.metadata;
+    if (metadata === undefined) {
+      throw forbidden("An agent-created secret requires path metadata.");
+    }
     this.requirePath({ metadata }, grant.writePathPrefixes);
     return this.secrets.create({
       secretId: input.secretId,
@@ -174,10 +174,10 @@ export class AgentService {
     if (current.environment !== input.environment) {
       throw forbidden();
     }
-    const metadata = input.metadata ?? current.metadata;
     if (input.metadata === undefined && input.payload === undefined) {
       throw forbidden("An agent update must change metadata and/or payload.");
     }
+    const metadata = input.metadata ?? current.metadata;
     this.requirePath({ metadata }, grant.writePathPrefixes);
     return this.secrets.update({
       secretId: input.secretId,

@@ -4,24 +4,21 @@ import { useRouter } from "vue-router";
 import AclEditor from "../components/AclEditor.vue";
 import MetadataFields, { type MetadataDraft } from "../components/MetadataFields.vue";
 import MutationState from "../components/MutationState.vue";
-import { identifier } from "../api/payload";
+import { isValidSecretIdentifier } from "../api/payload";
 import type { ControlRevision } from "../api/schemas";
 import { useGuardedMutation } from "../composables/useGuardedMutation";
 import { useAppStore } from "../stores/app";
 
 // `path` is the folder the operator was browsing when they clicked "New
-// secret" (see the `?path=` query param on this route). It only seeds the
-// initial draft — the field stays editable, and creating from the root
-// leaves it blank rather than prefilling anything.
+// secret". It seeds the ID itself; folders have no separate persisted record.
 const props = defineProps<{ env: string; path?: string }>();
 const store = useAppStore();
 const router = useRouter();
 
-const secretId = ref("");
+const secretId = ref(props.path === undefined ? "" : `${props.path}/`);
 const acl = ref<string[]>([]);
 const metadata = reactive<MetadataDraft>({
   description: "",
-  path: props.path ?? "",
   tags: [],
 });
 
@@ -29,8 +26,8 @@ const idError = computed(() => {
   if (secretId.value.length === 0) {
     return "Secret ID is required.";
   }
-  return !identifier.test(secretId.value)
-    ? "3–64 characters: lowercase letters, digits, or hyphens, starting with a letter."
+  return !isValidSecretIdentifier(secretId.value)
+    ? "Use slash-delimited lowercase IDs: 3–64 characters per segment, with no leading, trailing, or repeated slash."
     : undefined;
 });
 
@@ -41,7 +38,6 @@ const buildInput = () => ({
   environment: props.env,
   metadata: {
     ...(metadata.description.trim() ? { description: metadata.description.trim() } : {}),
-    ...(metadata.path.trim() ? { path: metadata.path.trim() } : {}),
     ...(metadata.tags.filter((t) => t.key).length > 0
       ? {
           tags: Object.fromEntries(
@@ -80,18 +76,30 @@ const submit = async (): Promise<void> => {
     });
   }
 };
+
+const catalogBackTo = computed(() =>
+  props.path === undefined
+    ? { name: "secrets", params: { env: props.env } }
+    : {
+        name: "secrets-browse",
+        params: { env: props.env, path: props.path.split("/") },
+      },
+);
 </script>
 
 <template>
   <div class="max-w-2xl space-y-4 text-sm">
     <div>
-      <RouterLink class="text-xs text-accent hover:underline" :to="{ name: 'secrets', params: { env } }">
+      <RouterLink class="text-xs text-accent hover:underline" :to="catalogBackTo">
         ← Secrets
       </RouterLink>
       <h1 class="text-lg font-semibold">New secret in {{ env }}</h1>
       <p class="mt-1 text-ink-muted">
         Step 1 of 2. Creating a secret leaves it in PENDING_VALUE; it becomes deliverable
         once you set its first payload on the next screen.
+      </p>
+      <p v-if="path" class="mt-1 text-xs text-ink-muted">
+        This secret will be created in <span class="mono">{{ path }}</span>.
       </p>
     </div>
 
@@ -102,23 +110,20 @@ const submit = async (): Promise<void> => {
     />
 
     <form class="space-y-4 rounded border border-line bg-surface-raised p-4" @submit.prevent="submit">
-      <MetadataFields v-model="metadata">
-        <template #after-path>
-          <label class="block">
-            <span class="text-xs text-ink-muted">Secret ID</span>
-            <input
-              v-model="secretId"
-              required
-              placeholder="database-credentials"
-              class="mono mt-1 w-full rounded border border-line bg-surface px-2 py-1"
-            />
-            <span v-if="idError" class="text-xs text-danger">{{ idError }}</span>
-            <span v-else class="text-xs text-ink-muted">
-              A stable, readable ID is used for grants and audit records.
-            </span>
-          </label>
-        </template>
-      </MetadataFields>
+      <label class="block">
+        <span class="text-xs text-ink-muted">Secret ID</span>
+        <input
+          v-model="secretId"
+          required
+          placeholder="payments/stripe/api-key"
+          class="mono mt-1 w-full rounded border border-line bg-surface px-2 py-1"
+        />
+        <span v-if="idError" class="text-xs text-danger">{{ idError }}</span>
+        <span v-else class="text-xs text-ink-muted">
+          Slash-separated segments define the folder tree. A stable, readable ID is used for catalog and audit records.
+        </span>
+      </label>
+      <MetadataFields v-model="metadata" />
       <AclEditor v-model="acl" :environment="env" />
 
       <button

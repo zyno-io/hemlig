@@ -72,17 +72,8 @@ export const catalogPage = z.object({
   generatedAt: z.string(),
 });
 
-/**
- * `explicit` -- an administrator created a folder record (POST
- * /v1/admin/folders) at exactly this path and no secret currently implies
- * it; secretCount is then 0. `derived` -- no folder record exists at exactly
- * this path; it appears only because a secret's metadata.path equals or
- * nests beneath it, or because a deeper explicit record implies it. `both`
- * -- an explicit record exists at exactly this path and secretCount is
- * greater than zero. An empty folder is `explicit` with secretCount 0, not
- * an absence -- it must render like any other folder.
- */
-export const folderKind = z.enum(["explicit", "derived", "both"]);
+/** Every folder is inferred from a slash-separated secret ID. */
+export const folderKind = z.literal("derived");
 
 export const secretTreeFolder = z.object({
   segment: z.string(),
@@ -238,18 +229,6 @@ export const auditPage = z.object({
   generatedAt: z.string(),
 });
 
-/**
- * An explicit, empty folder record — never a secret. Creating one has no
- * effect on any secret's path, and deleting one never touches a secret
- * either (see HemligApi.deleteFolder).
- */
-export const folderDefinition = z.object({
-  environment: z.string(),
-  path: z.string(),
-  createdAt: z.string(),
-  createdBy: actor,
-});
-
 export type ControlRevision = z.infer<typeof controlRevision>;
 export type CatalogEntry = z.infer<typeof catalogEntry>;
 export type CatalogPage = z.infer<typeof catalogPage>;
@@ -269,7 +248,6 @@ export type EnvironmentDefinition = z.infer<typeof environmentDefinition>;
 export type EnvironmentListResponse = z.infer<typeof environmentListResponse>;
 export type AuditEvent = z.infer<typeof auditEvent>;
 export type AuditPage = z.infer<typeof auditPage>;
-export type FolderDefinition = z.infer<typeof folderDefinition>;
 export type SecretReadResponse = z.infer<typeof secretReadResponse>;
 export type Metadata = z.infer<typeof metadata>;
 export type Grant = z.infer<typeof grant>;

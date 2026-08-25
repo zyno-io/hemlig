@@ -8,6 +8,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import type { AppConfig } from "../aws/config";
 import {
+  catalogSk,
   DynamoRepository,
   type CompletedMutation,
   type PreparedMutation,
@@ -101,6 +102,17 @@ describe("opaque cursor storage", () => {
       Key: { pk: `CURSOR#${cursor.token}`, sk: "STATE" },
       ConsistentRead: true,
     });
+  });
+});
+
+describe("secret ID catalog index", () => {
+  it("keys every secret under its parent ID path", () => {
+    expect(catalogSk("payments/stripe/api-key")).toBe(
+      "PATH#payments/stripe/SECRET#payments/stripe/api-key",
+    );
+    expect(catalogSk("root-secret")).toBe(
+      "PATH#_/SECRET#root-secret",
+    );
   });
 });
 
@@ -636,202 +648,11 @@ describe("console management indexes", () => {
   });
 });
 
-describe("folder registry", () => {
-  it("stores a folder record scoped to its environment, bounded by count", async () => {
-    const dynamo = {
-      send: jest.fn().mockResolvedValue({}),
-    } as unknown as DynamoDBDocumentClient;
-    const repository = new DynamoRepository(dynamo, config);
-    const folder = {
-      pk: "FOLDER#prod",
-      sk: "PATH#payments/adyen",
-      environment: "prod",
-      path: "payments/adyen",
-      createdAt: "2026-08-23T00:00:00.000Z",
-      createdBy: { type: "human" as const, id: "admin-1" },
-    };
-
-    await repository.createFolder(folder);
-
-    const command = (dynamo.send as jest.Mock).mock
-      .calls[0]?.[0] as TransactWriteCommand;
-    expect(command.input.TransactItems).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          Put: expect.objectContaining({
-            Item: folder,
-            ConditionExpression: "attribute_not_exists(pk)",
-          }),
-        }),
-        expect.objectContaining({
-          Update: expect.objectContaining({
-            Key: { pk: "FOLDER#prod", sk: "STATE" },
-            ConditionExpression:
-              "attribute_not_exists(folderCount) OR folderCount < :maximum",
-            ExpressionAttributeValues: expect.objectContaining({
-              ":maximum": 1000,
-            }),
-          }),
-        }),
-      ]),
-    );
-  });
-
-  it("surfaces a duplicate path or a full registry as a conflict", async () => {
-    const dynamo = {
-      send: jest
-        .fn()
-        .mockRejectedValue(new Error("ConditionalCheckFailedException")),
-    } as unknown as DynamoDBDocumentClient;
-    const repository = new DynamoRepository(dynamo, config);
-
-    await expect(
-      repository.createFolder({
-        pk: "FOLDER#prod",
-        sk: "PATH#a",
-        environment: "prod",
-        path: "a",
-        createdAt: "2026-08-23T00:00:00.000Z",
-        createdBy: { type: "human", id: "admin-1" },
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-  });
-
-  it("reads a folder record by environment and exact path", async () => {
-    const dynamo = {
-      send: jest.fn().mockResolvedValue({
-        Item: { pk: "FOLDER#prod", sk: "PATH#a", path: "a" },
-      }),
-    } as unknown as DynamoDBDocumentClient;
-    const repository = new DynamoRepository(dynamo, config);
-
-    const folder = await repository.getFolder("prod", "a");
-
-    const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as GetCommand;
-    expect(command.input).toMatchObject({
-      Key: { pk: "FOLDER#prod", sk: "PATH#a" },
-      ConsistentRead: true,
-    });
-    expect(folder).toEqual({ pk: "FOLDER#prod", sk: "PATH#a", path: "a" });
-  });
-
-  it("lists only PATH# folder records for an environment, bounded", async () => {
-    const dynamo = {
-      send: jest.fn().mockResolvedValue({ Items: [{ path: "a" }] }),
-    } as unknown as DynamoDBDocumentClient;
-    const repository = new DynamoRepository(dynamo, config);
-
-    const folders = await repository.listFolders("prod");
-
-    const command = (dynamo.send as jest.Mock).mock
-      .calls[0]?.[0] as QueryCommand;
-    expect(command.input).toMatchObject({
-      KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-      ExpressionAttributeValues: { ":pk": "FOLDER#prod", ":prefix": "PATH#" },
-      Limit: 1001,
-      ConsistentRead: true,
-    });
-    expect(folders).toEqual([{ path: "a" }]);
-  });
-
-  it("rejects a folder registry that exceeds its supported size", async () => {
-    const items = Array.from({ length: 1001 }, (_, index) => ({
-      path: `folder-${index}`,
-    }));
-    const dynamo = {
-      send: jest.fn().mockResolvedValue({ Items: items }),
-    } as unknown as DynamoDBDocumentClient;
-    const repository = new DynamoRepository(dynamo, config);
-
-    await expect(repository.listFolders("prod")).rejects.toMatchObject({
-      code: "service_unavailable",
-    });
-  });
-
-  it("deletes a folder record and decrements its environment's count in one transaction", async () => {
-    const dynamo = {
-      send: jest.fn().mockResolvedValue({}),
-    } as unknown as DynamoDBDocumentClient;
-    const repository = new DynamoRepository(dynamo, config);
-
-    await repository.deleteFolder("prod", "a");
-
-    const command = (dynamo.send as jest.Mock).mock
-      .calls[0]?.[0] as TransactWriteCommand;
-    expect(command.input.TransactItems).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          Delete: expect.objectContaining({
-            Key: { pk: "FOLDER#prod", sk: "PATH#a" },
-            ConditionExpression: "attribute_exists(pk)",
-          }),
-        }),
-        expect.objectContaining({
-          Update: expect.objectContaining({
-            Key: { pk: "FOLDER#prod", sk: "STATE" },
-            UpdateExpression: "SET folderCount = folderCount - :one",
-          }),
-        }),
-      ]),
-    );
-  });
-
-  it("reports occupancy when a READY secret sits at or beneath a path", async () => {
-    const dynamo = {
-      send: jest.fn().mockResolvedValue({ Count: 1 }),
-    } as unknown as DynamoDBDocumentClient;
-    const repository = new DynamoRepository(dynamo, config);
-
-    const occupied = await repository.hasSecretsAtOrBeneathPath(
-      "prod",
-      "payments",
-    );
-
-    expect(occupied).toBe(true);
-    const command = (dynamo.send as jest.Mock).mock
-      .calls[0]?.[0] as QueryCommand;
-    expect(command.input).toMatchObject({
-      IndexName: "catalog-path",
-      KeyConditionExpression:
-        "catalogPk = :catalogPk AND begins_with(catalogSk, :prefix)",
-      ExpressionAttributeValues: {
-        ":catalogPk": "CATALOG#prod",
-        ":prefix": "PATH#payments/",
-        ":ready": "READY",
-      },
-      Select: "COUNT",
-    });
-  });
-
-  it("reports no occupancy when no secret matches", async () => {
-    const dynamo = {
-      send: jest.fn().mockResolvedValue({ Count: 0 }),
-    } as unknown as DynamoDBDocumentClient;
-    const repository = new DynamoRepository(dynamo, config);
-
-    await expect(
-      repository.hasSecretsAtOrBeneathPath("prod", "payments"),
-    ).resolves.toBe(false);
-  });
-});
-
 describe("secret tree browsing", () => {
-  // listSecretTree now issues two internal queries -- the secret-derived one
-  // (against the catalog-path GSI, so its input has an IndexName) and
-  // listFolders' explicit-record one (a base-table query, no IndexName).
-  // This distinguishes them so each test's fixture only ever populates the
-  // half of the merge it means to exercise.
   const mockTreeDynamo = (
     secretItems: readonly Record<string, unknown>[],
-    folderItems: readonly Record<string, unknown>[] = [],
   ): DynamoDBDocumentClient =>
-    ({
-      send: jest.fn(async (command: QueryCommand) =>
-        command.input.IndexName === undefined
-          ? { Items: folderItems }
-          : { Items: secretItems },
-      ),
-    }) as unknown as DynamoDBDocumentClient;
+    ({ send: jest.fn(async () => ({ Items: secretItems })) }) as unknown as DynamoDBDocumentClient;
 
   it("groups descendants by immediate segment, counts recursively, and keeps unpathed secrets at the root", async () => {
     const items = [
@@ -843,25 +664,25 @@ describe("secret tree browsing", () => {
         metadata: {},
       },
       {
-        secretId: "paypal-key",
+        secretId: "payments/paypal-key",
         environment: "prod",
         controlVersionId: "c2",
         state: "ACTIVE",
-        metadata: { path: "payments" },
+        metadata: {},
       },
       {
-        secretId: "stripe-key",
+        secretId: "payments/stripe/stripe-key",
         environment: "prod",
         controlVersionId: "c3",
         state: "ACTIVE",
-        metadata: { path: "payments/stripe" },
+        metadata: {},
       },
       {
-        secretId: "aws-key",
+        secretId: "infra/aws/aws-key",
         environment: "prod",
         controlVersionId: "c4",
         state: "ACTIVE",
-        metadata: { path: "infra/aws" },
+        metadata: {},
       },
     ];
     const dynamo = mockTreeDynamo(items);
@@ -883,6 +704,7 @@ describe("secret tree browsing", () => {
       },
       Limit: 501,
     });
+    expect(dynamo.send).toHaveBeenCalledTimes(1);
     expect(page.truncated).toBe(false);
     expect(page.secrets.map((secret) => secret.secretId)).toEqual([
       "root-secret",
@@ -901,25 +723,25 @@ describe("secret tree browsing", () => {
   it("returns only the exact-path secret and immediate child folders at a prefix", async () => {
     const items = [
       {
-        secretId: "paypal-key",
+        secretId: "payments/paypal-key",
         environment: "prod",
         controlVersionId: "c1",
         state: "ACTIVE",
-        metadata: { path: "payments" },
+        metadata: {},
       },
       {
-        secretId: "stripe-key",
+        secretId: "payments/stripe/stripe-key",
         environment: "prod",
         controlVersionId: "c2",
         state: "ACTIVE",
-        metadata: { path: "payments/stripe" },
+        metadata: {},
       },
       {
-        secretId: "stripe-live-key",
+        secretId: "payments/stripe/live/stripe-live-key",
         environment: "prod",
         controlVersionId: "c3",
         state: "ACTIVE",
-        metadata: { path: "payments/stripe/live" },
+        metadata: {},
       },
     ];
     const dynamo = mockTreeDynamo(items);
@@ -937,7 +759,7 @@ describe("secret tree browsing", () => {
       },
     });
     expect(page.secrets.map((secret) => secret.secretId)).toEqual([
-      "paypal-key",
+      "payments/paypal-key",
     ]);
     expect(page.folders).toEqual([
       {
@@ -966,91 +788,6 @@ describe("secret tree browsing", () => {
     expect(page.secrets).toHaveLength(500);
   });
 
-  it("returns an explicit empty folder record with secretCount 0", async () => {
-    const folderItems = [
-      {
-        pk: "FOLDER#prod",
-        sk: "PATH#adyen",
-        environment: "prod",
-        path: "adyen",
-        createdAt: "2026-08-23T00:00:00.000Z",
-        createdBy: { type: "human", id: "admin-1" },
-      },
-    ];
-    const dynamo = mockTreeDynamo([], folderItems);
-    const repository = new DynamoRepository(dynamo, config);
-
-    const page = await repository.listSecretTree("prod", undefined);
-
-    expect(page.folders).toEqual([
-      { segment: "adyen", path: "adyen", secretCount: 0, kind: "explicit" },
-    ]);
-  });
-
-  it("merges an explicit folder record and a derived secret into one folder, not two", async () => {
-    const secretItems = [
-      {
-        secretId: "stripe-key",
-        environment: "prod",
-        controlVersionId: "c1",
-        state: "ACTIVE",
-        metadata: { path: "stripe" },
-      },
-    ];
-    const folderItems = [
-      {
-        pk: "FOLDER#prod",
-        sk: "PATH#stripe",
-        environment: "prod",
-        path: "stripe",
-        createdAt: "2026-08-23T00:00:00.000Z",
-        createdBy: { type: "human", id: "admin-1" },
-      },
-    ];
-    const dynamo = mockTreeDynamo(secretItems, folderItems);
-    const repository = new DynamoRepository(dynamo, config);
-
-    const page = await repository.listSecretTree("prod", undefined);
-
-    expect(page.folders).toEqual([
-      { segment: "stripe", path: "stripe", secretCount: 1, kind: "both" },
-    ]);
-  });
-
-  it("shows a folder record's implied ancestor as derived, then the record itself as explicit one level down", async () => {
-    const folderItems = [
-      {
-        pk: "FOLDER#prod",
-        sk: "PATH#reporting/weekly",
-        environment: "prod",
-        path: "reporting/weekly",
-        createdAt: "2026-08-23T00:00:00.000Z",
-        createdBy: { type: "human", id: "admin-1" },
-      },
-    ];
-    const dynamo = mockTreeDynamo([], folderItems);
-    const repository = new DynamoRepository(dynamo, config);
-
-    const root = await repository.listSecretTree("prod", undefined);
-    expect(root.folders).toEqual([
-      {
-        segment: "reporting",
-        path: "reporting",
-        secretCount: 0,
-        kind: "derived",
-      },
-    ]);
-
-    const nested = await repository.listSecretTree("prod", "reporting");
-    expect(nested.folders).toEqual([
-      {
-        segment: "weekly",
-        path: "reporting/weekly",
-        secretCount: 0,
-        kind: "explicit",
-      },
-    ]);
-  });
 });
 
 describe("secret catalog search", () => {
@@ -1061,14 +798,14 @@ describe("secret catalog search", () => {
         environment: "prod",
         controlVersionId: "c1",
         state: "ACTIVE",
-        metadata: { path: "payments", description: "unrelated" },
+        metadata: { description: "unrelated" },
       },
       {
         secretId: "paypal-key",
         environment: "prod",
         controlVersionId: "c2",
         state: "ACTIVE",
-        metadata: { path: "payments" },
+        metadata: {},
       },
     ];
     const dynamo = {

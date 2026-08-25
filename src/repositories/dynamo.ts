@@ -23,7 +23,6 @@ import type {
   EnvironmentRecord,
   EnrollmentOperationType,
   EnrollmentRecord,
-  FolderRecord,
   HeadRecord,
   IdentityRecord,
   IssuerRecord,
@@ -64,14 +63,9 @@ export interface SecretTreeFolder {
   readonly path: string;
   readonly secretCount: number;
   /**
-   * "explicit" -- an administrator created a folder record at exactly this
-   * path (POST /v1/admin/folders) and no secret currently implies it.
-   * "derived" -- no record exists at exactly this path; it appears only
-   * because a secret's metadata.path equals or nests beneath it, or because
-   * a deeper explicit record implies it. "both" -- an explicit record exists
-   * at exactly this path and secretCount is greater than zero.
+   * Folders are derived solely from slash-separated secret IDs.
    */
-  readonly kind: "explicit" | "derived" | "both";
+  readonly kind: "derived";
 }
 
 export interface SecretTreePage {
@@ -143,7 +137,6 @@ export interface TruststoreStateRecord {
 const maximumRevisionHistory = 500;
 const maximumBoundedScan = 500;
 const maximumEnvironments = 100;
-const maximumFolders = 1000;
 
 export class DynamoRepository {
   public constructor(
@@ -306,171 +299,6 @@ export class DynamoRepository {
     } catch {
       throw conflict("The environment already exists or the registry is full.");
     }
-  }
-
-  public async getFolder(
-    environment: string,
-    path: string,
-  ): Promise<FolderRecord | undefined> {
-    const response = await this.dynamo.send(
-      new GetCommand({
-        TableName: this.config.controlTableName,
-        Key: { pk: folderPk(environment), sk: folderSk(path) },
-        ConsistentRead: true,
-      }),
-    );
-    return response.Item as FolderRecord | undefined;
-  }
-
-  /**
-   * Every folder record for an environment, newest STATE-counter row
-   * excluded. Bounded the same way listEnvironments is: a registry that
-   * somehow exceeded its own creation-time cap is a service error, not a
-   * silently truncated page.
-   */
-  public async listFolders(
-    environment: string,
-  ): Promise<readonly FolderRecord[]> {
-    const response = await this.dynamo.send(
-      new QueryCommand({
-        TableName: this.config.controlTableName,
-        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-        ExpressionAttributeValues: {
-          ":pk": folderPk(environment),
-          ":prefix": "PATH#",
-        },
-        Limit: maximumFolders + 1,
-        ConsistentRead: true,
-      }),
-    );
-    if (
-      response.LastEvaluatedKey !== undefined ||
-      (response.Items?.length ?? 0) > maximumFolders
-    ) {
-      throw serviceUnavailable(
-        "The folder registry for this environment exceeds its supported size.",
-      );
-    }
-    return (response.Items ?? []) as FolderRecord[];
-  }
-
-  /**
-   * A duplicate path and an at-capacity registry collapse to the same
-   * conflict, exactly like createEnvironment: both mean "this call did not
-   * add the record you asked for" and neither needs a distinct code.
-   */
-  public async createFolder(folder: FolderRecord): Promise<void> {
-    try {
-      await this.dynamo.send(
-        new TransactWriteCommand({
-          TransactItems: [
-            {
-              Put: {
-                TableName: this.config.controlTableName,
-                Item: folder,
-                ConditionExpression: "attribute_not_exists(pk)",
-              },
-            },
-            {
-              Update: {
-                TableName: this.config.controlTableName,
-                Key: { pk: folderPk(folder.environment), sk: "STATE" },
-                UpdateExpression:
-                  "SET folderCount = if_not_exists(folderCount, :zero) + :one",
-                ConditionExpression:
-                  "attribute_not_exists(folderCount) OR folderCount < :maximum",
-                ExpressionAttributeValues: {
-                  ":zero": 0,
-                  ":one": 1,
-                  ":maximum": maximumFolders,
-                },
-              },
-            },
-          ],
-        }),
-      );
-    } catch {
-      throw conflict("The folder already exists or the registry is full.");
-    }
-  }
-
-  /**
-   * The caller (FolderService) has already confirmed the folder is empty and
-   * exists; this only guards against it having been deleted concurrently.
-   * Deleting the record never touches a secret -- it only ever removes the
-   * administrator-defined row, never anything under SECRET#.
-   */
-  public async deleteFolder(environment: string, path: string): Promise<void> {
-    try {
-      await this.dynamo.send(
-        new TransactWriteCommand({
-          TransactItems: [
-            {
-              Delete: {
-                TableName: this.config.controlTableName,
-                Key: { pk: folderPk(environment), sk: folderSk(path) },
-                ConditionExpression: "attribute_exists(pk)",
-              },
-            },
-            {
-              Update: {
-                TableName: this.config.controlTableName,
-                Key: { pk: folderPk(environment), sk: "STATE" },
-                UpdateExpression: "SET folderCount = folderCount - :one",
-                ConditionExpression:
-                  "attribute_exists(folderCount) AND folderCount > :zero",
-                ExpressionAttributeValues: { ":one": 1, ":zero": 0 },
-              },
-            },
-          ],
-        }),
-      );
-    } catch {
-      throw conflict(
-        "The folder record could not be deleted; it may already be gone.",
-      );
-    }
-  }
-
-  /**
-   * True when any READY secret's path equals `path` or is nested beneath it.
-   * Used only to refuse deleting a non-empty folder record. DynamoDB applies
-   * a FilterExpression after evaluating each queried item, so bounding this
-   * with a small Limit could mask a match that appears later in the index;
-   * this instead pages through to completion, which is safe because a
-   * folder's own subtree is expected to be small next to the whole
-   * environment catalog that listSecrets/listSecretTree bound.
-   */
-  public async hasSecretsAtOrBeneathPath(
-    environment: string,
-    path: string,
-  ): Promise<boolean> {
-    let exclusiveStartKey: Record<string, unknown> | undefined;
-    do {
-      const response = await this.dynamo.send(
-        new QueryCommand({
-          TableName: this.config.controlTableName,
-          IndexName: this.config.catalogPathIndex,
-          KeyConditionExpression:
-            "catalogPk = :catalogPk AND begins_with(catalogSk, :prefix)",
-          FilterExpression: "#workflowState = :ready",
-          ExpressionAttributeNames: { "#workflowState": "workflowState" },
-          ExpressionAttributeValues: {
-            ":catalogPk": catalogPk(environment),
-            ":prefix": catalogPathPrefix(path),
-            ":ready": "READY",
-          },
-          Select: "COUNT",
-          ExclusiveStartKey: exclusiveStartKey as never,
-        }),
-      );
-      if ((response.Count ?? 0) > 0) {
-        return true;
-      }
-      exclusiveStartKey = response.LastEvaluatedKey as
-        Record<string, unknown> | undefined;
-    } while (exclusiveStartKey !== undefined);
-    return false;
   }
 
   public async requireHead(
@@ -1148,36 +976,28 @@ export class DynamoRepository {
    * returning a cursor: a partial tree with a cursor is worse than a
    * bounded, complete-or-truncated one.
    *
-   * `folders` is the union of segments implied by a secret's metadata.path
-   * and segments implied by an explicit folder record (POST
-   * /v1/admin/folders), deduplicated by path. That is a second internal
-   * DynamoDB query (listFolders). `truncated` continues to reflect only the
-   * secret scan's bound, since the folder registry has its own, separate bound
-   * enforced at creation time.
+   * `folders` is the union of segments implied by slash-separated secret IDs.
    */
   public async listSecretTree(
     environment: string,
     pathPrefix: string | undefined,
   ): Promise<SecretTreePage> {
-    const [response, folderRecords] = await Promise.all([
-      this.dynamo.send(
-        new QueryCommand({
-          TableName: this.config.controlTableName,
-          IndexName: this.config.catalogPathIndex,
-          KeyConditionExpression:
-            "catalogPk = :catalogPk AND begins_with(catalogSk, :prefix)",
-          FilterExpression: "#workflowState = :ready",
-          ExpressionAttributeNames: { "#workflowState": "workflowState" },
-          ExpressionAttributeValues: {
-            ":catalogPk": catalogPk(environment),
-            ":prefix": catalogPathPrefix(pathPrefix),
-            ":ready": "READY",
-          },
-          Limit: maximumBoundedScan + 1,
-        }),
-      ),
-      this.listFolders(environment),
-    ]);
+    const response = await this.dynamo.send(
+      new QueryCommand({
+        TableName: this.config.controlTableName,
+        IndexName: this.config.catalogPathIndex,
+        KeyConditionExpression:
+          "catalogPk = :catalogPk AND begins_with(catalogSk, :prefix)",
+        FilterExpression: "#workflowState = :ready",
+        ExpressionAttributeNames: { "#workflowState": "workflowState" },
+        ExpressionAttributeValues: {
+          ":catalogPk": catalogPk(environment),
+          ":prefix": catalogPathPrefix(pathPrefix),
+          ":ready": "READY",
+        },
+        Limit: maximumBoundedScan + 1,
+      }),
+    );
     const items = (response.Items ?? []) as HeadRecord[];
     const truncated =
       items.length > maximumBoundedScan ||
@@ -1187,46 +1007,27 @@ export class DynamoRepository {
     const secrets: HeadRecord[] = [];
     const folderEntries = new Map<string, { secretCount: number }>();
     for (const item of bounded) {
-      const path = item.metadata?.path;
-      // catalogSk encodes an unpathed secret with the literal "_" segment
-      // (`PATH#_/SECRET#<id>`) so the root of the tree can be queried with
-      // the same begins_with("PATH#") scan as everything else. parseMetadata's
-      // path pattern requires a leading [a-z0-9], so a real path can never be
-      // exactly "_" today -- but if that pattern ever allowed a leading
-      // underscore, a real top-level folder named "_" would become
-      // indistinguishable from "no path" here. Not fixed; only recorded.
-      //
-      // `path === pathPrefix` also covers the root case (both undefined) in
-      // one comparison: an unpathed secret at the root has path === undefined
-      // === pathPrefix.
+      const path = secretFolderPath(item.secretId);
+      // `path === pathPrefix` also covers the root case (both undefined).
       if (path === pathPrefix) {
         secrets.push(item);
         continue;
       }
-      const segment = childSegment(path as string, pathPrefix) as string;
+      if (path === undefined) {
+        // The GSI query normally excludes root secrets below a folder. Keep
+        // this guard for resilience against a stale or manually repaired
+        // catalog entry while the ID-derived index backfill converges.
+        continue;
+      }
+      const segment = childSegment(path, pathPrefix);
+      if (segment === undefined) {
+        continue;
+      }
       const entry = folderEntries.get(segment) ?? { secretCount: 0 };
       entry.secretCount += 1;
       folderEntries.set(segment, entry);
     }
 
-    // An explicit folder record contributes the same kind of immediate-child
-    // segment a secret's metadata.path can: a record for "a/b/c" is never
-    // materialised at "a" or "a/b" (see FolderService), so an ancestor
-    // segment implied only by a deeper record is folded in here exactly like
-    // an ancestor implied only by a deeper secret path -- it makes the
-    // intermediate segment appear, with no effect on secretCount, which
-    // counts only actual secrets.
-    for (const folder of folderRecords) {
-      const segment = childSegment(folder.path, pathPrefix);
-      if (segment !== undefined && !folderEntries.has(segment)) {
-        folderEntries.set(segment, { secretCount: 0 });
-      }
-    }
-
-    // A folder's `kind` is "explicit" only when a record exists at exactly
-    // this level's accumulated path -- not merely somewhere in its subtree,
-    // which is exactly the distinction the loop above already respects.
-    const explicitPaths = new Set(folderRecords.map((folder) => folder.path));
     const folders = [...folderEntries.entries()]
       .map(([segment, { secretCount }]): SecretTreeFolder => {
         const path =
@@ -1235,11 +1036,7 @@ export class DynamoRepository {
           segment,
           path,
           secretCount,
-          kind: explicitPaths.has(path)
-            ? secretCount > 0
-              ? "both"
-              : "explicit"
-            : "derived",
+          kind: "derived",
         };
       })
       .sort((left, right) => left.segment.localeCompare(right.segment));
@@ -1861,10 +1658,7 @@ export class DynamoRepository {
             metadata: mutation.control.metadata,
             updatedAt: mutation.control.createdAt,
             catalogPk: catalogPk(mutation.environment),
-            catalogSk: catalogSk(
-              mutation.control.metadata.path,
-              mutation.secretId,
-            ),
+            catalogSk: catalogSk(mutation.secretId),
             catalogTags: mutation.control.metadata.tags ?? {},
             workflowState: "PREPARED",
             leaseOwner: mutation.operationId,
@@ -1931,10 +1725,7 @@ export class DynamoRepository {
       ":metadata": prepared.control.metadata,
       ":updatedAt": prepared.control.createdAt,
       ":catalogPk": catalogPk(prepared.control.environment),
-      ":catalogSk": catalogSk(
-        prepared.control.metadata.path,
-        prepared.secretId,
-      ),
+      ":catalogSk": catalogSk(prepared.secretId),
       ":catalogTags": prepared.control.metadata.tags ?? {},
     };
     const setClauses = [
@@ -2243,11 +2034,6 @@ const environmentsPk = "SYSTEM#ENVIRONMENTS";
 
 const environmentSk = (name: string): string => `ENVIRONMENT#${name}`;
 
-export const folderPk = (environment: string): string =>
-  `FOLDER#${environment}`;
-
-const folderSk = (path: string): string => `PATH#${path}`;
-
 const idempotencyPk = (actor: Actor): string =>
   `IDEMPOTENCY#${actor.type}#${actor.id}`;
 
@@ -2265,18 +2051,21 @@ export const identityConsumerSk = (
   fingerprint: string,
 ): string => `${notAfter}#${fingerprint}`;
 
-export const catalogSk = (path: string | undefined, secretId: string): string =>
-  `PATH#${path ?? "_"}\/SECRET#${secretId}`;
+export const catalogSk = (secretId: string): string =>
+  `PATH#${secretFolderPath(secretId) ?? "_"}/SECRET#${secretId}`;
 
 const catalogPathPrefix = (path: string | undefined): string =>
-  path === undefined ? "PATH#" : `PATH#${path}\/`;
+  path === undefined ? "PATH#" : `PATH#${path}/`;
+
+const secretFolderPath = (secretId: string): string | undefined => {
+  const separator = secretId.lastIndexOf("/");
+  return separator === -1 ? undefined : secretId.slice(0, separator);
+};
 
 /**
  * The immediate child segment of `path` below `pathPrefix`, or undefined
- * when `path` is not nested beneath `pathPrefix` at all. Shared by the
- * secret-derived and folder-record-derived halves of listSecretTree's
- * merge so both compute "immediate child" the same way. Exact equality
- * (`path === pathPrefix`) is handled by each caller before reaching here,
+ * when `path` is not nested beneath `pathPrefix` at all. Exact equality
+ * (`path === pathPrefix`) is handled by the caller before reaching here,
  * since that case means "this level itself", not a child of it.
  */
 const childSegment = (

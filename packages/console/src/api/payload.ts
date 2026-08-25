@@ -8,21 +8,16 @@ export const MAX_PAYLOAD_BYTES = 768_000;
 
 const entryKey = /^[A-Za-z0-9._-]+$/;
 export const identifier = /^[a-z][a-z0-9-]{2,63}$/;
+/** Mirrors `assertSecretIdentifier` in src/domain/validation.ts. */
+export const secretIdentifier =
+  /^[a-z][a-z0-9-]{2,63}(?:\/[a-z][a-z0-9-]{2,63})*$/;
+
+export const isValidSecretIdentifier = (value: string): boolean =>
+  value.length <= 256 && secretIdentifier.test(value);
 /** Mirrors `assertEnvironmentName` in src/domain/validation.ts. */
 export const environmentName = /^[a-z][a-z0-9-]{0,63}$/;
-export const metadataPath =
-  /^[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*$/;
 export const tagKey = /^[a-z][a-z0-9-]{0,31}$/;
 export const tagValue = /^[A-Za-z0-9][A-Za-z0-9._@+/-]{0,127}$/;
-
-/**
- * Mirrors `parseCatalogPathPrefix` in src/domain/validation.ts exactly (same
- * length bound, same `metadataPath` shape) — used for the folder path an
- * operator types when creating a folder, so the client rejects the same
- * inputs the service would, no stricter and no looser.
- */
-export const isValidFolderPath = (value: string): boolean =>
-  value.length > 0 && value.length <= 256 && metadataPath.test(value);
 
 export type Encoding = "utf8" | "base64";
 

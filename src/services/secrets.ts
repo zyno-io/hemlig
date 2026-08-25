@@ -29,7 +29,7 @@ import type {
   PreparedMutation,
 } from "../repositories/dynamo";
 import type { ObjectStore } from "../repositories/object-store";
-import { assertIdentifier } from "../domain/validation";
+import { assertSecretIdentifier } from "../domain/validation";
 import type { EnvironmentService } from "./environments";
 
 export interface CreateSecretInput {
@@ -77,7 +77,7 @@ export class SecretService {
   public async create(input: CreateSecretInput): Promise<ControlRevision> {
     await this.environments.require(input.environment);
     const secretId = input.secretId;
-    assertIdentifier(secretId, "secretId");
+    assertSecretIdentifier(secretId, "secretId");
     await this.assertAclEnvironment(input.acl, input.environment);
     const now = isoNow();
     const control: ControlRevision = {

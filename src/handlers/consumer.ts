@@ -40,19 +40,19 @@ export const handler = async (
       operation,
       sourceIp: event.requestContext.http.sourceIp,
     });
-    const secretMatch = /^\/v1\/secrets\/([a-z][a-z0-9-]{2,63})$/.exec(
-      event.rawPath,
-    );
-    const agentSecretMatch =
-      /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})$/.exec(event.rawPath);
-    const agentPayloadMatch =
-      /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})\/payload$/.exec(
-        event.rawPath,
-      );
-    const agentControlMatch =
-      /^\/v1\/agent\/secrets\/([a-z][a-z0-9-]{2,63})\/control$/.exec(
-        event.rawPath,
-      );
+    const decodedPath = decodeRequestPath(event.rawPath);
+    const secretMatch = new RegExp(
+      `^/v1/secrets/(${secretIdRoutePart})$`,
+    ).exec(decodedPath);
+    const agentSecretMatch = new RegExp(
+      `^/v1/agent/secrets/(${secretIdRoutePart})$`,
+    ).exec(decodedPath);
+    const agentPayloadMatch = new RegExp(
+      `^/v1/agent/secrets/(${secretIdRoutePart})/payload$`,
+    ).exec(decodedPath);
+    const agentControlMatch = new RegExp(
+      `^/v1/agent/secrets/(${secretIdRoutePart})/control$`,
+    ).exec(decodedPath);
     if (
       event.requestContext.http.method === "GET" &&
       event.rawPath === "/v1/agent/config"
@@ -338,6 +338,17 @@ export const handler = async (
       "The requested consumer route is not supported by this handler.",
     );
   });
+
+const secretIdRoutePart =
+  "[a-z][a-z0-9-]{2,63}(?:/[a-z][a-z0-9-]{2,63})*";
+
+const decodeRequestPath = (value: string): string => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw badRequest("The request path is not valid URL encoding.");
+  }
+};
 
 const parseObjectBody = (body: string | undefined): Record<string, unknown> => {
   const parsed = parseJsonBody(body);

@@ -72,41 +72,6 @@ export class HemligApi {
     });
   }
 
-  /**
-   * Creates exactly one explicit, empty folder record at `path`. Unlike
-   * every other admin mutation, this route takes no `Idempotency-Key`, the
-   * same as `createEnvironment`: there is nothing here that needs
-   * replay-on-retry semantics, since a path already recorded (or implied by
-   * a secret) simply reports the conflict it already would. Callers should
-   * treat a `conflict` as "this folder already exists" rather than a failed
-   * mutation.
-   */
-  public createFolder(
-    environment: string,
-    path: string,
-  ): Promise<s.FolderDefinition> {
-    return this.request(s.folderDefinition, "/v1/admin/folders", {
-      method: "POST",
-      body: { environment, path },
-    });
-  }
-
-  /**
-   * Deletes the explicit folder record at exactly `path`, never a secret.
-   * The service returns 409 when a secret's path equals or nests beneath
-   * `path` -- the folder would still be derived from that secret, so
-   * deleting the record would not remove it from the tree -- and 404 when
-   * no explicit record exists there, even if the tree still shows it as a
-   * derived folder. Both are refusals to surface as a plain explanation,
-   * not a generic failure.
-   */
-  public deleteFolder(environment: string, path: string): Promise<void> {
-    return this.requestEmpty("/v1/admin/folders", {
-      method: "DELETE",
-      query: { environment, path },
-    });
-  }
-
   public getSecret(
     environment: string,
     secretId: string,
@@ -330,14 +295,6 @@ export class HemligApi {
   ): Promise<T> {
     const response = await this.fetchResponse(path, options);
     return schema.parse(await response.json());
-  }
-
-  /** For routes with no response body, such as the folder DELETE's 204. */
-  private async requestEmpty(
-    path: string,
-    options: RequestOptions = {},
-  ): Promise<void> {
-    await this.fetchResponse(path, options);
   }
 
   private async fetchResponse(

@@ -243,7 +243,7 @@ metadata:
   namespace: payments
 spec:
   consumerRef: payments-prod
-  secretId: payments-api
+  secretId: payments/production/api-key
   source:
     name: payments-api-source
   metadata:

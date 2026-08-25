@@ -4,7 +4,7 @@ import { createPinia, setActivePinia, type Pinia } from "pinia";
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRouter, type Router } from "vue-router";
 import { ApiError } from "../api/errors";
-import type { CatalogEntry, CatalogPage, FolderDefinition, SecretTreePage } from "../api/schemas";
+import type { CatalogEntry, CatalogPage, SecretTreePage } from "../api/schemas";
 import { useAppStore } from "../stores/app";
 import SecretsCatalog, { parseCatalogFilter, pathSegments } from "./SecretsCatalog.vue";
 
@@ -94,23 +94,11 @@ const secretFixture = (overrides: Partial<CatalogEntry> = {}): CatalogEntry => (
 interface FakeApi {
   getSecretsTree: (...args: unknown[]) => Promise<SecretTreePage>;
   listSecrets: (...args: unknown[]) => Promise<CatalogPage>;
-  createFolder: (environment: string, path: string) => Promise<FolderDefinition>;
-  deleteFolder: (environment: string, path: string) => Promise<void>;
 }
-
-const folderFixture = (overrides: Partial<FolderDefinition> = {}): FolderDefinition => ({
-  environment: "dev",
-  path: "archived",
-  createdAt: "2026-08-23T00:00:00.000Z",
-  createdBy: { type: "human", id: "admin" },
-  ...overrides,
-});
 
 const defaultApi = (overrides: Partial<FakeApi> = {}): FakeApi => ({
   getSecretsTree: async () => emptyTreePage,
   listSecrets: async () => emptyCatalogPage,
-  createFolder: async (environment, path) => folderFixture({ environment, path }),
-  deleteFolder: async () => undefined,
   ...overrides,
 });
 
@@ -175,7 +163,7 @@ describe("SecretsCatalog tree browsing", () => {
     const api = defaultApi({
       getSecretsTree: async () => ({
         ...emptyTreePage,
-        folders: [{ segment: "stripe", path: "payments/stripe", secretCount: 12, kind: "both" }],
+        folders: [{ segment: "stripe", path: "payments/stripe", secretCount: 12, kind: "derived" }],
       }),
     });
     const { wrapper } = await mountCatalog(api, { env: "dev", path: ["payments"] });
@@ -209,11 +197,11 @@ describe("SecretsCatalog tree browsing", () => {
     expect(url.searchParams.get("catalogPath")).toBe("payments/stripe");
   });
 
-  it("renders an empty explicit folder normally, not as broken or missing", async () => {
+  it("renders a derived folder normally", async () => {
     const api = defaultApi({
       getSecretsTree: async () => ({
         ...emptyTreePage,
-        folders: [{ segment: "archived", path: "archived", secretCount: 0, kind: "explicit" }],
+        folders: [{ segment: "archived", path: "archived", secretCount: 0, kind: "derived" }],
       }),
     });
     const { wrapper } = await mountCatalog(api);
@@ -442,7 +430,7 @@ describe("SecretsCatalog smart search composition", () => {
   });
 });
 
-describe("SecretsCatalog folder create/delete", () => {
+describe("SecretsCatalog folder prefix", () => {
   const clickButtonNamed = async (
     wrapper: Awaited<ReturnType<typeof mountCatalog>>["wrapper"],
     text: string,
@@ -452,92 +440,37 @@ describe("SecretsCatalog folder create/delete", () => {
     await button?.trigger("click");
   };
 
-  it("creates a folder under the current path and invalidates that tree level", async () => {
-    const createFolder = vi.fn(async (environment: string, path: string) =>
-      folderFixture({ environment, path }),
-    );
-    const { wrapper, queryClient } = await mountCatalog(defaultApi({ createFolder }), {
+  it("takes a new folder to a prefixed secret form without calling the API", async () => {
+    const { wrapper, router } = await mountCatalog(defaultApi(), {
       env: "dev",
       path: ["payments"],
     });
-    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
 
     await clickButtonNamed(wrapper, "New folder");
     await wrapper.find('input[placeholder="invoices"]').setValue("archived");
-    await clickButtonNamed(wrapper, "Create folder");
+    await clickButtonNamed(wrapper, "Create secret here");
     await flushPromises();
 
-    expect(createFolder).toHaveBeenCalledWith("dev", "payments/archived");
-    expect(invalidate).toHaveBeenCalledWith(
-      expect.objectContaining({ queryKey: ["secrets-tree", "dev", "payments"] }),
+    expect(router.currentRoute.value.fullPath).toBe(
+      "/e/dev/secrets/new?path=payments/archived",
     );
   });
 
-  it("renders a duplicate folder as already existing rather than an error", async () => {
-    const createFolder = vi.fn(async (): Promise<FolderDefinition> => {
-      throw new ApiError(409, "conflict", "A folder or secret already exists at this path.");
-    });
-    const { wrapper } = await mountCatalog(defaultApi({ createFolder }));
+  it("explains that an empty folder is not persisted", async () => {
+    const { wrapper } = await mountCatalog(defaultApi());
 
     await clickButtonNamed(wrapper, "New folder");
-    await wrapper.find('input[placeholder="invoices"]').setValue("archived");
-    await clickButtonNamed(wrapper, "Create folder");
-    await flushPromises();
-
-    expect(wrapper.text()).toContain("already exists");
-    expect(wrapper.text()).not.toContain("request failed");
+    expect(wrapper.text()).toContain("empty folders are not stored");
   });
 
-  it("removes an empty explicit folder and invalidates that tree level", async () => {
-    const deleteFolder = vi.fn(async () => undefined);
-    const { wrapper, queryClient } = await mountCatalog(
-      defaultApi({
-        deleteFolder,
-        getSecretsTree: async () => ({
-          ...emptyTreePage,
-          folders: [{ segment: "archived", path: "archived", secretCount: 0, kind: "explicit" }],
-        }),
-      }),
-    );
-    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
-
-    await clickButtonNamed(wrapper, "Delete");
-    await flushPromises();
-
-    expect(deleteFolder).toHaveBeenCalledWith("dev", "archived");
-    expect(invalidate).toHaveBeenCalledWith(
-      expect.objectContaining({ queryKey: ["secrets-tree", "dev", ""] }),
-    );
-  });
-
-  it("surfaces the service's refusal to delete as a plain explanation, not a generic failure", async () => {
-    const deleteFolder = vi.fn(async () => {
-      throw new ApiError(409, "conflict", "The folder still contains secrets.");
-    });
-    const { wrapper } = await mountCatalog(
-      defaultApi({
-        deleteFolder,
-        getSecretsTree: async () => ({
-          ...emptyTreePage,
-          folders: [{ segment: "archived", path: "archived", secretCount: 0, kind: "explicit" }],
-        }),
-      }),
-    );
-
-    await clickButtonNamed(wrapper, "Delete");
-    await flushPromises();
-
-    expect(wrapper.text()).toContain("The folder still contains secrets.");
-  });
-
-  it("does not offer to delete a derived or mixed folder, since that delete would always fail", async () => {
+  it("does not offer to delete derived folders", async () => {
     const { wrapper } = await mountCatalog(
       defaultApi({
         getSecretsTree: async () => ({
           ...emptyTreePage,
           folders: [
             { segment: "derived-only", path: "derived-only", secretCount: 3, kind: "derived" },
-            { segment: "mixed", path: "mixed", secretCount: 2, kind: "both" },
+            { segment: "other", path: "other", secretCount: 2, kind: "derived" },
           ],
         }),
       }),

@@ -9,7 +9,6 @@ import type {
   AgentGrantRecord,
   ConsumerRecord,
   EnvironmentRecord,
-  FolderRecord,
   HeadRecord,
   IdentityRecord,
   IssuerRecord,
@@ -242,48 +241,6 @@ export const handler = async (
           truncated: tree.truncated,
           generatedAt: isoNow(),
         });
-      }
-      if (
-        event.requestContext.http.method === "POST" &&
-        event.rawPath === "/v1/admin/folders"
-      ) {
-        const body = parseObjectBody(event.body);
-        const folder = await app.folders.create({
-          environment: requiredString(body, "environment"),
-          path: body.path,
-          actor,
-        });
-        await app.audit.write({
-          correlationId,
-          outcome: "succeeded",
-          actor,
-          operation,
-          target: { environment: folder.environment, path: folder.path },
-          sourceIp: event.requestContext.http.sourceIp,
-        });
-        return json(201, folderResponse(folder));
-      }
-      // Like environments (its closest analogue), folder mutations skip
-      // Idempotency-Key: creation fails deterministically with a conflict
-      // on retry rather than risking a duplicate side effect, and deletion
-      // is naturally idempotent from the caller's point of view, so there
-      // is nothing here for a dedup key to protect.
-      if (
-        event.requestContext.http.method === "DELETE" &&
-        event.rawPath === "/v1/admin/folders"
-      ) {
-        const environment = requireQueryString(event, "environment");
-        const path = event.queryStringParameters?.path;
-        await app.folders.remove({ environment, path });
-        await app.audit.write({
-          correlationId,
-          outcome: "succeeded",
-          actor,
-          operation,
-          target: { environment, path: path ?? "" },
-          sourceIp: event.requestContext.http.sourceIp,
-        });
-        return empty(204);
       }
       if (
         event.requestContext.http.method === "POST" &&
@@ -649,17 +606,16 @@ export const handler = async (
             )
           : response();
       }
-      const secretMatch = /^\/v1\/admin\/secrets\/([a-z][a-z0-9-]{2,63})$/.exec(
-        event.rawPath,
-      );
-      const revisionMatch =
-        /^\/v1\/admin\/secrets\/([a-z][a-z0-9-]{2,63})\/revisions$/.exec(
-          event.rawPath,
-        );
-      const payloadMatch =
-        /^\/v1\/admin\/secrets\/([a-z][a-z0-9-]{2,63})\/payload$/.exec(
-          event.rawPath,
-        );
+      const decodedPath = decodeRequestPath(event.rawPath);
+      const secretMatch = new RegExp(
+        `^/v1/admin/secrets/(${secretIdRoutePart})$`,
+      ).exec(decodedPath);
+      const revisionMatch = new RegExp(
+        `^/v1/admin/secrets/(${secretIdRoutePart})/revisions$`,
+      ).exec(decodedPath);
+      const payloadMatch = new RegExp(
+        `^/v1/admin/secrets/(${secretIdRoutePart})/payload$`,
+      ).exec(decodedPath);
       if (
         event.requestContext.http.method === "GET" &&
         revisionMatch !== null
@@ -849,6 +805,17 @@ const requiredString = (
   return value;
 };
 
+const secretIdRoutePart =
+  "[a-z][a-z0-9-]{2,63}(?:/[a-z][a-z0-9-]{2,63})*";
+
+const decodeRequestPath = (value: string): string => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw badRequest("The request path is not valid URL encoding.");
+  }
+};
+
 const requireQueryString = (
   event: APIGatewayProxyEventV2,
   name: string,
@@ -932,13 +899,6 @@ const environmentResponse = (
   name: environment.name,
   createdAt: environment.createdAt,
   createdBy: environment.createdBy,
-});
-
-const folderResponse = (folder: FolderRecord): Record<string, unknown> => ({
-  environment: folder.environment,
-  path: folder.path,
-  createdAt: folder.createdAt,
-  createdBy: folder.createdBy,
 });
 
 const agentGrantResponse = (
