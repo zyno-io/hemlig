@@ -49,11 +49,19 @@ export interface ParsedCatalogFilter {
 export const parseCatalogFilter = (input: string): ParsedCatalogFilter => {
   const tags: CatalogTagFilter[] = [];
   const text: string[] = [];
-  for (const token of input.trim().split(/\s+/).filter((part) => part.length > 0)) {
+  for (const token of input
+    .trim()
+    .split(/\s+/)
+    .filter((part) => part.length > 0)) {
     const separator = token.indexOf(":");
     const key = separator === -1 ? undefined : token.slice(0, separator);
     const value = separator === -1 ? undefined : token.slice(separator + 1);
-    if (key !== undefined && value !== undefined && tagKey.test(key) && tagValue.test(value)) {
+    if (
+      key !== undefined &&
+      value !== undefined &&
+      tagKey.test(key) &&
+      tagValue.test(value)
+    ) {
       tags.push({ key, value });
     } else {
       text.push(token);
@@ -85,7 +93,9 @@ const store = useAppStore();
 const route = useRoute();
 const router = useRouter();
 
-const currentPath = computed(() => (props.path ?? []).filter((s) => s.length > 0).join("/"));
+const currentPath = computed(() =>
+  (props.path ?? []).filter((s) => s.length > 0).join("/"),
+);
 const breadcrumbs = computed(() => pathSegments(currentPath.value));
 
 const crumbTo = (path: string) => ({
@@ -104,7 +114,11 @@ const newSecretTo = computed(() => ({
   query: currentPath.value.length > 0 ? { path: currentPath.value } : {},
 }));
 
-const treeQueryKey = computed(() => ["secrets-tree", props.env, currentPath.value]);
+const treeQueryKey = computed(() => [
+  "secrets-tree",
+  props.env,
+  currentPath.value,
+]);
 
 // One bounded, complete level of the tree. Reactive to env/path through the
 // query key, the same pattern SecretDetail.vue uses for its secretId — no
@@ -131,7 +145,9 @@ const newFolderPath = computed(() => {
   if (trimmed.length === 0) {
     return "";
   }
-  return currentPath.value.length > 0 ? `${currentPath.value}/${trimmed}` : trimmed;
+  return currentPath.value.length > 0
+    ? `${currentPath.value}/${trimmed}`
+    : trimmed;
 });
 
 const newFolderPathError = computed(() => {
@@ -195,12 +211,8 @@ const cancelSearchDebounce = (): void => {
   }
 };
 
-// Every admin request — this search included — writes three permanent
-// objects into a seven-year Object Lock Compliance archive that cannot be
-// deleted. Debouncing keeps a typed query to one request per pause in typing
-// rather than one per keystroke. Do not remove this as unnecessary caution —
-// the discipline is about not amplifying automatically or in the background,
-// not about minimising a single deliberate, user-typed search.
+// Debouncing keeps a typed query to one request per pause in typing rather
+// than one per keystroke, without delaying a cleared search.
 watch(searchInput, (value) => {
   cancelSearchDebounce();
   const trimmed = value.trim();
@@ -214,6 +226,7 @@ watch(searchInput, (value) => {
     appliedInput.value = trimmed;
   }, SEARCH_DEBOUNCE_MS);
 });
+
 watch(
   () => route.query.catalogFilter,
   () => {
@@ -228,15 +241,23 @@ watch(
 
 onUnmounted(cancelSearchDebounce);
 
-// Parsed live (not debounced): parsing is free — no request, no audit write —
-// and showing the interpretation only after the debounce would hide a
+// Parsed live (not debounced): parsing is free and makes no request. Showing
+// the interpretation only after the debounce would hide a
 // typo'd tag falling back to free text for 300ms right when it matters.
 const liveFilter = computed(() => parseCatalogFilter(searchInput.value));
 // Parsed from the debounced value: this is what actually drives requests.
 const appliedFilter = computed(() => parseCatalogFilter(appliedInput.value));
 const hasFilter = computed(
-  () => appliedFilter.value.text.length > 0 || appliedFilter.value.tags.length > 0,
+  () =>
+    appliedFilter.value.text.length > 0 || appliedFilter.value.tags.length > 0,
 );
+const tagsParam = computed(() =>
+  appliedFilter.value.tags.map((tag) => `${tag.key}:${tag.value}`).join(","),
+);
+
+// A detail route cannot infer the catalog state it came from: a search is
+// local UI state and a folder is represented by another route. Carry the
+// small, safe return context explicitly so its back link restores either.
 const secretTo = (secretId: string) => ({
   name: "secret",
   params: { env: props.env, secretId },
@@ -249,9 +270,6 @@ const secretTo = (secretId: string) => ({
       : { catalogFilter: appliedInput.value }),
   },
 });
-const tagsParam = computed(() =>
-  appliedFilter.value.tags.map((tag) => `${tag.key}:${tag.value}`).join(","),
-);
 
 // The tree route has no tag filter and no search box, so any filter switches
 // the view into a flat result list instead of the folder tree. Which flat
@@ -302,7 +320,12 @@ watch([view, tagsParam, () => props.env, currentPath], () => {
 // give. The template says so explicitly so this isn't a surprise in either
 // direction.
 const searchResults = useQuery({
-  queryKey: computed(() => ["secrets-search", props.env, appliedFilter.value.text, tagsParam.value]),
+  queryKey: computed(() => [
+    "secrets-search",
+    props.env,
+    appliedFilter.value.text,
+    tagsParam.value,
+  ]),
   queryFn: () =>
     store.requireApi().listSecrets({
       environment: props.env,
@@ -327,7 +350,9 @@ const refreshing = computed(() => {
   if (view.value === "tree") {
     return tree.isFetching.value;
   }
-  return view.value === "tags" ? flatPages.loading.value : searchResults.isFetching.value;
+  return view.value === "tags"
+    ? flatPages.loading.value
+    : searchResults.isFetching.value;
 });
 
 const refresh = (): void => {
@@ -350,10 +375,13 @@ const catalogError = computed<unknown>(() => {
   if (view.value === "tree") {
     return tree.error.value;
   }
-  return view.value === "tags" ? flatPages.error.value : searchResults.error.value;
+  return view.value === "tags"
+    ? flatPages.error.value
+    : searchResults.error.value;
 });
 const tagRejection = computed(() =>
-  catalogError.value instanceof ApiError && catalogError.value.code === "bad_request"
+  catalogError.value instanceof ApiError &&
+  catalogError.value.code === "bad_request"
     ? catalogError.value.message
     : undefined,
 );
@@ -364,7 +392,10 @@ const tagRejection = computed(() =>
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h1 class="text-lg font-semibold">Secrets in {{ env }}</h1>
-        <nav aria-label="Breadcrumb" class="mt-1 flex flex-wrap items-center gap-1 text-xs text-ink-muted">
+        <nav
+          aria-label="Breadcrumb"
+          class="mt-1 flex flex-wrap items-center gap-1 text-xs text-ink-muted"
+        >
           <RouterLink
             class="hover:text-accent hover:underline"
             :to="{ name: 'secrets', params: { env } }"
@@ -374,14 +405,20 @@ const tagRejection = computed(() =>
           </RouterLink>
           <template v-for="crumb in breadcrumbs" :key="crumb.path">
             <span aria-hidden="true">/</span>
-            <RouterLink class="mono hover:text-accent hover:underline" :to="crumbTo(crumb.path)" @click="backToBrowsing">
+            <RouterLink
+              class="mono hover:text-accent hover:underline"
+              :to="crumbTo(crumb.path)"
+              @click="backToBrowsing"
+            >
               {{ crumb.segment }}
             </RouterLink>
           </template>
         </nav>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <label class="sr-only" for="catalog-filter">Search or filter secrets</label>
+        <label class="sr-only" for="catalog-filter"
+          >Search or filter secrets</label
+        >
         <input
           id="catalog-filter"
           v-model="searchInput"
@@ -396,10 +433,17 @@ const tagRejection = computed(() =>
         >
           {{ refreshing ? "Loading…" : "Refresh" }}
         </button>
-        <button class="rounded border border-line px-3 py-1" type="button" @click="newFolderOpen = !newFolderOpen">
+        <button
+          class="rounded border border-line px-3 py-1"
+          type="button"
+          @click="newFolderOpen = !newFolderOpen"
+        >
           New folder
         </button>
-        <RouterLink class="rounded bg-accent px-3 py-1 text-white" :to="newSecretTo">
+        <RouterLink
+          class="rounded bg-accent px-3 py-1 text-white"
+          :to="newSecretTo"
+        >
           New secret
         </RouterLink>
       </div>
@@ -410,7 +454,9 @@ const tagRejection = computed(() =>
       class="flex flex-wrap items-end gap-2 rounded border border-line bg-surface-raised p-3 text-xs"
     >
       <label class="flex flex-col gap-1">
-        <span class="text-ink-muted">New folder under {{ currentPath || "the root" }}</span>
+        <span class="text-ink-muted"
+          >New folder under {{ currentPath || "the root" }}</span
+        >
         <input
           v-model="newFolderSegment"
           maxlength="256"
@@ -418,7 +464,9 @@ const tagRejection = computed(() =>
           placeholder="invoices"
         />
       </label>
-      <span v-if="newFolderPathError" class="text-danger">{{ newFolderPathError }}</span>
+      <span v-if="newFolderPathError" class="text-danger">{{
+        newFolderPathError
+      }}</span>
       <span v-else class="text-ink-muted">
         This only prefixes the next secret ID; empty folders are not stored.
       </span>
@@ -430,7 +478,11 @@ const tagRejection = computed(() =>
       >
         Create secret here
       </button>
-      <button class="rounded px-3 py-1 text-ink-muted" type="button" @click="closeNewFolder">
+      <button
+        class="rounded px-3 py-1 text-ink-muted"
+        type="button"
+        @click="closeNewFolder"
+      >
         Cancel
       </button>
     </div>
@@ -444,23 +496,42 @@ const tagRejection = computed(() =>
         v-for="tag in liveFilter.tags"
         :key="`${tag.key}:${tag.value}`"
         class="mono rounded bg-line/40 px-1.5 py-0.5 text-ink"
-      >{{ tag.key }}={{ tag.value }}</span>
-      <span v-if="liveFilter.text.length > 0">matching "{{ liveFilter.text }}"</span>
+        >{{ tag.key }}={{ tag.value }}</span
+      >
+      <span v-if="liveFilter.text.length > 0"
+        >matching "{{ liveFilter.text }}"</span
+      >
     </div>
 
-    <p v-if="tagRejection" class="rounded border border-warn/50 bg-warn/5 p-2 text-xs text-warn">
+    <p
+      v-if="tagRejection"
+      class="rounded border border-warn/50 bg-warn/5 p-2 text-xs text-warn"
+    >
       {{ tagRejection }}
     </p>
 
-    <p v-if="view === 'tags'" class="rounded border border-accent/40 bg-accent/5 p-2 text-xs">
+    <p
+      v-if="view === 'tags'"
+      class="rounded border border-accent/40 bg-accent/5 p-2 text-xs"
+    >
       Showing a flat, tag-filtered result list under
-      <span class="mono">{{ currentPath || "the root" }}</span> — not the folder tree.
-      <button class="text-accent underline" @click="backToBrowsing">Back to browsing</button>
+      <span class="mono">{{ currentPath || "the root" }}</span> — not the folder
+      tree.
+      <button class="text-accent underline" @click="backToBrowsing">
+        Back to browsing
+      </button>
     </p>
-    <p v-else-if="view === 'search'" class="rounded border border-accent/40 bg-accent/5 p-2 text-xs">
-      Showing search results across all of <span class="mono">{{ env }}</span> — every path, not just
-      <span class="mono">{{ currentPath || "the root" }}</span>.
-      <button class="text-accent underline" @click="backToBrowsing">Back to browsing</button>
+    <p
+      v-else-if="view === 'search'"
+      class="rounded border border-accent/40 bg-accent/5 p-2 text-xs"
+    >
+      Showing search results across all of <span class="mono">{{ env }}</span> —
+      every path, not just
+      <span class="mono">{{ currentPath || "the root" }}</span
+      >.
+      <button class="text-accent underline" @click="backToBrowsing">
+        Back to browsing
+      </button>
     </p>
 
     <template v-if="view === 'tree'">
@@ -471,29 +542,45 @@ const tagRejection = computed(() =>
           read or the server says so. Rendering a silently short list here
           would look complete when it is not.
         -->
-        <p v-if="tree.data.value.truncated" class="rounded border border-warn/50 bg-warn/5 p-3 text-warn">
-          This level is incomplete — there are more folders or secrets here than the
-          server returned in one page. Narrow with a tag filter or drill into a subfolder
-          rather than trusting this list as the full contents.
+        <p
+          v-if="tree.data.value.truncated"
+          class="rounded border border-warn/50 bg-warn/5 p-3 text-warn"
+        >
+          This level is incomplete — there are more folders or secrets here than
+          the server returned in one page. Narrow with a tag filter or drill
+          into a subfolder rather than trusting this list as the full contents.
         </p>
 
-        <ul v-if="tree.data.value.folders.length > 0" class="divide-y divide-line/60 rounded border border-line">
+        <ul
+          v-if="tree.data.value.folders.length > 0"
+          class="divide-y divide-line/60 rounded border border-line"
+        >
           <li
             v-for="folder in tree.data.value.folders"
             :key="folder.path"
             class="flex items-center justify-between px-3 py-2 hover:bg-surface-raised"
           >
-            <RouterLink class="flex flex-1 items-center gap-2" :to="crumbTo(folder.path)">
+            <RouterLink
+              class="flex flex-1 items-center gap-2"
+              :to="crumbTo(folder.path)"
+            >
               <span aria-hidden="true">📁</span>
               <span class="mono">{{ folder.segment }}</span>
             </RouterLink>
             <span class="flex items-center gap-3 text-xs text-ink-muted">
-              <span>{{ folder.secretCount }} secret{{ folder.secretCount === 1 ? "" : "s" }}</span>
+              <span
+                >{{ folder.secretCount }} secret{{
+                  folder.secretCount === 1 ? "" : "s"
+                }}</span
+              >
             </span>
           </li>
         </ul>
 
-        <table v-if="tree.data.value.secrets.length > 0" class="w-full border-collapse text-left">
+        <table
+          v-if="tree.data.value.secrets.length > 0"
+          class="w-full border-collapse text-left"
+        >
           <thead class="text-xs uppercase tracking-wide text-ink-muted">
             <tr class="border-b border-line">
               <th class="py-2 pr-3 font-medium">Secret ID</th>
@@ -504,9 +591,16 @@ const tagRejection = computed(() =>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="secret in tree.data.value.secrets" :key="secret.secretId" class="border-b border-line/60">
+            <tr
+              v-for="secret in tree.data.value.secrets"
+              :key="secret.secretId"
+              class="border-b border-line/60"
+            >
               <td class="py-2 pr-3">
-                <RouterLink class="mono text-accent hover:underline" :to="secretTo(secret.secretId)">
+                <RouterLink
+                  class="mono text-accent hover:underline"
+                  :to="secretTo(secret.secretId)"
+                >
                   {{ secret.secretId }}
                 </RouterLink>
               </td>
@@ -515,29 +609,48 @@ const tagRejection = computed(() =>
                   v-for="(value, key) in secret.metadata.tags ?? {}"
                   :key="key"
                   class="mr-1 inline-block rounded bg-line/40 px-1.5 py-0.5"
-                >{{ key }}:{{ value }}</span>
+                  >{{ key }}:{{ value }}</span
+                >
               </td>
               <td class="py-2 pr-3"><StateBadge :state="secret.state" /></td>
-              <td class="py-2 pr-3 text-xs">{{ secret.payloadKeyCount ?? "—" }}</td>
-              <td class="mono py-2 text-xs text-ink-muted">{{ secret.updatedAt ?? "—" }}</td>
+              <td class="py-2 pr-3 text-xs">
+                {{ secret.payloadKeyCount ?? "—" }}
+              </td>
+              <td class="mono py-2 text-xs text-ink-muted">
+                {{ secret.updatedAt ?? "—" }}
+              </td>
             </tr>
           </tbody>
         </table>
 
         <p
-          v-if="tree.data.value.folders.length === 0 && tree.data.value.secrets.length === 0"
+          v-if="
+            tree.data.value.folders.length === 0 &&
+            tree.data.value.secrets.length === 0
+          "
           class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted"
         >
           Nothing directly at this path.
         </p>
       </template>
-      <p v-else class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted">Loading…</p>
+      <p
+        v-else
+        class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted"
+      >
+        Loading…
+      </p>
     </template>
 
     <template v-else-if="view === 'tags'">
-      <ErrorNotice v-if="flatPages.error.value && !tagRejection" :error="flatPages.error.value" />
+      <ErrorNotice
+        v-if="flatPages.error.value && !tagRejection"
+        :error="flatPages.error.value"
+      />
 
-      <table v-if="flatPages.items.value.length > 0" class="w-full border-collapse text-left">
+      <table
+        v-if="flatPages.items.value.length > 0"
+        class="w-full border-collapse text-left"
+      >
         <thead class="text-xs uppercase tracking-wide text-ink-muted">
           <tr class="border-b border-line">
             <th class="py-2 pr-3 font-medium">Secret ID</th>
@@ -549,23 +662,37 @@ const tagRejection = computed(() =>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="secret in flatPages.items.value" :key="secret.secretId" class="border-b border-line/60">
+          <tr
+            v-for="secret in flatPages.items.value"
+            :key="secret.secretId"
+            class="border-b border-line/60"
+          >
             <td class="py-2 pr-3">
-              <RouterLink class="text-accent hover:underline" :to="secretTo(secret.secretId)">
+              <RouterLink
+                class="text-accent hover:underline"
+                :to="secretTo(secret.secretId)"
+              >
                 {{ secret.secretId }}
               </RouterLink>
             </td>
-            <td class="mono py-2 pr-3 text-xs">{{ secretFolderPath(secret.secretId) ?? "Root" }}</td>
+            <td class="mono py-2 pr-3 text-xs">
+              {{ secretFolderPath(secret.secretId) ?? "Root" }}
+            </td>
             <td class="py-2 pr-3 text-xs">
               <span
                 v-for="(value, key) in secret.metadata.tags ?? {}"
                 :key="key"
                 class="mr-1 inline-block rounded bg-line/40 px-1.5 py-0.5"
-              >{{ key }}:{{ value }}</span>
+                >{{ key }}:{{ value }}</span
+              >
             </td>
             <td class="py-2 pr-3"><StateBadge :state="secret.state" /></td>
-            <td class="py-2 pr-3 text-xs">{{ secret.payloadKeyCount ?? "—" }}</td>
-            <td class="mono py-2 text-xs text-ink-muted">{{ secret.updatedAt ?? "—" }}</td>
+            <td class="py-2 pr-3 text-xs">
+              {{ secret.payloadKeyCount ?? "—" }}
+            </td>
+            <td class="mono py-2 text-xs text-ink-muted">
+              {{ secret.updatedAt ?? "—" }}
+            </td>
           </tr>
         </tbody>
       </table>
@@ -576,29 +703,61 @@ const tagRejection = computed(() =>
         secrets" is only truthful once the listing is exhausted.
       -->
       <p
-        v-else-if="flatPages.exhausted.value && !flatPages.loading.value && !flatPages.error.value"
+        v-else-if="
+          flatPages.exhausted.value &&
+          !flatPages.loading.value &&
+          !flatPages.error.value
+        "
         class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted"
       >
         No secrets match under {{ currentPath || "the root" }} in {{ env }}.
       </p>
-      <p v-else-if="!flatPages.error.value" class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted">
+      <p
+        v-else-if="!flatPages.error.value"
+        class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted"
+      >
         Searching…
       </p>
 
-      <div v-if="!flatPages.exhausted.value && flatPages.items.value.length > 0 && !flatPages.error.value" class="flex items-center gap-3">
-        <button class="rounded border border-line px-3 py-1" :disabled="flatPages.loading.value" @click="flatPages.loadMore()">
+      <div
+        v-if="
+          !flatPages.exhausted.value &&
+          flatPages.items.value.length > 0 &&
+          !flatPages.error.value
+        "
+        class="flex items-center gap-3"
+      >
+        <button
+          class="rounded border border-line px-3 py-1"
+          :disabled="flatPages.loading.value"
+          @click="flatPages.loadMore()"
+        >
           {{ flatPages.loading.value ? "Loading…" : "Load more" }}
         </button>
-        <span class="text-xs text-ink-muted">{{ flatPages.pagesFetched.value }} pages read</span>
+        <span class="text-xs text-ink-muted"
+          >{{ flatPages.pagesFetched.value }} pages read</span
+        >
       </div>
-      <p v-else-if="!flatPages.exhausted.value && !flatPages.loading.value && !flatPages.error.value" class="text-xs text-ink-muted">
+      <p
+        v-else-if="
+          !flatPages.exhausted.value &&
+          !flatPages.loading.value &&
+          !flatPages.error.value
+        "
+        class="text-xs text-ink-muted"
+      >
         More pages remain but none matched yet.
-        <button class="text-accent underline" @click="flatPages.loadMore()">Keep searching</button>
+        <button class="text-accent underline" @click="flatPages.loadMore()">
+          Keep searching
+        </button>
       </p>
     </template>
 
     <template v-else>
-      <ErrorNotice v-if="searchResults.error.value && !tagRejection" :error="searchResults.error.value" />
+      <ErrorNotice
+        v-if="searchResults.error.value && !tagRejection"
+        :error="searchResults.error.value"
+      />
       <template v-else-if="searchResults.data.value">
         <!--
           A `q` response is bounded-complete, not paginated: there is no
@@ -609,12 +768,18 @@ const tagRejection = computed(() =>
           than a page running out; rendering the list silently in that case
           would look like the full answer when it might not be.
         -->
-        <p v-if="searchResults.data.value.truncated" class="rounded border border-warn/50 bg-warn/5 p-3 text-warn">
+        <p
+          v-if="searchResults.data.value.truncated"
+          class="rounded border border-warn/50 bg-warn/5 p-3 text-warn"
+        >
           This result set is incomplete — the search scanned as far as its bound
           allows and stopped. Narrow the query to see the full set of matches.
         </p>
 
-        <table v-if="searchResults.data.value.secrets.length > 0" class="w-full border-collapse text-left">
+        <table
+          v-if="searchResults.data.value.secrets.length > 0"
+          class="w-full border-collapse text-left"
+        >
           <thead class="text-xs uppercase tracking-wide text-ink-muted">
             <tr class="border-b border-line">
               <th class="py-2 pr-3 font-medium">Secret ID</th>
@@ -626,32 +791,54 @@ const tagRejection = computed(() =>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="secret in searchResults.data.value.secrets" :key="secret.secretId" class="border-b border-line/60">
+            <tr
+              v-for="secret in searchResults.data.value.secrets"
+              :key="secret.secretId"
+              class="border-b border-line/60"
+            >
               <td class="py-2 pr-3">
-                <RouterLink class="text-accent hover:underline" :to="secretTo(secret.secretId)">
+                <RouterLink
+                  class="text-accent hover:underline"
+                  :to="secretTo(secret.secretId)"
+                >
                   {{ secret.secretId }}
                 </RouterLink>
               </td>
-              <td class="mono py-2 pr-3 text-xs">{{ secretFolderPath(secret.secretId) ?? "Root" }}</td>
+              <td class="mono py-2 pr-3 text-xs">
+                {{ secretFolderPath(secret.secretId) ?? "Root" }}
+              </td>
               <td class="py-2 pr-3 text-xs">
                 <span
                   v-for="(value, key) in secret.metadata.tags ?? {}"
                   :key="key"
                   class="mr-1 inline-block rounded bg-line/40 px-1.5 py-0.5"
-                >{{ key }}:{{ value }}</span>
+                  >{{ key }}:{{ value }}</span
+                >
               </td>
               <td class="py-2 pr-3"><StateBadge :state="secret.state" /></td>
-              <td class="py-2 pr-3 text-xs">{{ secret.payloadKeyCount ?? "—" }}</td>
-              <td class="mono py-2 text-xs text-ink-muted">{{ secret.updatedAt ?? "—" }}</td>
+              <td class="py-2 pr-3 text-xs">
+                {{ secret.payloadKeyCount ?? "—" }}
+              </td>
+              <td class="mono py-2 text-xs text-ink-muted">
+                {{ secret.updatedAt ?? "—" }}
+              </td>
             </tr>
           </tbody>
         </table>
 
-        <p v-else class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted">
+        <p
+          v-else
+          class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted"
+        >
           No matches for "{{ appliedFilter.text }}" in {{ env }}.
         </p>
       </template>
-      <p v-else class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted">Searching…</p>
+      <p
+        v-else
+        class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted"
+      >
+        Searching…
+      </p>
     </template>
   </div>
 </template>

@@ -22,8 +22,8 @@ export interface CursorPages<T> {
  * cursor. Following one cursor per click would look broken, so each call
  * chases cursors until it has something to show or the listing is exhausted.
  *
- * The hop budget stops a filter that matches nothing from writing an unbounded
- * number of permanent audit objects in a single click.
+ * The hop budget stops a filter that matches nothing from issuing an unbounded
+ * number of requests in a single click.
  */
 export const useCursorPages = <T>(
   fetchPage: (cursor: string | undefined) => Promise<CursorPage<T>>,

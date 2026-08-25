@@ -116,30 +116,24 @@ describe("GET /v1/admin/audit", () => {
     );
   });
 
-  it("reads a signed, date-scoped archive page and records the read", async () => {
+  it("reads a signed, date-scoped archive page without recording the read", async () => {
     const response = await handler(buildEvent({ date: "2026-08-23" }));
 
-    expect(list).toHaveBeenCalledWith("2026-08-23", undefined, undefined, undefined);
+    expect(list).toHaveBeenCalledWith(
+      "2026-08-23",
+      undefined,
+      undefined,
+      undefined,
+    );
     expect(encode).toHaveBeenCalledWith(
       expect.objectContaining({
         scope: `admin:audit:admin-1:${sha256Hex(
-          stableJson({ date: "2026-08-23", environment: undefined, secretId: undefined }),
+          stableJson({ date: "2026-08-23", secretId: undefined }),
         )}`,
         lastEvaluatedKey: { continuationToken: "s3-next" },
       }),
     );
-    expect(write).toHaveBeenCalledWith(
-      expect.objectContaining({
-        outcome: "attempted",
-        operation: "adminget:/v1/admin/audit",
-      }),
-    );
-    expect(write).toHaveBeenCalledWith(
-      expect.objectContaining({
-        outcome: "succeeded",
-        target: { date: "2026-08-23" },
-      }),
-    );
+    expect(write).not.toHaveBeenCalled();
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body as string)).toMatchObject({
       date: "2026-08-23",
@@ -160,20 +154,20 @@ describe("GET /v1/admin/audit", () => {
       buildEvent({ date: "2026-08-23", secretId: "payments-api" }),
     );
 
-    expect(list).toHaveBeenCalledWith("2026-08-23", undefined, "payments-api", undefined);
+    expect(list).toHaveBeenCalledWith(
+      "2026-08-23",
+      undefined,
+      "payments-api",
+      undefined,
+    );
     expect(encode).toHaveBeenCalledWith(
       expect.objectContaining({
         scope: `admin:audit:admin-1:${sha256Hex(
-          stableJson({ date: "2026-08-23", environment: undefined, secretId: "payments-api" }),
+          stableJson({ date: "2026-08-23", secretId: "payments-api" }),
         )}`,
       }),
     );
-    expect(write).toHaveBeenCalledWith(
-      expect.objectContaining({
-        outcome: "succeeded",
-        target: { date: "2026-08-23", secretId: "payments-api" },
-      }),
-    );
+    expect(write).not.toHaveBeenCalled();
     expect(response.statusCode).toBe(200);
   });
 

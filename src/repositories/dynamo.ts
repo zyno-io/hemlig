@@ -448,8 +448,8 @@ export class DynamoRepository {
     removeDisplayName: boolean,
   ): Promise<void> {
     const updateExpression = removeDisplayName
-      ? "SET capabilities = :capabilities, readPathPrefixes = :readPathPrefixes, writePathPrefixes = :writePathPrefixes REMOVE displayName"
-      : "SET capabilities = :capabilities, readPathPrefixes = :readPathPrefixes, writePathPrefixes = :writePathPrefixes, displayName = :displayName";
+      ? "SET capabilities = :capabilities, readSecretIdPrefixes = :readSecretIdPrefixes, writeSecretIdPrefixes = :writeSecretIdPrefixes REMOVE displayName, readPathPrefixes, writePathPrefixes"
+      : "SET capabilities = :capabilities, readSecretIdPrefixes = :readSecretIdPrefixes, writeSecretIdPrefixes = :writeSecretIdPrefixes, displayName = :displayName REMOVE readPathPrefixes, writePathPrefixes";
     try {
       await this.dynamo.send(
         new UpdateCommand({
@@ -459,8 +459,8 @@ export class DynamoRepository {
           ConditionExpression: "attribute_exists(pk)",
           ExpressionAttributeValues: {
             ":capabilities": grant.capabilities,
-            ":readPathPrefixes": grant.readPathPrefixes,
-            ":writePathPrefixes": grant.writePathPrefixes,
+            ":readSecretIdPrefixes": grant.readSecretIdPrefixes,
+            ":writeSecretIdPrefixes": grant.writeSecretIdPrefixes,
             ...(removeDisplayName ? {} : { ":displayName": grant.displayName }),
           },
         }),

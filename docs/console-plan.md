@@ -102,7 +102,7 @@ know.
 | Control revisions are the optimistic-concurrency token                                                      | Every mutation carries `If-Match`; a `412` never auto-retries                                      |
 | Catalog pages are post-filtered after a `Limit: 100` read (`src/repositories/dynamo.ts:418-436`)            | A page may be empty and still have a cursor; never render "no results" before the cursor is absent |
 | Opaque cursors are server-side, bound to actor and filters, and expire in 15 minutes                        | Any filter change resets pagination                                                                |
-| Every request writes audit objects into a seven-year Compliance archive (`src/handlers/admin.ts:24-38`)     | No polling, no background refetch, no N+1                                                          |
+| Mutations and secret-value reads write audit objects into a seven-year Compliance archive                   | Keep payload reads explicit; metadata may refresh normally; no N+1                                 |
 | Administrator payload reads are explicit, audited requests                                                  | Keep plaintext component-local; never cache or auto-load it                                        |
 | The gateway rejects bad tokens with a bare `401` before Lambda                                              | `401` and `403` mean different things and get different handling                                   |
 | No delete route exists                                                                                      | Retirement is ACL removal plus a tombstone, and the UI must say so                                 |
@@ -358,9 +358,9 @@ readonly payloadKeyCount?: number;
 
 ## B5. Consumer read routes
 
-Four new administrator routes. All `GET`, all requiring `Authorization`, none
-requiring `Idempotency-Key`, all emitting the same attempted/authorized/
-succeeded audit triple as existing reads.
+Four new administrator routes. All `GET`, all requiring `Authorization`, and
+none requiring `Idempotency-Key`. They return control-plane metadata only and
+are not audited as secret-value reads.
 
 ### Data model: two sparse GSIs
 
@@ -844,20 +844,14 @@ then. Implement as an auto-continuing fetch with a bounded hop count and a
 
 ### Audit write discipline
 
-Every request writes `attempted` and `authorized` objects before the handler
-routes, plus a terminal event, into an Object Lock Compliance bucket whose
-default retention is seven years. They cannot be deleted, and their retention
-cannot be shortened, until that window expires.
+Mutations and secret-value reads write `attempted`, `authorized`, and terminal
+events into an Object Lock Compliance bucket whose default retention is seven
+years. Routine metadata reads do not create audit evidence.
 
-- No polling. No `refetchInterval`, no `refetchOnWindowFocus`, no background
-  revalidation. Configure `@tanstack/vue-query` with these off globally.
-- `staleTime` five minutes, cache reused across navigation.
+- Payload reads remain explicit and are never cached with metadata.
+- Metadata uses normal focus, mount, and reconnect revalidation; polling stays
+  off.
 - No N+1. A list view renders from its page response only.
-- Refresh is an explicit user action.
-
-One catalog render costs three audit objects. Per-row detail fetches on a
-100-row page would write three hundred that nobody can remove for seven years.
-This is not a performance preference.
 
 ### Payload hygiene
 
@@ -1046,8 +1040,8 @@ ships with the handlers rather than after them. If the console and the service
 disagree, that test fails before anything reaches an environment.
 
 **No automated test may run against a real deployment's administrator API.**
-Every request writes audit objects into a Compliance-locked bucket. State this
-in the console README.
+Tests must not mutate real secrets or reveal real payload values; those actions
+write Compliance-locked audit evidence. State this in the console README.
 
 MiniStack cannot exercise OIDC, CORS preflight, or the JWT authorizer. Preflight
 versus the `$default` route, the access-token audience, the required scope, the

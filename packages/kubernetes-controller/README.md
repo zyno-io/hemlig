@@ -89,11 +89,11 @@ spec:
   consumerRef: payments
   secretId: payments/production/api-key-source
   source: { name: payments-api-source }
-  metadata: { path: payments/production, description: Payments API }
+  metadata: { description: Payments API }
 ```
 
 The administrator-side AgentGrant must give this consumer compatible
-`payments/production` read/write prefixes. Remote Hemlig authorization is the
+`payments/production` read/write secret-ID prefixes. Remote Hemlig authorization is the
 keyspace boundary: Kubernetes RBAC alone cannot expand it. An export rejects an
 import-managed source, and an import refuses to overwrite a user-owned target.
 

@@ -10,27 +10,27 @@ const grant: AgentGrantRecord = {
   consumerId: "payments-agent",
   environment: "prod",
   capabilities: ["read", "write"],
-  readPathPrefixes: ["payments"],
-  writePathPrefixes: ["payments"],
+  readSecretIdPrefixes: ["payments"],
+  writeSecretIdPrefixes: ["payments"],
   status: "ACTIVE",
   createdAt: "2026-08-23T00:00:00.000Z",
   createdBy: { type: "human", id: "admin" },
 };
 
-const control = (path: string): ControlRevision => ({
+const control = (secretId: string): ControlRevision => ({
   schemaVersion: 1,
-  secretId: "payments-api",
+  secretId,
   controlVersionId: "ctl-current",
   environment: "prod",
   state: "ACTIVE",
   createdAt: "2026-08-23T00:00:00.000Z",
   createdBy: { type: "human", id: "admin" },
-  metadata: { path },
+  metadata: {},
   acl: [{ consumerId: "payments-agent", permissions: ["read"] }],
 });
 
 describe("AgentService", () => {
-  it("rejects a lookalike path before the payload-read service is reached", async () => {
+  it("rejects a lookalike secret ID before the payload-read service is reached", async () => {
     const repository = {
       getAgentGrantForConsumer: jest.fn(async () => grant),
     } as unknown as DynamoRepository;
@@ -41,12 +41,12 @@ describe("AgentService", () => {
     const service = new AgentService(repository, secrets);
 
     await expect(
-      service.read("payments-agent", "prod", "payments-api", undefined),
-    ).rejects.toThrow("secret path");
+      service.read("payments-agent", "prod", "payments-prod/api", undefined),
+    ).rejects.toThrow("secret ID");
     expect(secrets.read).not.toHaveBeenCalled();
   });
 
-  it("turns an out-of-scope path move into a revocation without returning its path", async () => {
+  it("turns an out-of-scope secret-ID move into a revocation", async () => {
     const repository = {
       getAgentGrantForConsumer: jest.fn(async () => grant),
       listAccess: jest.fn(async () => ({
@@ -68,7 +68,7 @@ describe("AgentService", () => {
       getHead: jest.fn(async () => ({
         secretId: "payments-api",
         environment: "prod",
-        metadata: { path: "platform/private" },
+        metadata: {},
       })),
     } as unknown as DynamoRepository;
     const service = new AgentService(repository, {} as SecretService);

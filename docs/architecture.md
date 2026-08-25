@@ -55,9 +55,10 @@ domains, Route 53 aliases, a versioned truststore bucket, one-year sanitized
 API Gateway access-log groups, and EventBridge schedules. Access logs record
 only request ID, status, and gateway/authorizer error fields—never headers,
 query strings, or request bodies. The consumer domain starts without a
-truststore. Enrollment publishes a unique PEM bundle, pins its returned S3
-version on that domain, verifies an observed `AVAILABLE` domain state without
-truststore warnings, and only then activates the leaf identity. The consumer
+truststore. The first enrollment, or a changed root set, publishes a unique PEM
+bundle and pins its returned S3 version on that domain. Later leaf enrollments
+reuse that pinned bundle, verify an observed `AVAILABLE` domain state without
+truststore warnings, and only then activate the leaf identity. The consumer
 handler also rejects a request without both a client certificate and active
 identity row.
 
@@ -153,17 +154,19 @@ verify CSR -> load/create one KMS-wrapped issuing root -> issue client leaf
 
 Only the operation holding the truststore lease can publish. It loads every
 DynamoDB query page of active roots, sorts and deduplicates them by fingerprint,
-and publishes the one deployment root. The request polls only briefly so a
-candidate and its possible rollback fit the HTTP API Lambda window; longer
-propagation is resumed by the five-minute worker with the same S3 object
-version. A different enrollment receives `503` while the serialized publication
-is in progress. No identity becomes active merely because an S3 object was
-written. If API Gateway reports truststore warnings for the candidate version,
-Hemlig rolls back to the prior known bundle when one exists, marks the pending
-leaf workflow `FAILED`, and releases the lease; a warning-bearing bundle is
-never promoted. A rejected enrollment returns terminal `409 enrollment_failed`.
-Repair the issuer or truststore configuration before submitting a new
-enrollment: a different CSR cannot alter the rejected root bundle.
+then compares that set with the current pinned bundle. A matching set reuses the
+bundle and only verifies API Gateway availability; a changed set publishes a
+new bundle. The request polls only briefly so a candidate and its possible
+rollback fit the HTTP API Lambda window; longer propagation is resumed by the
+five-minute worker with the same S3 object version. A different enrollment
+receives `503` while the serialized publication is in progress. No identity
+becomes active merely because an S3 object was written. If API Gateway reports
+truststore warnings for the candidate version, Hemlig rolls back to the prior
+known bundle when one exists, marks the pending leaf workflow `FAILED`, and
+releases the lease; a warning-bearing bundle is never promoted. A rejected
+enrollment returns terminal `409 enrollment_failed`. Repair the issuer or
+truststore configuration before submitting a new enrollment: a different CSR
+cannot alter the rejected root bundle.
 
 The published bundle is preflighted against API Gateway's 1,000-certificate and
 1 MiB limits before any S3 write or domain update. The one-root design avoids
@@ -324,13 +327,14 @@ lost broker messages cannot change authorization or inject data.
 
 ## Audit evidence
 
-After the handler resolves an application actor, implemented routes emit
-`attempted` and `authorized` events, then write `succeeded` before a successful
-response. A conditional `304` read is audited, as are scheduled recovery and
-retention actions; post-authorization handler failures are best-effort audited
-as `failed`. TLS or JWT requests rejected before an actor exists are not
-application events and must be investigated through API Gateway logs. Each
-object has a unique, reverse-time sortable key:
+After the handler resolves an application actor, mutations and secret-value
+reads emit `attempted` and `authorized` events, then write `succeeded` before a
+successful response. A conditional `304` secret read is audited, as are
+scheduled recovery and retention actions; post-authorization failures for
+audited operations are best-effort recorded as `failed`. Routine metadata,
+configuration, change-feed, and audit-archive reads are not application audit
+events. TLS or JWT requests rejected before an actor exists must be investigated
+through API Gateway logs. Each object has a unique, reverse-time sortable key:
 
 ```text
 audit/<yyyy>/<mm>/<dd>/<descending-timestamp>-<event-id>.json
@@ -351,8 +355,8 @@ administrator JWT authorization as other management routes, but only this role
 receives `s3:ListBucket` and `s3:GetObject` on the archive prefix. The normal
 administrator Lambda remains write-only. Querying one UTC day reads at most 50
 immutable records per page; a caller-bound opaque cursor continues the page.
-The query Lambda writes its own audit events, preserving evidence of archive
-access without granting its archive-read permission to ordinary handlers.
+Archive reads are not audit events, which avoids recursively recording each
+inspection without granting archive-read permission to ordinary handlers.
 
 ## Recovery and retention
 

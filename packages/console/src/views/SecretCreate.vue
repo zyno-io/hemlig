@@ -2,7 +2,9 @@
 import { computed, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import AclEditor from "../components/AclEditor.vue";
-import MetadataFields, { type MetadataDraft } from "../components/MetadataFields.vue";
+import MetadataFields, {
+  type MetadataDraft,
+} from "../components/MetadataFields.vue";
 import MutationState from "../components/MutationState.vue";
 import { isValidSecretIdentifier } from "../api/payload";
 import type { ControlRevision } from "../api/schemas";
@@ -37,7 +39,9 @@ const buildInput = () => ({
   secretId: secretId.value,
   environment: props.env,
   metadata: {
-    ...(metadata.description.trim() ? { description: metadata.description.trim() } : {}),
+    ...(metadata.description.trim()
+      ? { description: metadata.description.trim() }
+      : {}),
     ...(metadata.tags.filter((t) => t.key).length > 0
       ? {
           tags: Object.fromEntries(
@@ -46,7 +50,10 @@ const buildInput = () => ({
         }
       : {}),
   },
-  acl: acl.value.map((consumerId) => ({ consumerId, permissions: ["read" as const] })),
+  acl: acl.value.map((consumerId) => ({
+    consumerId,
+    permissions: ["read" as const],
+  })),
 });
 
 type CreateInput = ReturnType<typeof buildInput>;
@@ -58,7 +65,9 @@ const creation = useGuardedMutation<CreateInput, ControlRevision>({
   // fresh one, so the only safe recovery is to look for the named secret.
   reconcile: async (input) => {
     try {
-      return await store.requireApi().getSecret(input.environment, input.secretId);
+      return await store
+        .requireApi()
+        .getSecret(input.environment, input.secretId);
     } catch {
       return undefined;
     }
@@ -90,13 +99,16 @@ const catalogBackTo = computed(() =>
 <template>
   <div class="max-w-2xl space-y-4 text-sm">
     <div>
-      <RouterLink class="text-xs text-accent hover:underline" :to="catalogBackTo">
+      <RouterLink
+        class="text-xs text-accent hover:underline"
+        :to="catalogBackTo"
+      >
         ← Secrets
       </RouterLink>
       <h1 class="text-lg font-semibold">New secret in {{ env }}</h1>
       <p class="mt-1 text-ink-muted">
-        Step 1 of 2. Creating a secret leaves it in PENDING_VALUE; it becomes deliverable
-        once you set its first payload on the next screen.
+        Step 1 of 2. Creating a secret leaves it in PENDING_VALUE; it becomes
+        deliverable once you set its first payload on the next screen.
       </p>
       <p v-if="path" class="mt-1 text-xs text-ink-muted">
         This secret will be created in <span class="mono">{{ path }}</span>.
@@ -109,7 +121,10 @@ const catalogBackTo = computed(() =>
       @reload="creation.reset()"
     />
 
-    <form class="space-y-4 rounded border border-line bg-surface-raised p-4" @submit.prevent="submit">
+    <form
+      class="space-y-4 rounded border border-line bg-surface-raised p-4"
+      @submit.prevent="submit"
+    >
       <label class="block">
         <span class="text-xs text-ink-muted">Secret ID</span>
         <input
@@ -131,7 +146,11 @@ const catalogBackTo = computed(() =>
         :disabled="!canSubmit || creation.phase.value.kind === 'submitting'"
         type="submit"
       >
-        {{ creation.phase.value.kind === "submitting" ? "Creating…" : "Create and set payload" }}
+        {{
+          creation.phase.value.kind === "submitting"
+            ? "Creating…"
+            : "Create and set payload"
+        }}
       </button>
     </form>
   </div>

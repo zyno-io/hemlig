@@ -8,21 +8,19 @@ import { createAppRouter } from "./router";
 import { useAppStore } from "./stores/app";
 
 /**
- * Every administrator request writes attempted, authorized, and terminal audit
- * objects into an Object Lock Compliance archive that cannot be deleted for
- * seven years. Background refetching would write permanent evidence nobody
- * asked for, so every automatic refresh is off and refreshing is an explicit
- * user action. Do not turn these back on.
+ * Metadata reads do not write audit evidence, so they may refresh normally.
+ * Payload values are never queried through this cache: their reads remain
+ * explicit, audited actions owned by the detail and payload components.
  */
 const queryOptions: VueQueryPluginOptions = {
   queryClientConfig: {
     defaultOptions: {
       queries: {
-        staleTime: 5 * 60 * 1000,
+        staleTime: 30 * 1000,
         gcTime: 15 * 60 * 1000,
-        refetchOnWindowFocus: false,
-        refetchOnReconnect: false,
-        refetchOnMount: false,
+        refetchOnWindowFocus: true,
+        refetchOnReconnect: true,
+        refetchOnMount: true,
         refetchInterval: false,
         retry: false,
       },

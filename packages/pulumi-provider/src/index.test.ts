@@ -22,10 +22,7 @@ function inputs(
     providerSchemaVersion: "2",
     secretId: "platform-hemlig-pulumi-sentinel",
     environment: "staging",
-    metadata: {
-      description: "Pulumi provider sentinel",
-      path: "platform/hemlig",
-    },
+    metadata: { description: "Pulumi provider sentinel" },
     acl: [],
     payload: { SENTINEL: { encoding: "utf8", value: "one" } },
     ...overrides,
@@ -41,8 +38,8 @@ function agentGrantInputs(
     consumerId: "staging-hemlig-sentinel",
     environment: "staging",
     capabilities: ["read"],
-    readPathPrefixes: ["platform/hemlig/integration"],
-    writePathPrefixes: [],
+    readSecretIdPrefixes: ["platform/hemlig/integration"],
+    writeSecretIdPrefixes: [],
     displayName: "Staging Hemlig Pulumi sentinel",
     bootstrapGeneration: "1",
     ...overrides,
@@ -91,7 +88,7 @@ test("metadata-only updates preserve the current immutable payload revision", as
         payloadVersionId: "payload-current",
         payloadKeyCount: 1,
         state: "ACTIVE",
-        metadata: { description: "before", path: "platform/hemlig" },
+        metadata: { description: "before" },
         acl: [],
       }),
       updateAdminSecret: async () => {
@@ -103,7 +100,7 @@ test("metadata-only updates preserve the current immutable payload revision", as
           payloadVersionId: "payload-current",
           payloadKeyCount: 1,
           state: "ACTIVE" as const,
-          metadata: { description: "after", path: "platform/hemlig" },
+          metadata: { description: "after" },
           acl: [],
         };
       },
@@ -116,9 +113,9 @@ test("metadata-only updates preserve the current immutable payload revision", as
   );
   const result = await provider.update(
     "platform-hemlig-pulumi-sentinel",
-    inputs({ metadata: { description: "before", path: "platform/hemlig" } }),
+    inputs({ metadata: { description: "before" } }),
     inputs({
-      metadata: { description: "after", path: "platform/hemlig" },
+      metadata: { description: "after" },
     }),
   );
 
@@ -142,10 +139,7 @@ test("payload updates write exactly one new revision", async () => {
         payloadVersionId: "payload-current",
         payloadKeyCount: 1,
         state: "ACTIVE",
-        metadata: {
-          description: "Pulumi provider sentinel",
-          path: "platform/hemlig",
-        },
+        metadata: { description: "Pulumi provider sentinel" },
         acl: [],
       }),
       updateAdminSecret: async () => {
@@ -162,10 +156,7 @@ test("payload updates write exactly one new revision", async () => {
           payloadVersionId: "payload-next",
           payloadKeyCount: 1,
           state: "ACTIVE" as const,
-          metadata: {
-            description: "Pulumi provider sentinel",
-            path: "platform/hemlig",
-          },
+          metadata: { description: "Pulumi provider sentinel" },
           acl: [],
         };
       },
@@ -197,8 +188,8 @@ test("creates one pending agent grant and one bootstrap capability", async () =>
           consumerId: "staging-hemlig-sentinel",
           environment: "staging",
           capabilities: ["read"] as const,
-          readPathPrefixes: ["platform/hemlig/integration"],
-          writePathPrefixes: [],
+          readSecretIdPrefixes: ["platform/hemlig/integration"],
+          writeSecretIdPrefixes: [],
           displayName: "Staging Hemlig Pulumi sentinel",
           status: "PENDING" as const,
           createdAt: "2026-08-23T00:00:00.000Z",
@@ -288,8 +279,8 @@ test("updates an active AgentGrant policy without re-enrolling its consumer", as
           consumerId: "staging-hemlig-sentinel",
           environment: "staging",
           capabilities: input.capabilities,
-          readPathPrefixes: input.readPathPrefixes ?? [],
-          writePathPrefixes: input.writePathPrefixes ?? [],
+          readSecretIdPrefixes: input.readSecretIdPrefixes ?? [],
+          writeSecretIdPrefixes: input.writeSecretIdPrefixes ?? [],
           displayName: input.displayName,
           status: "ACTIVE",
           createdAt: "2026-08-23T00:00:00.000Z",
@@ -309,7 +300,7 @@ test("updates an active AgentGrant policy without re-enrolling its consumer", as
     "grant-staging-hemlig-sentinel",
     oldInputs,
     agentGrantInputs({
-      readPathPrefixes: [
+      readSecretIdPrefixes: [
         "platform/hemlig/integration",
         "platform/gitlab-agents/staging",
       ],

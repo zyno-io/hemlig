@@ -6,7 +6,11 @@ import type {
 import { humanActorFromEvent } from "../auth/actors";
 import { badRequest } from "../domain/errors";
 import { json } from "../http/responses";
-import { parseAuditDate, parseAuditEnvironment, parseAuditSecretId } from "../services/audit";
+import {
+  parseAuditDate,
+  parseAuditEnvironment,
+  parseAuditSecretId,
+} from "../services/audit";
 import { isoNow, sha256Hex, stableJson } from "../util/encoding";
 import { withErrorResponse } from "./shared";
 
@@ -19,26 +23,9 @@ import { withErrorResponse } from "./shared";
 export const handler = async (
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyStructuredResultV2> =>
-  withErrorResponse(event, async (app, correlationId, setAuditContext) => {
+  withErrorResponse(event, async (app) => {
     const jwtEvent = event as APIGatewayProxyEventV2WithJWTAuthorizer;
     const actor = humanActorFromEvent(jwtEvent, app.config);
-    const operation = `admin${event.requestContext.http.method.toLowerCase()}:${event.rawPath}`;
-    const sourceIp = event.requestContext.http.sourceIp;
-    setAuditContext({ actor, operation, sourceIp });
-    await app.audit.write({
-      correlationId,
-      outcome: "attempted",
-      actor,
-      operation,
-      sourceIp,
-    });
-    await app.audit.write({
-      correlationId,
-      outcome: "authorized",
-      actor,
-      operation,
-      sourceIp,
-    });
     if (
       event.requestContext.http.method !== "GET" ||
       event.rawPath !== "/v1/admin/audit"
@@ -47,7 +34,9 @@ export const handler = async (
     }
     const date = parseAuditDate(event.queryStringParameters?.date);
     const secretId = parseAuditSecretId(event.queryStringParameters?.secretId);
-    const environment = parseAuditEnvironment(event.queryStringParameters?.environment);
+    const environment = parseAuditEnvironment(
+      event.queryStringParameters?.environment,
+    );
     const filterScope = sha256Hex(stableJson({ date, environment, secretId }));
     const scope = `admin:audit:${actor.id}:${filterScope}`;
     const rawCursor = event.queryStringParameters?.cursor;
@@ -69,17 +58,6 @@ export const handler = async (
             lastEvaluatedKey: { continuationToken: page.nextContinuationToken },
             expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
           });
-    await app.audit.write({
-      correlationId,
-      outcome: "succeeded",
-      actor,
-      operation,
-      target: {
-        date,
-        ...(secretId === undefined ? {} : { secretId }),
-      },
-      sourceIp,
-    });
     return json(200, {
       date: page.date,
       events: page.events,

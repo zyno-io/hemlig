@@ -65,7 +65,7 @@ the publication lease.
 Kubernetes and other constrained automation must not hold an administrator
 OIDC token. An administrator first creates an **AgentGrant** with a new
 consumer ID, one environment, `read` and/or `write` capability, and explicit
-canonical path prefixes. It then issues a single-use, 30-minute bootstrap
+canonical secret-ID prefixes. It then issues a single-use, 30-minute bootstrap
 capability. Hemlig stores only its SHA-256 digest.
 
 ```http
@@ -76,7 +76,7 @@ Content-Type: application/json
 { "apiCertificateSigningRequestPem": "-----BEGIN CERTIFICATE REQUEST-----…" }
 ```
 
-The route receives no desired consumer ID, environment, ACL, metadata path, or endpoint
+The route receives no desired consumer ID, environment, ACL, metadata, or endpoint
 from the caller. Those values come only from the pre-created AgentGrant. It
 returns the public mTLS leaf and the fixed grant scope. A retry with the same
 CSR returns the same enrollment result after a lost response; a different CSR
@@ -86,8 +86,8 @@ used as a general API token.
 
 An active agent identity cannot bypass its grant by calling ordinary delivery
 endpoints: Hemlig applies its AgentGrant prefix check there too. A prefix
-matches only the exact authorization path or a child segment (`payments`
-matches `payments/api`, never `payments-prod`). Missing paths and empty/root
+matches only the exact secret ID or a child segment (`payments`
+matches `payments/api`, never `payments-prod`). Empty/root
 prefixes are never agent-authorized. This is independent of console folders,
 which are always derived from the slash-separated secret ID.
 
@@ -182,9 +182,8 @@ it. The console's **New folder** flow only prefixes the ID of the next secret.
 map of up to 20 lowercase keys to short exact-match values, for example
 `owner: payments` and `system: billing`. Tags are returned only to
 administrators; they never select a delivery target, grant access, or appear
-in the consumer API. `metadata.path` remains an agent-authorization scope for
-existing Kubernetes integrations; it does not affect the catalog hierarchy and
-the console does not edit it. Folders always come from the secret ID.
+in the consumer API. Folders and agent authorization are both derived from the
+slash-separated secret ID; metadata never adds another path namespace.
 
 An ACL has zero to forty unique consumers and only supports the `read` permission.
 Every grant must identify an already-enrolled, active consumer in the same
@@ -554,15 +553,15 @@ enroll a consumer yet. `consumerId` must be unused; `environment` must exist.
   "consumerId": "prod-payments",
   "environment": "prod",
   "capabilities": ["read", "write"],
-  "readPathPrefixes": ["payments/production"],
-  "writePathPrefixes": ["payments/production"],
+  "readSecretIdPrefixes": ["payments/production"],
+  "writeSecretIdPrefixes": ["payments/production"],
   "displayName": "Payments namespace"
 }
 ```
 
-Path lists have one to twenty unique canonical paths and are required exactly
-when their matching capability is present. They are an authorization boundary,
-unlike normal organizational paths/tags. A grant is `PENDING` until bootstrap
+Secret-ID prefix lists have one to twenty unique canonical prefixes and are
+required exactly when their matching capability is present. They are an
+authorization boundary. A grant is `PENDING` until bootstrap
 completes, then becomes `ACTIVE`; it cannot silently fall back to a broad
 consumer identity.
 

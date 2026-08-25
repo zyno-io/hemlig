@@ -251,8 +251,8 @@ export const handler = async (
           consumerId: requiredString(body, "consumerId"),
           environment: requiredString(body, "environment"),
           capabilities: body.capabilities,
-          readPathPrefixes: body.readPathPrefixes,
-          writePathPrefixes: body.writePathPrefixes,
+          readSecretIdPrefixes: body.readSecretIdPrefixes,
+          writeSecretIdPrefixes: body.writeSecretIdPrefixes,
           ...(body.displayName === undefined
             ? {}
             : { displayName: body.displayName }),
@@ -268,9 +268,10 @@ export const handler = async (
         });
         return json(201, agentGrantResponse(grant));
       }
-      const agentGrantMatch = /^\/v1\/admin\/agent-grants\/(grant-[a-z0-9-]{3,80})$/.exec(
-        event.rawPath,
-      );
+      const agentGrantMatch =
+        /^\/v1\/admin\/agent-grants\/(grant-[a-z0-9-]{3,80})$/.exec(
+          event.rawPath,
+        );
       if (
         event.requestContext.http.method === "PUT" &&
         agentGrantMatch !== null
@@ -280,9 +281,11 @@ export const handler = async (
           agentGrantMatch[1] as string,
           {
             capabilities: body.capabilities,
-            readPathPrefixes: body.readPathPrefixes,
-            writePathPrefixes: body.writePathPrefixes,
-            ...(body.displayName === undefined ? {} : { displayName: body.displayName }),
+            readSecretIdPrefixes: body.readSecretIdPrefixes,
+            writeSecretIdPrefixes: body.writeSecretIdPrefixes,
+            ...(body.displayName === undefined
+              ? {}
+              : { displayName: body.displayName }),
           },
         );
         await app.audit.write({
@@ -805,8 +808,7 @@ const requiredString = (
   return value;
 };
 
-const secretIdRoutePart =
-  "[a-z][a-z0-9-]{2,63}(?:/[a-z][a-z0-9-]{2,63})*";
+const secretIdRoutePart = "[a-z][a-z0-9-]{2,63}(?:/[a-z][a-z0-9-]{2,63})*";
 
 const decodeRequestPath = (value: string): string => {
   try {
@@ -908,8 +910,8 @@ const agentGrantResponse = (
   consumerId: grant.consumerId,
   environment: grant.environment,
   capabilities: grant.capabilities,
-  readPathPrefixes: grant.readPathPrefixes,
-  writePathPrefixes: grant.writePathPrefixes,
+  readSecretIdPrefixes: grant.readSecretIdPrefixes ?? [],
+  writeSecretIdPrefixes: grant.writeSecretIdPrefixes ?? [],
   ...(grant.displayName === undefined
     ? {}
     : { displayName: grant.displayName }),

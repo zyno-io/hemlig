@@ -12,8 +12,8 @@ const grant: AgentGrantRecord = {
   consumerId: "payments-agent",
   environment: "prod",
   capabilities: ["read"],
-  readPathPrefixes: ["payments"],
-  writePathPrefixes: [],
+  readSecretIdPrefixes: ["payments"],
+  writeSecretIdPrefixes: [],
   status: "ACTIVE",
   createdAt: "2026-08-23T00:00:00.000Z",
   createdBy: { type: "human", id: "admin" },
@@ -154,8 +154,8 @@ describe("AgentGrantService", () => {
       consumerId: "payments-agent",
       environment: "prod",
       capabilities: ["read"],
-      readPathPrefixes: ["payments", "payments"],
-      writePathPrefixes: [],
+      readSecretIdPrefixes: ["payments", "payments"],
+      writeSecretIdPrefixes: [],
       actor: { type: "human", id: "admin" },
     })).rejects.toThrow("duplicate");
   });
@@ -174,14 +174,14 @@ describe("AgentGrantService", () => {
 
     const updated = await service.update(grant.grantId, {
       capabilities: ["read"],
-      readPathPrefixes: ["platform/hemlig/integration", "platform/gitlab-agents/staging"],
-      writePathPrefixes: [],
+      readSecretIdPrefixes: ["platform/hemlig/integration", "platform/gitlab-agents/staging"],
+      writeSecretIdPrefixes: [],
       displayName: "Staging trusted cluster consumer",
     });
 
     expect(updated.grantId).toBe(grant.grantId);
     expect(updated.consumerId).toBe(grant.consumerId);
-    expect(updated.readPathPrefixes).toEqual([
+    expect(updated.readSecretIdPrefixes).toEqual([
       "platform/gitlab-agents/staging",
       "platform/hemlig/integration",
     ]);

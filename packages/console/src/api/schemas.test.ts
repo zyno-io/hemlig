@@ -11,7 +11,7 @@ const catalogEntryFixture = {
   environment: "prod",
   controlVersionId: "ctl-1",
   state: "ACTIVE",
-  metadata: { path: "payments/stripe" },
+  metadata: {},
 };
 
 describe("catalogPage", () => {

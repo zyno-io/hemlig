@@ -73,8 +73,8 @@ export interface HemligAgentGrantArgs {
   readonly consumerId: pulumi.Input<string>;
   readonly environment: pulumi.Input<string>;
   readonly capabilities: pulumi.Input<readonly ("read" | "write")[]>;
-  readonly readPathPrefixes: pulumi.Input<readonly string[]>;
-  readonly writePathPrefixes: pulumi.Input<readonly string[]>;
+  readonly readSecretIdPrefixes: pulumi.Input<readonly string[]>;
+  readonly writeSecretIdPrefixes: pulumi.Input<readonly string[]>;
   readonly displayName: pulumi.Input<string>;
   /** Bump only before enrollment to replace an expired bootstrap capability. */
   readonly bootstrapGeneration: pulumi.Input<string>;
@@ -86,8 +86,8 @@ export interface ResolvedAgentGrantInputs {
   readonly consumerId: string;
   readonly environment: string;
   readonly capabilities: readonly ("read" | "write")[];
-  readonly readPathPrefixes: readonly string[];
-  readonly writePathPrefixes: readonly string[];
+  readonly readSecretIdPrefixes: readonly string[];
+  readonly writeSecretIdPrefixes: readonly string[];
   readonly displayName: string;
   readonly bootstrapGeneration: string;
 }
@@ -286,8 +286,8 @@ export class HemligAgentGrantProvider
       consumerId: inputs.consumerId,
       environment: inputs.environment,
       capabilities: inputs.capabilities,
-      readPathPrefixes: inputs.readPathPrefixes,
-      writePathPrefixes: inputs.writePathPrefixes,
+      readSecretIdPrefixes: inputs.readSecretIdPrefixes,
+      writeSecretIdPrefixes: inputs.writeSecretIdPrefixes,
       displayName: inputs.displayName,
     });
     const capability = await client.issueBootstrapCapability(
@@ -324,8 +324,8 @@ export class HemligAgentGrantProvider
     const adminToken = this.adminTokenFor();
     const policyChanged = [
       "capabilities",
-      "readPathPrefixes",
-      "writePathPrefixes",
+      "readSecretIdPrefixes",
+      "writeSecretIdPrefixes",
       "displayName",
     ].some(
       (property) =>
@@ -338,8 +338,8 @@ export class HemligAgentGrantProvider
         olds.grantId,
         {
           capabilities: news.capabilities,
-          readPathPrefixes: news.readPathPrefixes,
-          writePathPrefixes: news.writePathPrefixes,
+          readSecretIdPrefixes: news.readSecretIdPrefixes,
+          writeSecretIdPrefixes: news.writeSecretIdPrefixes,
           displayName: news.displayName,
         },
       );

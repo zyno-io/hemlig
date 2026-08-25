@@ -10,7 +10,7 @@ import type {
 import {
   assertIdentifier,
   parseAgentCapabilities,
-  parseAgentPathPrefixes,
+  parseAgentSecretIdPrefixes,
 } from "../domain/validation";
 import type { DynamoRepository } from "../repositories/dynamo";
 import { isoNow, newId, sha256Hex } from "../util/encoding";
@@ -22,16 +22,16 @@ export interface CreateAgentGrantInput {
   readonly consumerId: string;
   readonly environment: string;
   readonly capabilities: unknown;
-  readonly readPathPrefixes: unknown;
-  readonly writePathPrefixes: unknown;
+  readonly readSecretIdPrefixes: unknown;
+  readonly writeSecretIdPrefixes: unknown;
   readonly displayName?: unknown;
   readonly actor: Actor;
 }
 
 export interface UpdateAgentGrantInput {
   readonly capabilities: unknown;
-  readonly readPathPrefixes: unknown;
-  readonly writePathPrefixes: unknown;
+  readonly readSecretIdPrefixes: unknown;
+  readonly writeSecretIdPrefixes: unknown;
   readonly displayName?: unknown;
 }
 
@@ -44,7 +44,12 @@ export interface BootstrapCapabilityResult {
 export interface BootstrapRedemptionResult extends ConsumerProvisioningResult {
   readonly grant: Pick<
     AgentGrantRecord,
-    "grantId" | "consumerId" | "environment" | "capabilities" | "readPathPrefixes" | "writePathPrefixes"
+    | "grantId"
+    | "consumerId"
+    | "environment"
+    | "capabilities"
+    | "readSecretIdPrefixes"
+    | "writeSecretIdPrefixes"
   >;
 }
 
@@ -61,20 +66,32 @@ export class AgentGrantService {
     assertIdentifier(input.consumerId, "consumerId");
     await this.environments.require(input.environment);
     if ((await this.repository.getConsumer(input.consumerId)) !== undefined) {
-      throw conflict("An agent grant requires a consumer ID that has not been enrolled.");
+      throw conflict(
+        "An agent grant requires a consumer ID that has not been enrolled.",
+      );
     }
     const capabilities = parseAgentCapabilities(input.capabilities);
-    const readPathPrefixes = capabilities.includes("read")
-      ? parseAgentPathPrefixes(input.readPathPrefixes, "readPathPrefixes")
-      : emptyPrefixes(input.readPathPrefixes, "readPathPrefixes");
-    const writePathPrefixes = capabilities.includes("write")
-      ? parseAgentPathPrefixes(input.writePathPrefixes, "writePathPrefixes")
-      : emptyPrefixes(input.writePathPrefixes, "writePathPrefixes");
+    const readSecretIdPrefixes = capabilities.includes("read")
+      ? parseAgentSecretIdPrefixes(
+          input.readSecretIdPrefixes,
+          "readSecretIdPrefixes",
+        )
+      : emptyPrefixes(input.readSecretIdPrefixes, "readSecretIdPrefixes");
+    const writeSecretIdPrefixes = capabilities.includes("write")
+      ? parseAgentSecretIdPrefixes(
+          input.writeSecretIdPrefixes,
+          "writeSecretIdPrefixes",
+        )
+      : emptyPrefixes(input.writeSecretIdPrefixes, "writeSecretIdPrefixes");
     if (
       input.displayName !== undefined &&
-      (typeof input.displayName !== "string" || input.displayName.length === 0 || input.displayName.length > 256)
+      (typeof input.displayName !== "string" ||
+        input.displayName.length === 0 ||
+        input.displayName.length > 256)
     ) {
-      throw badRequest("displayName must be a non-empty string of at most 256 characters.");
+      throw badRequest(
+        "displayName must be a non-empty string of at most 256 characters.",
+      );
     }
     const grantId = `grant-${newId()}`;
     const grant: AgentGrantRecord = {
@@ -84,9 +101,11 @@ export class AgentGrantService {
       consumerId: input.consumerId,
       environment: input.environment,
       capabilities,
-      readPathPrefixes,
-      writePathPrefixes,
-      ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+      readSecretIdPrefixes,
+      writeSecretIdPrefixes,
+      ...(input.displayName === undefined
+        ? {}
+        : { displayName: input.displayName }),
       status: "PENDING",
       createdAt: isoNow(),
       createdBy: input.actor,
@@ -105,26 +124,41 @@ export class AgentGrantService {
       throw notFound("The requested agent grant was not found.");
     }
     const capabilities = parseAgentCapabilities(input.capabilities);
-    const readPathPrefixes = capabilities.includes("read")
-      ? parseAgentPathPrefixes(input.readPathPrefixes, "readPathPrefixes")
-      : emptyPrefixes(input.readPathPrefixes, "readPathPrefixes");
-    const writePathPrefixes = capabilities.includes("write")
-      ? parseAgentPathPrefixes(input.writePathPrefixes, "writePathPrefixes")
-      : emptyPrefixes(input.writePathPrefixes, "writePathPrefixes");
+    const readSecretIdPrefixes = capabilities.includes("read")
+      ? parseAgentSecretIdPrefixes(
+          input.readSecretIdPrefixes,
+          "readSecretIdPrefixes",
+        )
+      : emptyPrefixes(input.readSecretIdPrefixes, "readSecretIdPrefixes");
+    const writeSecretIdPrefixes = capabilities.includes("write")
+      ? parseAgentSecretIdPrefixes(
+          input.writeSecretIdPrefixes,
+          "writeSecretIdPrefixes",
+        )
+      : emptyPrefixes(input.writeSecretIdPrefixes, "writeSecretIdPrefixes");
     if (
       input.displayName !== undefined &&
-      (typeof input.displayName !== "string" || input.displayName.length === 0 || input.displayName.length > 256)
+      (typeof input.displayName !== "string" ||
+        input.displayName.length === 0 ||
+        input.displayName.length > 256)
     ) {
-      throw badRequest("displayName must be a non-empty string of at most 256 characters.");
+      throw badRequest(
+        "displayName must be a non-empty string of at most 256 characters.",
+      );
     }
     const updated: AgentGrantRecord = {
       ...existing,
       capabilities,
-      readPathPrefixes,
-      writePathPrefixes,
-      ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+      readSecretIdPrefixes,
+      writeSecretIdPrefixes,
+      ...(input.displayName === undefined
+        ? {}
+        : { displayName: input.displayName }),
     };
-    await this.repository.updateAgentGrant(updated, input.displayName === undefined);
+    await this.repository.updateAgentGrant(
+      updated,
+      input.displayName === undefined,
+    );
     return updated;
   }
 
@@ -137,7 +171,9 @@ export class AgentGrantService {
       throw notFound("The requested agent grant was not found.");
     }
     if (grant.status !== "PENDING") {
-      throw conflict("A bootstrap capability may only be issued for a pending grant.");
+      throw conflict(
+        "A bootstrap capability may only be issued for a pending grant.",
+      );
     }
     const token = `hmlb_${randomBytes(32).toString("base64url")}`;
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
@@ -163,20 +199,26 @@ export class AgentGrantService {
     const tokenHash = sha256Hex(token);
     const capability = await this.repository.getBootstrapCapability(tokenHash);
     if (capability === undefined) {
-      throw forbidden("The bootstrap capability is invalid, expired, or already consumed.");
+      throw forbidden(
+        "The bootstrap capability is invalid, expired, or already consumed.",
+      );
     }
     if (
       capability.status === "PENDING" &&
       new Date(capability.expiresAt).getTime() <= Date.now()
     ) {
-      throw forbidden("The bootstrap capability is invalid, expired, or already consumed.");
+      throw forbidden(
+        "The bootstrap capability is invalid, expired, or already consumed.",
+      );
     }
     const grant = await this.repository.getAgentGrant(capability.grantId);
     if (grant === undefined) {
       throw forbidden("The bootstrap capability does not name an agent grant.");
     }
     if (capability.status === "CONSUMED" && grant.status !== "ACTIVE") {
-      throw forbidden("The bootstrap capability does not name an active agent grant.");
+      throw forbidden(
+        "The bootstrap capability does not name an active agent grant.",
+      );
     }
     if (capability.status !== "PENDING" && capability.status !== "CONSUMED") {
       throw forbidden("The bootstrap capability is invalid.");
@@ -206,7 +248,9 @@ export class AgentGrantService {
       capability.status === "CONSUMED" &&
       capability.consumedFingerprint !== enrollment.result.apiFingerprint
     ) {
-      throw forbidden("The bootstrap capability does not match this certificate request.");
+      throw forbidden(
+        "The bootstrap capability does not match this certificate request.",
+      );
     }
     await this.notifications.provision({
       consumerId: grant.consumerId,
@@ -230,8 +274,8 @@ export class AgentGrantService {
         consumerId: grant.consumerId,
         environment: grant.environment,
         capabilities: grant.capabilities,
-        readPathPrefixes: grant.readPathPrefixes,
-        writePathPrefixes: grant.writePathPrefixes,
+        readSecretIdPrefixes: grant.readSecretIdPrefixes ?? [],
+        writeSecretIdPrefixes: grant.writeSecretIdPrefixes ?? [],
       },
     };
   }

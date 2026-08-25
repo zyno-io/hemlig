@@ -228,11 +228,12 @@ The stack binds the supplied issuer and audience to the admin HTTP API JWT
 authorizer. It creates custom domains and disables both default execute-api
 endpoints. The consumer domain initially has no truststore, so it cannot admit a
 useful caller. `POST /v1/admin/consumers` creates the Hemlig issuing root on the
-first enrollment, signs a submitted CSR, publishes the root's version-pinned
-truststore, and only then activates the issued client leaf. The recovery Lambda
-has the same narrowly scoped truststore/API Gateway update permissions so it can
-resume an interrupted enrollment; neither the consumer Lambda nor the deployment
-caller receives the issuer's unwrap permission.
+first enrollment, signs a submitted CSR, and verifies the version-pinned
+truststore before activating the issued client leaf. It publishes a bundle only
+for the first root set or a later root-set change. The recovery Lambda has the
+same narrowly scoped truststore/API Gateway update permissions so it can resume
+an interrupted enrollment; neither the consumer Lambda nor the deployment caller
+receives the issuer's unwrap permission.
 
 Each HTTP API has a retained CloudWatch access-log group with one-year
 retention. The log format includes only request ID, status, gateway error, and

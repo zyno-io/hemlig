@@ -140,8 +140,8 @@ export interface AgentGrant {
   readonly consumerId: string;
   readonly environment: string;
   readonly capabilities: readonly ("read" | "write")[];
-  readonly readPathPrefixes: readonly string[];
-  readonly writePathPrefixes: readonly string[];
+  readonly readSecretIdPrefixes: readonly string[];
+  readonly writeSecretIdPrefixes: readonly string[];
   readonly displayName?: string;
   readonly status: "PENDING" | "ACTIVE";
   readonly createdAt: string;
@@ -165,7 +165,10 @@ export interface AgentConfig {
   readonly environment: string;
   readonly grant: Pick<
     AgentGrant,
-    "grantId" | "capabilities" | "readPathPrefixes" | "writePathPrefixes"
+    | "grantId"
+    | "capabilities"
+    | "readSecretIdPrefixes"
+    | "writeSecretIdPrefixes"
   >;
   readonly mqtt: AgentMqttConfig;
 }
@@ -177,8 +180,8 @@ export interface AgentBootstrapResult extends ConsumerProvisioningResult {
     | "consumerId"
     | "environment"
     | "capabilities"
-    | "readPathPrefixes"
-    | "writePathPrefixes"
+    | "readSecretIdPrefixes"
+    | "writeSecretIdPrefixes"
   >;
 }
 
@@ -492,8 +495,8 @@ export class HemligClient {
       readonly consumerId: string;
       readonly environment: string;
       readonly capabilities: readonly ("read" | "write")[];
-      readonly readPathPrefixes?: readonly string[];
-      readonly writePathPrefixes?: readonly string[];
+      readonly readSecretIdPrefixes?: readonly string[];
+      readonly writeSecretIdPrefixes?: readonly string[];
       readonly displayName?: string;
     },
   ): Promise<AgentGrant> {
@@ -505,8 +508,8 @@ export class HemligClient {
     grantId: string,
     input: {
       readonly capabilities: readonly ("read" | "write")[];
-      readonly readPathPrefixes?: readonly string[];
-      readonly writePathPrefixes?: readonly string[];
+      readonly readSecretIdPrefixes?: readonly string[];
+      readonly writeSecretIdPrefixes?: readonly string[];
       readonly displayName?: string;
     },
   ): Promise<AgentGrant> {

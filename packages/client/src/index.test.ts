@@ -195,8 +195,8 @@ test("bootstrap redemption uses its one-use authorization scheme rather than bea
             consumerId: "payments-agent",
             environment: "prod",
             capabilities: ["read"],
-            readPathPrefixes: ["payments"],
-            writePathPrefixes: [],
+            readSecretIdPrefixes: ["payments"],
+            writeSecretIdPrefixes: [],
           },
         },
       };
@@ -226,7 +226,7 @@ test("agent control and payload updates use only mTLS transport headers", async 
           environment: "prod",
           controlVersionId: "ctl-next",
           state: "ACTIVE",
-          metadata: { path: "payments/production" },
+          metadata: {},
         },
       };
     },

@@ -16,20 +16,24 @@ const hemlig = new Provider("hemlig", {
 hemlig.secret("payments", {
   secretId: "payments-api",
   environment: "prod",
-  metadata: { description: "Payments API", path: "payments/production" },
+  metadata: { description: "Payments API" },
   acl: [{ consumerId: "prod-east", permissions: ["read"] }],
   payload: pulumi.secret({ API_TOKEN: { encoding: "utf8", value: "value" } }),
 });
 
-const paymentsAgent = hemlig.agentGrant("payments-agent", {
-  consumerId: "prod-payments",
-  environment: "prod",
-  capabilities: ["read", "write"],
-  readPathPrefixes: ["payments/production"],
-  writePathPrefixes: ["payments/production"],
-  displayName: "payments namespace in prod",
-  bootstrapGeneration: "1",
-}, { protect: true });
+const paymentsAgent = hemlig.agentGrant(
+  "payments-agent",
+  {
+    consumerId: "prod-payments",
+    environment: "prod",
+    capabilities: ["read", "write"],
+    readSecretIdPrefixes: ["payments/production"],
+    writeSecretIdPrefixes: ["payments/production"],
+    displayName: "payments namespace in prod",
+    bootstrapGeneration: "1",
+  },
+  { protect: true },
+);
 
 // Store only this one-use value in the intended namespace. It expires after
 // 30 minutes and is consumed by the controller when it creates its mTLS leaf.

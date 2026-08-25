@@ -187,12 +187,13 @@ permission result, source IP, and safe reason code. It never contains secret
 values, request bodies, authorization tokens, certificates/private keys, or
 KMS context values. The audit writer retries bounded transient failures.
 
-After an application actor has been resolved, each implemented route emits the
-applicable outcome sequence, including a `304` secret read, `GET /changes`,
+After an application actor has been resolved, mutations and secret-value reads
+emit the applicable outcome sequence, including a `304` secret read,
 enrollment, rotation, and revocation. A decrypted payload or a successful route
-response is never returned until its terminal audit write has succeeded. TLS or
-JWT failures rejected before an actor exists are outside this application event
-stream and belong in API Gateway access/control-plane logs. The idempotency
+response is never returned until its terminal audit write has succeeded. Routine
+metadata, configuration, change-feed, and audit-archive reads are not recorded.
+TLS or JWT failures rejected before an actor exists are outside this application
+event stream and belong in API Gateway access/control-plane logs. The idempotency
 record records terminal-audit status after the write, but the two writes are not
 one atomic cross-service transaction: an interruption between them can require
 operator reconciliation. The implementation does not claim exactly-once
@@ -214,10 +215,12 @@ failure cannot itself always be audited.
    active, deployment-wide truststore anchor rather than a per-consumer record.
 3. Acquire the conditional singleton truststore-publication lease. Query every
    page of active roots, sort and deduplicate by fingerprint, and preflight the
-   1,000-certificate/1 MiB API Gateway truststore limits. Persist the exact root
-   set/object reference, then conditionally upload a unique bundle object.
-4. Update the custom domain to that exact S3 object version, then read the
-   domain configuration until its observed truststore version matches, there
+   1,000-certificate/1 MiB API Gateway truststore limits. If those fingerprints
+   match the current bundle, reuse its exact object reference; otherwise persist
+   the new root set/object reference and upload a unique bundle object.
+4. When the root set changed, update the custom domain to that exact S3 object
+   version. In either case, read the domain configuration until its observed
+   truststore version matches, there
    are no warnings, and every domain configuration is `AVAILABLE`. Only then
    transactionally activate this operation's leaf identity and release
    the generation lease. If API Gateway reports warnings, restore the previous
@@ -309,9 +312,8 @@ server-side continuation state is held in the control table, not in a separate
 secret. A reconciliation cycle starts without a cursor and completes when
 `nextCursor` is absent. An active row tells the operator what it should have;
 a tombstone tells it to delete the operator-managed Kubernetes Secret. The
-caller does not receive metadata, ACLs, or payloads from this endpoint. It also
-writes attempted/authorized and terminal audit evidence before returning a
-page.
+caller does not receive metadata, ACLs, or payloads from this endpoint and is
+not audited as a secret-value read.
 
 ## CDK deployment contract
 

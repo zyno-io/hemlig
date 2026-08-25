@@ -36,7 +36,7 @@ during one migration release but is not extended further.
 | Administrator access    | The controller receives no administrator OIDC token, client secret, or token-file path                                                              | A namespace controller must not hold a credential able to manage every Hemlig secret.                                            |
 | Bootstrap               | An administrator creates a one-time opaque bootstrap capability for an AgentGrant; the controller redeems it once with a locally generated CSR      | The capability can activate one pre-scoped identity only. It cannot browse, read, write, or manage arbitrary secrets.            |
 | Namespace authorization | Each AgentGrant binds consumer identity, environment, read prefixes, write prefixes, and capabilities; Hemlig enforces it before payload read/write | Kubernetes namespaces and RBAC alone cannot constrain a remote credential.                                                       |
-| Identity                | One mTLS consumer identity per HemligConsumer, normally per namespace and environment; an explicit opt-in permits one shared cluster consumer      | A shared identity is reserved for trusted cluster services and carries the union of their granted paths.                          |
+| Identity                | One mTLS consumer identity per HemligConsumer, normally per namespace and environment; an explicit opt-in permits one shared cluster consumer       | A shared identity is reserved for trusted cluster services and carries the union of their granted paths.                         |
 | Enrollment              | The controller generates a 3072-bit RSA key and CSR, Hemlig signs it, registers it for MQTT, and the controller writes a kubernetes.io/tls Secret   | The private key is generated and retained in the cluster; it is never sent to Hemlig or placed in CR status.                     |
 | Import source of truth  | Hemlig consumer API plus the current-access snapshot                                                                                                | ACL revocation is a security event, so the controller can remove previously materialized targets.                                |
 | Export source of truth  | The referenced Kubernetes Secret                                                                                                                    | Kubernetes data is authoritative for an export; remote drift is reconciled back to it.                                           |
@@ -248,7 +248,6 @@ spec:
     name: payments-api-source
   metadata:
     description: Payments API credentials
-    path: payments/production
     tags:
       owner: payments
       system: billing
@@ -262,7 +261,7 @@ rejects a source carrying any Hemlig import-management marker, which prevents
 feedback loops even if a user tries to export an import target.
 
 The export has no environment or ACL field. Hemlig derives the environment from
-the mTLS AgentGrant and requires metadata.path to fall beneath one of that
+the mTLS AgentGrant and requires its secret ID to fall beneath one of that
 grant's write prefixes. On first creation Hemlig adds read access for the same
 consumer automatically. The namespace agent cannot grant a second consumer,
 remove a grant, or edit an ACL; administrators retain those operations through
@@ -298,18 +297,17 @@ keeps remote policy approval with the people and tools that administer Hemlig.
   "consumerId": "prod-payments",
   "environment": "prod",
   "capabilities": ["read", "write"],
-  "readPathPrefixes": ["payments/production"],
-  "writePathPrefixes": ["payments/production"],
+  "readSecretIdPrefixes": ["payments/production"],
+  "writeSecretIdPrefixes": ["payments/production"],
   "displayName": "payments namespace in prod cluster"
 }
 ```
 
-Path authorization is segment-aware: a prefix matches the exact path or a path
-starting with that prefix followed by a slash. Empty/root prefixes are rejected.
-An mTLS agent may read only when its AgentGrant has read scope for the current
-secret metadata path and the secret ACL grants its consumer read. It may write
-only when its AgentGrant has write scope for the existing or new metadata path.
-A secret with no canonical path is never agent-readable or agent-writable.
+Secret-ID authorization is segment-aware: a prefix matches the exact ID or an
+ID starting with that prefix followed by a slash. Empty/root prefixes are
+rejected. An mTLS agent may read only when its AgentGrant has read scope for
+the secret ID and the secret ACL grants its consumer read. It may write only
+when its AgentGrant has write scope for the secret ID.
 
 Administrators create/update AgentGrants with ETags and issue bootstrap
 capabilities from them. The returned token is a cryptographically random,

@@ -41,9 +41,9 @@ export const handler = async (
       sourceIp: event.requestContext.http.sourceIp,
     });
     const decodedPath = decodeRequestPath(event.rawPath);
-    const secretMatch = new RegExp(
-      `^/v1/secrets/(${secretIdRoutePart})$`,
-    ).exec(decodedPath);
+    const secretMatch = new RegExp(`^/v1/secrets/(${secretIdRoutePart})$`).exec(
+      decodedPath,
+    );
     const agentSecretMatch = new RegExp(
       `^/v1/agent/secrets/(${secretIdRoutePart})$`,
     ).exec(decodedPath);
@@ -79,8 +79,8 @@ export const handler = async (
         grant: {
           grantId: grant.grantId,
           capabilities: grant.capabilities,
-          readPathPrefixes: grant.readPathPrefixes,
-          writePathPrefixes: grant.writePathPrefixes,
+          readSecretIdPrefixes: grant.readSecretIdPrefixes ?? [],
+          writeSecretIdPrefixes: grant.writeSecretIdPrefixes ?? [],
         },
         mqtt: {
           endpoint: app.config.iotEndpoint,
@@ -258,7 +258,11 @@ export const handler = async (
         outcome: "succeeded",
         actor,
         operation,
-        target: { environment, secretId, controlVersionId: result.controlVersionId },
+        target: {
+          environment,
+          secretId,
+          controlVersionId: result.controlVersionId,
+        },
         permission: "read",
         sourceIp: event.requestContext.http.sourceIp,
         reasonCode: result.notModified ? "not_modified" : undefined,
@@ -339,8 +343,7 @@ export const handler = async (
     );
   });
 
-const secretIdRoutePart =
-  "[a-z][a-z0-9-]{2,63}(?:/[a-z][a-z0-9-]{2,63})*";
+const secretIdRoutePart = "[a-z][a-z0-9-]{2,63}(?:/[a-z][a-z0-9-]{2,63})*";
 
 const decodeRequestPath = (value: string): string => {
   try {

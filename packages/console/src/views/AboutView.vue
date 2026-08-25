@@ -64,12 +64,11 @@ const excluded = [
     </section>
 
     <section>
-      <h2 class="font-medium">Why nothing auto-refreshes</h2>
+      <h2 class="font-medium">Audit scope</h2>
       <p class="mt-1 max-w-2xl text-ink-muted">
-        Every administrator request writes audit evidence into an Object Lock
-        Compliance archive that cannot be deleted for seven years. Polling would
-        write permanent records nobody asked for, so refreshing is always an
-        explicit action.
+        Mutations and secret-value revelations write audit evidence into an
+        Object Lock Compliance archive that cannot be deleted for seven years.
+        Routine metadata browsing does not, so the console refreshes it normally.
       </p>
     </section>
   </div>

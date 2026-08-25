@@ -65,8 +65,8 @@ const retryCreate = async (): Promise<void> => {
         first enrollment.
       </p>
       <p class="mt-2 text-ink-muted">
-        Creating it now, rather than waiting, publishes the truststore anchor immediately so
-        it can be distributed to consumer hosts before anyone tries to enroll against it.
+        Creating it now, rather than waiting, makes the root certificate available to
+        distribute before anyone enrolls. The first enrollment publishes it to API Gateway.
       </p>
       <MutationState
         v-if="creation.phase.value.kind !== 'idle'"

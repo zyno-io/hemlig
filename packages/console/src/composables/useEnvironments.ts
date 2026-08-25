@@ -6,8 +6,7 @@ import { useAppStore } from "../stores/app";
 /**
  * One query key, used by the root resolver, the shell's environment
  * switcher, and the `/environments` management view alike, so all three read
- * the same cache entry rather than each paying for its own read of a list
- * that, like every admin request, writes permanent audit evidence.
+ * the same cache entry rather than each paying for its own read of a list.
  */
 export const environmentsQueryKey = ["environments"] as const;
 
@@ -16,8 +15,8 @@ export const environmentsQueryKey = ["environments"] as const;
  * routes only after a session exists, so callers can use the default `true`.
  * The optional gate remains useful for focused embedding and tests.
  *
- * Global query defaults (no polling, no refetch on focus/mount/reconnect —
- * see main.ts) apply here unchanged; every refresh stays an explicit action.
+ * Global query defaults refresh metadata on focus, mount, and reconnect;
+ * polling remains off — see main.ts.
  */
 export const useEnvironmentsQuery = (
   enabled: MaybeRefOrGetter<boolean> = true,

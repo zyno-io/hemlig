@@ -15,7 +15,6 @@ export const actor = z.object({
 
 export const metadata = z.object({
   description: z.string().optional(),
-  path: z.string().optional(),
   tags: z.record(z.string()).optional(),
 });
 

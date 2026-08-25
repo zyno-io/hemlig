@@ -6,7 +6,10 @@ import { createMemoryHistory, createRouter, type Router } from "vue-router";
 import { ApiError } from "../api/errors";
 import type { CatalogEntry, CatalogPage, SecretTreePage } from "../api/schemas";
 import { useAppStore } from "../stores/app";
-import SecretsCatalog, { parseCatalogFilter, pathSegments } from "./SecretsCatalog.vue";
+import SecretsCatalog, {
+  parseCatalogFilter,
+  pathSegments,
+} from "./SecretsCatalog.vue";
 
 describe("pathSegments", () => {
   it("has no crumbs at the root, for both undefined and empty input", () => {
@@ -15,7 +18,9 @@ describe("pathSegments", () => {
   });
 
   it("derives a single crumb for a one-segment path", () => {
-    expect(pathSegments("payments")).toEqual([{ segment: "payments", path: "payments" }]);
+    expect(pathSegments("payments")).toEqual([
+      { segment: "payments", path: "payments" },
+    ]);
   });
 
   it("derives a cumulative path for each segment of a nested path", () => {
@@ -29,7 +34,10 @@ describe("pathSegments", () => {
 
 describe("parseCatalogFilter", () => {
   it("treats bare text as free text", () => {
-    expect(parseCatalogFilter("stripe-api-key")).toEqual({ text: "stripe-api-key", tags: [] });
+    expect(parseCatalogFilter("stripe-api-key")).toEqual({
+      text: "stripe-api-key",
+      tags: [],
+    });
   });
 
   it("parses a single key:value token as a tag filter", () => {
@@ -82,12 +90,14 @@ const emptyCatalogPage: CatalogPage = {
   generatedAt: "2026-08-23T00:00:00.000Z",
 };
 
-const secretFixture = (overrides: Partial<CatalogEntry> = {}): CatalogEntry => ({
+const secretFixture = (
+  overrides: Partial<CatalogEntry> = {},
+): CatalogEntry => ({
   secretId: "stripe-api-key",
   environment: "dev",
   controlVersionId: "ctl-1",
   state: "ACTIVE",
-  metadata: { path: "payments/stripe" },
+  metadata: {},
   ...overrides,
 });
 
@@ -106,14 +116,26 @@ const buildRouter = (): Router =>
   createRouter({
     history: createMemoryHistory(),
     routes: [
-      { path: "/e/:env/secrets", name: "secrets", component: { template: "<div/>" } },
+      {
+        path: "/e/:env/secrets",
+        name: "secrets",
+        component: { template: "<div/>" },
+      },
       {
         path: "/e/:env/secrets/browse/:path*",
         name: "secrets-browse",
         component: { template: "<div/>" },
       },
-      { path: "/e/:env/secrets/new", name: "secret-new", component: { template: "<div/>" } },
-      { path: "/e/:env/secrets/:secretId", name: "secret", component: { template: "<div/>" } },
+      {
+        path: "/e/:env/secrets/new",
+        name: "secret-new",
+        component: { template: "<div/>" },
+      },
+      {
+        path: "/e/:env/secrets/:secretId",
+        name: "secret",
+        component: { template: "<div/>" },
+      },
     ],
   });
 
@@ -121,7 +143,12 @@ const mountCatalog = async (
   api: FakeApi,
   props: { env: string; path?: string[] } = { env: "dev" },
   query: Record<string, string> = {},
-): Promise<{ wrapper: ReturnType<typeof mount>; router: Router; pinia: Pinia; queryClient: QueryClient }> => {
+): Promise<{
+  wrapper: ReturnType<typeof mount>;
+  router: Router;
+  pinia: Pinia;
+  queryClient: QueryClient;
+}> => {
   const pinia = createPinia();
   setActivePinia(pinia);
   const store = useAppStore();
@@ -143,7 +170,10 @@ const mountCatalog = async (
     // The global RouterLink stub (vitest.setup.ts) drops `to` entirely, which
     // hides it from the href-based assertions below; the real router already
     // provided as a plugin is enough to resolve real hrefs instead.
-    global: { plugins: [pinia, router, [VueQueryPlugin, { queryClient }]], stubs: { RouterLink: false } },
+    global: {
+      plugins: [pinia, router, [VueQueryPlugin, { queryClient }]],
+      stubs: { RouterLink: false },
+    },
   });
   await flushPromises();
   return { wrapper, router, pinia, queryClient };
@@ -163,20 +193,36 @@ describe("SecretsCatalog tree browsing", () => {
     const api = defaultApi({
       getSecretsTree: async () => ({
         ...emptyTreePage,
-        folders: [{ segment: "stripe", path: "payments/stripe", secretCount: 12, kind: "derived" }],
+        folders: [
+          {
+            segment: "stripe",
+            path: "payments/stripe",
+            secretCount: 12,
+            kind: "derived",
+          },
+        ],
       }),
     });
-    const { wrapper } = await mountCatalog(api, { env: "dev", path: ["payments"] });
+    const { wrapper } = await mountCatalog(api, {
+      env: "dev",
+      path: ["payments"],
+    });
 
     expect(wrapper.text()).toContain("stripe");
     expect(wrapper.text()).toContain("12 secrets");
   });
 
   it("carries the folder being browsed into the New secret link", async () => {
-    const { wrapper } = await mountCatalog(defaultApi(), { env: "dev", path: ["payments", "stripe"] });
+    const { wrapper } = await mountCatalog(defaultApi(), {
+      env: "dev",
+      path: ["payments", "stripe"],
+    });
 
     const link = wrapper.findAll("a").find((a) => a.text() === "New secret");
-    const url = new URL(link?.attributes("href") ?? "", "http://console.invalid");
+    const url = new URL(
+      link?.attributes("href") ?? "",
+      "http://console.invalid",
+    );
     expect(url.pathname).toBe("/e/dev/secrets/new");
     expect(url.searchParams.get("path")).toBe("payments/stripe");
   });
@@ -191,8 +237,13 @@ describe("SecretsCatalog tree browsing", () => {
       }),
       { env: "dev", path: ["payments", "stripe"] },
     );
-    const link = wrapper.findAll("a").find((anchor) => anchor.text() === "stripe-api-key");
-    const url = new URL(link?.attributes("href") ?? "", "http://console.invalid");
+    const link = wrapper
+      .findAll("a")
+      .find((anchor) => anchor.text() === "stripe-api-key");
+    const url = new URL(
+      link?.attributes("href") ?? "",
+      "http://console.invalid",
+    );
     expect(url.pathname).toBe("/e/dev/secrets/stripe-api-key");
     expect(url.searchParams.get("catalogPath")).toBe("payments/stripe");
   });
@@ -201,7 +252,14 @@ describe("SecretsCatalog tree browsing", () => {
     const api = defaultApi({
       getSecretsTree: async () => ({
         ...emptyTreePage,
-        folders: [{ segment: "archived", path: "archived", secretCount: 0, kind: "derived" }],
+        folders: [
+          {
+            segment: "archived",
+            path: "archived",
+            secretCount: 0,
+            kind: "derived",
+          },
+        ],
       }),
     });
     const { wrapper } = await mountCatalog(api);
@@ -215,20 +273,26 @@ describe("SecretsCatalog tree browsing", () => {
     const { wrapper } = await mountCatalog(defaultApi());
 
     const link = wrapper.findAll("a").find((a) => a.text() === "New secret");
-    const url = new URL(link?.attributes("href") ?? "", "http://console.invalid");
+    const url = new URL(
+      link?.attributes("href") ?? "",
+      "http://console.invalid",
+    );
     expect(url.pathname).toBe("/e/dev/secrets/new");
     expect(url.searchParams.has("path")).toBe(false);
   });
 });
 
 describe("SecretsCatalog search", () => {
-  const searchInput = (wrapper: Awaited<ReturnType<typeof mountCatalog>>["wrapper"]) =>
-    wrapper.find("#catalog-filter");
+  const searchInput = (
+    wrapper: Awaited<ReturnType<typeof mountCatalog>>["wrapper"],
+  ) => wrapper.find("#catalog-filter");
 
   it("waits for the debounce before calling listSecrets with q, and not before", async () => {
     vi.useFakeTimers();
     try {
-      const listSecrets = vi.fn(async (): Promise<CatalogPage> => emptyCatalogPage);
+      const listSecrets = vi.fn(
+        async (): Promise<CatalogPage> => emptyCatalogPage,
+      );
       const { wrapper } = await mountCatalog(defaultApi({ listSecrets }));
 
       await searchInput(wrapper).setValue("stripe");
@@ -316,7 +380,9 @@ describe("SecretsCatalog search", () => {
   it("says plainly that there are no matches", async () => {
     vi.useFakeTimers();
     try {
-      const { wrapper } = await mountCatalog(defaultApi({ listSecrets: async () => emptyCatalogPage }));
+      const { wrapper } = await mountCatalog(
+        defaultApi({ listSecrets: async () => emptyCatalogPage }),
+      );
 
       await searchInput(wrapper).setValue("no-such-secret");
       await vi.advanceTimersByTimeAsync(300);
@@ -335,7 +401,10 @@ describe("SecretsCatalog search", () => {
     vi.useFakeTimers();
     try {
       const api = defaultApi({
-        listSecrets: async () => ({ secrets: [secretFixture()], generatedAt: "2026-08-23T00:00:00.000Z" }),
+        listSecrets: async () => ({
+          secrets: [secretFixture()],
+          generatedAt: "2026-08-23T00:00:00.000Z",
+        }),
       });
       const { wrapper } = await mountCatalog(api);
       const input = searchInput(wrapper);
@@ -349,7 +418,9 @@ describe("SecretsCatalog search", () => {
       await vi.advanceTimersByTimeAsync(300);
       await flushPromises();
 
-      expect(wrapper.text()).not.toContain("Showing search results across all of");
+      expect(wrapper.text()).not.toContain(
+        "Showing search results across all of",
+      );
       expect(wrapper.text()).toContain("Nothing directly at this path.");
     } finally {
       vi.useRealTimers();
@@ -359,7 +430,9 @@ describe("SecretsCatalog search", () => {
   it("returns to browsing immediately when the query is cleared", async () => {
     vi.useFakeTimers();
     try {
-      const listSecrets = vi.fn(async (): Promise<CatalogPage> => emptyCatalogPage);
+      const listSecrets = vi.fn(
+        async (): Promise<CatalogPage> => emptyCatalogPage,
+      );
       const { wrapper } = await mountCatalog(defaultApi({ listSecrets }));
 
       await searchInput(wrapper).setValue("stripe");
@@ -378,13 +451,16 @@ describe("SecretsCatalog search", () => {
 });
 
 describe("SecretsCatalog smart search composition", () => {
-  const searchInput = (wrapper: Awaited<ReturnType<typeof mountCatalog>>["wrapper"]) =>
-    wrapper.find("#catalog-filter");
+  const searchInput = (
+    wrapper: Awaited<ReturnType<typeof mountCatalog>>["wrapper"],
+  ) => wrapper.find("#catalog-filter");
 
   it("issues one request carrying both q and tags once mixed input settles", async () => {
     vi.useFakeTimers();
     try {
-      const listSecrets = vi.fn(async (): Promise<CatalogPage> => emptyCatalogPage);
+      const listSecrets = vi.fn(
+        async (): Promise<CatalogPage> => emptyCatalogPage,
+      );
       const { wrapper } = await mountCatalog(defaultApi({ listSecrets }));
 
       await searchInput(wrapper).setValue("owner:payments stripe");
@@ -393,7 +469,11 @@ describe("SecretsCatalog smart search composition", () => {
 
       expect(listSecrets).toHaveBeenCalledTimes(1);
       expect(listSecrets).toHaveBeenCalledWith(
-        expect.objectContaining({ environment: "dev", q: "stripe", tags: "owner:payments" }),
+        expect.objectContaining({
+          environment: "dev",
+          q: "stripe",
+          tags: "owner:payments",
+        }),
       );
     } finally {
       vi.useRealTimers();
@@ -414,7 +494,11 @@ describe("SecretsCatalog smart search composition", () => {
     vi.useFakeTimers();
     try {
       const listSecrets = vi.fn(async (): Promise<CatalogPage> => {
-        throw new ApiError(400, "bad_request", "tags contains a duplicate key.");
+        throw new ApiError(
+          400,
+          "bad_request",
+          "tags contains a duplicate key.",
+        );
       });
       const { wrapper } = await mountCatalog(defaultApi({ listSecrets }));
 
@@ -469,13 +553,25 @@ describe("SecretsCatalog folder prefix", () => {
         getSecretsTree: async () => ({
           ...emptyTreePage,
           folders: [
-            { segment: "derived-only", path: "derived-only", secretCount: 3, kind: "derived" },
-            { segment: "other", path: "other", secretCount: 2, kind: "derived" },
+            {
+              segment: "derived-only",
+              path: "derived-only",
+              secretCount: 3,
+              kind: "derived",
+            },
+            {
+              segment: "other",
+              path: "other",
+              secretCount: 2,
+              kind: "derived",
+            },
           ],
         }),
       }),
     );
 
-    expect(wrapper.findAll("button").find((b) => b.text() === "Delete")).toBeUndefined();
+    expect(
+      wrapper.findAll("button").find((b) => b.text() === "Delete"),
+    ).toBeUndefined();
   });
 });

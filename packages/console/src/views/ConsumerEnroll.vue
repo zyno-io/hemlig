@@ -171,8 +171,8 @@ const result = computed(() => enrollment.result.value);
           {{ enrollment.phase.value.kind === "submitting" ? "Enrolling…" : "Enroll consumer" }}
         </button>
         <p class="text-xs text-ink-muted">
-          Enrollment publishes the truststore and waits for API Gateway to confirm it, so
-          this can take a few seconds.
+          Enrollment verifies the current truststore with API Gateway. It publishes a new
+          bundle only when the issuing-root set changes, so this can take a few seconds.
         </p>
       </form>
     </template>
