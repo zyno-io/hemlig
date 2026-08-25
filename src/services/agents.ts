@@ -195,27 +195,18 @@ export class AgentService {
     return grant;
   }
 
-  private requireSecretUid(
-    secretUid: string | undefined,
-    allowed: readonly string[] | undefined,
-  ): void {
-    if (secretUid === undefined || allowed?.includes(secretUid) !== true) {
-      throw forbidden("The agent grant does not allow this secret.");
-    }
-  }
-
   private requireReadScope(
     control: { readonly secretUid?: string },
     grant: AgentGrantRecord,
   ): void {
-    this.requireSecretUid(control.secretUid, grant.readSecretUids);
+    this.requireSecretPermission(control.secretUid, grant, "read");
   }
 
   private requireWriteScope(
     control: { readonly secretUid?: string },
     grant: AgentGrantRecord,
   ): void {
-    this.requireSecretUid(control.secretUid, grant.writeSecretUids);
+    this.requireSecretPermission(control.secretUid, grant, "write");
   }
 
   private isWithinReadScope(
@@ -224,7 +215,36 @@ export class AgentService {
   ): boolean {
     return (
       control.secretUid !== undefined &&
-      grant.readSecretUids?.includes(control.secretUid) === true
+      this.hasSecretPermission(grant, control.secretUid, "read")
+    );
+  }
+
+  private requireSecretPermission(
+    secretUid: string | undefined,
+    grant: AgentGrantRecord,
+    permission: AgentCapability,
+  ): void {
+    if (
+      secretUid === undefined ||
+      !this.hasSecretPermission(grant, secretUid, permission)
+    ) {
+      throw forbidden("The agent grant does not allow this secret.");
+    }
+  }
+
+  /** A pre-migration record has no canonical pairs and therefore grants nothing. */
+  private hasSecretPermission(
+    grant: AgentGrantRecord,
+    secretUid: string,
+    permission: AgentCapability,
+  ): boolean {
+    return (
+      Array.isArray(grant.secretGrants) &&
+      grant.secretGrants.some(
+        (scope) =>
+          scope.secretUid === secretUid &&
+          scope.permissions.includes(permission),
+      )
     );
   }
 }

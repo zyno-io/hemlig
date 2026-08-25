@@ -9,6 +9,7 @@ import {
 } from "../domain/errors";
 import type {
   AccessRecord,
+  AgentSecretGrant,
   Actor,
   ControlRevision,
   Grant,
@@ -50,6 +51,8 @@ export interface UpdateSecretInput {
   readonly payload?: SecretPayload;
   readonly actor: Actor;
   readonly idempotencyKey: string;
+  /** Internal AgentGrant projection maintenance only. */
+  readonly allowAgentAcl?: boolean;
 }
 
 export interface ArchiveSecretInput {
@@ -65,6 +68,15 @@ export interface RevokeConsumerSecretGrantInput {
   readonly secretId: string;
   readonly actor: Actor;
   readonly idempotencyKey: string;
+  /** Internal AgentGrant projection maintenance only. */
+  readonly allowAgentAcl?: boolean;
+}
+
+export interface ReconcileAgentReadAccessInput {
+  readonly consumerId: string;
+  readonly environment: string;
+  readonly secretGrants: readonly AgentSecretGrant[];
+  readonly actor: Actor;
 }
 
 export interface SecretReadResult {
@@ -134,7 +146,12 @@ export class SecretService {
     const currentControl = await this.getControl(head);
     const metadata = input.metadata ?? currentControl.metadata;
     const acl = input.acl ?? currentControl.acl;
-    await this.assertAclEnvironment(acl, head.environment);
+    await this.assertAclEnvironment(
+      acl,
+      head.environment,
+      input.allowAgentAcl ?? false,
+      currentControl.acl,
+    );
     const createdAt = isoNow();
     let payloadRevision = undefined;
     let payloadVersionId = currentControl.payloadVersionId;
@@ -243,6 +260,15 @@ export class SecretService {
     if (consumer === undefined) {
       throw notFound("The requested consumer was not found.");
     }
+    if (
+      !input.allowAgentAcl &&
+      (await this.repository.getAgentGrantForConsumer(input.consumerId)) !==
+        undefined
+    ) {
+      throw conflict(
+        "Agent consumer access is managed by its AgentGrant, not the secret ACL.",
+      );
+    }
     const head = await this.repository.requireHead(
       consumer.environment,
       input.secretId,
@@ -261,7 +287,55 @@ export class SecretService {
       acl,
       actor: input.actor,
       idempotencyKey: input.idempotencyKey,
+      allowAgentAcl: input.allowAgentAcl,
     });
+  }
+
+  /**
+   * Keeps the read ACL/index as an operational projection of a canonical
+   * AgentGrant. This is deliberately fail-closed: added ACL entries are not
+   * usable until the AgentGrant itself is active, and a partially completed
+   * reconciliation can only deny an old permission, never create a new one.
+   */
+  public async reconcileAgentReadAccess(
+    input: ReconcileAgentReadAccessInput,
+  ): Promise<void> {
+    const desired = new Map(
+      input.secretGrants
+        .filter((grant) => grant.permissions.includes("read"))
+        .map((grant) => [grant.secretUid, grant]),
+    );
+    const current = await this.listAllConsumerSecretGrants(
+      input.consumerId,
+      input.environment,
+    );
+    const currentByUid = new Map(
+      current.map((grant) => [grant.secretUid, grant]),
+    );
+    for (const grant of current) {
+      if (desired.has(grant.secretUid)) {
+        continue;
+      }
+      await this.revokeConsumerSecretGrant({
+        consumerId: input.consumerId,
+        secretId: grant.secretId,
+        actor: input.actor,
+        idempotencyKey: `agent-acl-revoke-${newId()}`,
+        allowAgentAcl: true,
+      });
+    }
+    for (const grant of desired.values()) {
+      if (currentByUid.has(grant.secretUid)) {
+        continue;
+      }
+      await this.grantAgentConsumerReadAccess({
+        consumerId: input.consumerId,
+        environment: input.environment,
+        secretId: grant.secretId,
+        secretUid: grant.secretUid,
+        actor: input.actor,
+      });
+    }
   }
 
   /** Reads a historical archive entry by its immutable identity, not its reusable name. */
@@ -511,9 +585,66 @@ export class SecretService {
     return resolved.filter((item): item is AccessRecord => item !== undefined);
   }
 
+  private async grantAgentConsumerReadAccess(input: {
+    readonly consumerId: string;
+    readonly environment: string;
+    readonly secretId: string;
+    readonly secretUid: string;
+    readonly actor: Actor;
+  }): Promise<void> {
+    const head = await this.repository.requireHead(
+      input.environment,
+      input.secretId,
+    );
+    if (head.secretUid !== input.secretUid) {
+      // An archived name may have been reused. A grant never silently follows
+      // it to a different immutable secret identity.
+      return;
+    }
+    const current = await this.getControl(head);
+    if (current.acl.some((grant) => grant.consumerId === input.consumerId)) {
+      return;
+    }
+    await this.update({
+      secretId: input.secretId,
+      environment: input.environment,
+      expectedControlVersionId: current.controlVersionId,
+      acl: [
+        ...current.acl,
+        { consumerId: input.consumerId, permissions: ["read"] },
+      ],
+      actor: input.actor,
+      idempotencyKey: `agent-acl-grant-${newId()}`,
+      allowAgentAcl: true,
+    });
+  }
+
+  private async listAllConsumerSecretGrants(
+    consumerId: string,
+    environment: string,
+  ): Promise<readonly import("../domain/types").ConsumerSecretGrant[]> {
+    const grants: import("../domain/types").ConsumerSecretGrant[] = [];
+    let cursor: Record<string, string> | undefined;
+    do {
+      const page = await this.repository.listConsumerSecretGrants(
+        consumerId,
+        environment,
+        cursor,
+      );
+      grants.push(...page.grants);
+      cursor =
+        page.nextCursor === undefined
+          ? undefined
+          : (JSON.parse(page.nextCursor) as Record<string, string>);
+    } while (cursor !== undefined);
+    return grants;
+  }
+
   private async assertAclEnvironment(
     acl: readonly Grant[],
     environment: string,
+    allowAgentAcl = false,
+    priorAcl: readonly Grant[] = [],
   ): Promise<void> {
     const records = await Promise.all(
       acl.map(async (grant) => this.repository.getConsumer(grant.consumerId)),
@@ -528,6 +659,39 @@ export class SecretService {
       ) {
         throw forbidden(
           "Every ACL grant must name an active consumer in the secret environment.",
+        );
+      }
+    }
+    if (allowAgentAcl) {
+      return;
+    }
+    const consumerIds = new Set([
+      ...acl.map((grant) => grant.consumerId),
+      ...priorAcl.map((grant) => grant.consumerId),
+    ]);
+    const agentGrants = await Promise.all(
+      [...consumerIds].map(async (consumerId) => ({
+        consumerId,
+        grant: await this.repository.getAgentGrantForConsumer(consumerId),
+      })),
+    );
+    for (const agentGrant of agentGrants) {
+      if (agentGrant.grant === undefined) {
+        continue;
+      }
+      const current = acl.find(
+        (grant) => grant.consumerId === agentGrant.consumerId,
+      );
+      const prior = priorAcl.find(
+        (grant) => grant.consumerId === agentGrant.consumerId,
+      );
+      if (
+        current === undefined ||
+        prior === undefined ||
+        !sameGrant(current, prior)
+      ) {
+        throw conflict(
+          "Agent consumer access is managed by its AgentGrant, not the secret ACL.",
         );
       }
     }
@@ -589,3 +753,10 @@ export const payloadKey = (
   secretUid: string,
   payloadVersionId: string,
 ): string => `secrets/${secretUid}/payload/${payloadVersionId}.json`;
+
+const sameGrant = (left: Grant, right: Grant): boolean =>
+  left.consumerId === right.consumerId &&
+  left.permissions.length === right.permissions.length &&
+  left.permissions.every(
+    (permission, index) => permission === right.permissions[index],
+  );

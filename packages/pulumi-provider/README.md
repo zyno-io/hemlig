@@ -27,8 +27,12 @@ const paymentsAgent = hemlig.agentGrant(
     consumerId: "prod-payments",
     environment: "prod",
     capabilities: ["read", "write"],
-    readSecretIds: ["payments/production/api-key"],
-    writeSecretIds: ["payments/production/api-key"],
+    secretGrants: [
+      {
+        secretId: "payments/production/api-key",
+        permissions: ["read", "write"],
+      },
+    ],
     displayName: "payments namespace in prod",
     bootstrapGeneration: "1",
   },
@@ -52,6 +56,8 @@ Pulumi resource input or output. A payload revision is written only when the
 declared payload changes. Metadata or ACL-only changes create a new control
 revision while retaining the current payload revision.
 
-AgentGrant policy fields are immutable. `bootstrapGeneration` may be bumped
-only while its grant is still pending, to replace an expired unredeemed
+An AgentGrant's consumer ID and environment are immutable; changing either
+replaces the resource. Exact per-secret permissions are updated in place and
+automatically reconcile read delivery access. `bootstrapGeneration` may be
+bumped only while its grant is still pending, to replace an expired unredeemed
 capability; each bump creates one fresh 30-minute capability.

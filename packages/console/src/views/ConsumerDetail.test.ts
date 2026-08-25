@@ -33,8 +33,10 @@ interface FakeApi {
     grantId: string,
     input: {
       capabilities: readonly ("read" | "write")[];
-      readSecretIds: readonly string[];
-      writeSecretIds: readonly string[];
+      secretGrants: readonly {
+        secretId: string;
+        permissions: readonly ("read" | "write")[];
+      }[];
       displayName?: string;
     },
   ) => Promise<AgentGrant>;
@@ -66,10 +68,13 @@ const agentGrant = (): AgentGrant => ({
   consumerId: "prod-east",
   environment: "prod",
   capabilities: ["read", "write"],
-  readSecretIds: ["platform/database/postgres"],
-  readSecretUids: ["sec-postgres"],
-  writeSecretIds: ["platform/database/postgres"],
-  writeSecretUids: ["sec-postgres"],
+  secretGrants: [
+    {
+      secretId: "platform/database/postgres",
+      secretUid: "sec-postgres",
+      permissions: ["read", "write"],
+    },
+  ],
   displayName: "Production east",
   status: "ACTIVE",
   createdAt: "2026-08-25T00:00:00.000Z",
@@ -156,10 +161,12 @@ describe("ConsumerDetail secret access", () => {
 
     expect(wrapper.text()).toContain("platform/database/postgres");
     await wrapper
-      .get('[aria-label="Revoke access to platform/database/postgres"]')
+      .get(
+        '[aria-label="Revoke read permission for platform/database/postgres"]',
+      )
       .trigger("click");
     const dialog = wrapper.get('[role="dialog"]');
-    expect(dialog.text()).toContain("Revoke this secret grant?");
+    expect(dialog.text()).toContain("Revoke this permission?");
     await dialog
       .findAll("button")
       .find((button) => button.text() === "Revoke")
@@ -177,8 +184,14 @@ describe("ConsumerDetail secret access", () => {
   it("revokes only the selected AgentGrant permission", async () => {
     const updateAgentGrant = vi.fn(async () => ({
       ...agentGrant(),
-      readSecretIds: [],
-      readSecretUids: [],
+      capabilities: ["write" as const],
+      secretGrants: [
+        {
+          secretId: "platform/database/postgres",
+          secretUid: "sec-postgres",
+          permissions: ["write" as const],
+        },
+      ],
     }));
     const { wrapper } = await mountView({
       getConsumer: async () => ({ ...consumer(), agentGrant: agentGrant() }),
@@ -198,14 +211,14 @@ describe("ConsumerDetail secret access", () => {
       updateAgentGrant,
     });
 
-    expect(wrapper.text()).toContain("Agent policy");
+    expect(wrapper.text()).toContain("Canonical exact permissions");
     await wrapper
       .get(
         '[aria-label="Revoke read permission for platform/database/postgres"]',
       )
       .trigger("click");
     const dialog = wrapper.get('[role="dialog"]');
-    expect(dialog.text()).toContain("Revoke this agent policy permission?");
+    expect(dialog.text()).toContain("Revoke this permission?");
     await dialog
       .findAll("button")
       .find((button) => button.text() === "Revoke")
@@ -213,9 +226,13 @@ describe("ConsumerDetail secret access", () => {
     await flushPromises();
 
     expect(updateAgentGrant).toHaveBeenCalledWith("grant-prod-east", {
-      capabilities: ["read", "write"],
-      readSecretIds: [],
-      writeSecretIds: ["platform/database/postgres"],
+      capabilities: ["write"],
+      secretGrants: [
+        {
+          secretId: "platform/database/postgres",
+          permissions: ["write"],
+        },
+      ],
       displayName: "Production east",
     });
   });

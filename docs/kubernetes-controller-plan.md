@@ -298,8 +298,12 @@ keeps remote policy approval with the people and tools that administer Hemlig.
   "consumerId": "prod-payments",
   "environment": "prod",
   "capabilities": ["read", "write"],
-  "readSecretIds": ["payments/production/api-key"],
-  "writeSecretIds": ["payments/production/api-key"],
+  "secretGrants": [
+    {
+      "secretId": "payments/production/api-key",
+      "permissions": ["read", "write"]
+    }
+  ],
   "displayName": "payments namespace in prod cluster"
 }
 ```
@@ -563,8 +567,9 @@ logging.
       changes administrator-only and require administrator-created secrets.
       Agent self-identity rotation remains
       pending.
-- [x] Enforce UID-bound exact read/write grants plus normal consumer ACL checks
-      before every secret operation.
+- [x] Enforce UID-bound exact read/write AgentGrant permissions before every
+      secret operation; derive the agent read delivery ACL projection from the
+      same canonical records.
 - [x] Add current snapshot and bootstrap/agent response types to @hemlig/client.
       The controller must consume canonical contracts rather than duplicate HTTP
       shapes.

@@ -535,25 +535,27 @@ describe("slash-separated admin secret IDs", () => {
   });
 });
 
-describe("AgentGrant exact secret IDs", () => {
-  it("forwards exact allowlists and never reintroduces prefix fields", async () => {
+describe("AgentGrant exact secret permissions", () => {
+  it("forwards paired secret permissions and never reintroduces prefix fields", async () => {
     const create = jest.fn(
       async (input: {
         readonly consumerId: string;
         readonly environment: string;
         readonly capabilities: readonly string[];
-        readonly readSecretIds: readonly string[];
-        readonly writeSecretIds: readonly string[];
+        readonly secretGrants: readonly {
+          readonly secretId: string;
+          readonly permissions: readonly string[];
+        }[];
         readonly actor: unknown;
       }) => ({
         grantId: "grant-payments",
         consumerId: input.consumerId,
         environment: input.environment,
         capabilities: input.capabilities,
-        readSecretIds: input.readSecretIds,
-        readSecretUids: ["sec-payments-stripe-api-key"],
-        writeSecretIds: input.writeSecretIds,
-        writeSecretUids: [],
+        secretGrants: input.secretGrants.map((scope) => ({
+          ...scope,
+          secretUid: "sec-payments-stripe-api-key",
+        })),
         status: "PENDING",
         createdAt: "2026-08-23T00:00:00.000Z",
         createdBy: input.actor,
@@ -593,23 +595,28 @@ describe("AgentGrant exact secret IDs", () => {
         consumerId: "payments-agent",
         environment: "prod",
         capabilities: ["read"],
-        readSecretIds: ["payments/stripe-api-key"],
-        writeSecretIds: [],
+        secretGrants: [
+          { secretId: "payments/stripe-api-key", permissions: ["read"] },
+        ],
       }),
     });
 
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
-        readSecretIds: ["payments/stripe-api-key"],
-        writeSecretIds: [],
+        secretGrants: [
+          { secretId: "payments/stripe-api-key", permissions: ["read"] },
+        ],
       }),
     );
     const body = JSON.parse(response.body as string) as Record<string, unknown>;
     expect(body).toMatchObject({
-      readSecretIds: ["payments/stripe-api-key"],
-      readSecretUids: ["sec-payments-stripe-api-key"],
-      writeSecretIds: [],
-      writeSecretUids: [],
+      secretGrants: [
+        {
+          secretId: "payments/stripe-api-key",
+          secretUid: "sec-payments-stripe-api-key",
+          permissions: ["read"],
+        },
+      ],
     });
     expect(body.readSecretIdPrefixes).toBeUndefined();
     expect(body.writeSecretIdPrefixes).toBeUndefined();
@@ -623,10 +630,13 @@ describe("consumer secret grant management", () => {
       consumerId: "prod-east",
       environment: "prod",
       capabilities: ["read", "write"],
-      readSecretIds: ["platform/database/postgres"],
-      readSecretUids: ["sec-postgres"],
-      writeSecretIds: ["platform/database/postgres"],
-      writeSecretUids: ["sec-postgres"],
+      secretGrants: [
+        {
+          secretId: "platform/database/postgres",
+          secretUid: "sec-postgres",
+          permissions: ["read", "write"],
+        },
+      ],
       status: "ACTIVE",
       createdAt: "2026-08-25T00:00:00.000Z",
       createdBy: { type: "human", id: "admin-1" },
@@ -674,10 +684,13 @@ describe("consumer secret grant management", () => {
     expect(JSON.parse(response.body as string)).toMatchObject({
       agentGrant: {
         grantId: "grant-prod-east",
-        readSecretIds: ["platform/database/postgres"],
-        readSecretUids: ["sec-postgres"],
-        writeSecretIds: ["platform/database/postgres"],
-        writeSecretUids: ["sec-postgres"],
+        secretGrants: [
+          {
+            secretId: "platform/database/postgres",
+            secretUid: "sec-postgres",
+            permissions: ["read", "write"],
+          },
+        ],
       },
     });
   });

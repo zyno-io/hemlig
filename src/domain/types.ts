@@ -59,6 +59,13 @@ export interface Grant {
   readonly permissions: readonly Permission[];
 }
 
+/** One immutable target and its exact agent operations. */
+export interface AgentSecretGrant {
+  readonly secretId: string;
+  readonly secretUid: string;
+  readonly permissions: readonly AgentCapability[];
+}
+
 export interface ControlRevision {
   readonly schemaVersion: 1;
   /** Present on UID-native revisions; legacy revisions remain readable. */
@@ -211,10 +218,9 @@ export interface ConsumerRecord {
 }
 
 /**
- * Administrator-owned remote policy for an enrolled namespace agent.  The
- * Exact secret IDs are retained for administrator-facing selection and
- * display. Authorization is bound to immutable secret UIDs, so archiving and
- * reusing an external secret ID cannot extend an existing agent grant.
+ * Administrator-owned remote policy for an enrolled namespace agent. Each
+ * entry binds its display ID, immutable UID, and exact read/write operations
+ * together so the two identifiers can never drift apart.
  */
 export interface AgentGrantRecord {
   readonly pk: string;
@@ -223,14 +229,7 @@ export interface AgentGrantRecord {
   readonly consumerId: string;
   readonly environment: EnvironmentName;
   readonly capabilities: readonly AgentCapability[];
-  /** Required exactly when `read` is a capability. */
-  readonly readSecretIds: readonly string[];
-  /** Immutable IDs corresponding to the administrator-selected read secrets. */
-  readonly readSecretUids: readonly string[];
-  /** Required exactly when `write` is a capability. */
-  readonly writeSecretIds: readonly string[];
-  /** Immutable IDs corresponding to the administrator-selected write secrets. */
-  readonly writeSecretUids: readonly string[];
+  readonly secretGrants: readonly AgentSecretGrant[];
   readonly displayName?: string;
   readonly status: AgentGrantStatus;
   readonly createdAt: string;

@@ -91,38 +91,15 @@ export const parseCatalogPathPrefix = (
   return value;
 };
 
-/** A namespace-agent boundary is an explicit, bounded set of exact IDs. */
-export const parseAgentSecretIds = (
-  value: unknown,
-  field: string,
-): readonly string[] => {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 20) {
-    throw badRequest(
-      `${field} must contain between one and twenty canonical secret IDs.`,
-    );
-  }
-  const secretIds = value.map((entry) => {
-    if (
-      typeof entry !== "string" ||
-      entry.length > 256 ||
-      !secretIdentifier.test(entry)
-    ) {
-      throw badRequest(
-        `${field} must contain canonical slash-delimited secret IDs.`,
-      );
-    }
-    return entry;
-  });
-  if (new Set(secretIds).size !== secretIds.length) {
-    throw badRequest(`${field} must not contain duplicate secret IDs.`);
-  }
-  return [...secretIds].sort((left, right) => left.localeCompare(right));
-};
-
 export const parseAgentCapabilities = (
   value: unknown,
+  allowEmpty = false,
 ): readonly AgentCapability[] => {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 2) {
+  if (
+    !Array.isArray(value) ||
+    (!allowEmpty && value.length === 0) ||
+    value.length > 2
+  ) {
     throw badRequest("capabilities must contain read and/or write.");
   }
   const capabilities = value.map((entry): AgentCapability => {

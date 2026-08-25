@@ -327,6 +327,7 @@ describe("SecretService.update", () => {
         status: "ACTIVE",
         environment: "prod",
       }),
+      getAgentGrantForConsumer: jest.fn().mockResolvedValue(undefined),
       getAccess: jest.fn().mockResolvedValue(access),
       getIdempotency: jest.fn().mockResolvedValue(undefined),
       prepareMutation: jest
@@ -367,6 +368,81 @@ describe("SecretService.update", () => {
 
     expect(preparedControl?.payloadKeyCount).toBe(2);
   });
+
+  it("preserves an AgentGrant-derived ACL row during an unrelated secret update", async () => {
+    const repository = {
+      requireHead: jest.fn().mockResolvedValue(head),
+      getConsumer: jest.fn().mockResolvedValue({
+        status: "ACTIVE",
+        environment: "prod",
+      }),
+      getAgentGrantForConsumer: jest.fn().mockResolvedValue({
+        grantId: "grant-prod-east",
+      }),
+      getAccess: jest.fn().mockResolvedValue(access),
+      getIdempotency: jest.fn().mockResolvedValue(undefined),
+      prepareMutation: jest.fn().mockResolvedValue(undefined),
+      completeMutation: jest.fn().mockResolvedValue(undefined),
+    };
+    const objects = {
+      getJson: jest.fn().mockResolvedValue(control),
+      putImmutable: jest.fn().mockResolvedValue({
+        bucket: "revisions",
+        key: "control",
+        versionId: "new-version",
+        checksumSha256: "checksum",
+      }),
+      extendComplianceRetention: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new SecretService(
+      repository as never,
+      objects as never,
+      {} as never,
+      config,
+      {} as never,
+    );
+
+    await expect(
+      service.update({
+        secretId: "database-credentials",
+        environment: "prod",
+        expectedControlVersionId: "ctl-current",
+        metadata: { description: "changed without ACL mutation" },
+        actor: { type: "human", id: "admin" },
+        idempotencyKey: "preserve-agent-projection",
+      }),
+    ).resolves.toMatchObject({
+      controlVersionId: expect.stringMatching(/^ctl-/),
+    });
+  });
+
+  it("refuses direct replacement or removal of an AgentGrant-derived ACL row", async () => {
+    const repository = {
+      requireHead: jest.fn().mockResolvedValue(head),
+      getAgentGrantForConsumer: jest.fn().mockResolvedValue({
+        grantId: "grant-prod-east",
+      }),
+    };
+    const objects = { getJson: jest.fn().mockResolvedValue(control) };
+    const service = new SecretService(
+      repository as never,
+      objects as never,
+      {} as never,
+      config,
+      {} as never,
+    );
+
+    await expect(
+      service.update({
+        secretId: "database-credentials",
+        environment: "prod",
+        expectedControlVersionId: "ctl-current",
+        acl: [],
+        actor: { type: "human", id: "admin" },
+        idempotencyKey: "remove-agent-projection",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
 });
 
 describe("SecretService.revokeConsumerSecretGrant", () => {
@@ -385,6 +461,7 @@ describe("SecretService.revokeConsumerSecretGrant", () => {
         environment: "prod",
         status: "ACTIVE",
       })),
+      getAgentGrantForConsumer: jest.fn(async () => undefined),
       requireHead: jest.fn(async () => head),
       getAccess: jest.fn(async () => access),
       getIdempotency: jest.fn(async () => undefined),
@@ -435,6 +512,7 @@ describe("SecretService.revokeConsumerSecretGrant", () => {
         consumerId: "prod-east",
         environment: "prod",
       })),
+      getAgentGrantForConsumer: jest.fn(async () => undefined),
       requireHead: jest.fn(async () => head),
     };
     const objects = { getJson: jest.fn(async () => control) };
@@ -454,6 +532,112 @@ describe("SecretService.revokeConsumerSecretGrant", () => {
         idempotencyKey: "revoke-prod-west-database",
       }),
     ).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("refuses direct ACL revocation for an AgentGrant consumer", async () => {
+    const repository = {
+      getConsumer: jest.fn(async () => ({
+        consumerId: "prod-east",
+        environment: "prod",
+        status: "ACTIVE",
+      })),
+      getAgentGrantForConsumer: jest.fn(async () => ({
+        grantId: "grant-east",
+      })),
+    };
+    const service = new SecretService(
+      repository as never,
+      {} as never,
+      {} as never,
+      config,
+      {} as never,
+    );
+
+    await expect(
+      service.revokeConsumerSecretGrant({
+        consumerId: "prod-east",
+        secretId: "database-credentials",
+        actor: { type: "human", id: "admin" },
+        idempotencyKey: "manual-agent-acl-revoke",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+});
+
+describe("SecretService.reconcileAgentReadAccess", () => {
+  it("removes ACL-only access and adds only missing canonical read targets", async () => {
+    const repository = {
+      listConsumerSecretGrants: jest.fn(async () => ({
+        grants: [
+          {
+            secretUid: "sec-keep",
+            secretId: "platform/keep",
+            permissions: ["read"],
+            controlVersionId: "ctl-keep",
+            state: "ACTIVE",
+          },
+          {
+            secretUid: "sec-extra",
+            secretId: "platform/extra",
+            permissions: ["read"],
+            controlVersionId: "ctl-extra",
+            state: "ACTIVE",
+          },
+        ],
+      })),
+    };
+    const service = new SecretService(
+      repository as never,
+      {} as never,
+      {} as never,
+      config,
+      {} as never,
+    );
+    const exposed = service as unknown as {
+      revokeConsumerSecretGrant: jest.Mock;
+      grantAgentConsumerReadAccess: jest.Mock;
+    };
+    exposed.revokeConsumerSecretGrant = jest.fn(async () => undefined);
+    exposed.grantAgentConsumerReadAccess = jest.fn(async () => undefined);
+
+    await service.reconcileAgentReadAccess({
+      consumerId: "prod-east",
+      environment: "prod",
+      secretGrants: [
+        {
+          secretId: "platform/keep",
+          secretUid: "sec-keep",
+          permissions: ["read"],
+        },
+        {
+          secretId: "platform/add",
+          secretUid: "sec-add",
+          permissions: ["read", "write"],
+        },
+        {
+          secretId: "platform/write-only",
+          secretUid: "sec-write-only",
+          permissions: ["write"],
+        },
+      ],
+      actor: { type: "system", id: "migration" },
+    });
+
+    expect(exposed.revokeConsumerSecretGrant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        consumerId: "prod-east",
+        secretId: "platform/extra",
+        allowAgentAcl: true,
+      }),
+    );
+    expect(exposed.grantAgentConsumerReadAccess).toHaveBeenCalledWith({
+      consumerId: "prod-east",
+      environment: "prod",
+      secretId: "platform/add",
+      secretUid: "sec-add",
+      actor: { type: "system", id: "migration" },
+    });
+    expect(exposed.grantAgentConsumerReadAccess).toHaveBeenCalledTimes(1);
   });
 });
 

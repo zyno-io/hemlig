@@ -70,6 +70,7 @@ export const createApplication = (config: AppConfig): Application => {
       consumers,
       environments,
       agentNotifications,
+      secrets,
     ),
     clients,
   };

@@ -133,10 +133,13 @@ export const agentGrant = z.object({
   consumerId: z.string(),
   environment: z.string(),
   capabilities: z.array(z.enum(["read", "write"])),
-  readSecretIds: z.array(z.string()),
-  readSecretUids: z.array(z.string()),
-  writeSecretIds: z.array(z.string()),
-  writeSecretUids: z.array(z.string()),
+  secretGrants: z.array(
+    z.object({
+      secretId: z.string(),
+      secretUid: z.string(),
+      permissions: z.array(z.enum(["read", "write"])),
+    }),
+  ),
   displayName: z.string().optional(),
   status: z.enum(["PENDING", "ACTIVE"]),
   createdAt: z.string(),

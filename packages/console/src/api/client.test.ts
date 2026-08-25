@@ -179,10 +179,13 @@ describe("HemligApi transport", () => {
         consumerId: "prod-east",
         environment: "prod",
         capabilities: ["read", "write"],
-        readSecretIds: [],
-        readSecretUids: [],
-        writeSecretIds: ["platform/database/postgres"],
-        writeSecretUids: ["sec-postgres"],
+        secretGrants: [
+          {
+            secretId: "platform/database/postgres",
+            secretUid: "sec-postgres",
+            permissions: ["write"],
+          },
+        ],
         status: "ACTIVE",
         createdAt: "2026-08-25T00:00:00.000Z",
       }),
@@ -195,8 +198,12 @@ describe("HemligApi transport", () => {
 
     await api.updateAgentGrant("grant-prod-east", {
       capabilities: ["read", "write"],
-      readSecretIds: [],
-      writeSecretIds: ["platform/database/postgres"],
+      secretGrants: [
+        {
+          secretId: "platform/database/postgres",
+          permissions: ["write"],
+        },
+      ],
     });
 
     const request = fetchMock.mock.calls[0]?.[0];
@@ -205,8 +212,12 @@ describe("HemligApi transport", () => {
     expect(options.method).toBe("PUT");
     expect(JSON.parse(options.body as string)).toEqual({
       capabilities: ["read", "write"],
-      readSecretIds: [],
-      writeSecretIds: ["platform/database/postgres"],
+      secretGrants: [
+        {
+          secretId: "platform/database/postgres",
+          permissions: ["write"],
+        },
+      ],
     });
   });
 

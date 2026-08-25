@@ -3,7 +3,7 @@ import type {
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
 import { badRequest } from "../domain/errors";
-import type { Actor } from "../domain/types";
+import type { Actor, AgentCapability, AgentSecretGrant } from "../domain/types";
 import { empty, json, parseJsonBody } from "../http/responses";
 import { isObject } from "../domain/validation";
 import { withErrorResponse } from "./shared";
@@ -23,12 +23,19 @@ export const handler = async (
       throw badRequest("The requested bootstrap route is not supported.");
     }
     const authorization = event.headers.authorization;
-    const token = authorization?.match(/^Bootstrap (hmlb_[A-Za-z0-9_-]{43})$/)?.[1];
+    const token = authorization?.match(
+      /^Bootstrap (hmlb_[A-Za-z0-9_-]{43})$/,
+    )?.[1];
     if (token === undefined) {
-      throw badRequest("A valid Bootstrap authorization capability is required.");
+      throw badRequest(
+        "A valid Bootstrap authorization capability is required.",
+      );
     }
     const body = parseJsonBody(event.body);
-    if (!isObject(body) || typeof body.apiCertificateSigningRequestPem !== "string") {
+    if (
+      !isObject(body) ||
+      typeof body.apiCertificateSigningRequestPem !== "string"
+    ) {
       throw badRequest("apiCertificateSigningRequestPem is required.");
     }
     if (body.apiCertificateSigningRequestPem.length > 16_384) {
@@ -45,7 +52,10 @@ export const handler = async (
       environment: result.environment,
     };
     const operation = "bootstrap.redeem";
-    const target = { grantId: result.grant.grantId, consumerId: result.consumerId };
+    const target = {
+      grantId: result.grant.grantId,
+      consumerId: result.consumerId,
+    };
     setAuditContext({
       actor,
       operation,
@@ -76,5 +86,44 @@ export const handler = async (
       target,
       sourceIp: event.requestContext.http.sourceIp,
     });
-    return json(201, result);
+    return json(201, {
+      ...result,
+      grant: {
+        ...result.grant,
+        // Retained for older bootstrap clients. These are derived from one
+        // paired canonical sequence, not independently sorted arrays.
+        readSecretIds: secretIdsForPermission(
+          result.grant.secretGrants,
+          "read",
+        ),
+        readSecretUids: secretUidsForPermission(
+          result.grant.secretGrants,
+          "read",
+        ),
+        writeSecretIds: secretIdsForPermission(
+          result.grant.secretGrants,
+          "write",
+        ),
+        writeSecretUids: secretUidsForPermission(
+          result.grant.secretGrants,
+          "write",
+        ),
+      },
+    });
   });
+
+const secretIdsForPermission = (
+  grants: readonly AgentSecretGrant[],
+  permission: AgentCapability,
+): readonly string[] =>
+  grants
+    .filter((grant) => grant.permissions.includes(permission))
+    .map((grant) => grant.secretId);
+
+const secretUidsForPermission = (
+  grants: readonly AgentSecretGrant[],
+  permission: AgentCapability,
+): readonly string[] =>
+  grants
+    .filter((grant) => grant.permissions.includes(permission))
+    .map((grant) => grant.secretUid);

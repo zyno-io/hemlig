@@ -3,6 +3,7 @@ import type {
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
 import { consumerActorFromEvent } from "../auth/actors";
+import type { AgentCapability, AgentGrantRecord } from "../domain/types";
 import { badRequest, forbidden } from "../domain/errors";
 import { empty, json, parseJsonBody } from "../http/responses";
 import { isObject, parseMetadata, parsePayload } from "../domain/validation";
@@ -79,10 +80,14 @@ export const handler = async (
         grant: {
           grantId: grant.grantId,
           capabilities: grant.capabilities,
-          readSecretIds: grant.readSecretIds,
-          readSecretUids: grant.readSecretUids,
-          writeSecretIds: grant.writeSecretIds,
-          writeSecretUids: grant.writeSecretUids,
+          secretGrants: grant.secretGrants,
+          // Retained for older agents while they move to secretGrants. Both
+          // arrays are derived from the same paired records, never sorted
+          // independently.
+          readSecretIds: secretIdsForPermission(grant, "read"),
+          readSecretUids: secretUidsForPermission(grant, "read"),
+          writeSecretIds: secretIdsForPermission(grant, "write"),
+          writeSecretUids: secretUidsForPermission(grant, "write"),
         },
         mqtt: {
           endpoint: app.config.iotEndpoint,
@@ -320,6 +325,24 @@ export const handler = async (
   });
 
 const secretIdRoutePart = "[a-z][a-z0-9-]{2,63}(?:/[a-z][a-z0-9-]{2,63})*";
+
+const agentScopesForPermission = (
+  grant: AgentGrantRecord,
+  permission: AgentCapability,
+) =>
+  grant.secretGrants.filter((scope) => scope.permissions.includes(permission));
+
+const secretIdsForPermission = (
+  grant: AgentGrantRecord,
+  permission: AgentCapability,
+): readonly string[] =>
+  agentScopesForPermission(grant, permission).map((scope) => scope.secretId);
+
+const secretUidsForPermission = (
+  grant: AgentGrantRecord,
+  permission: AgentCapability,
+): readonly string[] =>
+  agentScopesForPermission(grant, permission).map((scope) => scope.secretUid);
 
 const decodeRequestPath = (value: string): string => {
   try {

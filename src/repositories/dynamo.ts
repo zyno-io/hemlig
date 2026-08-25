@@ -3,6 +3,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  ScanCommand,
   TransactGetCommand,
   TransactWriteCommand,
   UpdateCommand,
@@ -73,6 +74,11 @@ export interface SecretTreePage {
   readonly folders: readonly SecretTreeFolder[];
   readonly secrets: readonly HeadRecord[];
   readonly truncated: boolean;
+}
+
+export interface AgentGrantPage {
+  readonly grants: readonly AgentGrantRecord[];
+  readonly nextKey?: Record<string, unknown>;
 }
 
 export interface PreparedMutation {
@@ -448,6 +454,32 @@ export class DynamoRepository {
       : undefined;
   }
 
+  /** Maintenance-only full-table scan for reconciling derived AgentGrant ACLs. */
+  public async listAgentGrants(
+    exclusiveStartKey?: Record<string, unknown>,
+  ): Promise<AgentGrantPage> {
+    const result = await this.dynamo.send(
+      new ScanCommand({
+        TableName: this.config.controlTableName,
+        FilterExpression:
+          "begins_with(pk, :agentGrantPrefix) AND sk = :profile",
+        ExpressionAttributeValues: {
+          ":agentGrantPrefix": "AGENT_GRANT#",
+          ":profile": "PROFILE",
+        },
+        ...(exclusiveStartKey === undefined
+          ? {}
+          : { ExclusiveStartKey: exclusiveStartKey }),
+      }),
+    );
+    return {
+      grants: (result.Items ?? []) as AgentGrantRecord[],
+      ...(result.LastEvaluatedKey === undefined
+        ? {}
+        : { nextKey: result.LastEvaluatedKey as Record<string, unknown> }),
+    };
+  }
+
   public async createAgentGrant(grant: AgentGrantRecord): Promise<void> {
     try {
       await this.dynamo.send(
@@ -485,8 +517,8 @@ export class DynamoRepository {
     removeDisplayName: boolean,
   ): Promise<void> {
     const updateExpression = removeDisplayName
-      ? "SET capabilities = :capabilities, readSecretIds = :readSecretIds, readSecretUids = :readSecretUids, writeSecretIds = :writeSecretIds, writeSecretUids = :writeSecretUids REMOVE displayName, readSecretIdPrefixes, writeSecretIdPrefixes, readPathPrefixes, writePathPrefixes"
-      : "SET capabilities = :capabilities, readSecretIds = :readSecretIds, readSecretUids = :readSecretUids, writeSecretIds = :writeSecretIds, writeSecretUids = :writeSecretUids, displayName = :displayName REMOVE readSecretIdPrefixes, writeSecretIdPrefixes, readPathPrefixes, writePathPrefixes";
+      ? "SET capabilities = :capabilities, secretGrants = :secretGrants REMOVE displayName, readSecretIds, readSecretUids, writeSecretIds, writeSecretUids, readSecretIdPrefixes, writeSecretIdPrefixes, readPathPrefixes, writePathPrefixes"
+      : "SET capabilities = :capabilities, secretGrants = :secretGrants, displayName = :displayName REMOVE readSecretIds, readSecretUids, writeSecretIds, writeSecretUids, readSecretIdPrefixes, writeSecretIdPrefixes, readPathPrefixes, writePathPrefixes";
     try {
       await this.dynamo.send(
         new UpdateCommand({
@@ -496,10 +528,7 @@ export class DynamoRepository {
           ConditionExpression: "attribute_exists(pk)",
           ExpressionAttributeValues: {
             ":capabilities": grant.capabilities,
-            ":readSecretIds": grant.readSecretIds,
-            ":readSecretUids": grant.readSecretUids,
-            ":writeSecretIds": grant.writeSecretIds,
-            ":writeSecretUids": grant.writeSecretUids,
+            ":secretGrants": grant.secretGrants,
             ...(removeDisplayName ? {} : { ":displayName": grant.displayName }),
           },
         }),

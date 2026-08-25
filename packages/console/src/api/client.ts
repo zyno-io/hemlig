@@ -220,8 +220,10 @@ export class HemligApi {
     grantId: string,
     input: {
       readonly capabilities: readonly ("read" | "write")[];
-      readonly readSecretIds: readonly string[];
-      readonly writeSecretIds: readonly string[];
+      readonly secretGrants: readonly {
+        readonly secretId: string;
+        readonly permissions: readonly ("read" | "write")[];
+      }[];
       readonly displayName?: string;
     },
   ): Promise<s.AgentGrant> {

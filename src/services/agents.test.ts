@@ -10,10 +10,13 @@ const grant: AgentGrantRecord = {
   consumerId: "payments-agent",
   environment: "prod",
   capabilities: ["read", "write"],
-  readSecretIds: ["payments/api"],
-  readSecretUids: ["sec-payments-api"],
-  writeSecretIds: ["payments/api"],
-  writeSecretUids: ["sec-payments-api"],
+  secretGrants: [
+    {
+      secretId: "payments/api",
+      secretUid: "sec-payments-api",
+      permissions: ["read", "write"],
+    },
+  ],
   status: "ACTIVE",
   createdAt: "2026-08-23T00:00:00.000Z",
   createdBy: { type: "human", id: "admin" },
@@ -40,7 +43,13 @@ describe("AgentService", () => {
     const repository = {
       getAgentGrantForConsumer: jest.fn(async () => ({
         ...grant,
-        readSecretUids: ["sec-a-different-secret"],
+        secretGrants: [
+          {
+            secretId: "payments/api",
+            secretUid: "sec-a-different-secret",
+            permissions: ["read", "write"],
+          },
+        ],
       })),
     } as unknown as DynamoRepository;
     const secrets = {
@@ -98,7 +107,7 @@ describe("AgentService", () => {
   it("fails closed instead of throwing when an unmigrated grant has no UID scope", async () => {
     const repository = {
       getAgentGrantForConsumer: jest.fn(async () => {
-        const { readSecretUids: _readSecretUids, ...legacyGrant } = grant;
+        const { secretGrants: _secretGrants, ...legacyGrant } = grant;
         return legacyGrant as AgentGrantRecord;
       }),
     } as unknown as DynamoRepository;
@@ -118,7 +127,13 @@ describe("AgentService", () => {
     const repository = {
       getAgentGrantForConsumer: jest.fn(async () => ({
         ...grant,
-        readSecretUids: ["sec-a-different-secret"],
+        secretGrants: [
+          {
+            secretId: "payments/api",
+            secretUid: "sec-a-different-secret",
+            permissions: ["read", "write"],
+          },
+        ],
       })),
       listAccess: jest.fn(async () => ({
         changes: [

@@ -43,6 +43,12 @@ interface SecretIdentity {
   readonly secretUid: string;
 }
 
+interface MigratedAgentSecretGrant {
+  readonly secretId: string;
+  readonly secretUid: string;
+  readonly permissions: readonly ("read" | "write")[];
+}
+
 export interface SecretUidMigrationPlan {
   readonly secretMoves: readonly SecretMove[];
   readonly accessMoves: readonly AccessMove[];
@@ -274,12 +280,11 @@ const migrateAgentGrants = (
     ) {
       continue;
     }
+    const canonical = canonicalSecretGrants(item, pk, issues);
     if (
-      Array.isArray(item.readSecretIds) &&
-      Array.isArray(item.readSecretUids) &&
-      Array.isArray(item.writeSecretIds) &&
-      Array.isArray(item.writeSecretUids) &&
-      !hasLegacyScopeFields(item)
+      canonical !== undefined &&
+      !hasLegacyScopeFields(item) &&
+      !hasParallelScopeFields(item)
     ) {
       continue;
     }
@@ -288,63 +293,160 @@ const migrateAgentGrants = (
       issues.push(`${pk} has no environment.`);
       continue;
     }
-    const capabilities = stringArray(item.capabilities);
-    const read = secretIdsForGrant(
-      item,
-      pk,
-      "read",
-      capabilities.includes("read"),
-      environment,
-      identities,
-      issues,
-    );
-    const write = secretIdsForGrant(
-      item,
-      pk,
-      "write",
-      capabilities.includes("write"),
-      environment,
-      identities,
-      issues,
-    );
-    if (read === undefined || write === undefined) {
-      continue;
-    }
-    const readSecretUids = secretUidsFor(
-      pk,
-      "read",
-      read,
-      environment,
-      identities,
-      issues,
-    );
-    const writeSecretUids = secretUidsFor(
-      pk,
-      "write",
-      write,
-      environment,
-      identities,
-      issues,
-    );
-    if (readSecretUids === undefined || writeSecretUids === undefined) {
+    const secretGrants =
+      canonical ??
+      migratedSecretGrants(item, pk, environment, identities, issues);
+    if (secretGrants === undefined) {
       continue;
     }
     updates.push({
       key: { pk, sk },
       item: {
-        ...item,
-        readSecretIds: read,
-        readSecretUids,
-        writeSecretIds: write,
-        writeSecretUids,
-        readSecretIdPrefixes: undefined,
-        writeSecretIdPrefixes: undefined,
-        readPathPrefixes: undefined,
-        writePathPrefixes: undefined,
+        ...withoutLegacyAgentScopeFields(item),
+        secretGrants,
       },
     });
   }
   return { updates, issues };
+};
+
+const canonicalSecretGrants = (
+  item: Item,
+  grantPk: string,
+  issues: string[],
+): readonly MigratedAgentSecretGrant[] | undefined => {
+  if (!Object.hasOwn(item, "secretGrants")) {
+    return undefined;
+  }
+  if (!Array.isArray(item.secretGrants)) {
+    issues.push(`${grantPk} has an invalid secretGrants value.`);
+    return undefined;
+  }
+  const grants: MigratedAgentSecretGrant[] = [];
+  for (const value of item.secretGrants) {
+    const entry =
+      value !== null && typeof value === "object" && !Array.isArray(value)
+        ? (value as Item)
+        : undefined;
+    if (entry === undefined) {
+      issues.push(`${grantPk} has an invalid secretGrants entry.`);
+      return undefined;
+    }
+    const secretId = stringField(entry, "secretId");
+    const secretUid = stringField(entry, "secretUid");
+    const permissions = stringArray(entry.permissions);
+    if (
+      secretId === undefined ||
+      secretUid === undefined ||
+      permissions.length === 0 ||
+      permissions.length > 2 ||
+      permissions.some(
+        (permission) => permission !== "read" && permission !== "write",
+      )
+    ) {
+      issues.push(`${grantPk} has an invalid secretGrants entry.`);
+      return undefined;
+    }
+    const agentPermissions = permissions as readonly ("read" | "write")[];
+    grants.push({
+      secretId,
+      secretUid,
+      permissions: [...new Set(agentPermissions)].sort(),
+    });
+  }
+  if (new Set(grants.map((grant) => grant.secretId)).size !== grants.length) {
+    issues.push(`${grantPk} has duplicate secretGrants secret IDs.`);
+    return undefined;
+  }
+  return grants.sort((left, right) =>
+    left.secretId.localeCompare(right.secretId),
+  );
+};
+
+const migratedSecretGrants = (
+  item: Item,
+  grantPk: string,
+  environment: string,
+  identities: readonly SecretIdentity[],
+  issues: string[],
+): readonly MigratedAgentSecretGrant[] | undefined => {
+  const capabilities = stringArray(item.capabilities);
+  const read = secretIdsForGrant(
+    item,
+    grantPk,
+    "read",
+    capabilities.includes("read"),
+    environment,
+    identities,
+    issues,
+  );
+  const write = secretIdsForGrant(
+    item,
+    grantPk,
+    "write",
+    capabilities.includes("write"),
+    environment,
+    identities,
+    issues,
+  );
+  if (read === undefined || write === undefined) {
+    return undefined;
+  }
+  const permissionsBySecretId = new Map<string, Set<"read" | "write">>();
+  for (const secretId of read) {
+    permissionsBySecretId.set(secretId, new Set<"read" | "write">(["read"]));
+  }
+  for (const secretId of write) {
+    const permissions =
+      permissionsBySecretId.get(secretId) ?? new Set<"read" | "write">();
+    permissions.add("write");
+    permissionsBySecretId.set(secretId, permissions);
+  }
+  const identitiesByName = new Map(
+    identities.map((identity) => [
+      nameKey(identity.environment, identity.secretId),
+      identity,
+    ]),
+  );
+  const grants: MigratedAgentSecretGrant[] = [];
+  for (const [secretId, permissions] of permissionsBySecretId.entries()) {
+    const identity = identitiesByName.get(nameKey(environment, secretId));
+    if (identity === undefined) {
+      issues.push(
+        `${grantPk} names secret ${environment}/${secretId}, which is not active during migration.`,
+      );
+      return undefined;
+    }
+    grants.push({
+      secretId,
+      secretUid: identity.secretUid,
+      permissions: [...permissions].sort(),
+    });
+  }
+  return grants.sort((left, right) =>
+    left.secretId.localeCompare(right.secretId),
+  );
+};
+
+const hasParallelScopeFields = (item: Item): boolean =>
+  Object.hasOwn(item, "readSecretIds") ||
+  Object.hasOwn(item, "readSecretUids") ||
+  Object.hasOwn(item, "writeSecretIds") ||
+  Object.hasOwn(item, "writeSecretUids");
+
+const withoutLegacyAgentScopeFields = (item: Item): Item => {
+  const {
+    readSecretIds: _readSecretIds,
+    readSecretUids: _readSecretUids,
+    writeSecretIds: _writeSecretIds,
+    writeSecretUids: _writeSecretUids,
+    readSecretIdPrefixes: _readSecretIdPrefixes,
+    writeSecretIdPrefixes: _writeSecretIdPrefixes,
+    readPathPrefixes: _readPathPrefixes,
+    writePathPrefixes: _writePathPrefixes,
+    ...canonical
+  } = item;
+  return canonical;
 };
 
 const hasLegacyScopeFields = (item: Item): boolean =>
@@ -381,34 +483,6 @@ const secretIdsForGrant = (
     identities,
     issues,
   );
-};
-
-const secretUidsFor = (
-  grantPk: string,
-  capability: "read" | "write",
-  secretIds: readonly string[],
-  environment: string,
-  identities: readonly SecretIdentity[],
-  issues: string[],
-): readonly string[] | undefined => {
-  const identitiesByName = new Map(
-    identities.map((identity) => [
-      nameKey(identity.environment, identity.secretId),
-      identity,
-    ]),
-  );
-  const secretUids: string[] = [];
-  for (const secretId of secretIds) {
-    const identity = identitiesByName.get(nameKey(environment, secretId));
-    if (identity === undefined) {
-      issues.push(
-        `${grantPk} names ${capability} secret ${environment}/${secretId}, which is not active during migration.`,
-      );
-      return undefined;
-    }
-    secretUids.push(identity.secretUid);
-  }
-  return secretUids.sort((left, right) => left.localeCompare(right));
 };
 
 const migrateScope = (

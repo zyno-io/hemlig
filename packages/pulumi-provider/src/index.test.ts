@@ -34,12 +34,13 @@ function agentGrantInputs(
 ): ResolvedAgentGrantInputs {
   return {
     adminUrl: "https://admin.example.com",
-    providerSchemaVersion: "1",
+    providerSchemaVersion: "2",
     consumerId: "staging-hemlig-sentinel",
     environment: "staging",
     capabilities: ["read"],
-    readSecretIds: ["platform/hemlig/integration"],
-    writeSecretIds: [],
+    secretGrants: [
+      { secretId: "platform/hemlig/integration", permissions: ["read"] },
+    ],
     displayName: "Staging Hemlig Pulumi sentinel",
     bootstrapGeneration: "1",
     ...overrides,
@@ -192,10 +193,13 @@ test("creates one pending agent grant and one bootstrap capability", async () =>
           consumerId: "staging-hemlig-sentinel",
           environment: "staging",
           capabilities: ["read"] as const,
-          readSecretIds: ["platform/hemlig/integration"],
-          readSecretUids: ["sec-platform-hemlig-integration"],
-          writeSecretIds: [],
-          writeSecretUids: [],
+          secretGrants: [
+            {
+              secretId: "platform/hemlig/integration",
+              secretUid: "sec-platform-hemlig-integration",
+              permissions: ["read"] as const,
+            },
+          ],
           displayName: "Staging Hemlig Pulumi sentinel",
           status: "PENDING" as const,
           createdAt: "2026-08-23T00:00:00.000Z",
@@ -285,10 +289,10 @@ test("updates an active AgentGrant policy without re-enrolling its consumer", as
           consumerId: "staging-hemlig-sentinel",
           environment: "staging",
           capabilities: input.capabilities,
-          readSecretIds: input.readSecretIds ?? [],
-          readSecretUids: [],
-          writeSecretIds: input.writeSecretIds ?? [],
-          writeSecretUids: [],
+          secretGrants: input.secretGrants.map((scope) => ({
+            ...scope,
+            secretUid: `sec-${scope.secretId.replaceAll("/", "-")}`,
+          })),
           displayName: input.displayName,
           status: "ACTIVE",
           createdAt: "2026-08-23T00:00:00.000Z",
@@ -308,9 +312,12 @@ test("updates an active AgentGrant policy without re-enrolling its consumer", as
     "grant-staging-hemlig-sentinel",
     oldInputs,
     agentGrantInputs({
-      readSecretIds: [
-        "platform/hemlig/integration",
-        "platform/gitlab-agents/staging",
+      secretGrants: [
+        { secretId: "platform/hemlig/integration", permissions: ["read"] },
+        {
+          secretId: "platform/gitlab-agents/staging",
+          permissions: ["read"],
+        },
       ],
     }),
   );

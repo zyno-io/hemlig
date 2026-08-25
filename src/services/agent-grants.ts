@@ -4,35 +4,37 @@ import type {
   Actor,
   AgentCapability,
   AgentGrantRecord,
+  AgentSecretGrant,
   BootstrapCapabilityRecord,
   ConsumerProvisioningResult,
 } from "../domain/types";
 import {
   assertIdentifier,
+  assertSecretIdentifier,
   parseAgentCapabilities,
-  parseAgentSecretIds,
 } from "../domain/validation";
 import type { DynamoRepository } from "../repositories/dynamo";
 import { isoNow, newId, sha256Hex } from "../util/encoding";
 import type { ConsumerService } from "./consumers";
 import type { EnvironmentService } from "./environments";
 import type { AgentNotificationService } from "./agent-notifications";
+import type { SecretService } from "./secrets";
 
 export interface CreateAgentGrantInput {
   readonly consumerId: string;
   readonly environment: string;
   readonly capabilities: unknown;
-  readonly readSecretIds: unknown;
-  readonly writeSecretIds: unknown;
+  /** Canonical request form; UIDs are resolved server-side. */
+  readonly secretGrants: unknown;
   readonly displayName?: unknown;
   readonly actor: Actor;
 }
 
 export interface UpdateAgentGrantInput {
   readonly capabilities: unknown;
-  readonly readSecretIds: unknown;
-  readonly writeSecretIds: unknown;
+  readonly secretGrants: unknown;
   readonly displayName?: unknown;
+  readonly actor: Actor;
 }
 
 export interface BootstrapCapabilityResult {
@@ -44,14 +46,7 @@ export interface BootstrapCapabilityResult {
 export interface BootstrapRedemptionResult extends ConsumerProvisioningResult {
   readonly grant: Pick<
     AgentGrantRecord,
-    | "grantId"
-    | "consumerId"
-    | "environment"
-    | "capabilities"
-    | "readSecretIds"
-    | "readSecretUids"
-    | "writeSecretIds"
-    | "writeSecretUids"
+    "grantId" | "consumerId" | "environment" | "capabilities" | "secretGrants"
   >;
 }
 
@@ -62,6 +57,7 @@ export class AgentGrantService {
     private readonly consumers: ConsumerService,
     private readonly environments: EnvironmentService,
     private readonly notifications: AgentNotificationService,
+    private readonly secrets: SecretService,
   ) {}
 
   public async create(input: CreateAgentGrantInput): Promise<AgentGrantRecord> {
@@ -73,19 +69,9 @@ export class AgentGrantService {
       );
     }
     const capabilities = parseAgentCapabilities(input.capabilities);
-    const readSecretIds = capabilities.includes("read")
-      ? parseAgentSecretIds(input.readSecretIds, "readSecretIds")
-      : emptySecretIds(input.readSecretIds, "readSecretIds");
-    const writeSecretIds = capabilities.includes("write")
-      ? parseAgentSecretIds(input.writeSecretIds, "writeSecretIds")
-      : emptySecretIds(input.writeSecretIds, "writeSecretIds");
-    const readSecretUids = await this.resolveSecretUids(
+    const secretGrants = await this.resolveSecretGrants(
       input.environment,
-      readSecretIds,
-    );
-    const writeSecretUids = await this.resolveSecretUids(
-      input.environment,
-      writeSecretIds,
+      parseSecretGrants(input.secretGrants, capabilities, false),
     );
     if (
       input.displayName !== undefined &&
@@ -105,10 +91,7 @@ export class AgentGrantService {
       consumerId: input.consumerId,
       environment: input.environment,
       capabilities,
-      readSecretIds,
-      readSecretUids,
-      writeSecretIds,
-      writeSecretUids,
+      secretGrants,
       ...(input.displayName === undefined
         ? {}
         : { displayName: input.displayName }),
@@ -129,20 +112,10 @@ export class AgentGrantService {
     if (existing === undefined) {
       throw notFound("The requested agent grant was not found.");
     }
-    const capabilities = parseAgentCapabilities(input.capabilities);
-    const readSecretIds = capabilities.includes("read")
-      ? parseAgentSecretIds(input.readSecretIds, "readSecretIds")
-      : emptySecretIds(input.readSecretIds, "readSecretIds");
-    const writeSecretIds = capabilities.includes("write")
-      ? parseAgentSecretIds(input.writeSecretIds, "writeSecretIds")
-      : emptySecretIds(input.writeSecretIds, "writeSecretIds");
-    const readSecretUids = await this.resolveSecretUids(
+    const capabilities = parseAgentCapabilities(input.capabilities, true);
+    const secretGrants = await this.resolveSecretGrants(
       existing.environment,
-      readSecretIds,
-    );
-    const writeSecretUids = await this.resolveSecretUids(
-      existing.environment,
-      writeSecretIds,
+      parseSecretGrants(input.secretGrants, capabilities, true),
     );
     if (
       input.displayName !== undefined &&
@@ -157,14 +130,14 @@ export class AgentGrantService {
     const updated: AgentGrantRecord = {
       ...existing,
       capabilities,
-      readSecretIds,
-      readSecretUids,
-      writeSecretIds,
-      writeSecretUids,
+      secretGrants,
       ...(input.displayName === undefined
         ? {}
         : { displayName: input.displayName }),
     };
+    if (existing.status === "ACTIVE") {
+      await this.reconcileReadAccess(updated, input.actor);
+    }
     await this.repository.updateAgentGrant(
       updated,
       input.displayName === undefined,
@@ -267,6 +240,7 @@ export class AgentGrantService {
       certificateFingerprint: enrollment.result.apiFingerprint,
       certificatePem: enrollment.result.apiCertificatePem,
     });
+    await this.reconcileReadAccess(grant, actor);
     await this.repository.activateAgentGrant(
       grant.grantId,
       enrollment.result.apiFingerprint,
@@ -284,36 +258,109 @@ export class AgentGrantService {
         consumerId: grant.consumerId,
         environment: grant.environment,
         capabilities: grant.capabilities,
-        readSecretIds: grant.readSecretIds,
-        readSecretUids: grant.readSecretUids,
-        writeSecretIds: grant.writeSecretIds,
-        writeSecretUids: grant.writeSecretUids,
+        secretGrants: grant.secretGrants,
       },
     };
   }
 
+  /** Repairs the derived ACL/index projection after a migration or retry. */
+  public async reconcileActiveGrant(
+    grantId: string,
+    actor: Actor,
+  ): Promise<void> {
+    const grant = await this.repository.getAgentGrant(grantId);
+    if (grant === undefined) {
+      throw notFound("The requested agent grant was not found.");
+    }
+    if (grant.status !== "ACTIVE") {
+      return;
+    }
+    await this.reconcileReadAccess(grant, actor);
+  }
+
   /** Resolves public IDs once, at policy write time, to immutable targets. */
-  private async resolveSecretUids(
+  private async resolveSecretGrants(
     environment: string,
-    secretIds: readonly string[],
-  ): Promise<readonly string[]> {
+    grants: readonly ParsedSecretGrant[],
+  ): Promise<readonly AgentSecretGrant[]> {
     const heads = await Promise.all(
-      secretIds.map(async (secretId) =>
-        this.repository.requireHead(environment, secretId),
+      grants.map(async (grant) =>
+        this.repository.requireHead(environment, grant.secretId),
       ),
     );
-    return heads
-      .map((head) => head.secretUid)
-      .sort((left, right) => left.localeCompare(right));
+    return grants.map((grant, index) => {
+      const head = heads[index];
+      if (head === undefined) {
+        throw new Error("A requested secret head was not resolved.");
+      }
+      return {
+        secretId: grant.secretId,
+        secretUid: head.secretUid,
+        permissions: grant.permissions,
+      };
+    });
+  }
+
+  private async reconcileReadAccess(
+    grant: AgentGrantRecord,
+    actor: Actor,
+  ): Promise<void> {
+    await this.secrets.reconcileAgentReadAccess({
+      consumerId: grant.consumerId,
+      environment: grant.environment,
+      secretGrants: grant.secretGrants,
+      actor,
+    });
   }
 }
 
-const emptySecretIds = (value: unknown, field: string): readonly string[] => {
-  if (value === undefined) {
-    return [];
+interface ParsedSecretGrant {
+  readonly secretId: string;
+  readonly permissions: readonly AgentCapability[];
+}
+
+const parseSecretGrants = (
+  value: unknown,
+  capabilities: readonly AgentCapability[],
+  allowEmpty: boolean,
+): readonly ParsedSecretGrant[] => {
+  if (
+    !Array.isArray(value) ||
+    (!allowEmpty && value.length === 0) ||
+    value.length > 20
+  ) {
+    throw badRequest(
+      "secretGrants must contain between one and twenty grants.",
+    );
   }
-  if (Array.isArray(value) && value.length === 0) {
-    return [];
+  const grants = value.map((entry): ParsedSecretGrant => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw badRequest("Each secret grant must be an object.");
+    }
+    const candidate = entry as Record<string, unknown>;
+    if (typeof candidate.secretId !== "string") {
+      throw badRequest("Each secret grant must name a secretId.");
+    }
+    assertSecretIdentifier(candidate.secretId, "secretGrants.secretId");
+    const permissions = parseAgentCapabilities(candidate.permissions);
+    if (permissions.some((permission) => !capabilities.includes(permission))) {
+      throw badRequest(
+        "Every secret grant permission must be an agent capability.",
+      );
+    }
+    return { secretId: candidate.secretId, permissions };
+  });
+  if (new Set(grants.map((grant) => grant.secretId)).size !== grants.length) {
+    throw badRequest("secretGrants must not contain duplicate secret IDs.");
   }
-  throw badRequest(`${field} requires its matching capability.`);
+  for (const capability of capabilities) {
+    if (!grants.some((grant) => grant.permissions.includes(capability))) {
+      throw badRequest(
+        `secretGrants must include at least one ${capability} permission.`,
+      );
+    }
+  }
+  return [...grants].sort((left, right) =>
+    left.secretId.localeCompare(right.secretId),
+  );
 };

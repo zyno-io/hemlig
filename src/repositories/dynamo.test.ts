@@ -2,6 +2,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  ScanCommand,
   TransactWriteCommand,
   UpdateCommand,
   type DynamoDBDocumentClient,
@@ -187,6 +188,47 @@ describe("consumer secret grants", () => {
       },
       Limit: 100,
       ConsistentRead: true,
+    });
+  });
+});
+
+describe("AgentGrant maintenance", () => {
+  it("scans only AgentGrant profile records and preserves the Dynamo continuation key", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({
+        Items: [
+          {
+            pk: "AGENT_GRANT#grant-prod-east",
+            sk: "PROFILE",
+            grantId: "grant-prod-east",
+          },
+        ],
+        LastEvaluatedKey: { pk: "AGENT_GRANT#grant-prod-east", sk: "next" },
+      }),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    const startKey = { pk: "AGENT_GRANT#grant-before", sk: "PROFILE" };
+
+    await expect(repository.listAgentGrants(startKey)).resolves.toEqual({
+      grants: [
+        {
+          pk: "AGENT_GRANT#grant-prod-east",
+          sk: "PROFILE",
+          grantId: "grant-prod-east",
+        },
+      ],
+      nextKey: { pk: "AGENT_GRANT#grant-prod-east", sk: "next" },
+    });
+
+    const scan = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as ScanCommand;
+    expect(scan.input).toEqual({
+      TableName: "control",
+      FilterExpression: "begins_with(pk, :agentGrantPrefix) AND sk = :profile",
+      ExpressionAttributeValues: {
+        ":agentGrantPrefix": "AGENT_GRANT#",
+        ":profile": "PROFILE",
+      },
+      ExclusiveStartKey: startKey,
     });
   });
 });

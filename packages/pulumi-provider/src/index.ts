@@ -73,8 +73,7 @@ export interface HemligAgentGrantArgs {
   readonly consumerId: pulumi.Input<string>;
   readonly environment: pulumi.Input<string>;
   readonly capabilities: pulumi.Input<readonly ("read" | "write")[]>;
-  readonly readSecretIds: pulumi.Input<readonly string[]>;
-  readonly writeSecretIds: pulumi.Input<readonly string[]>;
+  readonly secretGrants: pulumi.Input<readonly AgentSecretGrantInput[]>;
   readonly displayName: pulumi.Input<string>;
   /** Bump only before enrollment to replace an expired bootstrap capability. */
   readonly bootstrapGeneration: pulumi.Input<string>;
@@ -86,10 +85,15 @@ export interface ResolvedAgentGrantInputs {
   readonly consumerId: string;
   readonly environment: string;
   readonly capabilities: readonly ("read" | "write")[];
-  readonly readSecretIds: readonly string[];
-  readonly writeSecretIds: readonly string[];
+  readonly secretGrants: readonly AgentSecretGrantInput[];
   readonly displayName: string;
   readonly bootstrapGeneration: string;
+}
+
+/** Exact permissions for one secret; the service resolves its immutable UID. */
+export interface AgentSecretGrantInput {
+  readonly secretId: string;
+  readonly permissions: readonly ("read" | "write")[];
 }
 
 interface ResolvedAgentGrantState extends ResolvedAgentGrantInputs {
@@ -286,8 +290,7 @@ export class HemligAgentGrantProvider
       consumerId: inputs.consumerId,
       environment: inputs.environment,
       capabilities: inputs.capabilities,
-      readSecretIds: inputs.readSecretIds,
-      writeSecretIds: inputs.writeSecretIds,
+      secretGrants: inputs.secretGrants,
       displayName: inputs.displayName,
     });
     const capability = await client.issueBootstrapCapability(
@@ -322,12 +325,7 @@ export class HemligAgentGrantProvider
   ): Promise<pulumi.dynamic.UpdateResult> {
     const client = this.createClient(news);
     const adminToken = this.adminTokenFor();
-    const policyChanged = [
-      "capabilities",
-      "readSecretIds",
-      "writeSecretIds",
-      "displayName",
-    ].some(
+    const policyChanged = ["capabilities", "secretGrants", "displayName"].some(
       (property) =>
         JSON.stringify(olds[property as keyof ResolvedAgentGrantInputs]) !==
         JSON.stringify(news[property as keyof ResolvedAgentGrantInputs]),
@@ -338,8 +336,7 @@ export class HemligAgentGrantProvider
         olds.grantId,
         {
           capabilities: news.capabilities,
-          readSecretIds: news.readSecretIds,
-          writeSecretIds: news.writeSecretIds,
+          secretGrants: news.secretGrants,
           displayName: news.displayName,
         },
       );
@@ -425,7 +422,7 @@ export class HemligAgentGrant extends pulumi.dynamic.Resource {
       {
         ...args,
         adminUrl,
-        providerSchemaVersion: "1",
+        providerSchemaVersion: "2",
         // Dynamic-provider outputs need placeholders so Pulumi transfers them
         // onto the resource instance after registration.
         grantId: undefined,
@@ -502,11 +499,44 @@ const withAgentGrantState = (
 const agentGrantInputs = (
   value: ResolvedAgentGrantState,
 ): ResolvedAgentGrantInputs => {
+  const legacyValue = value as ResolvedAgentGrantState & {
+    readonly readSecretIds?: readonly string[];
+    readonly writeSecretIds?: readonly string[];
+  };
   const {
     grantId: _grantId,
     bootstrapToken: _bootstrapToken,
     bootstrapExpiresAt: _bootstrapExpiresAt,
+    readSecretIds,
+    writeSecretIds,
     ...inputs
-  } = value;
-  return inputs;
+  } = legacyValue;
+  return {
+    ...inputs,
+    secretGrants:
+      inputs.secretGrants ?? legacySecretGrants(readSecretIds, writeSecretIds),
+  };
+};
+
+/** Converts v1 Pulumi state to the v2 canonical request shape exactly once. */
+const legacySecretGrants = (
+  readSecretIds: readonly string[] | undefined,
+  writeSecretIds: readonly string[] | undefined,
+): readonly AgentSecretGrantInput[] => {
+  const permissionsBySecretId = new Map<string, Set<"read" | "write">>();
+  for (const secretId of readSecretIds ?? []) {
+    permissionsBySecretId.set(secretId, new Set(["read"]));
+  }
+  for (const secretId of writeSecretIds ?? []) {
+    const permissions =
+      permissionsBySecretId.get(secretId) ?? new Set<"read" | "write">();
+    permissions.add("write");
+    permissionsBySecretId.set(secretId, permissions);
+  }
+  return [...permissionsBySecretId.entries()]
+    .map(([secretId, permissions]) => ({
+      secretId,
+      permissions: [...permissions].sort(),
+    }))
+    .sort((left, right) => left.secretId.localeCompare(right.secretId));
 };

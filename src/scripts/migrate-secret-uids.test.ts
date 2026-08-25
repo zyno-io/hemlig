@@ -101,7 +101,7 @@ describe("buildSecretUidMigrationPlan", () => {
     ]);
   });
 
-  it("snapshots a prefix to exact matching IDs and immutable UIDs without a lookalike match", () => {
+  it("snapshots a prefix to paired exact permissions without a lookalike match", () => {
     const plan = buildSecretUidMigrationPlan([
       ...legacySecret("payments/api-key"),
       ...legacySecret("payments-prod/api-key"),
@@ -119,16 +119,19 @@ describe("buildSecretUidMigrationPlan", () => {
     expect(plan.grantUpdates).toEqual([
       expect.objectContaining({
         item: expect.objectContaining({
-          readSecretIds: ["payments/api-key"],
-          readSecretUids: [expect.stringMatching(/^sec-/)],
-          writeSecretIds: [],
-          writeSecretUids: [],
+          secretGrants: [
+            {
+              secretId: "payments/api-key",
+              secretUid: expect.stringMatching(/^sec-/),
+              permissions: ["read"],
+            },
+          ],
         }),
       }),
     ]);
   });
 
-  it("converts an unmatched prefix to an empty allowlist instead of future access", () => {
+  it("converts an unmatched prefix to no exact permissions instead of future access", () => {
     const plan = buildSecretUidMigrationPlan([
       ...legacySecret(),
       {
@@ -144,15 +147,12 @@ describe("buildSecretUidMigrationPlan", () => {
     expect(plan.issues).toEqual([]);
     expect(plan.grantUpdates[0]?.item).toEqual(
       expect.objectContaining({
-        readSecretIds: [],
-        readSecretUids: [],
-        writeSecretIds: [],
-        writeSecretUids: [],
+        secretGrants: [],
       }),
     );
   });
 
-  it("adds immutable UIDs to an already exact-ID grant", () => {
+  it("converts an exact-ID grant to paired immutable secret records", () => {
     const plan = buildSecretUidMigrationPlan([
       ...legacySecret(),
       {
@@ -169,13 +169,93 @@ describe("buildSecretUidMigrationPlan", () => {
     expect(plan.grantUpdates).toEqual([
       expect.objectContaining({
         item: expect.objectContaining({
-          readSecretIds: ["payments/api-key"],
-          readSecretUids: [expect.stringMatching(/^sec-/)],
-          writeSecretIds: [],
-          writeSecretUids: [],
+          secretGrants: [
+            {
+              secretId: "payments/api-key",
+              secretUid: expect.stringMatching(/^sec-/),
+              permissions: ["read"],
+            },
+          ],
         }),
       }),
     ]);
+  });
+
+  it("rebuilds paired records from live heads instead of zipping independently sorted legacy arrays", () => {
+    const plan = buildSecretUidMigrationPlan([
+      ...legacySecret("payments/alpha"),
+      ...legacySecret("payments/bravo"),
+      {
+        pk: "AGENT_GRANT#grant-payments",
+        sk: "PROFILE",
+        environment: "prod",
+        capabilities: ["read"],
+        readSecretIds: ["payments/alpha", "payments/bravo"],
+        // This legacy order is deliberately incompatible with the ID order.
+        readSecretUids: ["sec-bravo", "sec-alpha"],
+        writeSecretIds: [],
+        writeSecretUids: [],
+      },
+    ]);
+
+    expect(plan.issues).toEqual([]);
+    const grants = plan.grantUpdates[0]?.item.secretGrants as readonly {
+      readonly secretId: string;
+      readonly secretUid: string;
+      readonly permissions: readonly string[];
+    }[];
+    expect(grants).toEqual([
+      {
+        secretId: "payments/alpha",
+        secretUid: expect.stringMatching(/^sec-/),
+        permissions: ["read"],
+      },
+      {
+        secretId: "payments/bravo",
+        secretUid: expect.stringMatching(/^sec-/),
+        permissions: ["read"],
+      },
+    ]);
+    expect(grants[0]?.secretUid).not.toBe("sec-bravo");
+    expect(grants[1]?.secretUid).not.toBe("sec-alpha");
+    expect(plan.grantUpdates[0]?.item.readSecretIds).toBeUndefined();
+    expect(plan.grantUpdates[0]?.item.readSecretUids).toBeUndefined();
+  });
+
+  it("keeps an already paired grant while removing all obsolete parallel fields", () => {
+    const plan = buildSecretUidMigrationPlan([
+      ...legacySecret(),
+      {
+        pk: "AGENT_GRANT#grant-paired",
+        sk: "PROFILE",
+        environment: "prod",
+        capabilities: ["read"],
+        secretGrants: [
+          {
+            secretId: "payments/api-key",
+            secretUid: "sec-original-pair",
+            permissions: ["read"],
+          },
+        ],
+        readSecretIds: ["payments/api-key"],
+        readSecretUids: ["sec-wrong-legacy-value"],
+      },
+    ]);
+
+    expect(plan.issues).toEqual([]);
+    expect(plan.grantUpdates[0]?.item).toEqual(
+      expect.objectContaining({
+        secretGrants: [
+          {
+            secretId: "payments/api-key",
+            secretUid: "sec-original-pair",
+            permissions: ["read"],
+          },
+        ],
+      }),
+    );
+    expect(plan.grantUpdates[0]?.item.readSecretIds).toBeUndefined();
+    expect(plan.grantUpdates[0]?.item.readSecretUids).toBeUndefined();
   });
 
   it("refuses to guess how legacy metadata paths map to exact secret IDs", () => {

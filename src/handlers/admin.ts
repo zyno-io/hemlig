@@ -261,8 +261,7 @@ export const handler = async (
           consumerId: requiredString(body, "consumerId"),
           environment: requiredString(body, "environment"),
           capabilities: body.capabilities,
-          readSecretIds: body.readSecretIds,
-          writeSecretIds: body.writeSecretIds,
+          secretGrants: body.secretGrants,
           ...(body.displayName === undefined
             ? {}
             : { displayName: body.displayName }),
@@ -291,11 +290,11 @@ export const handler = async (
           agentGrantMatch[1] as string,
           {
             capabilities: body.capabilities,
-            readSecretIds: body.readSecretIds,
-            writeSecretIds: body.writeSecretIds,
+            secretGrants: body.secretGrants,
             ...(body.displayName === undefined
               ? {}
               : { displayName: body.displayName }),
+            actor,
           },
         );
         await app.audit.write({
@@ -1142,10 +1141,7 @@ const agentGrantResponse = (
   consumerId: grant.consumerId,
   environment: grant.environment,
   capabilities: grant.capabilities,
-  readSecretIds: grant.readSecretIds,
-  readSecretUids: grant.readSecretUids,
-  writeSecretIds: grant.writeSecretIds,
-  writeSecretUids: grant.writeSecretUids,
+  secretGrants: grant.secretGrants,
   ...(grant.displayName === undefined
     ? {}
     : { displayName: grant.displayName }),

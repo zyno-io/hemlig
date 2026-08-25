@@ -65,7 +65,7 @@ the publication lease.
 Kubernetes and other constrained automation must not hold an administrator
 OIDC token. An administrator first creates an **AgentGrant** with a new
 consumer ID, one environment, `read` and/or `write` capability, and explicit
-canonical secret IDs. It then issues a single-use, 30-minute bootstrap
+per-secret permissions. It then issues a single-use, 30-minute bootstrap
 capability. Hemlig stores only its SHA-256 digest.
 
 ```http
@@ -501,8 +501,9 @@ Returns one authoritative consumer profile, its creator, the current issuing
 root fingerprint when one exists, and the exact count of active API leaves.
 The count is calculated from identity records rather than a mutable counter.
 For an enrolled namespace agent, it also includes the attached AgentGrant and
-its exact read/write secret IDs and UIDs. This makes the secret ACL and the
-separate agent-policy layer inspectable together in the consumer UI.
+its exact secret ID, UID, and permission records. Agent read delivery ACL rows
+are derived automatically from this policy and are not a separate permission
+layer in the consumer UI.
 
 #### `GET /v1/admin/consumers/{consumerId}/grants?cursor=<opaque>`
 
@@ -605,17 +606,21 @@ enroll a consumer yet. `consumerId` must be unused; `environment` must exist.
   "consumerId": "prod-payments",
   "environment": "prod",
   "capabilities": ["read", "write"],
-  "readSecretIds": ["payments/production/stripe-api-key"],
-  "writeSecretIds": ["payments/production/stripe-api-key"],
+  "secretGrants": [
+    {
+      "secretId": "payments/production/stripe-api-key",
+      "permissions": ["read", "write"]
+    }
+  ],
   "displayName": "Payments namespace"
 }
 ```
 
-Secret-ID lists have one to twenty unique canonical IDs and are required
-exactly when their matching capability is present. They are an authorization
-boundary; Hemlig resolves and persists matching immutable secret UIDs with
-each list. A grant is `PENDING` until bootstrap
-completes, then becomes `ACTIVE`; it cannot silently fall back to a broad
+`secretGrants` has one to twenty unique canonical IDs. Each record carries the
+exact operations for that secret and may grant only an operation in
+`capabilities`. It is an authorization boundary; Hemlig resolves and persists
+the matching immutable secret UID beside each record. A grant is `PENDING`
+until bootstrap completes, then becomes `ACTIVE`; it cannot silently fall back to a broad
 consumer identity.
 
 `POST /v1/admin/agent-grants/{grantId}/bootstrap-capabilities` returns the

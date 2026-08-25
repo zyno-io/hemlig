@@ -142,13 +142,17 @@ export interface AgentGrant {
   readonly consumerId: string;
   readonly environment: string;
   readonly capabilities: readonly ("read" | "write")[];
-  readonly readSecretIds: readonly string[];
-  readonly readSecretUids: readonly string[];
-  readonly writeSecretIds: readonly string[];
-  readonly writeSecretUids: readonly string[];
+  readonly secretGrants: readonly AgentSecretGrant[];
   readonly displayName?: string;
   readonly status: "PENDING" | "ACTIVE";
   readonly createdAt: string;
+}
+
+/** One immutable secret target and its exact agent operations. */
+export interface AgentSecretGrant {
+  readonly secretId: string;
+  readonly secretUid: string;
+  readonly permissions: readonly ("read" | "write")[];
 }
 
 export interface BootstrapCapability {
@@ -169,28 +173,34 @@ export interface AgentConfig {
   readonly environment: string;
   readonly grant: Pick<
     AgentGrant,
-    | "grantId"
-    | "capabilities"
-    | "readSecretIds"
-    | "readSecretUids"
-    | "writeSecretIds"
-    | "writeSecretUids"
-  >;
+    "grantId" | "capabilities" | "secretGrants"
+  > & {
+    /** @deprecated Derive from secretGrants instead. */
+    readonly readSecretIds?: readonly string[];
+    /** @deprecated Derive from secretGrants instead. */
+    readonly readSecretUids?: readonly string[];
+    /** @deprecated Derive from secretGrants instead. */
+    readonly writeSecretIds?: readonly string[];
+    /** @deprecated Derive from secretGrants instead. */
+    readonly writeSecretUids?: readonly string[];
+  };
   readonly mqtt: AgentMqttConfig;
 }
 
 export interface AgentBootstrapResult extends ConsumerProvisioningResult {
   readonly grant: Pick<
     AgentGrant,
-    | "grantId"
-    | "consumerId"
-    | "environment"
-    | "capabilities"
-    | "readSecretIds"
-    | "readSecretUids"
-    | "writeSecretIds"
-    | "writeSecretUids"
-  >;
+    "grantId" | "consumerId" | "environment" | "capabilities" | "secretGrants"
+  > & {
+    /** @deprecated Derive from secretGrants instead. */
+    readonly readSecretIds?: readonly string[];
+    /** @deprecated Derive from secretGrants instead. */
+    readonly readSecretUids?: readonly string[];
+    /** @deprecated Derive from secretGrants instead. */
+    readonly writeSecretIds?: readonly string[];
+    /** @deprecated Derive from secretGrants instead. */
+    readonly writeSecretUids?: readonly string[];
+  };
 }
 
 export interface ConsumerChange {
@@ -504,8 +514,10 @@ export class HemligClient {
       readonly consumerId: string;
       readonly environment: string;
       readonly capabilities: readonly ("read" | "write")[];
-      readonly readSecretIds?: readonly string[];
-      readonly writeSecretIds?: readonly string[];
+      readonly secretGrants: readonly {
+        readonly secretId: string;
+        readonly permissions: readonly ("read" | "write")[];
+      }[];
       readonly displayName?: string;
     },
   ): Promise<AgentGrant> {
@@ -517,8 +529,10 @@ export class HemligClient {
     grantId: string,
     input: {
       readonly capabilities: readonly ("read" | "write")[];
-      readonly readSecretIds?: readonly string[];
-      readonly writeSecretIds?: readonly string[];
+      readonly secretGrants: readonly {
+        readonly secretId: string;
+        readonly permissions: readonly ("read" | "write")[];
+      }[];
       readonly displayName?: string;
     },
   ): Promise<AgentGrant> {
