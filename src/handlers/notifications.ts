@@ -1,4 +1,7 @@
-import { IoTDataPlaneClient, PublishCommand } from "@aws-sdk/client-iot-data-plane";
+import {
+  IoTDataPlaneClient,
+  PublishCommand,
+} from "@aws-sdk/client-iot-data-plane";
 import type { AttributeValue } from "@aws-sdk/client-dynamodb";
 import type { DynamoDBStreamEvent } from "aws-lambda";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
@@ -19,7 +22,13 @@ export const handler = async (event: DynamoDBStreamEvent): Promise<void> => {
     endpoint: `https://${config.iotEndpoint}`,
   });
   const records = event.Records.flatMap((record) => {
-    if (record.eventName !== "INSERT" || record.dynamodb?.NewImage === undefined) {
+    // A schema migration can backfill a pending outbox record's environment.
+    // That produces MODIFY rather than INSERT; the notification contract is
+    // deliberately at-least-once, so deliver the still-pending event.
+    if (
+      (record.eventName !== "INSERT" && record.eventName !== "MODIFY") ||
+      record.dynamodb?.NewImage === undefined
+    ) {
       return [];
     }
     const item = unmarshall(
@@ -33,9 +42,9 @@ export const handler = async (event: DynamoDBStreamEvent): Promise<void> => {
     // Deployments can still have PENDING single-recipient outbox records from
     // before grouped fan-out. Deliver those rather than stranding a valid
     // change during the rollout.
-    const consumerIds = record.consumerIds ?? (
-      record.consumerId === undefined ? [] : [record.consumerId]
-    );
+    const consumerIds =
+      record.consumerIds ??
+      (record.consumerId === undefined ? [] : [record.consumerId]);
     const payload = Buffer.from(
       JSON.stringify({
         schemaVersion: 1,
@@ -48,7 +57,7 @@ export const handler = async (event: DynamoDBStreamEvent): Promise<void> => {
           : { payloadVersionId: record.payloadVersionId }),
       }),
       "utf8",
-   );
+    );
     for (const consumerId of consumerIds) {
       await publisher.send(
         new PublishCommand({

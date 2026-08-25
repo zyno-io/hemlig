@@ -71,4 +71,38 @@ describe('notification publisher', () => {
         });
         expect(mockMarkDelivered).toHaveBeenCalledWith('event-1');
     });
+
+    it('delivers a pending notification when migration backfills its environment', async () => {
+        const event = {
+            Records: [{
+                eventName: 'MODIFY',
+                dynamodb: {
+                    NewImage: marshall({
+                        pk: 'NOTIFICATION#event-2',
+                        sk: 'EVENT',
+                        eventId: 'event-2',
+                        consumerIds: ['staging-east'],
+                        secretId: 'payments-api',
+                        environment: 'staging',
+                        controlVersionId: 'ctl-next',
+                        kind: 'secret.changed',
+                        createdAt: '2026-08-25T00:00:00.000Z',
+                        status: 'PENDING',
+                    }),
+                },
+            }],
+        } as unknown as DynamoDBStreamEvent;
+
+        await handler(event);
+
+        const command = mockSend.mock.calls[0]?.[0] as PublishCommand;
+        expect(JSON.parse(Buffer.from(command.input.payload as Uint8Array).toString('utf8'))).toEqual({
+            schemaVersion: 1,
+            kind: 'secret.changed',
+            secretId: 'payments-api',
+            environment: 'staging',
+            controlVersionId: 'ctl-next',
+        });
+        expect(mockMarkDelivered).toHaveBeenCalledWith('event-2');
+    });
 });
