@@ -4,6 +4,7 @@ import type {
 } from "aws-lambda";
 import { createApplication, type Application } from "../app";
 import { loadConfig } from "../aws/config";
+import { ApiError } from "../domain/errors";
 import { errorResponse } from "../http/responses";
 import { newId } from "../util/encoding";
 import type { Actor } from "../domain/types";
@@ -34,6 +35,19 @@ export const withErrorResponse = async (
       auditContext = context;
     });
   } catch (error) {
+    // Never log the request body or headers: bootstrap capabilities and secret
+    // values can appear there.  A correlation ID plus the error is sufficient
+    // to diagnose an unexpected 5xx from its Lambda log stream.
+    if (!(error instanceof ApiError)) {
+      console.error("Hemlig request failed unexpectedly", {
+        correlationId,
+        name: error instanceof Error ? error.name : typeof error,
+        message: error instanceof Error ? error.message : String(error),
+        ...(error instanceof Error && error.stack !== undefined
+          ? { stack: error.stack }
+          : {}),
+      });
+    }
     if (app !== undefined && auditContext !== undefined) {
       try {
         await app.audit.write({

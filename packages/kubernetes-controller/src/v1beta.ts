@@ -379,6 +379,7 @@ export class HemligV1BetaController {
         resource.status,
         error,
       );
+      this.scheduleTransientResourceRetry(error);
       return undefined;
     }
   }
@@ -639,6 +640,7 @@ export class HemligV1BetaController {
         resource.status,
         error,
       );
+      this.scheduleTransientResourceRetry(error);
     }
   }
 
@@ -749,6 +751,7 @@ export class HemligV1BetaController {
         resource.status,
         error,
       );
+      this.scheduleTransientResourceRetry(error);
     }
   }
 
@@ -954,6 +957,19 @@ export class HemligV1BetaController {
         this.scheduleReconcile(this.reconcileRetryDelay(error));
       });
     }, delayMilliseconds);
+  }
+
+  /**
+   * A resource-level reconciliation failure is deliberately contained so one
+   * bad Import does not prevent the remainder of the cluster from converging.
+   * Containment must not turn a transient remote failure into a ten-minute
+   * outage, though: the periodic sweep is only the missed-event safety net.
+   */
+  private scheduleTransientResourceRetry(error: unknown): void {
+    if (!isTransientResourceError(error)) {
+      return;
+    }
+    this.scheduleReconcile(this.reconcileRetryDelay(error));
   }
 
   private reconcileRetryDelay(error: unknown): number {
@@ -1216,6 +1232,24 @@ const retryAfterMilliseconds = (error: unknown): number | undefined => {
   return Number.isSafeInteger(seconds) && seconds >= 0
     ? seconds * 1_000
     : undefined;
+};
+
+export const isTransientResourceError = (error: unknown): boolean => {
+  if (error instanceof ReconcileError) {
+    return false;
+  }
+  if (!(error instanceof HemligError)) {
+    // Transport and Kubernetes client failures have no reliable status. They
+    // are safe to retry because all controller operations are idempotent.
+    return true;
+  }
+  return (
+    error.status === 408 ||
+    error.status === 409 ||
+    error.status === 425 ||
+    error.status === 429 ||
+    error.status >= 500
+  );
 };
 
 const stringMapChecksum = (data: Readonly<Record<string, string>>): string =>

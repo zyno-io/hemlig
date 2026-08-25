@@ -10,7 +10,9 @@ import {
   allowsConsumerReference,
   consumerReferenceKey,
   HemligV1BetaController,
+  isTransientResourceError,
 } from "./v1beta";
+import { HemligError } from "@hemlig/client";
 
 test("converts UTF-8 and base64 Hemlig entries into Kubernetes Secret data", () => {
   const data = payloadToKubernetesData({
@@ -59,6 +61,16 @@ test("requires an explicit consumer opt-in for a cross-namespace reference", () 
       providerRef: "staging",
     },
   }), true);
+});
+
+test("retries transient Hemlig responses but not denied or invalid resources", () => {
+  assert.equal(isTransientResourceError(new HemligError(500, "busy")), true);
+  assert.equal(
+    isTransientResourceError(new HemligError(409, "conflict")),
+    true,
+  );
+  assert.equal(isTransientResourceError(new HemligError(403, "denied")), false);
+  assert.equal(isTransientResourceError(new HemligError(404, "absent")), false);
 });
 
 test("writes reconciliation status as JSON Patch", async () => {
