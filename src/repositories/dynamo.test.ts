@@ -3,6 +3,7 @@ import {
   PutCommand,
   QueryCommand,
   TransactWriteCommand,
+  UpdateCommand,
   type DynamoDBDocumentClient,
 } from "@aws-sdk/lib-dynamodb";
 import type { AppConfig } from "../aws/config";
@@ -99,6 +100,30 @@ describe("opaque cursor storage", () => {
       TableName: "control",
       Key: { pk: `CURSOR#${cursor.token}`, sk: "STATE" },
       ConsistentRead: true,
+    });
+  });
+});
+
+describe("notification outbox", () => {
+  it("aliases the ttl attribute when marking a notification delivered", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+
+    await expect(repository.markNotificationDelivered("event-1")).resolves.toBe(
+      true,
+    );
+
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as UpdateCommand;
+    expect(command.input).toMatchObject({
+      TableName: "control",
+      Key: { pk: "NOTIFICATION#event-1", sk: "EVENT" },
+      UpdateExpression:
+        "SET #status = :delivered, deliveredAt = :deliveredAt, #ttl = :ttl",
+      ConditionExpression: "#status = :pending",
+      ExpressionAttributeNames: { "#status": "status", "#ttl": "ttl" },
     });
   });
 });

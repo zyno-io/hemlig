@@ -749,9 +749,9 @@ export class DynamoRepository {
           TableName: this.config.controlTableName,
           Key: { pk: notificationPk(eventId), sk: "EVENT" },
           UpdateExpression:
-            "SET #status = :delivered, deliveredAt = :deliveredAt, ttl = :ttl",
+            "SET #status = :delivered, deliveredAt = :deliveredAt, #ttl = :ttl",
           ConditionExpression: "#status = :pending",
-          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeNames: { "#status": "status", "#ttl": "ttl" },
           ExpressionAttributeValues: {
             ":pending": "PENDING",
             ":delivered": "DELIVERED",
