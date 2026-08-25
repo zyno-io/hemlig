@@ -23,6 +23,8 @@ const credentials = { accessKeyId: "test", secretAccessKey: "test" };
 const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const bucket = `secrets-manager-${suffix}`;
 const table = `secrets-manager-${suffix}`;
+const secretUid = "sec-ministack-local";
+const secretId = "testing/ministack/sec-local";
 
 const run = async (): Promise<void> => {
   const s3 = new S3Client({
@@ -115,7 +117,8 @@ const run = async (): Promise<void> => {
     { API_TOKEN: { encoding: "utf8", value: "not-logged" } },
     {
       environment: "local",
-      secretId: "testing/ministack/sec-local",
+      secretId,
+      secretUid,
       payloadVersionId: "pay-local",
     },
     { type: "system", id: "ministack-verify" },
@@ -125,7 +128,7 @@ const run = async (): Promise<void> => {
   const bytes = Buffer.from(stableJson(revision), "utf8");
   const object = await objects.putImmutable(
     bucket,
-    "secrets/local/testing/ministack/sec-local/payload/pay-local.json",
+    `secrets/${secretUid}/payload/pay-local.json`,
     bytes,
   );
   const existingObject = await objects.putImmutableOrGet(
@@ -153,9 +156,10 @@ const run = async (): Promise<void> => {
         Put: {
           TableName: table,
           Item: {
-            pk: "SECRET#local#testing/ministack/sec-local",
+            pk: `SECRET#${secretUid}`,
             sk: "HEAD",
-            secretId: "testing/ministack/sec-local",
+            secretUid,
+            secretId,
             environment: "local",
             controlVersionId: "ctl-local",
             state: "ACTIVE",
@@ -165,8 +169,22 @@ const run = async (): Promise<void> => {
               tags: { owner: "platform" },
             },
             catalogPk: "CATALOG#local",
-            catalogSk: "PATH#testing/ministack/SECRET#testing/ministack/sec-local",
+            catalogSk:
+              "PATH#testing/ministack/SECRET#testing/ministack/sec-local",
             catalogTags: { owner: "platform" },
+          },
+          ConditionExpression: "attribute_not_exists(pk)",
+        },
+      },
+      {
+        Put: {
+          TableName: table,
+          Item: {
+            pk: `SECRET_NAME#local#${secretId}`,
+            sk: "LOOKUP",
+            secretUid,
+            secretId,
+            environment: "local",
           },
           ConditionExpression: "attribute_not_exists(pk)",
         },
@@ -210,14 +228,16 @@ const run = async (): Promise<void> => {
         Put: {
           TableName: table,
           Item: {
-            pk: "SECRET#local#testing/ministack/sec-local",
+            pk: `SECRET#${secretUid}`,
             sk: "CONTROL#ctl-local",
+            secretUid,
             workflowState: "READY",
-            revisionPk: "SECRET#local#testing/ministack/sec-local",
+            revisionPk: `SECRET#${secretUid}`,
             revisionSk: "2026-08-22T00:00:00.000Z#ctl-local",
             serialized: {
               schemaVersion: 1,
-              secretId: "testing/ministack/sec-local",
+              secretUid,
+              secretId,
               controlVersionId: "ctl-local",
               payloadKeyCount: 1,
               environment: "local",
@@ -239,7 +259,7 @@ const run = async (): Promise<void> => {
   });
   if (
     catalog.secrets.length !== 1 ||
-    catalog.secrets[0]?.secretId !== "testing/ministack/sec-local"
+    catalog.secrets[0]?.secretId !== secretId
   ) {
     throw new Error(
       "Catalog path/tag query did not return the expected secret.",
@@ -259,7 +279,7 @@ const run = async (): Promise<void> => {
   }
   const revisions = await repository.listRecentControlRevisions(
     "local",
-    "testing/ministack/sec-local",
+    secretId,
   );
   if (revisions.revisions[0]?.serialized.controlVersionId !== "ctl-local") {
     throw new Error(
