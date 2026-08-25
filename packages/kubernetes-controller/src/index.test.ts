@@ -160,3 +160,37 @@ test("writes reconciliation status as JSON Patch", async () => {
   );
   assert.match(patch.body[0].value.conditions?.[0]?.lastTransitionTime ?? "", /^\d{4}-\d{2}-\d{2}T/);
 });
+
+test("retries a transient Kubernetes API failure without exiting", async () => {
+  let listAttempts = 0;
+  const custom = {
+    async listClusterCustomObject(): Promise<unknown> {
+      listAttempts += 1;
+      if (listAttempts === 1) {
+        throw Object.assign(new Error("storage is initializing"), {
+          headers: { "retry-after": "0" },
+        });
+      }
+      return { items: [] };
+    },
+    async listCustomObjectForAllNamespaces(): Promise<unknown> {
+      return { items: [] };
+    },
+  };
+  const controller = new HemligV1BetaController(
+    {} as never,
+    custom as never,
+    {
+      intervalMilliseconds: 1,
+      sourceDebounceMilliseconds: 1,
+      reconcileRetryMilliseconds: 1,
+    },
+  );
+  const abort = new AbortController();
+  const running = controller.run(abort.signal);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  abort.abort();
+  await running;
+
+  assert.ok(listAttempts > 1);
+});

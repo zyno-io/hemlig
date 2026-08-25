@@ -194,6 +194,8 @@ export const allowsConsumerReference = (
 export interface V1BetaControllerConfig {
   readonly intervalMilliseconds: number;
   readonly sourceDebounceMilliseconds: number;
+  /** Retry after a transient Kubernetes API failure without restarting the Pod. */
+  readonly reconcileRetryMilliseconds?: number;
 }
 
 /**
@@ -228,12 +230,18 @@ export class HemligV1BetaController {
   }
 
   public async run(signal: AbortSignal): Promise<void> {
-    await this.reconcileAll();
-    this.startWatches(signal);
+    let watchesStarted = false;
     while (!signal.aborted) {
-      await wait(this.config.intervalMilliseconds, signal);
-      if (!signal.aborted) {
+      try {
         await this.reconcileAll();
+        if (!watchesStarted) {
+          this.startWatches(signal);
+          watchesStarted = true;
+        }
+        await wait(this.config.intervalMilliseconds, signal);
+      } catch (error) {
+        this.reportReconcileFailure(error);
+        await wait(this.reconcileRetryDelay(error), signal);
       }
     }
     this.mqtt.stop();
@@ -933,14 +941,30 @@ export class HemligV1BetaController {
     });
   }
 
-  private scheduleReconcile(): void {
+  private scheduleReconcile(
+    delayMilliseconds = this.config.sourceDebounceMilliseconds,
+  ): void {
     if (this.reconcileTimer !== undefined) {
       return;
     }
     this.reconcileTimer = setTimeout(() => {
       this.reconcileTimer = undefined;
-      void this.reconcileAll();
-    }, this.config.sourceDebounceMilliseconds);
+      void this.reconcileAll().catch((error: unknown) => {
+        this.reportReconcileFailure(error);
+        this.scheduleReconcile(this.reconcileRetryDelay(error));
+      });
+    }, delayMilliseconds);
+  }
+
+  private reconcileRetryDelay(error: unknown): number {
+    return retryAfterMilliseconds(error)
+      ?? this.config.reconcileRetryMilliseconds
+      ?? 1_000;
+  }
+
+  private reportReconcileFailure(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Hemlig reconciliation failed; retrying: ${message}\n`);
   }
 
   private startWatches(signal: AbortSignal): void {
@@ -1175,6 +1199,24 @@ const isAlreadyExists = (error: unknown): boolean =>
   error !== null &&
   "code" in error &&
   (error as { code?: unknown }).code === 409;
+
+const retryAfterMilliseconds = (error: unknown): number | undefined => {
+  if (typeof error !== "object" || error === null || !("headers" in error)) {
+    return undefined;
+  }
+  const headers = (error as { readonly headers?: unknown }).headers;
+  if (typeof headers !== "object" || headers === null || !("retry-after" in headers)) {
+    return undefined;
+  }
+  const retryAfter = (headers as { readonly "retry-after"?: unknown })["retry-after"];
+  if (typeof retryAfter !== "string" || !/^\d+$/.test(retryAfter)) {
+    return undefined;
+  }
+  const seconds = Number.parseInt(retryAfter, 10);
+  return Number.isSafeInteger(seconds) && seconds >= 0
+    ? seconds * 1_000
+    : undefined;
+};
 
 const stringMapChecksum = (data: Readonly<Record<string, string>>): string =>
   createHash("sha256")
