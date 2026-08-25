@@ -727,8 +727,15 @@ export const handler = async (
         const key = requireIdempotencyKey(event.headers["idempotency-key"]);
         const body = parseObjectBody(event.body);
         const environment = requireQueryString(event, "environment");
+        const secretId = secretMatch[1] as string;
+        setAuditContext({
+          actor,
+          operation,
+          target: { environment, secretId },
+          sourceIp: event.requestContext.http.sourceIp,
+        });
         const control = await app.secrets.update({
-          secretId: secretMatch[1] as string,
+          secretId,
           environment,
           expectedControlVersionId: requireIfMatch(event.headers["if-match"]),
           metadata:
@@ -758,8 +765,15 @@ export const handler = async (
         const key = requireIdempotencyKey(event.headers["idempotency-key"]);
         const body = parseObjectBody(event.body);
         const environment = requireQueryString(event, "environment");
+        const secretId = payloadMatch[1] as string;
+        setAuditContext({
+          actor,
+          operation,
+          target: { environment, secretId },
+          sourceIp: event.requestContext.http.sourceIp,
+        });
         const control = await app.secrets.update({
-          secretId: payloadMatch[1] as string,
+          secretId,
           environment,
           expectedControlVersionId: requireIfMatch(event.headers["if-match"]),
           payload: parsePayload(body.payload, app.config.maxPayloadBytes),
