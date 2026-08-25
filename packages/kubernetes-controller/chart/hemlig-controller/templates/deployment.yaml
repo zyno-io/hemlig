@@ -7,11 +7,16 @@ metadata:
 spec:
   # The current controller does not implement leader election. The schema
   # deliberately accepts only one replica until that safety property ships.
-  # Recreate also prevents a rolling update from briefly running two independent
-  # reconcilers against the same bootstrap capability and import targets.
+  # A zero-surge update prevents a rolling upgrade from briefly running two
+  # independent reconcilers against the same bootstrap capability and import
+  # targets. It is used instead of `Recreate` so an existing Deployment can
+  # adopt this safety property without an invalid strategy transition.
   replicas: {{ .Values.replicaCount }}
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       {{- include "hemlig-controller.selectorLabels" . | nindent 6 }}
