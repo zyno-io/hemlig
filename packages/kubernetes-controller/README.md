@@ -22,9 +22,11 @@ The resource topology is intentionally split:
 The controller watches CRs, namespaces, and Secrets. Source changes debounce
 for 250 ms; MQTT QoS 1 hints trigger prompt remote pulls. A ten-minute snapshot
 remains the correctness path for missed watches or broker messages. Current raw
-manifests install one replica; Lease leadership, manual enrollment, and leaf
-rotation are tracked in the [controller plan](../../docs/kubernetes-controller-plan.md)
-before multi-replica support is declared.
+manifests install one replica and use a `Recreate` Deployment strategy, so an
+upgrade cannot briefly run two independent reconcilers. Lease leadership,
+manual enrollment, and leaf rotation are tracked in the
+[controller plan](../../docs/kubernetes-controller-plan.md) before multi-replica
+support is declared.
 
 For a release install, use the Zyno chart repository:
 
