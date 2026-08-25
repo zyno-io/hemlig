@@ -114,6 +114,83 @@ describe("secret ID catalog index", () => {
   });
 });
 
+describe("consumer secret grants", () => {
+  it("lists only live ACL rows and refreshes their current control version", async () => {
+    const dynamo = {
+      send: jest
+        .fn()
+        .mockResolvedValueOnce({
+          Items: [
+            {
+              pk: "CONSUMER#prod-east",
+              sk: "SECRET#prod#sec-live",
+              consumerId: "prod-east",
+              secretUid: "sec-live",
+              secretId: "platform/database/postgres",
+              environment: "prod",
+              permissions: ["read"],
+              controlVersionId: "ctl-prior",
+              state: "ACTIVE",
+              changeKind: "secret.changed",
+            },
+            {
+              pk: "CONSUMER#prod-east",
+              sk: "SECRET#prod#sec-revoked",
+              consumerId: "prod-east",
+              secretUid: "sec-revoked",
+              secretId: "platform/database/retired",
+              environment: "prod",
+              permissions: [],
+              controlVersionId: "ctl-retired",
+              state: "REVOKED",
+              changeKind: "secret.revoked",
+            },
+          ],
+          LastEvaluatedKey: { pk: "CONSUMER#prod-east", sk: "next" },
+        })
+        .mockResolvedValueOnce({
+          Item: {
+            pk: "SECRET#sec-live",
+            sk: "HEAD",
+            secretUid: "sec-live",
+            secretId: "platform/database/postgres",
+            environment: "prod",
+            controlVersionId: "ctl-current",
+            state: "ACTIVE",
+          },
+        }),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+
+    await expect(
+      repository.listConsumerSecretGrants("prod-east", "prod"),
+    ).resolves.toEqual({
+      grants: [
+        {
+          secretUid: "sec-live",
+          secretId: "platform/database/postgres",
+          permissions: ["read"],
+          controlVersionId: "ctl-current",
+          state: "ACTIVE",
+        },
+      ],
+      nextCursor: JSON.stringify({ pk: "CONSUMER#prod-east", sk: "next" }),
+    });
+
+    const query = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as QueryCommand;
+    expect(query.input).toMatchObject({
+      TableName: "control",
+      KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+      ExpressionAttributeValues: {
+        ":pk": "CONSUMER#prod-east",
+        ":prefix": "SECRET#prod#",
+      },
+      Limit: 100,
+      ConsistentRead: true,
+    });
+  });
+});
+
 describe("notification outbox", () => {
   it("aliases the ttl attribute when marking a notification delivered", async () => {
     const dynamo = {

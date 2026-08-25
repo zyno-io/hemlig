@@ -497,6 +497,92 @@ export const handler = async (
             : { rootFingerprint: issuer.fingerprint }),
         });
       }
+      const consumerGrantsMatch =
+        /^\/v1\/admin\/consumers\/([a-z][a-z0-9-]{2,63})\/grants$/.exec(
+          event.rawPath,
+        );
+      if (
+        event.requestContext.http.method === "GET" &&
+        consumerGrantsMatch !== null
+      ) {
+        const consumerId = consumerGrantsMatch[1] as string;
+        const consumer = await app.repository.getConsumer(consumerId);
+        if (consumer === undefined) {
+          throw notFound("The requested consumer was not found.");
+        }
+        const rawCursor = event.queryStringParameters?.cursor;
+        const cursorScope = `admin:consumer-grants:${actor.id}:${consumerId}`;
+        const decoded =
+          rawCursor === undefined
+            ? undefined
+            : await app.cursors.decode(rawCursor, cursorScope);
+        const page = await app.repository.listConsumerSecretGrants(
+          consumerId,
+          consumer.environment,
+          decoded?.lastEvaluatedKey,
+        );
+        const nextCursor =
+          page.nextCursor === undefined
+            ? undefined
+            : await app.cursors.encode({
+                scope: cursorScope,
+                lastEvaluatedKey: JSON.parse(page.nextCursor) as Record<
+                  string,
+                  string
+                >,
+                expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+              });
+        await app.audit.write({
+          correlationId,
+          outcome: "succeeded",
+          actor,
+          operation,
+          target: { consumerId },
+          sourceIp: event.requestContext.http.sourceIp,
+        });
+        return json(200, {
+          consumerId,
+          environment: consumer.environment,
+          grants: page.grants,
+          nextCursor,
+          generatedAt: isoNow(),
+        });
+      }
+      const consumerGrantTarget = consumerGrantTargetFromPath(
+        decodeRequestPath(event.rawPath),
+      );
+      if (
+        event.requestContext.http.method === "DELETE" &&
+        consumerGrantTarget !== undefined
+      ) {
+        const key = requireIdempotencyKey(event.headers["idempotency-key"]);
+        setAuditContext({
+          actor,
+          operation,
+          target: consumerGrantTarget,
+          sourceIp: event.requestContext.http.sourceIp,
+        });
+        const control = await app.secrets.revokeConsumerSecretGrant({
+          ...consumerGrantTarget,
+          actor,
+          idempotencyKey: key,
+        });
+        return await humanOperation(
+          app,
+          actor,
+          key,
+          correlationId,
+          operation,
+          event.requestContext.http.sourceIp,
+          {
+            consumerId: consumerGrantTarget.consumerId,
+            environment: control.environment,
+            secretId: control.secretId,
+            controlVersionId: control.controlVersionId,
+          },
+          () => json(200, control, { etag: control.controlVersionId }),
+        );
+      }
       const apiIdentityMatch =
         /^\/v1\/admin\/consumers\/([a-z][a-z0-9-]{2,63})\/api-identities$/.exec(
           event.rawPath,
@@ -928,6 +1014,17 @@ const secretIdFromSuffixedPath = (
   return new RegExp(`^${secretIdRoutePart}$`).test(secretId)
     ? secretId
     : undefined;
+};
+
+const consumerGrantTargetFromPath = (
+  decodedPath: string,
+): { readonly consumerId: string; readonly secretId: string } | undefined => {
+  const match = new RegExp(
+    `^/v1/admin/consumers/([a-z][a-z0-9-]{2,63})/grants/(${secretIdRoutePart})$`,
+  ).exec(decodedPath);
+  return match === null
+    ? undefined
+    : { consumerId: match[1] as string, secretId: match[2] as string };
 };
 
 const parseArchivedQuery = (value: string | undefined): boolean => {

@@ -141,6 +141,20 @@ export interface AccessRecord {
   readonly changeKind: "secret.changed" | "secret.revoked";
 }
 
+/** One currently effective secret ACL entry, projected for consumer management. */
+export interface ConsumerSecretGrant {
+  readonly secretUid: string;
+  readonly secretId: string;
+  readonly permissions: readonly Permission[];
+  readonly controlVersionId: string;
+  readonly state: SecretState;
+}
+
+export interface ConsumerSecretGrantPage {
+  readonly grants: readonly ConsumerSecretGrant[];
+  readonly nextCursor?: string;
+}
+
 export interface IdentityRecord {
   readonly pk: string;
   readonly sk: "PROFILE";

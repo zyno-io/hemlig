@@ -615,3 +615,124 @@ describe("AgentGrant exact secret IDs", () => {
     expect(body.writeSecretIdPrefixes).toBeUndefined();
   });
 });
+
+describe("consumer secret grant management", () => {
+  it("lists a consumer's effective secret ACL grants", async () => {
+    const listConsumerSecretGrants = jest.fn(async () => ({
+      grants: [
+        {
+          secretUid: "sec-postgres",
+          secretId: "platform/database/postgres",
+          permissions: ["read"],
+          controlVersionId: "ctl-postgres",
+          state: "ACTIVE",
+        },
+      ],
+    }));
+    const app = {
+      config,
+      repository: {
+        getConsumer: jest.fn(async () => ({
+          consumerId: "prod-east",
+          environment: "prod",
+        })),
+        listConsumerSecretGrants,
+      },
+      cursors: {},
+      audit: { write: jest.fn(async () => undefined) },
+    } as unknown as Application;
+    withErrorResponse.mockImplementation(
+      async (
+        event: APIGatewayProxyEventV2,
+        action: (
+          application: Application,
+          correlationId: string,
+          setAuditContext: (context: unknown) => void,
+        ) => Promise<APIGatewayProxyStructuredResultV2>,
+      ) => {
+        try {
+          return await action(app, "corr-1", () => undefined);
+        } catch (error) {
+          return errorResponse(error, "corr-1");
+        }
+      },
+    );
+
+    const response = await handler(
+      buildEvent("GET", "/v1/admin/consumers/prod-east/grants"),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(listConsumerSecretGrants).toHaveBeenCalledWith(
+      "prod-east",
+      "prod",
+      undefined,
+    );
+    expect(JSON.parse(response.body as string)).toMatchObject({
+      consumerId: "prod-east",
+      environment: "prod",
+      grants: [
+        expect.objectContaining({
+          secretUid: "sec-postgres",
+          secretId: "platform/database/postgres",
+        }),
+      ],
+    });
+  });
+
+  it("revokes an encoded secret ID through the dedicated consumer grant route", async () => {
+    const revokeConsumerSecretGrant = jest.fn(async () => ({
+      schemaVersion: 1,
+      secretUid: "sec-postgres",
+      secretId: "platform/database/postgres",
+      controlVersionId: "ctl-revoked",
+      environment: "prod",
+      state: "ACTIVE",
+      createdAt: "2026-08-25T00:00:00.000Z",
+      createdBy: { type: "human", id: "admin-1" },
+      metadata: {},
+      acl: [],
+    }));
+    const app = {
+      config,
+      repository: { markAuditSucceeded: jest.fn(async () => undefined) },
+      secrets: { revokeConsumerSecretGrant },
+      audit: {
+        write: jest.fn(async () => ({ eventId: "evt-1" })),
+      },
+    } as unknown as Application;
+    withErrorResponse.mockImplementation(
+      async (
+        event: APIGatewayProxyEventV2,
+        action: (
+          application: Application,
+          correlationId: string,
+          setAuditContext: (context: unknown) => void,
+        ) => Promise<APIGatewayProxyStructuredResultV2>,
+      ) => {
+        try {
+          return await action(app, "corr-1", () => undefined);
+        } catch (error) {
+          return errorResponse(error, "corr-1");
+        }
+      },
+    );
+
+    const response = await handler(
+      buildEvent(
+        "DELETE",
+        "/v1/admin/consumers/prod-east/grants/platform%2Fdatabase%2Fpostgres",
+        { "idempotency-key": "revoke-consumer-grant" },
+      ),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(revokeConsumerSecretGrant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        consumerId: "prod-east",
+        secretId: "platform/database/postgres",
+        idempotencyKey: "revoke-consumer-grant",
+      }),
+    );
+  });
+});

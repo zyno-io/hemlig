@@ -29,7 +29,7 @@ import type {
   PreparedMutation,
 } from "../repositories/dynamo";
 import type { ObjectStore } from "../repositories/object-store";
-import { assertSecretIdentifier } from "../domain/validation";
+import { assertIdentifier, assertSecretIdentifier } from "../domain/validation";
 import type { EnvironmentService } from "./environments";
 
 export interface CreateSecretInput {
@@ -56,6 +56,13 @@ export interface ArchiveSecretInput {
   readonly secretId: string;
   readonly environment: string;
   readonly expectedControlVersionId: string;
+  readonly actor: Actor;
+  readonly idempotencyKey: string;
+}
+
+export interface RevokeConsumerSecretGrantInput {
+  readonly consumerId: string;
+  readonly secretId: string;
   readonly actor: Actor;
   readonly idempotencyKey: string;
 }
@@ -220,6 +227,41 @@ export class SecretService {
       archive: true,
     });
     return control;
+  }
+
+  /**
+   * Removes one consumer from the source-of-truth ACL, rather than editing
+   * its delivery projection directly. The normal mutation path then emits the
+   * durable revocation and notification for the consumer.
+   */
+  public async revokeConsumerSecretGrant(
+    input: RevokeConsumerSecretGrantInput,
+  ): Promise<ControlRevision> {
+    assertIdentifier(input.consumerId, "consumerId");
+    assertSecretIdentifier(input.secretId, "secretId");
+    const consumer = await this.repository.getConsumer(input.consumerId);
+    if (consumer === undefined) {
+      throw notFound("The requested consumer was not found.");
+    }
+    const head = await this.repository.requireHead(
+      consumer.environment,
+      input.secretId,
+    );
+    const current = await this.getControl(head);
+    const acl = current.acl.filter(
+      (grant) => grant.consumerId !== input.consumerId,
+    );
+    if (acl.length === current.acl.length) {
+      throw notFound("The consumer does not have access to this secret.");
+    }
+    return this.update({
+      secretId: input.secretId,
+      environment: consumer.environment,
+      expectedControlVersionId: current.controlVersionId,
+      acl,
+      actor: input.actor,
+      idempotencyKey: input.idempotencyKey,
+    });
   }
 
   /** Reads a historical archive entry by its immutable identity, not its reusable name. */

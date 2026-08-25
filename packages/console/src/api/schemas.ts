@@ -134,6 +134,22 @@ export const consumerDetail = consumerSummary.extend({
   apiIdentities: z.array(apiIdentity).optional(),
 });
 
+export const consumerSecretGrant = z.object({
+  secretUid: z.string(),
+  secretId: z.string(),
+  permissions: z.array(z.literal("read")),
+  controlVersionId: z.string(),
+  state: z.enum(["PENDING_VALUE", "ACTIVE"]),
+});
+
+export const consumerSecretGrantPage = z.object({
+  consumerId: z.string(),
+  environment: z.string(),
+  grants: z.array(consumerSecretGrant),
+  nextCursor: z.string().optional(),
+  generatedAt: z.string(),
+});
+
 export const apiIdentityListPage = z.object({
   consumerId: z.string(),
   environment: z.string(),
@@ -245,6 +261,8 @@ export type SecretTreePage = z.infer<typeof secretTreePage>;
 export type ConsumerSummary = z.infer<typeof consumerSummary>;
 export type ConsumerListPage = z.infer<typeof consumerListPage>;
 export type ConsumerDetail = z.infer<typeof consumerDetail>;
+export type ConsumerSecretGrant = z.infer<typeof consumerSecretGrant>;
+export type ConsumerSecretGrantPage = z.infer<typeof consumerSecretGrantPage>;
 export type ApiIdentity = z.infer<typeof apiIdentity>;
 export type ApiIdentityListPage = z.infer<typeof apiIdentityListPage>;
 export type EnrollmentResult = z.infer<typeof enrollmentResult>;

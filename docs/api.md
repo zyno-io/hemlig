@@ -501,6 +501,24 @@ Returns one authoritative consumer profile, its creator, the current issuing
 root fingerprint when one exists, and the exact count of active API leaves.
 The count is calculated from identity records rather than a mutable counter.
 
+#### `GET /v1/admin/consumers/{consumerId}/grants?cursor=<opaque>`
+
+Returns every current secret ACL grant held by the consumer, in strongly
+consistent pages of at most 100. Each entry contains its `secretId`, immutable
+`secretUid`, `read` permission, current control revision, and secret state.
+Historical revocation tombstones and archived secrets are omitted: this is the
+effective access view used by the consumer management UI. The cursor is bound
+to the administrator and consumer for 15 minutes.
+
+#### `DELETE /v1/admin/consumers/{consumerId}/grants/{secretId}`
+
+Removes the consumer from that secret's source ACL and writes a new immutable
+control revision. The normal delivery change feed receives a durable
+revocation, so a materialized workload converges even if it was offline during
+the action. This route requires `Authorization` and `Idempotency-Key`; it does
+not accept an `If-Match` header because Hemlig reads the current revision and
+uses a conditional update to reject a concurrent ACL change.
+
 #### `GET /v1/admin/consumers/{consumerId}/api-identities?cursor=<opaque>`
 
 Returns a newest-first page of public API leaf records, including validity,

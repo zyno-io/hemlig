@@ -112,6 +112,66 @@ describe("HemligApi transport", () => {
     expect(headers["if-match"]).toBe('"ctl-1"');
   });
 
+  it("lists and revokes a consumer's encoded secret grant", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonOk({
+          consumerId: "prod-east",
+          environment: "prod",
+          grants: [
+            {
+              secretUid: "sec-postgres",
+              secretId: "platform/database/postgres",
+              permissions: ["read"],
+              controlVersionId: "ctl-postgres",
+              state: "ACTIVE",
+            },
+          ],
+          generatedAt: "2026-08-25T00:00:00.000Z",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonOk({
+          schemaVersion: 1,
+          secretUid: "sec-postgres",
+          secretId: "platform/database/postgres",
+          controlVersionId: "ctl-revoked",
+          environment: "prod",
+          state: "ACTIVE",
+          createdAt: "2026-08-25T00:00:00.000Z",
+          createdBy: { type: "human", id: "admin" },
+          metadata: {},
+          acl: [],
+        }),
+      );
+    const api = new HemligApi(
+      config,
+      tokens,
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await api.listConsumerSecretGrants("prod-east", "cursor-1");
+    await api.revokeConsumerSecretGrant(
+      "prod-east",
+      "platform/database/postgres",
+      "revoke-grant-key",
+    );
+
+    const listRequest = fetchMock.mock.calls[0]?.[0];
+    expect(listRequest?.pathname).toBe("/v1/admin/consumers/prod-east/grants");
+    expect(listRequest?.searchParams.get("cursor")).toBe("cursor-1");
+    const revokeRequest = fetchMock.mock.calls[1]?.[0];
+    const revokeOptions = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(revokeRequest?.pathname).toBe(
+      "/v1/admin/consumers/prod-east/grants/platform%2Fdatabase%2Fpostgres",
+    );
+    expect(revokeOptions.method).toBe("DELETE");
+    expect(
+      (revokeOptions.headers as Record<string, string>)["idempotency-key"],
+    ).toBe("revoke-grant-key");
+  });
+
   it("queries archived catalog entries only when the caller opts in", async () => {
     const fetchMock = vi.fn(async (_url: URL, _options?: RequestInit) =>
       jsonOk({ secrets: [], generatedAt: "2026-08-25T00:00:00.000Z" }),

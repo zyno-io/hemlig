@@ -369,6 +369,94 @@ describe("SecretService.update", () => {
   });
 });
 
+describe("SecretService.revokeConsumerSecretGrant", () => {
+  it("removes only the target consumer from the source ACL and emits a normal revision", async () => {
+    let preparedControl: ControlRevision | undefined;
+    const currentControl: ControlRevision = {
+      ...control,
+      acl: [
+        { consumerId: "prod-east", permissions: ["read"] },
+        { consumerId: "prod-west", permissions: ["read"] },
+      ],
+    };
+    const repository = {
+      getConsumer: jest.fn(async () => ({
+        consumerId: "prod-east",
+        environment: "prod",
+        status: "ACTIVE",
+      })),
+      requireHead: jest.fn(async () => head),
+      getAccess: jest.fn(async () => access),
+      getIdempotency: jest.fn(async () => undefined),
+      prepareMutation: jest.fn(
+        async (prepared: { readonly control: ControlRevision }) => {
+          preparedControl = prepared.control;
+        },
+      ),
+      completeMutation: jest.fn(async () => undefined),
+    };
+    const objects = {
+      getJson: jest.fn(async () => currentControl),
+      putImmutable: jest.fn(async () => ({
+        bucket: "revisions",
+        key: "control",
+        versionId: "new-version",
+        checksumSha256: "checksum",
+      })),
+      extendComplianceRetention: jest.fn(async () => undefined),
+    };
+    const service = new SecretService(
+      repository as never,
+      objects as never,
+      {} as never,
+      config,
+      {} as never,
+    );
+
+    await service.revokeConsumerSecretGrant({
+      consumerId: "prod-east",
+      secretId: "database-credentials",
+      actor: { type: "human", id: "admin" },
+      idempotencyKey: "revoke-prod-east-database",
+    });
+
+    expect(preparedControl?.acl).toEqual([
+      { consumerId: "prod-west", permissions: ["read"] },
+    ]);
+    expect(repository.requireHead).toHaveBeenCalledWith(
+      "prod",
+      "database-credentials",
+    );
+  });
+
+  it("refuses a revoke when the consumer is absent from the secret ACL", async () => {
+    const repository = {
+      getConsumer: jest.fn(async () => ({
+        consumerId: "prod-east",
+        environment: "prod",
+      })),
+      requireHead: jest.fn(async () => head),
+    };
+    const objects = { getJson: jest.fn(async () => control) };
+    const service = new SecretService(
+      repository as never,
+      objects as never,
+      {} as never,
+      config,
+      {} as never,
+    );
+
+    await expect(
+      service.revokeConsumerSecretGrant({
+        consumerId: "prod-west",
+        secretId: "database-credentials",
+        actor: { type: "human", id: "admin" },
+        idempotencyKey: "revoke-prod-west-database",
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+});
+
 describe("SecretService.archive", () => {
   it("writes an archived control revision with no ACL and preserves the UID-backed payload history", async () => {
     let prepared:

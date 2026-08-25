@@ -216,6 +216,29 @@ export class HemligApi {
     );
   }
 
+  public listConsumerSecretGrants(
+    consumerId: string,
+    cursor?: string,
+  ): Promise<s.ConsumerSecretGrantPage> {
+    return this.request(
+      s.consumerSecretGrantPage,
+      `/v1/admin/consumers/${encode(consumerId)}/grants`,
+      { query: { cursor } },
+    );
+  }
+
+  public revokeConsumerSecretGrant(
+    consumerId: string,
+    secretId: string,
+    idempotencyKey: string,
+  ): Promise<s.ControlRevision> {
+    return this.request(
+      s.controlRevision,
+      `/v1/admin/consumers/${encode(consumerId)}/grants/${encode(secretId)}`,
+      { method: "DELETE", idempotencyKey },
+    );
+  }
+
   public listApiIdentities(
     consumerId: string,
     cursor?: string,

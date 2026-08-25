@@ -17,6 +17,7 @@ import type {
   BootstrapCapabilityRecord,
   CatalogPage,
   ChangePage,
+  ConsumerSecretGrantPage,
   ConsumerProvisioningResult,
   ConsumerRecord,
   ControlRevision,
@@ -911,6 +912,66 @@ export class DynamoRepository {
         response.LastEvaluatedKey === undefined
           ? undefined
           : JSON.stringify(response.LastEvaluatedKey),
+    };
+  }
+
+  /**
+   * Lists the live ACL entries for one consumer. This is intentionally
+   * distinct from listAccess(), which is a delivery change feed and includes
+   * durable revocation tombstones needed by consumers to converge.
+   */
+  public async listConsumerSecretGrants(
+    consumerId: string,
+    environment: string,
+    exclusiveStartKey?: Record<string, string>,
+  ): Promise<ConsumerSecretGrantPage> {
+    const response = await this.dynamo.send(
+      new QueryCommand({
+        TableName: this.config.controlTableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues: {
+          ":pk": `CONSUMER#${consumerId}`,
+          ":prefix": accessSkPrefix(environment),
+        },
+        ExclusiveStartKey: exclusiveStartKey,
+        Limit: 100,
+        ConsistentRead: true,
+      }),
+    );
+    const accessRecords = (response.Items ?? []) as AccessRecord[];
+    const candidates = await Promise.all(
+      accessRecords.map(async (access) => {
+        if (
+          !access.permissions.includes("read") ||
+          access.state === "REVOKED"
+        ) {
+          return undefined;
+        }
+        const head = await this.getHeadBySecretUid(access.secretUid);
+        if (
+          head === undefined ||
+          head.environment !== environment ||
+          head.secretId !== access.secretId ||
+          head.state === "ARCHIVED"
+        ) {
+          return undefined;
+        }
+        return {
+          secretUid: head.secretUid,
+          secretId: head.secretId,
+          permissions: access.permissions,
+          controlVersionId: head.controlVersionId,
+          state: head.state,
+        };
+      }),
+    );
+    return {
+      grants: candidates.filter(
+        (grant): grant is NonNullable<typeof grant> => grant !== undefined,
+      ),
+      ...(response.LastEvaluatedKey === undefined
+        ? {}
+        : { nextCursor: JSON.stringify(response.LastEvaluatedKey) }),
     };
   }
 
