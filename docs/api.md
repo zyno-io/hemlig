@@ -500,6 +500,9 @@ environment-bound and expires after 15 minutes.
 Returns one authoritative consumer profile, its creator, the current issuing
 root fingerprint when one exists, and the exact count of active API leaves.
 The count is calculated from identity records rather than a mutable counter.
+For an enrolled namespace agent, it also includes the attached AgentGrant and
+its exact read/write secret IDs and UIDs. This makes the secret ACL and the
+separate agent-policy layer inspectable together in the consumer UI.
 
 #### `GET /v1/admin/consumers/{consumerId}/grants?cursor=<opaque>`
 
@@ -610,7 +613,8 @@ enroll a consumer yet. `consumerId` must be unused; `environment` must exist.
 
 Secret-ID lists have one to twenty unique canonical IDs and are required
 exactly when their matching capability is present. They are an authorization
-boundary. A grant is `PENDING` until bootstrap
+boundary; Hemlig resolves and persists matching immutable secret UIDs with
+each list. A grant is `PENDING` until bootstrap
 completes, then becomes `ACTIVE`; it cannot silently fall back to a broad
 consumer identity.
 

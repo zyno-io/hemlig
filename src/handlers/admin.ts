@@ -476,9 +476,10 @@ export const handler = async (
         if (consumer === undefined) {
           throw notFound("The requested consumer was not found.");
         }
-        const [activeApiIdentityCount, issuer] = await Promise.all([
+        const [activeApiIdentityCount, issuer, agentGrant] = await Promise.all([
           app.repository.countActiveConsumerApiIdentities(consumerId),
           app.repository.getIssuer(),
+          app.repository.getAgentGrantForConsumer(consumerId),
         ]);
         await app.audit.write({
           correlationId,
@@ -495,6 +496,9 @@ export const handler = async (
           ...(issuer === undefined
             ? {}
             : { rootFingerprint: issuer.fingerprint }),
+          ...(agentGrant === undefined
+            ? {}
+            : { agentGrant: agentGrantResponse(agentGrant) }),
         });
       }
       const consumerGrantsMatch =

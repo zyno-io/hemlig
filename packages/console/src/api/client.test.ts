@@ -172,6 +172,44 @@ describe("HemligApi transport", () => {
     ).toBe("revoke-grant-key");
   });
 
+  it("updates an AgentGrant with the remaining exact permissions", async () => {
+    const fetchMock = vi.fn(async (_url: URL, _options?: RequestInit) =>
+      jsonOk({
+        grantId: "grant-prod-east",
+        consumerId: "prod-east",
+        environment: "prod",
+        capabilities: ["read", "write"],
+        readSecretIds: [],
+        readSecretUids: [],
+        writeSecretIds: ["platform/database/postgres"],
+        writeSecretUids: ["sec-postgres"],
+        status: "ACTIVE",
+        createdAt: "2026-08-25T00:00:00.000Z",
+      }),
+    );
+    const api = new HemligApi(
+      config,
+      tokens,
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await api.updateAgentGrant("grant-prod-east", {
+      capabilities: ["read", "write"],
+      readSecretIds: [],
+      writeSecretIds: ["platform/database/postgres"],
+    });
+
+    const request = fetchMock.mock.calls[0]?.[0];
+    const options = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(request?.pathname).toBe("/v1/admin/agent-grants/grant-prod-east");
+    expect(options.method).toBe("PUT");
+    expect(JSON.parse(options.body as string)).toEqual({
+      capabilities: ["read", "write"],
+      readSecretIds: [],
+      writeSecretIds: ["platform/database/postgres"],
+    });
+  });
+
   it("queries archived catalog entries only when the caller opts in", async () => {
     const fetchMock = vi.fn(async (_url: URL, _options?: RequestInit) =>
       jsonOk({ secrets: [], generatedAt: "2026-08-25T00:00:00.000Z" }),

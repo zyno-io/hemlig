@@ -216,6 +216,22 @@ export class HemligApi {
     );
   }
 
+  public updateAgentGrant(
+    grantId: string,
+    input: {
+      readonly capabilities: readonly ("read" | "write")[];
+      readonly readSecretIds: readonly string[];
+      readonly writeSecretIds: readonly string[];
+      readonly displayName?: string;
+    },
+  ): Promise<s.AgentGrant> {
+    return this.request(
+      s.agentGrant,
+      `/v1/admin/agent-grants/${encode(grantId)}`,
+      { method: "PUT", body: input },
+    );
+  }
+
   public listConsumerSecretGrants(
     consumerId: string,
     cursor?: string,

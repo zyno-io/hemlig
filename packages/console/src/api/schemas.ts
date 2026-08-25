@@ -128,10 +128,25 @@ export const apiIdentity = z.object({
   apiCertificatePem: z.string().optional(),
 });
 
+export const agentGrant = z.object({
+  grantId: z.string(),
+  consumerId: z.string(),
+  environment: z.string(),
+  capabilities: z.array(z.enum(["read", "write"])),
+  readSecretIds: z.array(z.string()),
+  readSecretUids: z.array(z.string()),
+  writeSecretIds: z.array(z.string()),
+  writeSecretUids: z.array(z.string()),
+  displayName: z.string().optional(),
+  status: z.enum(["PENDING", "ACTIVE"]),
+  createdAt: z.string(),
+});
+
 export const consumerDetail = consumerSummary.extend({
   createdBy: actor.optional(),
   rootFingerprint: z.string().optional(),
   apiIdentities: z.array(apiIdentity).optional(),
+  agentGrant: agentGrant.optional(),
 });
 
 export const consumerSecretGrant = z.object({
@@ -261,6 +276,7 @@ export type SecretTreePage = z.infer<typeof secretTreePage>;
 export type ConsumerSummary = z.infer<typeof consumerSummary>;
 export type ConsumerListPage = z.infer<typeof consumerListPage>;
 export type ConsumerDetail = z.infer<typeof consumerDetail>;
+export type AgentGrant = z.infer<typeof agentGrant>;
 export type ConsumerSecretGrant = z.infer<typeof consumerSecretGrant>;
 export type ConsumerSecretGrantPage = z.infer<typeof consumerSecretGrantPage>;
 export type ApiIdentity = z.infer<typeof apiIdentity>;

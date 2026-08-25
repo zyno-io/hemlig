@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRouter, type Router } from "vue-router";
 import type {
+  AgentGrant,
   ConsumerDetail as ConsumerDetailModel,
   ConsumerSecretGrantPage,
   ControlRevision,
@@ -28,6 +29,15 @@ interface FakeApi {
     secretId: string,
     idempotencyKey: string,
   ) => Promise<ControlRevision>;
+  updateAgentGrant: (
+    grantId: string,
+    input: {
+      capabilities: readonly ("read" | "write")[];
+      readSecretIds: readonly string[];
+      writeSecretIds: readonly string[];
+      displayName?: string;
+    },
+  ) => Promise<AgentGrant>;
 }
 
 const consumer = (): ConsumerDetailModel => ({
@@ -49,6 +59,20 @@ const revision = (): ControlRevision => ({
   createdBy: { type: "human", id: "admin" },
   metadata: {},
   acl: [],
+});
+
+const agentGrant = (): AgentGrant => ({
+  grantId: "grant-prod-east",
+  consumerId: "prod-east",
+  environment: "prod",
+  capabilities: ["read", "write"],
+  readSecretIds: ["platform/database/postgres"],
+  readSecretUids: ["sec-postgres"],
+  writeSecretIds: ["platform/database/postgres"],
+  writeSecretUids: ["sec-postgres"],
+  displayName: "Production east",
+  status: "ACTIVE",
+  createdAt: "2026-08-25T00:00:00.000Z",
 });
 
 const buildRouter = (): Router =>
@@ -127,6 +151,7 @@ describe("ConsumerDetail secret access", () => {
       }),
       listConsumerSecretGrants,
       revokeConsumerSecretGrant,
+      updateAgentGrant: async () => agentGrant(),
     });
 
     expect(wrapper.text()).toContain("platform/database/postgres");
@@ -147,5 +172,51 @@ describe("ConsumerDetail secret access", () => {
       expect.any(String),
     );
     expect(listConsumerSecretGrants).toHaveBeenCalledTimes(2);
+  });
+
+  it("revokes only the selected AgentGrant permission", async () => {
+    const updateAgentGrant = vi.fn(async () => ({
+      ...agentGrant(),
+      readSecretIds: [],
+      readSecretUids: [],
+    }));
+    const { wrapper } = await mountView({
+      getConsumer: async () => ({ ...consumer(), agentGrant: agentGrant() }),
+      listApiIdentities: async () => ({
+        consumerId: "prod-east",
+        environment: "prod",
+        apiIdentities: [],
+        generatedAt: "2026-08-25T00:00:00.000Z",
+      }),
+      listConsumerSecretGrants: async () => ({
+        consumerId: "prod-east",
+        environment: "prod",
+        grants: [],
+        generatedAt: "2026-08-25T00:00:00.000Z",
+      }),
+      revokeConsumerSecretGrant: async () => revision(),
+      updateAgentGrant,
+    });
+
+    expect(wrapper.text()).toContain("Agent policy");
+    await wrapper
+      .get(
+        '[aria-label="Revoke read permission for platform/database/postgres"]',
+      )
+      .trigger("click");
+    const dialog = wrapper.get('[role="dialog"]');
+    expect(dialog.text()).toContain("Revoke this agent policy permission?");
+    await dialog
+      .findAll("button")
+      .find((button) => button.text() === "Revoke")
+      ?.trigger("click");
+    await flushPromises();
+
+    expect(updateAgentGrant).toHaveBeenCalledWith("grant-prod-east", {
+      capabilities: ["read", "write"],
+      readSecretIds: [],
+      writeSecretIds: ["platform/database/postgres"],
+      displayName: "Production east",
+    });
   });
 });

@@ -8,6 +8,7 @@ import MutationState from "../components/MutationState.vue";
 import StateBadge from "../components/StateBadge.vue";
 import { inspectCsr } from "../api/csr";
 import type {
+  AgentGrant,
   ApiIdentity,
   ApiIdentityResult,
   ConsumerSecretGrant,
@@ -21,10 +22,11 @@ const props = defineProps<{ env: string; consumerId: string }>();
 const store = useAppStore();
 const queryClient = useQueryClient();
 
+const consumerKey = computed(() => ["consumer", props.consumerId]);
 const identitiesKey = computed(() => ["consumer-identities", props.consumerId]);
 
 const consumer = useQuery({
-  queryKey: computed(() => ["consumer", props.consumerId]),
+  queryKey: consumerKey,
   queryFn: () => store.requireApi().getConsumer(props.consumerId),
 });
 const identities = useQuery({
@@ -57,12 +59,40 @@ const activeCount = computed(
     ).length,
 );
 
+interface AgentSecretPermission {
+  readonly secretId: string;
+  readonly secretUid?: string;
+  readonly permission: "read" | "write";
+}
+
+const agentSecretPermissions = computed<readonly AgentSecretPermission[]>(
+  () => {
+    const agentGrant = consumer.data.value?.agentGrant;
+    if (agentGrant === undefined) {
+      return [];
+    }
+    return [
+      ...agentGrant.readSecretIds.map((secretId, index) => ({
+        secretId,
+        secretUid: agentGrant.readSecretUids[index],
+        permission: "read" as const,
+      })),
+      ...agentGrant.writeSecretIds.map((secretId, index) => ({
+        secretId,
+        secretUid: agentGrant.writeSecretUids[index],
+        permission: "write" as const,
+      })),
+    ];
+  },
+);
+
 const csr = ref("");
 const csrProblem = ref<string | undefined>();
 const rotating = ref(false);
 const showGenerator = ref(false);
 const revokeTarget = ref<ApiIdentity | undefined>();
 const revokeGrantTarget = ref<ConsumerSecretGrant | undefined>();
+const revokeAgentPermissionTarget = ref<AgentSecretPermission | undefined>();
 
 // Pasting an operator-generated CSR remains the default, primary path; this
 // only fills the same textarea the paste/upload flow already validates.
@@ -88,6 +118,36 @@ const grantRevocation = useGuardedMutation<string, ControlRevision>({
       .requireApi()
       .revokeConsumerSecretGrant(props.consumerId, secretId, key),
 });
+const agentGrantRevocation = useGuardedMutation<
+  AgentSecretPermission,
+  AgentGrant
+>({
+  family: "secret",
+  mutate: (target) => {
+    const agentGrant = consumer.data.value?.agentGrant;
+    if (agentGrant === undefined) {
+      throw new Error("The consumer does not have an agent grant.");
+    }
+    return store.requireApi().updateAgentGrant(agentGrant.grantId, {
+      capabilities: agentGrant.capabilities,
+      readSecretIds:
+        target.permission === "read"
+          ? agentGrant.readSecretIds.filter(
+              (secretId) => secretId !== target.secretId,
+            )
+          : agentGrant.readSecretIds,
+      writeSecretIds:
+        target.permission === "write"
+          ? agentGrant.writeSecretIds.filter(
+              (secretId) => secretId !== target.secretId,
+            )
+          : agentGrant.writeSecretIds,
+      ...(agentGrant.displayName === undefined
+        ? {}
+        : { displayName: agentGrant.displayName }),
+    });
+  },
+});
 
 const reloadGrants = (): void => {
   grants.reset();
@@ -95,6 +155,7 @@ const reloadGrants = (): void => {
 };
 
 const refresh = (): void => {
+  void consumer.refetch();
   void identities.refetch();
   reloadGrants();
 };
@@ -136,6 +197,18 @@ const confirmGrantRevoke = async (): Promise<void> => {
   const result = await grantRevocation.submit(target.secretId);
   if (result !== undefined) {
     reloadGrants();
+  }
+};
+
+const confirmAgentPermissionRevoke = async (): Promise<void> => {
+  const target = revokeAgentPermissionTarget.value;
+  if (target === undefined) {
+    return;
+  }
+  revokeAgentPermissionTarget.value = undefined;
+  const result = await agentGrantRevocation.submit(target);
+  if (result !== undefined) {
+    await queryClient.invalidateQueries({ queryKey: consumerKey.value });
   }
 };
 </script>
@@ -201,6 +274,13 @@ const confirmGrantRevoke = async (): Promise<void> => {
       intent="revoke this secret access grant"
       @retry="grantRevocation.retry()"
       @reload="reloadGrants"
+    />
+    <MutationState
+      :phase="agentGrantRevocation.phase.value"
+      :can-retry="agentGrantRevocation.canRetry.value"
+      intent="revoke this agent policy permission"
+      @retry="agentGrantRevocation.retry()"
+      @reload="consumer.refetch()"
     />
 
     <div
@@ -416,6 +496,67 @@ const confirmGrantRevoke = async (): Promise<void> => {
       </button>
     </section>
 
+    <section
+      v-if="consumer.data.value?.agentGrant"
+      class="rounded border border-line bg-surface-raised p-4"
+    >
+      <div>
+        <h2 class="font-medium">Agent policy</h2>
+        <p class="mt-1 text-xs text-ink-muted">
+          Exact per-secret permissions in AgentGrant
+          <span class="mono">{{ consumer.data.value.agentGrant.grantId }}</span
+          >. Revoking one permission leaves the secret ACL and any other
+          permission unchanged.
+        </p>
+      </div>
+
+      <table
+        v-if="agentSecretPermissions.length > 0"
+        class="mt-3 w-full border-collapse text-left"
+      >
+        <thead class="text-xs uppercase tracking-wide text-ink-muted">
+          <tr class="border-b border-line">
+            <th class="py-2 pr-3 font-medium">Secret</th>
+            <th class="py-2 pr-3 font-medium">Permission</th>
+            <th class="py-2 font-medium"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="grant in agentSecretPermissions"
+            :key="`${grant.permission}:${grant.secretUid ?? grant.secretId}`"
+            class="border-b border-line/60"
+          >
+            <td class="py-2 pr-3">
+              <div class="mono text-xs">{{ grant.secretId }}</div>
+              <div
+                v-if="grant.secretUid"
+                class="mono mt-0.5 text-[0.65rem] text-ink-muted"
+              >
+                {{ grant.secretUid }}
+              </div>
+            </td>
+            <td class="py-2 pr-3 text-xs">{{ grant.permission }}</td>
+            <td class="py-2 text-right">
+              <button
+                class="rounded border border-danger/50 px-2 py-1 text-xs text-danger"
+                :aria-label="`Revoke ${grant.permission} permission for ${grant.secretId}`"
+                @click="revokeAgentPermissionTarget = grant"
+              >
+                Revoke
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p
+        v-else
+        class="mt-3 rounded border border-line p-3 text-center text-xs text-ink-muted"
+      >
+        This AgentGrant currently has no secret permissions.
+      </p>
+    </section>
+
     <div
       v-if="revokeTarget"
       class="fixed inset-0 z-10 flex items-center justify-center bg-black/40 p-4"
@@ -492,6 +633,41 @@ const confirmGrantRevoke = async (): Promise<void> => {
           <button
             class="rounded bg-danger px-3 py-1 text-white"
             @click="confirmGrantRevoke"
+          >
+            Revoke
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="revokeAgentPermissionTarget"
+      class="fixed inset-0 z-10 flex items-center justify-center bg-black/40 p-4"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        class="w-full max-w-md rounded border border-line bg-surface-raised p-5"
+      >
+        <h2 class="font-semibold">Revoke this agent policy permission?</h2>
+        <p class="mono mt-2 break-all text-xs">
+          {{ revokeAgentPermissionTarget.permission }}:
+          {{ revokeAgentPermissionTarget.secretId }}
+        </p>
+        <p class="mt-2 text-sm">
+          This removes only this exact permission from the AgentGrant. It does
+          not change the secret ACL or any other permission for this secret.
+        </p>
+        <div class="mt-4 flex justify-end gap-2">
+          <button
+            class="rounded border border-line px-3 py-1"
+            @click="revokeAgentPermissionTarget = undefined"
+          >
+            Cancel
+          </button>
+          <button
+            class="rounded bg-danger px-3 py-1 text-white"
+            @click="confirmAgentPermissionRevoke"
           >
             Revoke
           </button>

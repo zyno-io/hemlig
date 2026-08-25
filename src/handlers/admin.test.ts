@@ -617,6 +617,71 @@ describe("AgentGrant exact secret IDs", () => {
 });
 
 describe("consumer secret grant management", () => {
+  it("includes an attached AgentGrant in consumer detail", async () => {
+    const getAgentGrantForConsumer = jest.fn(async () => ({
+      grantId: "grant-prod-east",
+      consumerId: "prod-east",
+      environment: "prod",
+      capabilities: ["read", "write"],
+      readSecretIds: ["platform/database/postgres"],
+      readSecretUids: ["sec-postgres"],
+      writeSecretIds: ["platform/database/postgres"],
+      writeSecretUids: ["sec-postgres"],
+      status: "ACTIVE",
+      createdAt: "2026-08-25T00:00:00.000Z",
+      createdBy: { type: "human", id: "admin-1" },
+    }));
+    const app = {
+      config,
+      repository: {
+        getConsumer: jest.fn(async () => ({
+          consumerId: "prod-east",
+          environment: "prod",
+          status: "ACTIVE",
+          subjectUri: "spiffe://hemlig/consumer/prod-east",
+          createdAt: "2026-08-25T00:00:00.000Z",
+          createdBy: { type: "human", id: "admin-1" },
+        })),
+        countActiveConsumerApiIdentities: jest.fn(async () => 1),
+        getIssuer: jest.fn(async () => undefined),
+        getAgentGrantForConsumer,
+      },
+      audit: { write: jest.fn(async () => undefined) },
+    } as unknown as Application;
+    withErrorResponse.mockImplementation(
+      async (
+        event: APIGatewayProxyEventV2,
+        action: (
+          application: Application,
+          correlationId: string,
+          setAuditContext: (context: unknown) => void,
+        ) => Promise<APIGatewayProxyStructuredResultV2>,
+      ) => {
+        try {
+          return await action(app, "corr-1", () => undefined);
+        } catch (error) {
+          return errorResponse(error, "corr-1");
+        }
+      },
+    );
+
+    const response = await handler(
+      buildEvent("GET", "/v1/admin/consumers/prod-east"),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(getAgentGrantForConsumer).toHaveBeenCalledWith("prod-east");
+    expect(JSON.parse(response.body as string)).toMatchObject({
+      agentGrant: {
+        grantId: "grant-prod-east",
+        readSecretIds: ["platform/database/postgres"],
+        readSecretUids: ["sec-postgres"],
+        writeSecretIds: ["platform/database/postgres"],
+        writeSecretUids: ["sec-postgres"],
+      },
+    });
+  });
+
   it("lists a consumer's effective secret ACL grants", async () => {
     const listConsumerSecretGrants = jest.fn(async () => ({
       grants: [
