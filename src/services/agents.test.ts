@@ -191,7 +191,7 @@ describe("AgentService", () => {
       getAgentGrantForConsumer: jest.fn(async () => grant),
     } as unknown as DynamoRepository;
     const secrets = {
-      getControlSnapshot: jest.fn(async () => snapshot),
+      getControlSnapshotBySecretUid: jest.fn(async () => snapshot),
       updateFromSnapshot: jest.fn(async () => control("payments/api")),
     } as unknown as SecretService;
     const service = new AgentService(repository, secrets);
@@ -207,7 +207,9 @@ describe("AgentService", () => {
 
     await expect(service.update(input)).resolves.toEqual(control("payments/api"));
 
-    expect(secrets.getControlSnapshot).toHaveBeenCalledWith("prod", "payments/api");
+    expect(secrets.getControlSnapshotBySecretUid).toHaveBeenCalledWith(
+      "sec-payments-api",
+    );
     expect(secrets.updateFromSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({
         secretId: "payments/api",

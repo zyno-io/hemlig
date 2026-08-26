@@ -153,6 +153,24 @@ export class SecretService {
     secretId: string,
   ): Promise<SecretControlSnapshot> {
     const head = await this.repository.requireHead(environment, secretId);
+    return this.controlSnapshotFromHead(head);
+  }
+
+  /**
+   * Loads an immutable secret identity after a caller has already resolved it
+   * from an exact grant. Callers must still verify its public ID and logical
+   * environment before using the result.
+   */
+  public async getControlSnapshotBySecretUid(
+    secretUid: string,
+  ): Promise<SecretControlSnapshot> {
+    const head = await this.repository.requireHeadBySecretUid(secretUid);
+    return this.controlSnapshotFromHead(head);
+  }
+
+  private async controlSnapshotFromHead(
+    head: HeadRecord,
+  ): Promise<SecretControlSnapshot> {
     return { head, control: await this.getControl(head) };
   }
 

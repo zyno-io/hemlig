@@ -144,12 +144,17 @@ export class AgentService {
       input.environment,
       "write",
     );
-    const snapshot = await this.secrets.getControlSnapshot(
-      input.environment,
+    const secretUid = this.requireSecretUidForPermission(
       input.secretId,
+      grant,
+      "write",
     );
+    const snapshot = await this.secrets.getControlSnapshotBySecretUid(secretUid);
     const current = snapshot.control;
-    if (current.environment !== input.environment) {
+    if (
+      current.environment !== input.environment ||
+      current.secretId !== input.secretId
+    ) {
       throw forbidden();
     }
     if (input.metadata === undefined && input.payload === undefined) {
@@ -234,6 +239,24 @@ export class AgentService {
     ) {
       throw forbidden("The agent grant does not allow this secret.");
     }
+  }
+
+  private requireSecretUidForPermission(
+    secretId: string,
+    grant: AgentGrantRecord,
+    permission: AgentCapability,
+  ): string {
+    const secretUid = Array.isArray(grant.secretGrants)
+      ? grant.secretGrants.find(
+          (scope) =>
+            scope.secretId === secretId &&
+            scope.permissions.includes(permission),
+        )?.secretUid
+      : undefined;
+    if (secretUid === undefined) {
+      throw forbidden("The agent grant does not allow this secret.");
+    }
+    return secretUid;
   }
 
   /** A pre-migration record has no canonical pairs and therefore grants nothing. */
