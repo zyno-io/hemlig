@@ -4,7 +4,10 @@ import type {
 } from "../domain/types";
 import type { DynamoRepository } from "../repositories/dynamo";
 import type { AgentNotificationService } from "./agent-notifications";
-import { AgentGrantService } from "./agent-grants";
+import {
+  AgentGrantService,
+  MAX_AGENT_SECRET_GRANTS,
+} from "./agent-grants";
 import type { ConsumerService } from "./consumers";
 import type { EnvironmentService } from "./environments";
 import type { SecretService } from "./secrets";
@@ -193,6 +196,81 @@ describe("AgentGrantService", () => {
         actor,
       }),
     ).rejects.toThrow("duplicate");
+  });
+
+  it("allows a consumer to receive up to one thousand exact secret grants", async () => {
+    const repository = {
+      getConsumer: jest.fn(async () => undefined),
+      requireHead: jest.fn(async (_environment: string, secretId: string) => ({
+        secretUid: `sec-${secretId.replaceAll("/", "-")}`,
+      })),
+      createAgentGrant: jest.fn(async () => undefined),
+    } as unknown as DynamoRepository;
+    const environments = {
+      require: jest.fn(async () => undefined),
+    } as unknown as EnvironmentService;
+    const service = new AgentGrantService(
+      repository,
+      {} as ConsumerService,
+      environments,
+      {} as AgentNotificationService,
+      secretService(),
+    );
+    const exactGrants = Array.from(
+      { length: MAX_AGENT_SECRET_GRANTS },
+      (_, index) => ({
+        secretId: `workloads/secret-${index}`,
+        permissions: ["read"],
+      }),
+    );
+
+    await expect(
+      service.create({
+        consumerId: "trusted-cluster-agent",
+        environment: "staging",
+        capabilities: ["read"],
+        secretGrants: exactGrants,
+        actor,
+      }),
+    ).resolves.toMatchObject({ secretGrants: expect.any(Array) });
+    expect(
+      (repository as unknown as { requireHead: jest.Mock }).requireHead,
+    ).toHaveBeenCalledTimes(MAX_AGENT_SECRET_GRANTS);
+  });
+
+  it("rejects a consumer policy larger than one thousand exact grants", async () => {
+    const repository = {
+      getConsumer: jest.fn(async () => undefined),
+    } as unknown as DynamoRepository;
+    const environments = {
+      require: jest.fn(async () => undefined),
+    } as unknown as EnvironmentService;
+    const service = new AgentGrantService(
+      repository,
+      {} as ConsumerService,
+      environments,
+      {} as AgentNotificationService,
+      secretService(),
+    );
+    const exactGrants = Array.from(
+      { length: MAX_AGENT_SECRET_GRANTS + 1 },
+      (_, index) => ({
+        secretId: `workloads/secret-${index}`,
+        permissions: ["read"],
+      }),
+    );
+
+    await expect(
+      service.create({
+        consumerId: "trusted-cluster-agent",
+        environment: "staging",
+        capabilities: ["read"],
+        secretGrants: exactGrants,
+        actor,
+      }),
+    ).rejects.toThrow(
+      `secretGrants must contain between one and ${MAX_AGENT_SECRET_GRANTS} grants.`,
+    );
   });
 
   it("resolves each selected ID once and retains its UID beside that same ID", async () => {

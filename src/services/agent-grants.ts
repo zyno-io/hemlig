@@ -319,6 +319,12 @@ interface ParsedSecretGrant {
   readonly permissions: readonly AgentCapability[];
 }
 
+/**
+ * A consumer's policy is an exact allow-list. Keep this comfortably above
+ * realistic cluster needs without permitting an unbounded request payload.
+ */
+export const MAX_AGENT_SECRET_GRANTS = 1_000;
+
 const parseSecretGrants = (
   value: unknown,
   capabilities: readonly AgentCapability[],
@@ -327,10 +333,10 @@ const parseSecretGrants = (
   if (
     !Array.isArray(value) ||
     (!allowEmpty && value.length === 0) ||
-    value.length > 20
+    value.length > MAX_AGENT_SECRET_GRANTS
   ) {
     throw badRequest(
-      "secretGrants must contain between one and twenty grants.",
+      `secretGrants must contain between one and ${MAX_AGENT_SECRET_GRANTS} grants.`,
     );
   }
   const grants = value.map((entry): ParsedSecretGrant => {
