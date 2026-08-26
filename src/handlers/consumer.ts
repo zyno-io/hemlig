@@ -131,7 +131,11 @@ export const handler = async (
     }
     if (
       event.requestContext.http.method === "PUT" &&
-      agentSecretMatch !== null
+      agentSecretMatch !== null &&
+      // `secretIdRoutePart` permits a segment named `payload`, so the generic
+      // route also matches an encoded payload subresource unless it is
+      // explicitly excluded so the specific branch below handles it.
+      agentPayloadMatch === null
     ) {
       const key = requireIdempotencyKey(event.headers["idempotency-key"]);
       const body = parseObjectBody(event.body);
