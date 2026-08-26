@@ -144,10 +144,11 @@ export class AgentService {
       input.environment,
       "write",
     );
-    const current = await this.secrets.getControlRevision(
+    const snapshot = await this.secrets.getControlSnapshot(
       input.environment,
       input.secretId,
     );
+    const current = snapshot.control;
     if (current.environment !== input.environment) {
       throw forbidden();
     }
@@ -155,15 +156,18 @@ export class AgentService {
       throw forbidden("An agent update must change metadata and/or payload.");
     }
     this.requireWriteScope(current, grant);
-    return this.secrets.update({
-      secretId: input.secretId,
-      environment: input.environment,
-      expectedControlVersionId: input.expectedControlVersionId,
-      ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
-      ...(input.payload === undefined ? {} : { payload: input.payload }),
-      actor: input.actor,
-      idempotencyKey: input.idempotencyKey,
-    });
+    return this.secrets.updateFromSnapshot(
+      {
+        secretId: input.secretId,
+        environment: input.environment,
+        expectedControlVersionId: input.expectedControlVersionId,
+        ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+        ...(input.payload === undefined ? {} : { payload: input.payload }),
+        actor: input.actor,
+        idempotencyKey: input.idempotencyKey,
+      },
+      snapshot,
+    );
   }
 
   private async requireGrant(

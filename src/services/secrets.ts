@@ -92,6 +92,12 @@ export interface ActiveSecretPayload {
   readonly payload: SecretPayload;
 }
 
+/** A consistent control read retained for a conditional follow-up mutation. */
+export interface SecretControlSnapshot {
+  readonly head: HeadRecord;
+  readonly control: ControlRevision;
+}
+
 export class SecretService {
   public constructor(
     private readonly repository: DynamoRepository,
@@ -133,17 +139,42 @@ export class SecretService {
     environment: string,
     secretId: string,
   ): Promise<ControlRevision> {
+    const snapshot = await this.getControlSnapshot(environment, secretId);
+    return snapshot.control;
+  }
+
+  /**
+   * Reads the current head and immutable control revision together. A scoped
+   * agent write reuses this snapshot, so it does not perform a second name
+   * lookup between obtaining the ETag and conditionally acquiring the lease.
+   */
+  public async getControlSnapshot(
+    environment: string,
+    secretId: string,
+  ): Promise<SecretControlSnapshot> {
     const head = await this.repository.requireHead(environment, secretId);
-    return this.getControl(head);
+    return { head, control: await this.getControl(head) };
   }
 
   public async update(input: UpdateSecretInput): Promise<ControlRevision> {
-    const head = await this.repository.requireHead(
+    const snapshot = await this.getControlSnapshot(
       input.environment,
       input.secretId,
     );
+    return this.updateFromSnapshot(input, snapshot);
+  }
+
+  /**
+   * Applies a mutation from a control snapshot. The expected control revision
+   * remains the DynamoDB lease condition, so reusing a snapshot never weakens
+   * concurrent-writer protection.
+   */
+  public async updateFromSnapshot(
+    input: UpdateSecretInput,
+    snapshot: SecretControlSnapshot,
+  ): Promise<ControlRevision> {
+    const { head, control: currentControl } = snapshot;
     this.assertExpectedVersion(head, input.expectedControlVersionId);
-    const currentControl = await this.getControl(head);
     const metadata = input.metadata ?? currentControl.metadata;
     const acl = input.acl ?? currentControl.acl;
     await this.assertAclEnvironment(

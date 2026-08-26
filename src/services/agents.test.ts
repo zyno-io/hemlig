@@ -1,4 +1,8 @@
-import type { AgentGrantRecord, ControlRevision } from "../domain/types";
+import type {
+  AgentGrantRecord,
+  ControlRevision,
+  HeadRecord,
+} from "../domain/types";
 import type { DynamoRepository } from "../repositories/dynamo";
 import type { SecretService } from "./secrets";
 import { AgentService } from "./agents";
@@ -171,5 +175,46 @@ describe("AgentService", () => {
         payloadVersionId: undefined,
       }),
     ]);
+  });
+
+  it("reuses the authorized control snapshot for an agent payload write", async () => {
+    const snapshot = {
+      head: {
+        secretUid: "sec-payments-api",
+        secretId: "payments/api",
+        environment: "prod",
+        controlVersionId: "ctl-current",
+      } as HeadRecord,
+      control: control("payments/api"),
+    };
+    const repository = {
+      getAgentGrantForConsumer: jest.fn(async () => grant),
+    } as unknown as DynamoRepository;
+    const secrets = {
+      getControlSnapshot: jest.fn(async () => snapshot),
+      updateFromSnapshot: jest.fn(async () => control("payments/api")),
+    } as unknown as SecretService;
+    const service = new AgentService(repository, secrets);
+    const input = {
+      consumerId: "payments-agent",
+      environment: "prod",
+      secretId: "payments/api",
+      expectedControlVersionId: "ctl-current",
+      payload: { TOKEN: { encoding: "utf8" as const, value: "updated" } },
+      actor: { type: "consumer" as const, id: "agent" },
+      idempotencyKey: "snapshot-agent-write",
+    };
+
+    await expect(service.update(input)).resolves.toEqual(control("payments/api"));
+
+    expect(secrets.getControlSnapshot).toHaveBeenCalledWith("prod", "payments/api");
+    expect(secrets.updateFromSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secretId: "payments/api",
+        expectedControlVersionId: "ctl-current",
+        payload: input.payload,
+      }),
+      snapshot,
+    );
   });
 });
