@@ -196,6 +196,8 @@ export interface V1BetaControllerConfig {
   readonly sourceDebounceMilliseconds: number;
   /** Retry after a transient Kubernetes API failure without restarting the Pod. */
   readonly reconcileRetryMilliseconds?: number;
+  /** Upper bound for the exponential retry backoff. */
+  readonly reconcileRetryMaxMilliseconds?: number;
 }
 
 /**
@@ -206,7 +208,14 @@ export interface V1BetaControllerConfig {
 export class HemligV1BetaController {
   private readonly mqtt = new MqttHintManager(() => this.scheduleReconcile());
   private reconcileTimer: NodeJS.Timeout | undefined;
+  private reconcileDueAt = 0;
   private reconciling = false;
+  /** A reconcile was requested while a pass was running; run another after it. */
+  private rerunRequested = false;
+  /** The latest transient resource failure in the current pass, if any. */
+  private passRetryError: { readonly error: unknown } | undefined;
+  /** Consecutive failed passes, used for exponential backoff. */
+  private retryAttempt = 0;
   private watch: k8s.Watch | undefined;
 
   public constructor(
@@ -241,7 +250,7 @@ export class HemligV1BetaController {
         await wait(this.config.intervalMilliseconds, signal);
       } catch (error) {
         this.reportReconcileFailure(error);
-        await wait(this.reconcileRetryDelay(error), signal);
+        await wait(this.nextRetryDelay(error), signal);
       }
     }
     this.mqtt.stop();
@@ -249,9 +258,14 @@ export class HemligV1BetaController {
 
   public async reconcileAll(): Promise<void> {
     if (this.reconciling) {
+      // Dropping this request would lose a watch event or a transient-failure
+      // retry until the next periodic sweep.
+      this.rerunRequested = true;
       return;
     }
     this.reconciling = true;
+    this.rerunRequested = false;
+    this.passRetryError = undefined;
     try {
       const [providers, consumers, imports, secretExports] = await Promise.all([
         this.listCluster<HemligProvider>(providerPlural),
@@ -317,6 +331,19 @@ export class HemligV1BetaController {
       }
     } finally {
       this.reconciling = false;
+    }
+    // Schedule after the pass so a retry cannot fire into the running pass and
+    // be discarded by the guard above.
+    const retry = this.takePassRetry();
+    if (retry === undefined) {
+      this.retryAttempt = 0;
+    } else {
+      this.scheduleReconcile(this.nextRetryDelay(retry.error));
+    }
+    if (this.rerunRequested) {
+      // A change observed during this pass must not wait behind the backoff.
+      this.rerunRequested = false;
+      this.scheduleReconcile();
     }
   }
 
@@ -944,17 +971,22 @@ export class HemligV1BetaController {
     });
   }
 
-  private scheduleReconcile(
-    delayMilliseconds = this.config.sourceDebounceMilliseconds,
-  ): void {
+  private scheduleReconcile(delayMilliseconds = this.eventDelay()): void {
+    const dueAt = performance.now() + delayMilliseconds;
     if (this.reconcileTimer !== undefined) {
-      return;
+      // Keep the earlier pass: an event must not wait behind a long backoff,
+      // and a retry is covered by a sooner pass.
+      if (this.reconcileDueAt <= dueAt) {
+        return;
+      }
+      clearTimeout(this.reconcileTimer);
     }
+    this.reconcileDueAt = dueAt;
     this.reconcileTimer = setTimeout(() => {
       this.reconcileTimer = undefined;
       void this.reconcileAll().catch((error: unknown) => {
         this.reportReconcileFailure(error);
-        this.scheduleReconcile(this.reconcileRetryDelay(error));
+        this.scheduleReconcile(this.nextRetryDelay(error));
       });
     }, delayMilliseconds);
   }
@@ -965,17 +997,40 @@ export class HemligV1BetaController {
    * Containment must not turn a transient remote failure into a ten-minute
    * outage, though: the periodic sweep is only the missed-event safety net.
    */
+  /** While failing, events preempt the backoff at most once per base delay. */
+  private eventDelay(): number {
+    const debounce = this.config.sourceDebounceMilliseconds;
+    return this.retryAttempt === 0
+      ? debounce
+      : Math.max(debounce, this.config.reconcileRetryMilliseconds ?? 1_000);
+  }
+
+  private takePassRetry(): { readonly error: unknown } | undefined {
+    const retry = this.passRetryError;
+    this.passRetryError = undefined;
+    return retry;
+  }
+
   private scheduleTransientResourceRetry(error: unknown): void {
     if (!isTransientResourceError(error)) {
       return;
     }
-    this.scheduleReconcile(this.reconcileRetryDelay(error));
+    // reconcileAll schedules one retry for the whole pass once it finishes.
+    this.passRetryError = { error };
   }
 
-  private reconcileRetryDelay(error: unknown): number {
-    return retryAfterMilliseconds(error)
-      ?? this.config.reconcileRetryMilliseconds
-      ?? 1_000;
+  /**
+   * Capped exponential backoff with jitter, reset by a clean pass. A retry that
+   * fires every second against a persistent failure would load the shared
+   * Hemlig service (and its audit log) from every cluster at once.
+   */
+  private nextRetryDelay(error: unknown): number {
+    const base = this.config.reconcileRetryMilliseconds ?? 1_000;
+    const max = this.config.reconcileRetryMaxMilliseconds ?? 300_000;
+    const ceiling = Math.min(max, base * 2 ** Math.min(this.retryAttempt, 30));
+    this.retryAttempt += 1;
+    const jittered = ceiling / 2 + Math.random() * (ceiling / 2);
+    return Math.max(retryAfterMilliseconds(error) ?? 0, Math.round(jittered));
   }
 
   private reportReconcileFailure(error: unknown): void {
@@ -1007,7 +1062,11 @@ export class HemligV1BetaController {
       await this.watch.watch(
         path,
         {},
-        () => this.scheduleReconcile(),
+        (phase: string, object: unknown) => {
+          if (!isOwnStatusUpdate(phase, object)) {
+            this.scheduleReconcile();
+          }
+        },
         () => {
           if (!signal.aborted) {
             setTimeout(() => {
@@ -1239,17 +1298,50 @@ export const isTransientResourceError = (error: unknown): boolean => {
     return false;
   }
   if (!(error instanceof HemligError)) {
-    // Transport and Kubernetes client failures have no reliable status. They
-    // are safe to retry because all controller operations are idempotent.
-    return true;
+    // Kubernetes API failures carry a numeric status: a missing source Secret
+    // (404), forbidden access (403), or an invalid object (422) will not heal by
+    // retrying, and a watch event reconciles once it is fixed. Transport
+    // failures have no status and are safe to retry because all controller
+    // operations are idempotent.
+    const status = kubernetesStatus(error);
+    return status === undefined || isTransientStatus(status);
   }
+  return isTransientStatus(error.status);
+};
+
+/**
+ * A MODIFIED Hemlig CR whose status already records its current generation is
+ * a status-only write (normally this controller's own); it has no new input.
+ */
+const isOwnStatusUpdate = (phase: string, object: unknown): boolean => {
+  if (phase !== "MODIFIED" || typeof object !== "object" || object === null) {
+    return false;
+  }
+  const resource = object as {
+    readonly apiVersion?: string;
+    readonly metadata?: { readonly generation?: number };
+    readonly status?: { readonly observedGeneration?: number };
+  };
   return (
-    error.status === 408 ||
-    error.status === 409 ||
-    error.status === 425 ||
-    error.status === 429 ||
-    error.status >= 500
+    resource.apiVersion === `${group}/${version}` &&
+    resource.metadata?.generation !== undefined &&
+    resource.status?.observedGeneration === resource.metadata.generation
   );
+};
+
+const isTransientStatus = (status: number): boolean =>
+  status === 408 ||
+  status === 409 ||
+  status === 425 ||
+  status === 429 ||
+  status >= 500;
+
+const kubernetesStatus = (error: unknown): number | undefined => {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
+  const code = (error as { readonly code?: unknown }).code;
+  return typeof code === "number" ? code : undefined;
 };
 
 const stringMapChecksum = (data: Readonly<Record<string, string>>): string =>

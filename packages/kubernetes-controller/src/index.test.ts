@@ -73,6 +73,54 @@ test("retries transient Hemlig responses but not denied or invalid resources", (
   assert.equal(isTransientResourceError(new HemligError(404, "absent")), false);
 });
 
+test("retries only transient Kubernetes API statuses", () => {
+  const apiError = (code: number) =>
+    Object.assign(new Error(`HTTP-Code: ${code}`), { code });
+  assert.equal(isTransientResourceError(apiError(429)), true);
+  assert.equal(isTransientResourceError(apiError(409)), true);
+  assert.equal(isTransientResourceError(apiError(503)), true);
+  assert.equal(isTransientResourceError(apiError(404)), false);
+  assert.equal(isTransientResourceError(apiError(403)), false);
+  assert.equal(isTransientResourceError(apiError(422)), false);
+  assert.equal(
+    isTransientResourceError(Object.assign(new Error("reset"), { code: "ECONNRESET" })),
+    true,
+  );
+  assert.equal(isTransientResourceError(new Error("socket hang up")), true);
+});
+
+test("backs off exponentially while a reconciliation keeps failing", async () => {
+  let listAttempts = 0;
+  const custom = {
+    async listClusterCustomObject(): Promise<unknown> {
+      listAttempts += 1;
+      throw new Error("apiserver unavailable");
+    },
+    async listCustomObjectForAllNamespaces(): Promise<unknown> {
+      return { items: [] };
+    },
+  };
+  const controller = new HemligV1BetaController(
+    {} as never,
+    custom as never,
+    {
+      intervalMilliseconds: 1,
+      sourceDebounceMilliseconds: 1,
+      reconcileRetryMilliseconds: 10,
+      reconcileRetryMaxMilliseconds: 1_000,
+    },
+  );
+  const abort = new AbortController();
+  const running = controller.run(abort.signal);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  abort.abort();
+  await running;
+
+  // Fixed 10 ms retries would make about 30 attempts in 300 ms; backoff with
+  // equal jitter (5-10, 10-20, 20-40, 40-80, 80-160 ms, ...) allows at most 7.
+  assert.ok(listAttempts >= 3 && listAttempts <= 7, `attempts: ${listAttempts}`);
+});
+
 test("writes reconciliation status as JSON Patch", async () => {
   const statusPatches: unknown[] = [];
   const consumer = {
