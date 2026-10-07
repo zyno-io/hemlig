@@ -1,6 +1,8 @@
 # Hemlig licensing
 
-Copyright (c) 2026 Hemlig contributors.
+Copyright (c) 2026 Signal24 LLC dba Zyno Consulting.
+
+Author: Zyno Consulting <oss@zyno.io>.
 
 Hemlig uses GNU Affero General Public License version 3 only
 (`AGPL-3.0-only`) for the secrets service and administrator console, and MIT

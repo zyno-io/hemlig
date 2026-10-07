@@ -41,5 +41,6 @@
     "vite": "^6.0.7",
     "vitest": "^3",
     "vue-tsc": "^2.2.0"
-  }
+  },
+  "author": "Zyno Consulting <oss@zyno.io>"
 }
