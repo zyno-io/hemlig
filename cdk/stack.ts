@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import {
   Arn,
@@ -1112,6 +1112,10 @@ export class HemligStack extends Stack {
   ): NodejsFunction {
     const sourceEntry = path.resolve(__dirname, "..", entry);
     const packagedEntry = path.resolve(__dirname, "..", "..", entry);
+    const serviceLicense = readFileSync(
+      path.resolve(__dirname, "..", "LICENSE"),
+      "utf8",
+    );
     return new NodejsFunction(this, id, {
       functionName,
       description: `Hemlig ${id}`,
@@ -1122,10 +1126,27 @@ export class HemligStack extends Stack {
       timeout: Duration.seconds(29),
       tracing: lambda.Tracing.ACTIVE,
       environment,
-      bundling: { minify: true, sourceMap: true, target: "node24" },
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        target: "node24",
+        commandHooks: {
+          beforeBundling: () => [],
+          beforeInstall: () => [],
+          // Embed our license text rather than reading the consumer's LICENSE
+          // from inputDir: installed CDK packages may bundle from a different
+          // project root, and Docker bundling uses a container-local outputDir.
+          afterBundling: (_inputDir, outputDir) => [
+            `printf '%s' ${shellArgument(serviceLicense)} > ${shellArgument(path.join(outputDir, "LICENSE"))}`,
+          ],
+        },
+      },
     });
   }
 }
+
+const shellArgument = (value: string): string =>
+  `'${value.replaceAll("'", "'\"'\"'")}'`;
 
 const immutableBucket = (
   scope: Construct,

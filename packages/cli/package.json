@@ -2,7 +2,7 @@
   "name": "@hemlig/cli",
   "version": "0.1.0",
   "description": "Machine-friendly administrator CLI for Hemlig secrets.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "packageManager": "yarn@4.10.3",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -27,5 +27,6 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.8.3"
-  }
+  },
+  "author": "Zyno Consulting <oss@zyno.io>"
 }

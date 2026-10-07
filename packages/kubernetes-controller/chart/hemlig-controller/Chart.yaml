@@ -11,7 +11,8 @@ home: https://github.com/zyno-io/hemlig
 sources:
   - https://github.com/zyno-io/hemlig
 maintainers:
-  - name: Zyno IO
+  - name: Zyno Consulting
+    email: oss@zyno.io
     url: https://github.com/zyno-io
 keywords:
   - secrets
@@ -19,4 +20,4 @@ keywords:
   - hemlig
   - controller
 annotations:
-  artifacthub.io/license: Apache-2.0
+  artifacthub.io/license: MIT

@@ -8,8 +8,11 @@ WORKDIR /workspace
 ENV NODE_ENV=production
 COPY --from=build /workspace/node_modules ./node_modules
 COPY --from=build /workspace/packages/client/package.json ./packages/client/package.json
+COPY --from=build /workspace/packages/client/LICENSE ./packages/client/LICENSE
 COPY --from=build /workspace/packages/client/dist ./packages/client/dist
 COPY --from=build /workspace/packages/kubernetes-controller/package.json ./packages/kubernetes-controller/package.json
+COPY --from=build /workspace/packages/kubernetes-controller/LICENSE ./packages/kubernetes-controller/LICENSE
+COPY --from=build /workspace/packages/kubernetes-controller/LICENSE ./LICENSE
 COPY --from=build /workspace/packages/kubernetes-controller/dist ./packages/kubernetes-controller/dist
 # The Helm chart enforces runAsNonRoot.  Use the unprivileged account supplied
 # by the official Node image. Its numeric UID lets Kubernetes verify that

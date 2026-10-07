@@ -2,7 +2,7 @@
   "name": "@hemlig/kubernetes-controller",
   "version": "0.1.0",
   "description": "Kubernetes import/export controller for Hemlig secrets.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "packageManager": "yarn@4.10.3",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -31,5 +31,6 @@
     "@types/node": "^24.0.0",
     "@types/node-forge": "^1.3.14",
     "typescript": "^5.8.3"
-  }
+  },
+  "author": "Zyno Consulting <oss@zyno.io>"
 }
