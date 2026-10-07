@@ -49,11 +49,11 @@ export class AgentService {
     onAuthorized?: () => Promise<void>,
   ): Promise<SecretReadResult> {
     const grant = await this.requireCapability(consumerId, environment, "read");
-    const control = await this.secrets.getControlRevision(
-      environment,
-      secretId,
-    );
-    this.requireReadScope(control, grant);
+    // The immutable UID is already on the live head. Loading the S3 control
+    // object here defeats conditional reads: even an unchanged secret would
+    // incur a GetObject before SecretService.read can return notModified.
+    const head = await this.repository.requireHead(environment, secretId);
+    this.requireReadScope(head, grant);
     return this.secrets.read(
       consumerId,
       environment,
