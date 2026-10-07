@@ -24,7 +24,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "engines": {
     "node": "24.x"
@@ -38,5 +39,13 @@
     "@types/node": "^24.0.0",
     "typescript": "^5.8.3"
   },
-  "author": "Zyno Consulting <oss@zyno.io>"
+  "author": "Zyno Consulting <oss@zyno.io>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zyno-io/hemlig.git",
+    "directory": "packages/client"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }
