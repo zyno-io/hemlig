@@ -16,7 +16,8 @@ new zone's name servers at its parent registrar/zone.
 
 It is now a Yarn Berry workspace monorepo. The root package remains the AWS
 service/CDK construct; [the workspace map](docs/monorepo.md) describes the
-shared client, Kubernetes import/export controller, and Pulumi provider.
+shared client, [administrator CLI](docs/cli.md), Kubernetes import/export
+controller, and Pulumi provider.
 
 ## Current implementation
 
