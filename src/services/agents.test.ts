@@ -43,6 +43,43 @@ const control = (
 });
 
 describe("AgentService", () => {
+  it("authorizes a conditional read from the head without loading an S3 control revision", async () => {
+    const repository = {
+      getAgentGrantForConsumer: jest.fn(async () => grant),
+      requireHead: jest.fn(async () => ({ secretUid: "sec-payments-api" })),
+    } as unknown as DynamoRepository;
+    const notModified = {
+      notModified: true,
+      controlVersionId: "ctl-current",
+      payloadVersionId: "pay-current",
+    };
+    const secrets = {
+      getControlRevision: jest.fn(),
+      read: jest.fn(async () => notModified),
+    } as unknown as SecretService;
+    const service = new AgentService(repository, secrets);
+    const onAuthorized = jest.fn(async () => undefined);
+
+    const result = await service.read(
+      "payments-agent",
+      "prod",
+      "payments/api",
+      "ctl-current",
+      onAuthorized,
+    );
+
+    expect(result).toEqual(notModified);
+    expect(repository.requireHead).toHaveBeenCalledWith("prod", "payments/api");
+    expect(secrets.getControlRevision).not.toHaveBeenCalled();
+    expect(secrets.read).toHaveBeenCalledWith(
+      "payments-agent",
+      "prod",
+      "payments/api",
+      "ctl-current",
+      onAuthorized,
+    );
+  });
+
   it("rejects a secret whose immutable UID is not in the grant before payload read", async () => {
     const repository = {
       getAgentGrantForConsumer: jest.fn(async () => ({
@@ -54,6 +91,9 @@ describe("AgentService", () => {
             permissions: ["read", "write"],
           },
         ],
+      })),
+      requireHead: jest.fn(async () => ({
+        secretUid: "sec-payments-prod-api",
       })),
     } as unknown as DynamoRepository;
     const secrets = {
@@ -73,6 +113,9 @@ describe("AgentService", () => {
   it("does not authorize a reused secret ID after the originally granted UID is archived", async () => {
     const repository = {
       getAgentGrantForConsumer: jest.fn(async () => grant),
+      requireHead: jest.fn(async () => ({
+        secretUid: "sec-reused-payments-api",
+      })),
     } as unknown as DynamoRepository;
     const secrets = {
       getControlRevision: jest.fn(async () =>
@@ -89,9 +132,10 @@ describe("AgentService", () => {
     expect(secrets.read).not.toHaveBeenCalled();
   });
 
-  it("fails closed for a legacy control revision with no immutable UID", async () => {
+  it("fails closed for a legacy head with no immutable UID", async () => {
     const repository = {
       getAgentGrantForConsumer: jest.fn(async () => grant),
+      requireHead: jest.fn(async () => ({ secretUid: undefined })),
     } as unknown as DynamoRepository;
     const secrets = {
       getControlRevision: jest.fn(async () => ({
@@ -114,6 +158,7 @@ describe("AgentService", () => {
         const { secretGrants: _secretGrants, ...legacyGrant } = grant;
         return legacyGrant as AgentGrantRecord;
       }),
+      requireHead: jest.fn(async () => ({ secretUid: "sec-payments-api" })),
     } as unknown as DynamoRepository;
     const secrets = {
       getControlRevision: jest.fn(async () => control("payments/api")),
@@ -205,7 +250,9 @@ describe("AgentService", () => {
       idempotencyKey: "snapshot-agent-write",
     };
 
-    await expect(service.update(input)).resolves.toEqual(control("payments/api"));
+    await expect(service.update(input)).resolves.toEqual(
+      control("payments/api"),
+    );
 
     expect(secrets.getControlSnapshotBySecretUid).toHaveBeenCalledWith(
       "sec-payments-api",
