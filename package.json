@@ -36,6 +36,7 @@
     "node": "24.x"
   },
   "scripts": {
+    "backfill:agent-sync": "yarn build && node dist/scripts/backfill-agent-sync.js",
     "backfill:console-indexes": "yarn build && node dist/scripts/backfill-console-indexes.js",
     "backfill:secret-id-folders": "yarn build && node dist/scripts/backfill-secret-id-folders.js",
     "migrate:secret-identity": "yarn build && node dist/scripts/migrate-secret-identity.js",

@@ -217,6 +217,24 @@ export interface ConsumerChangePage {
   readonly generatedAt: string;
 }
 
+export interface AgentSyncEntry {
+  readonly secretUid: string;
+  readonly secretId: string;
+  readonly controlVersionId: string;
+  readonly payloadVersionId?: string;
+  readonly state: "PENDING_VALUE" | "ACTIVE" | "REVOKED";
+  readonly permissions: readonly ("read" | "write")[];
+  readonly metadata?: SecretMetadata;
+}
+
+export interface AgentSyncPage {
+  readonly config: AgentConfig;
+  readonly snapshot: boolean;
+  readonly changes: readonly AgentSyncEntry[];
+  readonly nextCursor?: string;
+  readonly syncCursor?: string;
+}
+
 export interface AgentControl {
   readonly secretId: string;
   readonly environment: string;
@@ -331,6 +349,12 @@ export class HemligClient {
 
   public async listAgentChanges(cursor?: string): Promise<ConsumerChangePage> {
     return this.request("GET", withQuery("/v1/changes", { cursor }));
+  }
+
+  public async syncAgent(
+    query: { readonly syncCursor?: string; readonly cursor?: string } = {},
+  ): Promise<AgentSyncPage> {
+    return this.request("GET", withQuery("/v1/agent/sync", query));
   }
 
   public async updateAgentSecret(

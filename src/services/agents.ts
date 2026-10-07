@@ -84,10 +84,14 @@ export class AgentService {
       environment,
       secretId,
     );
-    if (grant.capabilities.includes("read")) {
-      this.requireReadScope(control, grant);
-    } else {
+    if (
+      grant.capabilities.includes("write") &&
+      control.secretUid !== undefined &&
+      this.hasSecretPermission(grant, control.secretUid, "write")
+    ) {
       this.requireWriteScope(control, grant);
+    } else {
+      this.requireReadScope(control, grant);
     }
     return control;
   }
@@ -149,7 +153,8 @@ export class AgentService {
       grant,
       "write",
     );
-    const snapshot = await this.secrets.getControlSnapshotBySecretUid(secretUid);
+    const snapshot =
+      await this.secrets.getControlSnapshotBySecretUid(secretUid);
     const current = snapshot.control;
     if (
       current.environment !== input.environment ||

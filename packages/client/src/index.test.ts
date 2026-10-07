@@ -6,6 +6,33 @@ import {
   type TransportRequest,
 } from "./index";
 
+test("agent synchronization passes opaque checkpoint and page cursors without bearer auth", async () => {
+  const requests: TransportRequest[] = [];
+  const transport: HemligTransport = {
+    request: async (request) => {
+      requests.push(request);
+      return {
+        status: 200,
+        headers: {},
+        body: { config: {}, snapshot: false, changes: [], syncCursor: "next" },
+      };
+    },
+  };
+  const client = new HemligClient(
+    new URL("https://api.example.test"),
+    transport,
+  );
+  await client.syncAgent({ syncCursor: "checkpoint+/=" });
+  await client.syncAgent({ cursor: "page+/=" });
+  assert.equal(requests[0]?.url.pathname, "/v1/agent/sync");
+  assert.equal(
+    requests[0]?.url.searchParams.get("syncCursor"),
+    "checkpoint+/=",
+  );
+  assert.equal(requests[1]?.url.searchParams.get("cursor"), "page+/=");
+  assert.equal(requests[0]?.headers?.authorization, undefined);
+});
+
 test("admin payload write carries the ETag and idempotency key", async () => {
   const requests: TransportRequest[] = [];
   const transport: HemligTransport = {

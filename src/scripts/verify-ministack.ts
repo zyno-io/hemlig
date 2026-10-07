@@ -16,6 +16,9 @@ import type { AppConfig } from "../aws/config";
 import { ObjectStore } from "../repositories/object-store";
 import { DynamoRepository } from "../repositories/dynamo";
 import { stableJson } from "../util/encoding";
+import { AgentSyncService } from "../services/agent-sync";
+import { CursorService } from "../services/cursor";
+import type { AgentGrantRecord } from "../domain/types";
 
 const endpoint = process.env.AWS_ENDPOINT_URL ?? "http://localhost:4566";
 const region = process.env.AWS_REGION ?? "us-east-1";
@@ -286,6 +289,66 @@ const run = async (): Promise<void> => {
       "Secret revision index did not return the expected control revision.",
     );
   }
+  // Exercise the real transaction/query/cursor expressions against MiniStack,
+  // including a late update, coalescing, and opaque checkpoint reuse.
+  const head = await repository.requireHead("local", secretId);
+  await repository.agentSync.backfillHead(head);
+  await repository.agentSync.markReady("local");
+  const sync = new AgentSyncService(
+    repository,
+    new CursorService(repository),
+    config,
+  );
+  const agentGrant: AgentGrantRecord = {
+    pk: "AGENT_GRANT#local",
+    sk: "PROFILE",
+    grantId: "local",
+    consumerId: "local-east",
+    environment: "local",
+    status: "ACTIVE",
+    capabilities: ["write"],
+    secretGrants: [{ secretId, secretUid, permissions: ["write"] }],
+    createdAt: "2026-10-07T00:00:00Z",
+    createdBy: { type: "system", id: "ministack-verify" },
+  };
+  const initial = await sync.sync("local-east", "local", {}, agentGrant);
+  if (
+    initial.changes[0]?.controlVersionId !== "ctl-local" ||
+    initial.syncCursor === undefined
+  )
+    throw new Error("Agent sync initial projection failed.");
+  await repository.agentSync.backfillHead(head);
+  const delta = await sync.sync(
+    "local-east",
+    "local",
+    { syncCursor: initial.syncCursor },
+    agentGrant,
+  );
+  if (
+    delta.snapshot ||
+    delta.changes.length !== 1 ||
+    delta.syncCursor === undefined
+  )
+    throw new Error("Agent sync delta projection failed.");
+  const state = await repository.agentSync.state("local");
+  const latest = await repository.agentSync.page(
+    "local",
+    0,
+    state?.sequence ?? 0,
+  );
+  if (latest.records.length !== 1)
+    throw new Error("Agent sync failed to coalesce old projections.");
+  const unchanged = await sync.sync(
+    "local-east",
+    "local",
+    { syncCursor: delta.syncCursor },
+    agentGrant,
+  );
+  if (
+    unchanged.changes.length !== 0 ||
+    unchanged.syncCursor !== delta.syncCursor
+  )
+    throw new Error("Agent sync changed an idle checkpoint.");
   let deleteDenied = false;
   try {
     const deleteObject = new DeleteObjectCommand({
