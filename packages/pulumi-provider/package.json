@@ -2,7 +2,7 @@
   "name": "@hemlig/pulumi-provider",
   "version": "0.1.0",
   "description": "Pulumi dynamic provider for Hemlig secret control-plane resources.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "packageManager": "yarn@4.10.3",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

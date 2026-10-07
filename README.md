@@ -19,6 +19,13 @@ service/CDK construct; [the workspace map](docs/monorepo.md) describes the
 shared client, [administrator CLI](docs/cli.md), Kubernetes import/export
 controller, and Pulumi provider.
 
+The server and administrator console are licensed under **AGPL-3.0-only**.
+The client, CLI, Kubernetes controller, Pulumi provider, CDK integration and
+OpenAPI contract are **MIT**. Commercial hosting is allowed; modified AGPL
+services must offer their corresponding source to their network users. See
+[the licensing policy](LICENSING.md) for component boundaries and earlier
+Apache releases.
+
 ## Current implementation
 
 The current implementation provides the payload/control-revision workflow,

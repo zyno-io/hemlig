@@ -17,6 +17,10 @@ Use `yarn build:all`, `yarn lint:all`, and `yarn test:all` for workspace-wide
 commands. The controller and Pulumi package intentionally depend on the shared
 client rather than importing Lambda source or duplicating HTTP request shapes.
 
+The server and administrator console are AGPL-3.0-only; client and integration
+code is MIT. See [licensing](../LICENSING.md) for the exact subtree boundaries,
+package contents and commercial-hosting source obligations.
+
 The [administrator CLI](cli.md) uses the shared client for secret creation,
 metadata/ACL updates, payload reads/writes, and archival. It accepts explicit
 operation keys and revision ETags and does not manage Kubernetes mirror CRs.

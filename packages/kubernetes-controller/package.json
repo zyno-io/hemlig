@@ -2,7 +2,7 @@
   "name": "@hemlig/kubernetes-controller",
   "version": "0.1.0",
   "description": "Kubernetes import/export controller for Hemlig secrets.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "packageManager": "yarn@4.10.3",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

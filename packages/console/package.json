@@ -2,7 +2,7 @@
   "name": "@hemlig/console",
   "version": "0.1.0",
   "description": "Browser management console for the Hemlig administrator API.",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "packageManager": "yarn@4.10.3",
@@ -11,7 +11,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc -b && vite build",
+    "build": "vue-tsc -b && vite build && cp LICENSE dist/LICENSE && cp ../client/LICENSE dist/LICENSE-MIT",
     "preview": "vite preview",
     "lint": "vue-tsc --noEmit",
     "test": "vitest run",
