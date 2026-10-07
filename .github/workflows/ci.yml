@@ -237,9 +237,11 @@ jobs:
       - name: Pack and verify publishable manifests
         run: node scripts/release.mjs pack "$RELEASE_TAG"
       - name: Dry-run npm publication
+        env:
+          NPM_DIST_TAG: ${{ steps.release.outputs.npm_tag }}
         run: |
-          for archive in release-artifacts/hemlig-{client,cli,pulumi-provider}.tgz; do
-            npm publish "$archive" --dry-run --access public --ignore-scripts
+          for archive in ./release-artifacts/hemlig-{client,cli,pulumi-provider}.tgz; do
+            npm publish "$archive" --dry-run --access public --ignore-scripts --tag "$NPM_DIST_TAG"
           done
       - name: Record package checksums
         run: (cd release-artifacts && sha256sum ./*.tgz > SHA256SUMS)

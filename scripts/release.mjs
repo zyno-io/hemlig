@@ -106,7 +106,7 @@ export function validatePackedManifest(manifest, pkg, version) {
 }
 
 function readArchive(directory, pkg, version) {
-  const filename = path.join(directory, pkg.archive);
+  const filename = path.resolve(directory, pkg.archive);
   const contents = readFileSync(filename);
   const json = run("tar", ["-xOf", filename, "package/package.json"], {
     stdio: ["ignore", "pipe", "inherit"],
