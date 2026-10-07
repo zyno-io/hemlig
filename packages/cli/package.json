@@ -1,0 +1,31 @@
+{
+  "name": "@hemlig/cli",
+  "version": "0.1.0",
+  "description": "Machine-friendly administrator CLI for Hemlig secrets.",
+  "license": "Apache-2.0",
+  "packageManager": "yarn@4.10.3",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "hemlig": "dist/main.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test dist/*.test.js"
+  },
+  "dependencies": {
+    "@hemlig/client": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.3"
+  }
+}

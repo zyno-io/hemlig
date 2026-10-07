@@ -560,7 +560,7 @@ export class HemligClient {
     environment: string,
     secretId: string,
     controlVersionId: string,
-    input: Pick<ControlRevision, "metadata" | "acl">,
+    input: Partial<Pick<ControlRevision, "metadata" | "acl">>,
     idempotencyKey: string,
   ): Promise<ControlRevision> {
     return this.request(
