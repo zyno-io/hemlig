@@ -17,6 +17,9 @@ Use `yarn build:all`, `yarn lint:all`, and `yarn test:all` for workspace-wide
 commands. The controller and Pulumi package intentionally depend on the shared
 client rather than importing Lambda source or duplicating HTTP request shapes.
 
+The [release workflow](releases.md) creates GitHub releases from version tags and
+publishes the client, administrator CLI and Pulumi provider to npm after CI.
+
 The server and administrator console are AGPL-3.0-only; client and integration
 code is MIT. See [licensing](../LICENSING.md) for the exact subtree boundaries,
 package contents and commercial-hosting source obligations.
