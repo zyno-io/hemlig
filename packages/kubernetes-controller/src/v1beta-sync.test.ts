@@ -5,7 +5,7 @@ import {
   HemligError,
   type AgentSyncEntry,
   type AgentConfig,
-} from "@hemlig/client";
+} from "@zyno-io/hemlig-client";
 import { HemligV1BetaController } from "./v1beta";
 
 type Resource = {

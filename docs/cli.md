@@ -1,7 +1,7 @@
 # Hemlig administrator CLI
 
-`@hemlig/cli` lives in `packages/cli` and exposes the `hemlig` executable. It
-uses [`@hemlig/client`](../packages/client/src/index.ts) against the
+`@zyno-io/hemlig-cli` lives in `packages/cli` and exposes the `hemlig` executable. It
+uses [`@zyno-io/hemlig-client`](../packages/client/src/index.ts) against the
 [administrator API](api.md) and [OpenAPI contract](../openapi/consumer-secrets.yaml).
 It requires Node.js 24. It manages existing environments; it does not provision
 Hemlig infrastructure, enroll consumers, redeem bootstrap tokens, or manage
@@ -11,9 +11,9 @@ Kubernetes `HemligSecretImport` / `HemligSecretExport` resources.
 
 ```bash
 yarn install --immutable
-yarn workspace @hemlig/client build
-yarn workspace @hemlig/cli build
-yarn workspace @hemlig/cli exec hemlig --help
+yarn workspace @zyno-io/hemlig-client build
+yarn workspace @zyno-io/hemlig-cli build
+yarn workspace @zyno-io/hemlig-cli exec hemlig --help
 ```
 
 `node packages/cli/dist/main.js --help` also works. The package declares the

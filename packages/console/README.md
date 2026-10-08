@@ -1,4 +1,4 @@
-# @hemlig/console
+# @zyno-io/hemlig-console
 
 Browser management interface for the Hemlig administrator API.
 

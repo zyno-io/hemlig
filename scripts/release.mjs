@@ -11,13 +11,17 @@ import { pathToFileURL } from "node:url";
 
 export const releasePackages = [
   {
-    name: "@hemlig/client",
+    name: "@zyno-io/hemlig-client",
     directory: "packages/client",
     archive: "hemlig-client.tgz",
   },
-  { name: "@hemlig/cli", directory: "packages/cli", archive: "hemlig-cli.tgz" },
   {
-    name: "@hemlig/pulumi-provider",
+    name: "@zyno-io/hemlig-cli",
+    directory: "packages/cli",
+    archive: "hemlig-cli.tgz",
+  },
+  {
+    name: "@zyno-io/hemlig-pulumi-provider",
     directory: "packages/pulumi-provider",
     archive: "hemlig-pulumi-provider.tgz",
   },
@@ -69,8 +73,8 @@ export function preparePackages(root, version) {
       throw new Error(`Unexpected publish metadata for ${pkg.name}.`);
     }
     if (
-      pkg.name !== "@hemlig/client" &&
-      manifest.dependencies?.["@hemlig/client"] !== "workspace:*"
+      pkg.name !== "@zyno-io/hemlig-client" &&
+      manifest.dependencies?.["@zyno-io/hemlig-client"] !== "workspace:*"
     ) {
       throw new Error(
         `${pkg.name} must use the client workspace before packing.`,
@@ -93,14 +97,17 @@ export function validatePackedManifest(manifest, pkg, version) {
     throw new Error(`Archive metadata does not match ${pkg.name}@${version}.`);
   }
   if (
-    pkg.name !== "@hemlig/client" &&
-    manifest.dependencies?.["@hemlig/client"] !== version
+    pkg.name !== "@zyno-io/hemlig-client" &&
+    manifest.dependencies?.["@zyno-io/hemlig-client"] !== version
   ) {
     throw new Error(
-      `${pkg.name} archive must depend on @hemlig/client@${version}.`,
+      `${pkg.name} archive must depend on @zyno-io/hemlig-client@${version}.`,
     );
   }
-  if (pkg.name === "@hemlig/cli" && manifest.bin?.hemlig !== "dist/main.js") {
+  if (
+    pkg.name === "@zyno-io/hemlig-cli" &&
+    manifest.bin?.hemlig !== "dist/main.js"
+  ) {
     throw new Error("CLI archive must expose the hemlig executable.");
   }
 }

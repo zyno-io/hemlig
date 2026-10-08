@@ -102,7 +102,7 @@ cross-caller tokens fail without exposing their contents. Expired checkpoints,
 scope changes, or a replaced index epoch produce `410 sync_reset_required`.
 Incomplete/backfilled indexes produce `503 sync_index_not_ready`.
 
-Keep the contract in OpenAPI, backend-owned domain types, and `@hemlig/client`.
+Keep the contract in OpenAPI, backend-owned domain types, and `@zyno-io/hemlig-client`.
 The consumer API already routes through its default Lambda integration.
 Sync remains audited under the existing handler policy; do not change audit
 retention or tracing as part of this work.

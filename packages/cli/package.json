@@ -1,5 +1,5 @@
 {
-  "name": "@hemlig/cli",
+  "name": "@zyno-io/hemlig-cli",
   "version": "0.1.0",
   "description": "Machine-friendly administrator CLI for Hemlig secrets.",
   "license": "MIT",
@@ -23,7 +23,7 @@
     "test": "node --test dist/*.test.js"
   },
   "dependencies": {
-    "@hemlig/client": "workspace:*"
+    "@zyno-io/hemlig-client": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

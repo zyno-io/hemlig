@@ -231,9 +231,9 @@ jobs:
         run: node scripts/release.mjs prepare "$RELEASE_TAG"
       - name: Build client, CLI and Pulumi provider
         run: |
-          yarn workspace @hemlig/client build
-          yarn workspace @hemlig/cli build
-          yarn workspace @hemlig/pulumi-provider build
+          yarn workspace @zyno-io/hemlig-client build
+          yarn workspace @zyno-io/hemlig-cli build
+          yarn workspace @zyno-io/hemlig-pulumi-provider build
       - name: Pack and verify publishable manifests
         run: node scripts/release.mjs pack "$RELEASE_TAG"
       - name: Dry-run npm publication

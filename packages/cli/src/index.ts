@@ -8,7 +8,7 @@ import {
   type ControlRevision,
   type HemligTransport,
   type SecretPayload,
-} from "@hemlig/client";
+} from "@zyno-io/hemlig-client";
 
 const commands = [
   "create",

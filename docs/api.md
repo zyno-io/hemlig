@@ -711,7 +711,7 @@ Start with no query parameters for a current-state snapshot. Continue every
 `nextCursor` using `?cursor=<opaque>` until the final page supplies
 `syncCursor`. After applying the entire cycle successfully, persist that
 checkpoint and pass it as `?syncCursor=<opaque>` on the next synchronization.
-The parameters are mutually exclusive. `@hemlig/client` exposes
+The parameters are mutually exclusive. `@zyno-io/hemlig-client` exposes
 `syncAgent({ syncCursor })` and `syncAgent({ cursor })`.
 
 ```json
