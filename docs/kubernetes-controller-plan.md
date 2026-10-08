@@ -2,10 +2,10 @@
 
 ## Purpose and release target
 
-This plan turns the existing @hemlig/kubernetes-controller prototype into a
+This plan turns the existing @zyno-io/hemlig-kubernetes-controller prototype into a
 safe, operable open-source Kubernetes integration. It remains a TypeScript,
 Node 24, Yarn Berry workspace in this monorepo and consumes only
-@hemlig/client. It neither imports Lambda implementation modules nor creates a
+@zyno-io/hemlig-client. It neither imports Lambda implementation modules nor creates a
 parallel AWS deployment.
 
 The controller has two deliberately one-way functions:
@@ -570,7 +570,7 @@ logging.
 - [x] Enforce UID-bound exact read/write AgentGrant permissions before every
       secret operation; derive the agent read delivery ACL projection from the
       same canonical records.
-- [x] Add current snapshot and bootstrap/agent response types to @hemlig/client.
+- [x] Add current snapshot and bootstrap/agent response types to @zyno-io/hemlig-client.
       The controller must consume canonical contracts rather than duplicate HTTP
       shapes.
 

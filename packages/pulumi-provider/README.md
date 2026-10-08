@@ -1,13 +1,13 @@
 # Hemlig Pulumi provider
 
-`@hemlig/pulumi-provider` is a dynamic Pulumi provider for Hemlig control-plane
+`@zyno-io/hemlig-pulumi-provider` is a dynamic Pulumi provider for Hemlig control-plane
 secrets. It uses the administrator API; AWS infrastructure remains owned by the
 `hemlig/cdk` construct.
 
 ```ts
 import * as k8s from "@pulumi/kubernetes";
 import * as pulumi from "@pulumi/pulumi";
-import { Provider } from "@hemlig/pulumi-provider";
+import { Provider } from "@zyno-io/hemlig-pulumi-provider";
 
 const hemlig = new Provider("hemlig", {
   adminUrl: "https://admin.example.com",

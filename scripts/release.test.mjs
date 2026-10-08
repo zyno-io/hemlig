@@ -61,8 +61,8 @@ test("release preparation preserves metadata and aligns the three workspace vers
           version: "0.1.0",
           license: "MIT",
           author: "Zyno Consulting <oss@zyno.io>",
-          ...(pkg.name !== "@hemlig/client"
-            ? { dependencies: { "@hemlig/client": "workspace:*" } }
+          ...(pkg.name !== "@zyno-io/hemlig-client"
+            ? { dependencies: { "@zyno-io/hemlig-client": "workspace:*" } }
             : {}),
         }),
       );
@@ -74,8 +74,11 @@ test("release preparation preserves metadata and aligns the three workspace vers
       );
       assert.equal(manifest.version, "0.2.0-rc.1");
       assert.equal(manifest.author, "Zyno Consulting <oss@zyno.io>");
-      if (pkg.name !== "@hemlig/client")
-        assert.equal(manifest.dependencies["@hemlig/client"], "workspace:*");
+      if (pkg.name !== "@zyno-io/hemlig-client")
+        assert.equal(
+          manifest.dependencies["@zyno-io/hemlig-client"],
+          "workspace:*",
+        );
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -89,13 +92,13 @@ test("packed consumers must refer to the released client version and expose the 
     version: "0.2.0",
     license: "MIT",
     bin: { hemlig: "dist/main.js" },
-    dependencies: { "@hemlig/client": "0.2.0" },
+    dependencies: { "@zyno-io/hemlig-client": "0.2.0" },
   };
   validatePackedManifest(manifest, pkg, "0.2.0");
   for (const dependency of ["workspace:*", "0.1.0", "^0.2.0"]) {
     assert.throws(() =>
       validatePackedManifest(
-        { ...manifest, dependencies: { "@hemlig/client": dependency } },
+        { ...manifest, dependencies: { "@zyno-io/hemlig-client": dependency } },
         pkg,
         "0.2.0",
       ),
@@ -107,9 +110,9 @@ test("packed consumers must refer to the released client version and expose the 
 });
 
 test("publication permits new versions and byte-identical retries", async () => {
-  const pkg = { name: "@hemlig/client", integrity: "sha512-same" };
+  const pkg = { name: "@zyno-io/hemlig-client", integrity: "sha512-same" };
   const absent = await publicationNeeded(pkg, "0.2.0", async (url) => {
-    assert.equal(url, "https://registry.npmjs.org/%40hemlig%2Fclient/0.2.0");
+    assert.equal(url, "https://registry.npmjs.org/%40zyno-io%2Fhemlig-client/0.2.0");
     return new Response(null, { status: 404 });
   });
   assert.equal(absent, true);
@@ -120,7 +123,7 @@ test("publication permits new versions and byte-identical retries", async () => 
 });
 
 test("publication rejects conflicting versions, registry failures and interrupted lookups", async () => {
-  const pkg = { name: "@hemlig/client", integrity: "sha512-same" };
+  const pkg = { name: "@zyno-io/hemlig-client", integrity: "sha512-same" };
   await assert.rejects(
     publicationNeeded(pkg, "0.2.0", async () =>
       Response.json({ dist: { integrity: "sha512-different" } }),

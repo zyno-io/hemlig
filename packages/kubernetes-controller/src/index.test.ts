@@ -12,7 +12,7 @@ import {
   HemligV1BetaController,
   isTransientResourceError,
 } from "./v1beta";
-import { HemligError } from "@hemlig/client";
+import { HemligError } from "@zyno-io/hemlig-client";
 
 test("converts UTF-8 and base64 Hemlig entries into Kubernetes Secret data", () => {
   const data = payloadToKubernetesData({

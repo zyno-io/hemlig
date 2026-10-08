@@ -11,8 +11,8 @@ import {
   type ControlRevision,
   type SecretMetadata,
   type SecretPayload,
-} from "@hemlig/client";
-import { NodeHttpsTransport } from "@hemlig/client/node";
+} from "@zyno-io/hemlig-client";
+import { NodeHttpsTransport } from "@zyno-io/hemlig-client/node";
 import {
   isOwnedByImport,
   kubernetesDataToPayload,

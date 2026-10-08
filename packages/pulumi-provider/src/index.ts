@@ -8,8 +8,8 @@ import {
   type Grant,
   type SecretMetadata,
   type SecretPayload,
-} from "@hemlig/client";
-import { NodeHttpsTransport } from "@hemlig/client/node";
+} from "@zyno-io/hemlig-client";
+import { NodeHttpsTransport } from "@zyno-io/hemlig-client/node";
 
 export interface HemligProviderArgs {
   /** Admin custom-domain URL, for example https://admin.example.com. */

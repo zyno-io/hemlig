@@ -13,7 +13,7 @@ Consumer Secrets API. It owns:
 - the reusable CDK construct, reference app, and AWS resource topology.
 
 It also contains a Kubernetes import/export controller and a Pulumi dynamic
-provider. Both consume the typed `@hemlig/client` package; neither imports
+provider. Both consume the typed `@zyno-io/hemlig-client` package; neither imports
 Lambda code or provisions a parallel AWS service topology.
 
 Each Hemlig installation consumes the `hemlig/cdk` construct from its own CDK

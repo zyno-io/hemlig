@@ -1,5 +1,5 @@
 {
-  "name": "@hemlig/kubernetes-controller",
+  "name": "@zyno-io/hemlig-kubernetes-controller",
   "version": "0.1.0",
   "description": "Kubernetes import/export controller for Hemlig secrets.",
   "license": "MIT",
@@ -22,8 +22,8 @@
     "test": "node --test dist/*.test.js"
   },
   "dependencies": {
-    "@hemlig/client": "workspace:*",
     "@kubernetes/client-node": "^1.3.0",
+    "@zyno-io/hemlig-client": "workspace:*",
     "mqtt": "^5.15.2",
     "node-forge": "^1.4.0"
   },

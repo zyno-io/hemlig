@@ -5,7 +5,7 @@ import type {
   TransportResponse,
 } from "./index";
 
-/** Node-only mTLS transport. Import from `@hemlig/client/node`. */
+/** Node-only mTLS transport. Import from `@zyno-io/hemlig-client/node`. */
 export class NodeHttpsTransport implements HemligTransport {
   public constructor(private readonly options: https.AgentOptions = {}) {}
 

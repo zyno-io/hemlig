@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { SecretPayload } from "@hemlig/client";
+import type { SecretPayload } from "@zyno-io/hemlig-client";
 
 /** Metadata fields shared by the controller's Kubernetes resource adapters. */
 export interface ObjectMeta {

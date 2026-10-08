@@ -8,9 +8,9 @@ The workflow creates a GitHub release for the existing tag, with generated notes
 three npm package archives and their `SHA256SUMS`. It then publishes these public
 MIT packages in dependency order:
 
-1. `@hemlig/client`
-2. `@hemlig/cli`
-3. `@hemlig/pulumi-provider`
+1. `@zyno-io/hemlig-client`
+2. `@zyno-io/hemlig-cli`
+3. `@zyno-io/hemlig-pulumi-provider`
 
 The existing workflow also publishes the tagged controller image and the Helm
 chart to the `zyno-io/charts` release repository. The root AWS/CDK package,
@@ -35,8 +35,8 @@ The packages are public and require Node.js 24. For example, after `v0.2.0`
 has been published:
 
 ```bash
-npm install --global @hemlig/cli@0.2.0
-npm install @hemlig/pulumi-provider@0.2.0
+npm install --global @zyno-io/hemlig-cli@0.2.0
+npm install @zyno-io/hemlig-pulumi-provider@0.2.0
 hemlig --help
 ```
 
@@ -61,7 +61,7 @@ support, and has `id-token: write`. npm exchanges the job's GitHub OIDC identity
 for a short-lived publish credential and generates provenance attestations.
 There is no stored npm publishing credential or token fallback in the workflow.
 The npm account configuring the publishers must have write access to the
-`@hemlig` packages. Confirm all three publisher registrations before pushing a
+`@zyno-io` packages. Confirm all three publisher registrations before pushing a
 release tag. npm-side package setup is separate from this repository change;
 the workflow does not create or configure trusted publisher registrations.
 

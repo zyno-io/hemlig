@@ -5,7 +5,10 @@ import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { type HemligTransport, type TransportRequest } from "@hemlig/client";
+import {
+  type HemligTransport,
+  type TransportRequest,
+} from "@zyno-io/hemlig-client";
 import { runCli } from "./index";
 
 const token = "test.header.signature";

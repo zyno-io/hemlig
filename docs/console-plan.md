@@ -61,12 +61,12 @@ corrected.
 | Token acquisition and lifetime in the browser  | Frontend | The provider is configured by the backend deployment.                       |
 | Retry, reconciliation, and pagination behavior | Frontend | Driven by backend properties — see [the leakage table](#what-leaks-across). |
 | Static hosting infrastructure                  | Seam     | Defined in backend CDK, serves frontend output.                             |
-| `@hemlig/client`                               | Seam     | Typed expression of the contract, used by both.                             |
+| `@zyno-io/hemlig-client`                       | Seam     | Typed expression of the contract, used by both.                             |
 
 ### Rules
 
 1. **Only HTTPS and JSON cross.** No shared runtime code except the typed
-   contract in `@hemlig/client`. No server-rendered anything. No websocket, no
+   contract in `@zyno-io/hemlig-client`. No server-rendered anything. No websocket, no
    long poll.
 2. **The console holds no AWS credential** and imports no AWS SDK. It cannot
    reach DynamoDB, S3, KMS, or CloudWatch, and no future feature may change
@@ -598,7 +598,7 @@ directly.
 
 # Part II — Frontend
 
-**Owner:** `packages/console`, package `@hemlig/console`, `private: true`.
+**Owner:** `packages/console`, package `@zyno-io/hemlig-console`, `private: true`.
 **Deliverable:** a static bundle. No server, no AWS credential, no AWS SDK.
 **Consumes:** the contract from [Part I](#part-i--backend), and nothing else.
 
@@ -635,7 +635,7 @@ packages/console/
     main.ts                   # fetch config.json, then mount
     config.ts                 # runtime config schema + loader
     auth/                     # oidc-client-ts wiring, in-memory token store
-    api/                      # @hemlig/client + FetchTransport + zod schemas
+    api/                      # @zyno-io/hemlig-client + FetchTransport + zod schemas
     stores/                   # session, environment context
     composables/              # useIdempotentMutation, useCursorPages, useEtag
     components/
@@ -888,7 +888,7 @@ operator has for correlating against the audit archive and access logs.
 Three things belong to neither side alone. Each has a named owner anyway,
 because shared ownership is how contracts rot.
 
-## S1. `@hemlig/client` — the contract in TypeScript
+## S1. `@zyno-io/hemlig-client` — the contract in TypeScript
 
 **Owner:** backend, because it expresses the contract. **Consumed by:** the
 console, the Pulumi provider, and the Kubernetes controller.
@@ -897,9 +897,9 @@ The package already has the right shape — a `HemligTransport` interface with
 the Node implementation separate. It needs to stop importing Node built-ins
 from the core entry point:
 
-- Subpath exports: `@hemlig/client` (isomorphic core — types, `HemligClient`,
+- Subpath exports: `@zyno-io/hemlig-client` (isomorphic core — types, `HemligClient`,
   `HemligTransport`, `HemligError`, a new `FetchTransport` on global `fetch`)
-  and `@hemlig/client/node` (`NodeHttpsTransport`).
+  and `@zyno-io/hemlig-client/node` (`NodeHttpsTransport`).
 - Widen `TransportRequest["method"]` to include `DELETE`. It is currently
   `"GET" | "POST" | "PUT"` and cannot express identity revocation.
 - Drop the `randomUUID` default for idempotency keys. Make the key explicit, or
@@ -1110,7 +1110,7 @@ proceed independently, and the contract test tells you when they have drifted.
 | B7  | Terminal enrollment error code                                | `src/services/consumers.ts`, `docs/api.md`                                                         | —          |
 | B8  | `sourceIp` through `humanOperation`; stale doc corrections    | `src/services/operations.ts`, handlers, `docs/`                                                    | —          |
 | B10 | OpenAPI and docs                                              | `openapi/`, `docs/`, `README.md`                                                                   | B2–B8      |
-| S1  | `@hemlig/client` split and new methods                        | `packages/client/`                                                                                 | B10        |
+| S1  | `@zyno-io/hemlig-client` split and new methods                | `packages/client/`                                                                                 | B10        |
 
 B2 and B3 are opt-in: existing machine-to-machine callers remain audience-only
 until `consoleFqdn` and `oidcAdminScope` are configured together. B4–B8 are
