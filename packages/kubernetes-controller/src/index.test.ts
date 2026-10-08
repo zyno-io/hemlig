@@ -254,3 +254,171 @@ test("retries a transient Kubernetes API failure without exiting", async () => {
 
   assert.ok(listAttempts > 1);
 });
+
+interface TestWatchSession {
+  readonly path: string;
+  readonly query: Record<string, unknown>;
+  readonly event: (phase: string, object: unknown) => void;
+  readonly done: (error: unknown) => void;
+}
+
+const settleWatch = async (): Promise<void> => {
+  // Drain the async list/reconcile chain without advancing the periodic timer.
+  for (let i = 0; i < 20; i += 1) {
+    await Promise.resolve();
+  }
+};
+
+const watchController = () => {
+  const sessions: TestWatchSession[] = [];
+  let passes = 0;
+  const controller = new HemligV1BetaController(
+    {} as never,
+    {
+      async listClusterCustomObject(): Promise<unknown> {
+        passes += 1;
+        return { items: [] };
+      },
+      async listCustomObjectForAllNamespaces(): Promise<unknown> {
+        return { items: [] };
+      },
+    } as never,
+    { intervalMilliseconds: 600_000, sourceDebounceMilliseconds: 1 },
+  );
+  Object.assign(controller, {
+    watch: {
+      async watch(
+        path: string,
+        query: Record<string, unknown>,
+        event: TestWatchSession["event"],
+        done: TestWatchSession["done"],
+      ): Promise<AbortController> {
+        sessions.push({ path, query, event, done });
+        return new AbortController();
+      },
+    },
+  });
+  return { controller, sessions, passes: () => passes };
+};
+
+test("resumes each Kubernetes watch from its bookmark without reconciling bookmarks", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const fixture = watchController();
+  const abort = new AbortController();
+  const running = fixture.controller.run(abort.signal);
+  await settleWatch();
+  const secretWatch = fixture.sessions.find(
+    (s) => s.path === "/api/v1/secrets",
+  );
+  const namespaceWatch = fixture.sessions.find(
+    (s) => s.path === "/api/v1/namespaces",
+  );
+  assert.ok(secretWatch);
+  assert.ok(namespaceWatch);
+  assert.deepEqual(secretWatch.query, { allowWatchBookmarks: true });
+
+  secretWatch.event("ADDED", { metadata: { resourceVersion: "secret-event" } });
+  t.mock.timers.tick(1);
+  await settleWatch();
+  assert.equal(fixture.passes(), 2);
+
+  secretWatch.event("BOOKMARK", {
+    metadata: { resourceVersion: "secret-bookmark" },
+  });
+  namespaceWatch.event("BOOKMARK", {
+    metadata: { resourceVersion: "namespace-bookmark" },
+  });
+  t.mock.timers.tick(1);
+  await settleWatch();
+  assert.equal(fixture.passes(), 2);
+
+  secretWatch.done(null);
+  namespaceWatch.done(null);
+  t.mock.timers.tick(1_000);
+  await settleWatch();
+  const resumedSecret = fixture.sessions
+    .filter((s) => s.path === secretWatch.path)
+    .at(-1);
+  const resumedNamespace = fixture.sessions
+    .filter((s) => s.path === namespaceWatch.path)
+    .at(-1);
+  assert.ok(resumedSecret);
+  assert.ok(resumedNamespace);
+  assert.deepEqual(resumedSecret.query, {
+    allowWatchBookmarks: true,
+    resourceVersion: "secret-bookmark",
+  });
+  assert.deepEqual(resumedNamespace.query, {
+    allowWatchBookmarks: true,
+    resourceVersion: "namespace-bookmark",
+  });
+  assert.equal(fixture.passes(), 2);
+
+  resumedSecret.event("DELETED", {
+    metadata: { resourceVersion: "secret-deleted" },
+  });
+  t.mock.timers.tick(1);
+  await settleWatch();
+  assert.equal(fixture.passes(), 3);
+  abort.abort();
+  await running;
+});
+
+test("advances the watch position even when a controller status update needs no reconciliation", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const fixture = watchController();
+  const abort = new AbortController();
+  const running = fixture.controller.run(abort.signal);
+  await settleWatch();
+  const session = fixture.sessions.find((s) =>
+    s.path.endsWith("/hemligsecretimports"),
+  );
+  assert.ok(session);
+  session.event("MODIFIED", {
+    apiVersion: "hemlig.io/v1beta1",
+    metadata: { generation: 1, resourceVersion: "status-update" },
+    status: { observedGeneration: 1 },
+  });
+  t.mock.timers.tick(1);
+  await settleWatch();
+  assert.equal(fixture.passes(), 1);
+  session.done(null);
+  t.mock.timers.tick(1_000);
+  await settleWatch();
+  const resumed = fixture.sessions
+    .filter((s) => s.path === session.path)
+    .at(-1);
+  assert.equal(resumed?.query.resourceVersion, "status-update");
+  abort.abort();
+  await running;
+});
+
+for (const delivery of ["stream", "http"] as const) {
+  test(`rebuilds the snapshot after an expired ${delivery} watch position`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const fixture = watchController();
+    const abort = new AbortController();
+    const running = fixture.controller.run(abort.signal);
+    await settleWatch();
+    const session = fixture.sessions.find((s) => s.path === "/api/v1/secrets");
+    assert.ok(session);
+    session.event("BOOKMARK", { metadata: { resourceVersion: "expired" } });
+    if (delivery === "stream") {
+      session.event("ERROR", { code: 410, reason: "Expired" });
+      session.done(null);
+    } else {
+      session.done({ statusCode: 410 });
+    }
+    t.mock.timers.tick(1);
+    await settleWatch();
+    assert.equal(fixture.passes(), 2);
+    t.mock.timers.tick(1_000);
+    await settleWatch();
+    const fresh = fixture.sessions
+      .filter((s) => s.path === session.path)
+      .at(-1);
+    assert.deepEqual(fresh?.query, { allowWatchBookmarks: true });
+    abort.abort();
+    await running;
+  });
+}

@@ -217,6 +217,7 @@ export class HemligV1BetaController {
   /** Consecutive failed passes, used for exponential backoff. */
   private retryAttempt = 0;
   private watch: k8s.Watch | undefined;
+  private readonly watchResourceVersions = new Map<string, string>();
 
   public constructor(
     private readonly core: CoreApi,
@@ -1059,15 +1060,43 @@ export class HemligV1BetaController {
       return;
     }
     try {
+      const resourceVersion = this.watchResourceVersions.get(path);
       await this.watch.watch(
         path,
-        {},
+        {
+          allowWatchBookmarks: true,
+          ...(resourceVersion === undefined ? {} : { resourceVersion }),
+        },
         (phase: string, object: unknown) => {
-          if (!isOwnStatusUpdate(phase, object)) {
+          if (phase === "ERROR") {
+            if (isExpiredWatch(object)) {
+              this.watchResourceVersions.delete(path);
+              this.scheduleReconcile();
+            }
+            return;
+          }
+          const metadata = (object as { readonly metadata?: ObjectMeta } | null)
+            ?.metadata;
+          if (typeof metadata?.resourceVersion === "string") {
+            this.watchResourceVersions.set(path, metadata.resourceVersion);
+          }
+          // A fresh watch can replay the existing collection. Reconnect from
+          // its last event/bookmark instead of turning that replay into full
+          // cluster reconciliations; bookmarks themselves contain no change.
+          if (
+            (phase === "ADDED" ||
+              phase === "MODIFIED" ||
+              phase === "DELETED") &&
+            !isOwnStatusUpdate(phase, object)
+          ) {
             this.scheduleReconcile();
           }
         },
-        () => {
+        (error: unknown) => {
+          if (isExpiredWatch(error)) {
+            this.watchResourceVersions.delete(path);
+            this.scheduleReconcile();
+          }
           if (!signal.aborted) {
             setTimeout(() => {
               void this.watchPath(path, signal);
@@ -1075,7 +1104,11 @@ export class HemligV1BetaController {
           }
         },
       );
-    } catch {
+    } catch (error) {
+      if (isExpiredWatch(error)) {
+        this.watchResourceVersions.delete(path);
+        this.scheduleReconcile();
+      }
       if (!signal.aborted) {
         setTimeout(() => {
           void this.watchPath(path, signal);
@@ -1327,6 +1360,17 @@ const isOwnStatusUpdate = (phase: string, object: unknown): boolean => {
     resource.metadata?.generation !== undefined &&
     resource.status?.observedGeneration === resource.metadata.generation
   );
+};
+
+const isExpiredWatch = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const status = error as {
+    readonly code?: unknown;
+    readonly statusCode?: unknown;
+  };
+  return status.code === 410 || status.statusCode === 410;
 };
 
 const isTransientStatus = (status: number): boolean =>
