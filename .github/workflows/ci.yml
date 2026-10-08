@@ -313,5 +313,4 @@ jobs:
       - name: Publish exact release archives in dependency order
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: node scripts/release.mjs publish "$RELEASE_TAG"
