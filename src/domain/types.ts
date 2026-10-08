@@ -104,6 +104,7 @@ export interface PayloadRevision {
 }
 
 export interface HeadRecord {
+  readonly syncSequence?: number;
   readonly pk: string;
   readonly sk: "HEAD";
   readonly secretUid: string;
@@ -330,6 +331,39 @@ export interface ObjectReference {
 export interface ChangePage {
   readonly changes: readonly AccessRecord[];
   readonly nextCursor?: string;
+}
+
+/** Safe agent synchronization response; never contains an ACL or payload. */
+export interface AgentSyncEntry {
+  readonly secretUid: string;
+  readonly secretId: string;
+  readonly controlVersionId: string;
+  readonly payloadVersionId?: string;
+  readonly state: "PENDING_VALUE" | "ACTIVE" | "REVOKED";
+  readonly permissions: readonly AgentCapability[];
+  readonly metadata?: SecretMetadata;
+}
+
+export interface AgentSyncConfig {
+  readonly consumerId: string;
+  readonly environment: string;
+  readonly grant: Pick<
+    AgentGrantRecord,
+    "grantId" | "capabilities" | "secretGrants"
+  >;
+  readonly mqtt: {
+    readonly endpoint: string;
+    readonly clientId: string;
+    readonly topic: string;
+  };
+}
+
+export interface AgentSyncPage {
+  readonly config: AgentSyncConfig;
+  readonly snapshot: boolean;
+  readonly changes: readonly AgentSyncEntry[];
+  readonly nextCursor?: string;
+  readonly syncCursor?: string;
 }
 
 export interface CatalogPage {

@@ -19,14 +19,26 @@ The resource topology is intentionally split:
 - `HemligSecretExport` pushes an application-owned source Secret through the
   consumer's remote write exact-secret scope. It cannot set ACLs.
 
-The controller watches CRs, namespaces, and Secrets. Source changes debounce
-for 250 ms; MQTT QoS 1 hints trigger prompt remote pulls. A ten-minute snapshot
-remains the correctness path for missed watches or broker messages. Current raw
+The controller watches CRs and referenced namespaces and Secrets. Source changes
+debounce for 250 ms; MQTT QoS 1 hints trigger prompt index synchronization. Every
+ten minutes it also queries the compact version index after its saved checkpoint
+to repair missed watches or broker messages. Unchanged imports and exports make
+no individual remote read. Missing or damaged targets and changed sources still
+converge through the authoritative agent API. Current raw
 manifests install one replica and use a zero-surge, one-unavailable Deployment
 strategy, so an upgrade cannot briefly run two independent reconcilers. Lease
 leadership, manual enrollment, and leaf rotation are tracked in the
 [controller plan](../../docs/kubernetes-controller-plan.md) before multi-replica
 support is declared.
+
+The server must support `GET /v1/agent/sync`, and existing environments must
+complete the dry-run-first `backfill:agent-sync` operator before upgrading the
+controller. New environments initialize their index automatically. The cursor
+and identity/API fingerprint are persisted in HemligConsumer status only after
+resource reconciliation succeeds. Expired or scope-changed cursors trigger a
+fresh index snapshot. Older servers or incomplete indexes fail visibly and
+back off; the controller does not fall back to per-secret polling. See the
+[sync design and rollout plan](../../docs/agent-sync-plan.md).
 
 For a release install, use the Zyno chart repository:
 

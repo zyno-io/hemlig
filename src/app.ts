@@ -7,6 +7,7 @@ import { AuditQueryService, AuditWriter } from "./services/audit";
 import { AgentGrantService } from "./services/agent-grants";
 import { AgentNotificationService } from "./services/agent-notifications";
 import { AgentService } from "./services/agents";
+import { AgentSyncService } from "./services/agent-sync";
 import { ConsumerService } from "./services/consumers";
 import { CursorService } from "./services/cursor";
 import { EnvironmentService } from "./services/environments";
@@ -21,6 +22,7 @@ export interface Application {
   readonly auditQueries: AuditQueryService;
   readonly agentGrants: AgentGrantService;
   readonly agents: AgentService;
+  readonly agentSync: AgentSyncService;
   readonly cursors: CursorService;
   readonly environments: EnvironmentService;
   readonly secrets: SecretService;
@@ -65,6 +67,11 @@ export const createApplication = (config: AppConfig): Application => {
     secrets,
     consumers,
     agents: new AgentService(repository, secrets),
+    agentSync: new AgentSyncService(
+      repository,
+      new CursorService(repository),
+      config,
+    ),
     agentGrants: new AgentGrantService(
       repository,
       consumers,

@@ -70,6 +70,10 @@ test("retries transient Hemlig responses but not denied or invalid resources", (
     true,
   );
   assert.equal(isTransientResourceError(new HemligError(403, "denied")), false);
+  assert.equal(
+    isTransientResourceError(new HemligError(412, "precondition_failed")),
+    true,
+  );
   assert.equal(isTransientResourceError(new HemligError(404, "absent")), false);
 });
 

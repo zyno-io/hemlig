@@ -43,6 +43,24 @@ const control = (
 });
 
 describe("AgentService", () => {
+  it("permits write-only control within a mixed-capability grant without requiring read scope", async () => {
+    const repository = {
+      getAgentGrantForConsumer: jest.fn(async () => ({
+        ...grant,
+        secretGrants: [{ ...grant.secretGrants[0]!, permissions: ["write"] }],
+      })),
+    } as unknown as DynamoRepository;
+    const secrets = {
+      getControlRevision: jest.fn(async () => control("payments/api")),
+    } as unknown as SecretService;
+    const service = new AgentService(repository, secrets);
+    const result = await service.control(
+      "payments-agent",
+      "prod",
+      "payments/api",
+    );
+    expect(result.secretUid).toBe("sec-payments-api");
+  });
   it("rejects a secret whose immutable UID is not in the grant before payload read", async () => {
     const repository = {
       getAgentGrantForConsumer: jest.fn(async () => ({
@@ -205,7 +223,9 @@ describe("AgentService", () => {
       idempotencyKey: "snapshot-agent-write",
     };
 
-    await expect(service.update(input)).resolves.toEqual(control("payments/api"));
+    await expect(service.update(input)).resolves.toEqual(
+      control("payments/api"),
+    );
 
     expect(secrets.getControlSnapshotBySecretUid).toHaveBeenCalledWith(
       "sec-payments-api",

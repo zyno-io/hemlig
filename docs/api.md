@@ -697,6 +697,80 @@ operator-managed Kubernetes Secret. This endpoint is not a durable event log.
 
 ## Agent routes
 
+### `GET /v1/agent/sync`
+
+Synchronizes a compact UID-bound version index for an active AgentGrant,
+including write-only or empty grants. It returns current safe agent
+configuration and scoped version entries, never payloads or ACLs. Entry
+permissions are effective: read scope also requires the current secret read
+ACL. Organizational metadata is present only for write-authorized entries.
+Archive and read revocation return a revoked entry without a payload version
+unless separately authorized write access remains.
+
+Start with no query parameters for a current-state snapshot. Continue every
+`nextCursor` using `?cursor=<opaque>` until the final page supplies
+`syncCursor`. After applying the entire cycle successfully, persist that
+checkpoint and pass it as `?syncCursor=<opaque>` on the next synchronization.
+The parameters are mutually exclusive. `@hemlig/client` exposes
+`syncAgent({ syncCursor })` and `syncAgent({ cursor })`.
+
+```json
+{
+  "config": {
+    "consumerId": "cluster-prod",
+    "environment": "prod",
+    "grant": {
+      "grantId": "grant-example",
+      "capabilities": ["read"],
+      "secretGrants": [
+        {
+          "secretId": "database-credentials",
+          "secretUid": "sec-example",
+          "permissions": ["read"]
+        }
+      ]
+    },
+    "mqtt": {
+      "endpoint": "iot.example.test",
+      "clientId": "cluster-prod",
+      "topic": "hemlig/example/consumers/cluster-prod"
+    }
+  },
+  "snapshot": false,
+  "changes": [
+    {
+      "secretUid": "sec-example",
+      "secretId": "database-credentials",
+      "controlVersionId": "ctl-example",
+      "payloadVersionId": "pay-example",
+      "permissions": ["read"],
+      "state": "ACTIVE"
+    }
+  ],
+  "syncCursor": "<opaque-server-issued-checkpoint>"
+}
+```
+
+Page cursors expire fifteen minutes after the cycle starts; checkpoints expire
+seven days after its committed range is captured. Tokens are bound to the
+caller, environment, current grant scope, and index epoch. `410
+sync_reset_required` requires a new snapshot. An incomplete index returns
+`503 sync_index_not_ready` until the operator backfill completes. An unchanged
+checkpoint returns an empty delta and the same token.
+
+Updates coalesce to each secret's latest state; this is not an event history.
+Concurrent updates beyond a captured range appear on the next synchronization.
+A missing snapshot entry can reflect such movement and must be checked
+authoritatively before removing a mirror. A revoked old UID never refers to a
+replacement secret that reuses its public ID.
+
+The Kubernetes controller verifies local target checksums and resource status
+before skipping a payload read. Local source changes retain authoritative
+If-Match and Idempotency-Key protections on exports. It saves the checkpoint in
+HemligConsumer status only after resource reconciliation succeeds. MQTT hints,
+reconnects, and periodic passes all resume that checkpoint. See the
+[design and rollout plan](agent-sync-plan.md).
+
 These are mTLS delivery routes for an active AgentGrant only. A normal consumer
 may not use them, and an agent cannot use normal consumer routes to escape its
 UID-bound exact-secret scope. All secret reads still require the agent's regular
@@ -706,6 +780,7 @@ their selected secret UIDs and can never modify an ACL.
 | Route                                      | Purpose                                                                                                                              |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `GET /v1/agent/config`                     | Returns the active grant's safe scope and the exact AWS IoT endpoint/client/topic.                                                   |
+| `GET /v1/agent/sync`                       | Returns current configuration and scoped version changes after a completed checkpoint, including write-only grants.                  |
 | `GET /v1/agent/secrets/{secretId}`         | Conditional payload read within read scope.                                                                                          |
 | `GET /v1/agent/secrets/{secretId}/control` | Returns only agent-visible metadata and ETag, including for a write-only exporter.                                                   |
 | `PUT /v1/agent/secrets/{secretId}`         | Updates agent-allowed metadata with `If-Match`.                                                                                      |

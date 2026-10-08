@@ -7,6 +7,7 @@ import {
   HemligError,
   type AgentConfig,
   type AgentControl,
+  type AgentSyncEntry,
   type ControlRevision,
   type SecretMetadata,
   type SecretPayload,
@@ -48,6 +49,9 @@ interface Condition {
 }
 
 interface ReconciliationStatus {
+  readonly secretUid?: string;
+  readonly syncCursor?: string;
+  readonly syncIdentity?: string;
   readonly observedGeneration?: number;
   readonly controlVersionId?: string;
   readonly payloadVersionId?: string;
@@ -167,6 +171,12 @@ interface ReadyConsumer {
   readonly config: AgentConfig;
   readonly certificate: Buffer;
   readonly privateKey: Buffer;
+  readonly syncEntries: ReadonlyMap<string, AgentSyncEntry>;
+  readonly syncSnapshot: boolean;
+  readonly syncCheckpoint: string;
+  readonly syncIdentity: string;
+  readonly readyStatus: ReconciliationStatus;
+  syncFailed: boolean;
 }
 
 interface IdentitySecret {
@@ -218,6 +228,8 @@ export class HemligV1BetaController {
   private retryAttempt = 0;
   private watch: k8s.Watch | undefined;
   private readonly watchResourceVersions = new Map<string, string>();
+  private secretDependencies = new Set<string>();
+  private namespaceDependencies = new Set<string>();
 
   public constructor(
     private readonly core: CoreApi,
@@ -274,6 +286,29 @@ export class HemligV1BetaController {
         this.listNamespaced<HemligSecretImport>(importPlural),
         this.listNamespaced<HemligSecretExport>(exportPlural),
       ]);
+      this.secretDependencies = new Set([
+        ...consumers.flatMap((resource) =>
+          [
+            resource.spec.identity.secretName,
+            resource.spec.bootstrapTokenRef.name,
+          ].map((name) => `${resource.metadata.namespace}/${name}`),
+        ),
+        ...imports.map(
+          (resource) =>
+            `${resource.metadata.namespace}/${resource.spec.target?.name ?? resource.metadata.name}`,
+        ),
+        ...secretExports.map(
+          (resource) =>
+            `${resource.metadata.namespace}/${resource.spec.source.name}`,
+        ),
+      ]);
+      this.namespaceDependencies = new Set(
+        [...consumers, ...imports, ...secretExports].flatMap((resource) =>
+          resource.metadata.namespace === undefined
+            ? []
+            : [resource.metadata.namespace],
+        ),
+      );
       const providersByName = new Map(
         providers.flatMap((provider) =>
           provider.metadata.name === undefined
@@ -307,6 +342,11 @@ export class HemligV1BetaController {
         )
           ? consumer
           : undefined;
+        if (consumer !== undefined && usableConsumer === undefined) {
+          // An explicit cross-namespace policy removal is a revocation, unlike
+          // a temporarily unavailable consumer. Never leave its owned copy.
+          await this.removeOwnedImport(resource);
+        }
         await this.reconcileImport(resource, usableConsumer);
       }
       for (const resource of secretExports) {
@@ -329,6 +369,20 @@ export class HemligV1BetaController {
           ? consumer
           : undefined;
         await this.reconcileExport(resource, usableConsumer);
+      }
+      for (const consumer of readyConsumers.values()) {
+        if (consumer.syncFailed) continue;
+        await this.setStatus(
+          required(consumer.resource.metadata.namespace, "consumer namespace"),
+          consumerPlural,
+          required(consumer.resource.metadata.name, "consumer name"),
+          {
+            ...consumer.readyStatus,
+            syncCursor: consumer.syncCheckpoint,
+            syncIdentity: consumer.syncIdentity,
+          },
+          consumer.readyStatus,
+        );
       }
     } finally {
       this.reconciling = false;
@@ -372,32 +426,56 @@ export class HemligV1BetaController {
         identity.certificate,
         identity.privateKey,
       );
-      const agentConfig = await client.getAgentConfig();
+      const syncIdentity = createHash("sha256")
+        .update(provider.spec.apiUrl)
+        .update(identity.certificate)
+        .digest("hex");
+      const sync = await this.synchronize(
+        client,
+        resource.status?.syncIdentity === syncIdentity
+          ? resource.status.syncCursor
+          : undefined,
+      );
+      const agentConfig = sync.config;
       this.mqtt.ensure({
         key: resourceKey(resource.metadata),
         ...agentConfig.mqtt,
         certificate: identity.certificate,
         privateKey: identity.privateKey,
       });
+      const readyStatus: ReconciliationStatus = {
+        ...resource.status,
+        observedGeneration: resource.metadata.generation,
+        consumerId: agentConfig.consumerId,
+        environment: agentConfig.environment,
+        grantId: agentConfig.grant.grantId,
+        conditions: [
+          readyCondition(
+            "IdentityReady",
+            "Bootstrap identity is active and scoped by Hemlig.",
+          ),
+        ],
+      };
       await this.setStatus(
         namespace,
         consumerPlural,
         name,
-        {
-          observedGeneration: resource.metadata.generation,
-          consumerId: agentConfig.consumerId,
-          environment: agentConfig.environment,
-          grantId: agentConfig.grant.grantId,
-          conditions: [
-            readyCondition(
-              "IdentityReady",
-              "Bootstrap identity is active and scoped by Hemlig.",
-            ),
-          ],
-        },
+        readyStatus,
         resource.status,
       );
-      return { resource, provider, client, config: agentConfig, ...identity };
+      return {
+        resource,
+        provider,
+        client,
+        config: agentConfig,
+        ...identity,
+        readyStatus,
+        syncIdentity,
+        syncCheckpoint: sync.checkpoint,
+        syncEntries: sync.entries,
+        syncSnapshot: sync.snapshot,
+        syncFailed: false,
+      };
     } catch (error) {
       await this.setFailure(
         namespace,
@@ -410,6 +488,53 @@ export class HemligV1BetaController {
       this.scheduleTransientResourceRetry(error);
       return undefined;
     }
+  }
+
+  private async synchronize(
+    client: HemligClient,
+    syncCursor: string | undefined,
+  ): Promise<{
+    readonly config: AgentConfig;
+    readonly entries: ReadonlyMap<string, AgentSyncEntry>;
+    readonly snapshot: boolean;
+    readonly checkpoint: string;
+  }> {
+    // Restart an expired/scope-changed cycle once. A continuously changing
+    // grant must back off rather than spin indefinitely through snapshots.
+    for (let reset = 0; reset < 2; reset += 1) {
+      const entries = new Map<string, AgentSyncEntry>();
+      let cursor: string | undefined;
+      let config: AgentConfig | undefined;
+      let snapshot = false;
+      try {
+        for (let pageNumber = 0; pageNumber < 1_000; pageNumber += 1) {
+          const page = await client.syncAgent(
+            cursor === undefined ? { syncCursor } : { cursor },
+          );
+          config = page.config;
+          snapshot = page.snapshot;
+          for (const entry of page.changes) entries.set(entry.secretUid, entry);
+          if (page.nextCursor === undefined) {
+            if (page.syncCursor === undefined)
+              throw new Error(
+                "Hemlig sync did not return a completed checkpoint.",
+              );
+            return { config, entries, snapshot, checkpoint: page.syncCursor };
+          }
+          cursor = page.nextCursor;
+        }
+        throw new Error("Hemlig sync exceeded its page limit.");
+      } catch (error) {
+        if (
+          !(error instanceof HemligError) ||
+          error.status !== 410 ||
+          reset !== 0
+        )
+          throw error;
+        syncCursor = undefined;
+      }
+    }
+    throw new Error("Hemlig sync did not complete.");
   }
 
   private async loadOrBootstrapIdentity(
@@ -590,12 +715,35 @@ export class HemligV1BetaController {
     try {
       const targetName = resource.spec.target?.name ?? name;
       const owner = resourceKey(resource.metadata);
-      const ifNoneMatch = await this.currentImportVersion(
+      const selected = consumer.config.grant.secretGrants.find(
+        (grant) => grant.secretId === resource.spec.secretId,
+      );
+      if (
+        !consumer.config.grant.capabilities.includes("read") ||
+        !selected?.permissions.includes("read")
+      )
+        throw new HemligError(403, "Import scope was revoked.");
+      const indexed = consumer.syncEntries.get(selected.secretUid);
+      if (indexed !== undefined && !indexed.permissions.includes("read"))
+        throw new HemligError(403, "Import access was revoked.");
+      const localVersion = await this.currentImportVersion(
         namespace,
         targetName,
         owner,
         resource.status,
+        selected.secretUid,
+        resource.spec.target?.type ?? "Opaque",
       );
+      const currentGeneration =
+        resource.status?.observedGeneration === resource.metadata.generation;
+      if (
+        localVersion !== undefined &&
+        currentGeneration &&
+        (indexed?.controlVersionId === localVersion ||
+          (indexed === undefined && !consumer.syncSnapshot))
+      )
+        return;
+      const ifNoneMatch = currentGeneration ? localVersion : undefined;
       const remote = await consumer.client.getAgentSecret(
         resource.spec.secretId,
         ifNoneMatch,
@@ -614,6 +762,7 @@ export class HemligV1BetaController {
           annotations: {
             "hemlig.io/import-owner": owner,
             "hemlig.io/secret-id": remote.secretId,
+            "hemlig.io/secret-uid": selected.secretUid,
             "hemlig.io/control-version-id": remote.controlVersionId,
             "hemlig.io/payload-version-id": remote.payloadVersionId,
             "hemlig.io/data-checksum": stringMapChecksum(data),
@@ -629,6 +778,7 @@ export class HemligV1BetaController {
         name,
         {
           observedGeneration: resource.metadata.generation,
+          secretUid: selected.secretUid,
           controlVersionId: remote.controlVersionId,
           payloadVersionId: remote.payloadVersionId,
           conditions: [
@@ -668,6 +818,7 @@ export class HemligV1BetaController {
         resource.status,
         error,
       );
+      consumer.syncFailed = true;
       this.scheduleTransientResourceRetry(error);
     }
   }
@@ -693,6 +844,17 @@ export class HemligV1BetaController {
       return;
     }
     try {
+      const selected = consumer.config.grant.secretGrants.find(
+        (grant) => grant.secretId === resource.spec.secretId,
+      );
+      if (
+        !consumer.config.grant.capabilities.includes("write") ||
+        !selected?.permissions.includes("write")
+      )
+        throw new HemligError(403, "Export scope was revoked.");
+      const indexed = consumer.syncEntries.get(selected.secretUid);
+      if (indexed !== undefined && !indexed.permissions.includes("write"))
+        throw new HemligError(403, "Export access was revoked.");
       const source = asSecret(
         await this.core.readNamespacedSecret({
           name: resource.spec.source.name,
@@ -710,9 +872,32 @@ export class HemligV1BetaController {
         ...source.binaryData,
       });
       const checksum = payloadChecksum(payload);
+      const priorStatus = resource.status;
+      if (
+        indexed === undefined &&
+        !consumer.syncSnapshot &&
+        priorStatus?.secretUid === selected.secretUid &&
+        priorStatus.observedGeneration === resource.metadata.generation &&
+        priorStatus.sourceChecksum === checksum &&
+        priorStatus.conditions?.some(
+          (condition) =>
+            condition.type === "Ready" && condition.status === "True",
+        )
+      )
+        return;
       let control: AgentControl | ControlRevision;
       try {
-        control = await consumer.client.getAgentControl(resource.spec.secretId);
+        control =
+          indexed?.metadata === undefined
+            ? await consumer.client.getAgentControl(resource.spec.secretId)
+            : {
+                secretId: indexed.secretId,
+                environment: consumer.config.environment,
+                controlVersionId: indexed.controlVersionId,
+                payloadVersionId: indexed.payloadVersionId,
+                metadata: indexed.metadata,
+                state: indexed.state,
+              };
       } catch (error) {
         if (!(error instanceof HemligError) || error.status !== 404) {
           throw error;
@@ -733,31 +918,29 @@ export class HemligV1BetaController {
           ),
         );
       }
-      const priorStatus = resource.status;
-      if (
+      const payloadMatches =
         priorStatus !== undefined &&
-        priorStatus.observedGeneration === resource.metadata.generation &&
+        priorStatus.secretUid === selected.secretUid &&
         priorStatus.sourceChecksum === checksum &&
-        priorStatus.controlVersionId === control.controlVersionId &&
-        priorStatus.payloadVersionId === control.payloadVersionId
-      ) {
-        return;
-      }
-      const written = await consumer.client.putAgentPayload(
-        resource.spec.secretId,
-        control.controlVersionId,
-        payload,
-        operationKey(
-          resource.metadata,
-          `payload:${checksum}:${control.controlVersionId}`,
-        ),
-      );
+        priorStatus.payloadVersionId === control.payloadVersionId;
+      const written = payloadMatches
+        ? control
+        : await consumer.client.putAgentPayload(
+            resource.spec.secretId,
+            control.controlVersionId,
+            payload,
+            operationKey(
+              resource.metadata,
+              `payload:${checksum}:${control.controlVersionId}`,
+            ),
+          );
       await this.setStatus(
         namespace,
         exportPlural,
         name,
         {
           observedGeneration: resource.metadata.generation,
+          secretUid: selected.secretUid,
           controlVersionId: written.controlVersionId,
           payloadVersionId: written.payloadVersionId,
           sourceChecksum: checksum,
@@ -779,6 +962,11 @@ export class HemligV1BetaController {
         resource.status,
         error,
       );
+      if (!(
+        error instanceof HemligError &&
+        (error.status === 403 || error.status === 404)
+      ))
+        consumer.syncFailed = true;
       this.scheduleTransientResourceRetry(error);
     }
   }
@@ -872,9 +1060,12 @@ export class HemligV1BetaController {
     name: string,
     owner: string,
     status: ReconciliationStatus | undefined,
+    secretUid: string,
+    type: string,
   ): Promise<string | undefined> {
     if (
-      status?.controlVersionId === undefined ||
+      status?.secretUid !== secretUid ||
+      status.controlVersionId === undefined ||
       status.payloadVersionId === undefined
     ) {
       return undefined;
@@ -886,6 +1077,8 @@ export class HemligV1BetaController {
       const annotations = current.metadata?.annotations;
       if (
         !isOwnedByImport(current.metadata, owner) ||
+        current.type !== type ||
+        annotations?.["hemlig.io/secret-uid"] !== secretUid ||
         annotations?.["hemlig.io/control-version-id"] !==
           status.controlVersionId ||
         annotations?.["hemlig.io/payload-version-id"] !==
@@ -1036,7 +1229,9 @@ export class HemligV1BetaController {
 
   private reportReconcileFailure(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`Hemlig reconciliation failed; retrying: ${message}\n`);
+    process.stderr.write(
+      `Hemlig reconciliation failed; retrying: ${message}\n`,
+    );
   }
 
   private startWatches(signal: AbortSignal): void {
@@ -1087,7 +1282,8 @@ export class HemligV1BetaController {
             (phase === "ADDED" ||
               phase === "MODIFIED" ||
               phase === "DELETED") &&
-            !isOwnStatusUpdate(phase, object)
+            !isOwnStatusUpdate(phase, object) &&
+            this.isRelevantWatchEvent(path, metadata)
           ) {
             this.scheduleReconcile();
           }
@@ -1115,6 +1311,20 @@ export class HemligV1BetaController {
         }, 1_000);
       }
     }
+  }
+
+  private isRelevantWatchEvent(
+    path: string,
+    metadata: ObjectMeta | undefined,
+  ): boolean {
+    if (metadata?.name === undefined) return true;
+    if (path === "/api/v1/namespaces")
+      return this.namespaceDependencies.has(metadata.name);
+    if (path === "/api/v1/secrets" && metadata.namespace !== undefined)
+      return this.secretDependencies.has(
+        `${metadata.namespace}/${metadata.name}`,
+      );
+    return true;
   }
 }
 
@@ -1313,10 +1523,16 @@ const retryAfterMilliseconds = (error: unknown): number | undefined => {
     return undefined;
   }
   const headers = (error as { readonly headers?: unknown }).headers;
-  if (typeof headers !== "object" || headers === null || !("retry-after" in headers)) {
+  if (
+    typeof headers !== "object" ||
+    headers === null ||
+    !("retry-after" in headers)
+  ) {
     return undefined;
   }
-  const retryAfter = (headers as { readonly "retry-after"?: unknown })["retry-after"];
+  const retryAfter = (headers as { readonly "retry-after"?: unknown })[
+    "retry-after"
+  ];
   if (typeof retryAfter !== "string" || !/^\d+$/.test(retryAfter)) {
     return undefined;
   }
@@ -1376,6 +1592,7 @@ const isExpiredWatch = (error: unknown): boolean => {
 const isTransientStatus = (status: number): boolean =>
   status === 408 ||
   status === 409 ||
+  status === 412 ||
   status === 425 ||
   status === 429 ||
   status >= 500;

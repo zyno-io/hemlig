@@ -33,10 +33,17 @@ const control: ControlRevision = {
 describe("consumer handler agent routes", () => {
   const update = jest.fn(async () => control);
   const auditWrite = jest.fn(async () => undefined);
+  const sync = jest.fn(async () => ({
+    config: {},
+    snapshot: false,
+    changes: [],
+    syncCursor: "checkpoint",
+  }));
 
   beforeEach(() => {
     update.mockClear();
     auditWrite.mockClear();
+    sync.mockClear();
     consumerActorFromEvent.mockResolvedValue({
       type: "consumer",
       id: "agent-fingerprint",
@@ -46,12 +53,17 @@ describe("consumer handler agent routes", () => {
     withErrorResponse.mockImplementation(
       async (
         event: APIGatewayProxyEventV2,
-        action: (app: unknown, correlationId: string, setAuditContext: () => void) => unknown,
+        action: (
+          app: unknown,
+          correlationId: string,
+          setAuditContext: () => void,
+        ) => unknown,
       ) =>
         action(
           {
             config: { maxPayloadBytes: 1_000_000 },
             agents: { update },
+            agentSync: { sync },
             audit: { write: auditWrite },
             repository: {
               getAgentGrantForConsumer: jest.fn(async () => ({})),
@@ -92,5 +104,30 @@ describe("consumer handler agent routes", () => {
       }),
     );
     expect(response.statusCode).toBe(200);
+  });
+
+  it("passes scoped opaque cursors to agent synchronization without a payload read", async () => {
+    const event = {
+      rawPath: "/v1/agent/sync",
+      queryStringParameters: { syncCursor: "opaque" },
+      headers: {},
+      requestContext: {
+        requestId: "sync-request",
+        http: { method: "GET", sourceIp: "127.0.0.1" },
+      },
+    } as unknown as APIGatewayProxyEventV2;
+    const response = await handler(event);
+    expect(sync).toHaveBeenCalledWith(
+      "staging-trusted",
+      "staging",
+      { syncCursor: "opaque", cursor: undefined },
+      {},
+    );
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body as string)).toMatchObject({
+      changes: [],
+      syncCursor: "checkpoint",
+    });
+    expect(update).not.toHaveBeenCalled();
   });
 });
