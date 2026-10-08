@@ -288,36 +288,57 @@ delete a different version.
 One on-demand DynamoDB table uses `pk`/`sk`, point-in-time recovery, and sparse
 GSIs for scheduled work.
 
-| Key                                          | Purpose                                                                     |
-| -------------------------------------------- | --------------------------------------------------------------------------- |
-| `SECRET#<uid> / HEAD`                        | Current revisions, state, write lease                                       |
-| `SECRET#<uid> / CONTROL#<version>`           | Control workflow/object metadata                                            |
-| `SECRET#<uid> / PAYLOAD#<version>`           | Payload workflow/object metadata                                            |
-| `SECRET_NAME#<environment>#<id> / LOOKUP`    | External name to immutable UID lookup                                       |
-| `CONSUMER#<id> / SECRET#<environment>#<uid>` | Current grant or `REVOKED` tombstone                                        |
-| `CONSUMER#<id> / PROFILE`                    | Immutable consumer environment/URI identity and activation state            |
-| `IDENTITY#<sha256> / PROFILE`                | Consumer API leaf identity and validity                                     |
-| `SYSTEM#ISSUER / PROFILE`                    | One public root, KMS-wrapped private-key envelope, and root validity        |
-| `TRUSTSTORE#ROOTS / ROOT#<sha256>`           | The public deployment-wide issuing-root truststore anchor                   |
-| `ENROLLMENT#<operation> / STATE`             | Recoverable enrollment state and truststore publication due time            |
-| `SYSTEM#TRUSTSTORE / STATE`                  | Singleton publication lease and current/pending version-pinned bundle       |
-| `IDEMPOTENCY#<actor> / REQUEST#<key>`        | Mutation state and terminal-audit marker                                    |
-| `AGENT_GRANT#<id> / PROFILE`                 | Administrator-owned path/capability boundary and activation state           |
-| `CONSUMER#<id> / AGENT_GRANT`                | Prevents an agent identity from falling back to unscoped delivery           |
-| `BOOTSTRAP#<sha256> / STATE`                 | Hash-only, expiring, one-use CSR redemption capability                      |
-| `NOTIFICATION#<id> / EVENT`                  | Pending/delivered MQTT hint; TTL begins only after terminal delivery        |
-| `CURSOR#<token> / STATE`                     | Opaque, caller-bound pagination continuation; DynamoDB TTL after 15 minutes |
-| `WORKFLOW#DUE` GSI                           | Expired prepared workflow discovery                                         |
-| `RETENTION#DUE` GSI                          | Eligible non-head revision discovery                                        |
-| `CATALOG#<environment>` GSI                  | Current `HEAD` records in path/secret order                                 |
-| `CONSUMERS#<environment>` GSI                | Administrative consumer profiles in consumer-ID order                       |
-| `CONSUMER#<id>` identity GSI                 | Administrative API leaves in expiration order                               |
-| `SECRET#<uid>` revision GSI                  | Newest-first bounded control-revision management history                    |
+| Key                                                  | Purpose                                                                               |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `SECRET#<uid> / HEAD`                                | Current revisions, state, write lease                                                 |
+| `SECRET#<uid> / CONTROL#<version>`                   | Control workflow/object metadata                                                      |
+| `SECRET#<uid> / PAYLOAD#<version>`                   | Payload workflow/object metadata                                                      |
+| `SECRET_NAME#<environment>#<id> / LOOKUP`            | External name to immutable UID lookup                                                 |
+| `CONSUMER#<id> / SECRET#<environment>#<uid>`         | Current grant or `REVOKED` tombstone                                                  |
+| `CONSUMER#<id> / PROFILE`                            | Immutable consumer environment/URI identity and activation state                      |
+| `IDENTITY#<sha256> / PROFILE`                        | Consumer API leaf identity and validity                                               |
+| `SYSTEM#ISSUER / PROFILE`                            | One public root, KMS-wrapped private-key envelope, and root validity                  |
+| `TRUSTSTORE#ROOTS / ROOT#<sha256>`                   | The public deployment-wide issuing-root truststore anchor                             |
+| `ENROLLMENT#<operation> / STATE`                     | Recoverable enrollment state and truststore publication due time                      |
+| `SYSTEM#TRUSTSTORE / STATE`                          | Singleton publication lease and current/pending version-pinned bundle                 |
+| `IDEMPOTENCY#<actor> / REQUEST#<key>`                | Mutation state and terminal-audit marker                                              |
+| `AGENT_GRANT#<id> / PROFILE`                         | Administrator-owned path/capability boundary and activation state                     |
+| `CONSUMER#<id> / AGENT_GRANT`                        | Prevents an agent identity from falling back to unscoped delivery                     |
+| `BOOTSTRAP#<sha256> / STATE`                         | Hash-only, expiring, one-use CSR redemption capability                                |
+| `NOTIFICATION#<id> / EVENT`                          | Pending/delivered MQTT hint; TTL begins only after terminal delivery                  |
+| `AGENT_SYNC#<environment> / STATE`                   | Epoch, committed sequence, and backfill readiness                                     |
+| `AGENT_SYNC#<environment> / CHANGE#<sequence>#<uid>` | Coalesced current version/permission projection; archived markers retained eight days |
+| `CURSOR#<token> / STATE`                             | Opaque, caller-bound pagination continuation; DynamoDB TTL after 15 minutes           |
+| `WORKFLOW#DUE` GSI                                   | Expired prepared workflow discovery                                                   |
+| `RETENTION#DUE` GSI                                  | Eligible non-head revision discovery                                                  |
+| `CATALOG#<environment>` GSI                          | Current `HEAD` records in path/secret order                                           |
+| `CONSUMERS#<environment>` GSI                        | Administrative consumer profiles in consumer-ID order                                 |
+| `CONSUMER#<id>` identity GSI                         | Administrative API leaves in expiration order                                         |
+| `SECRET#<uid>` revision GSI                          | Newest-first bounded control-revision management history                              |
 
 `GET /v1/changes` is a paginated _current access snapshot_, not an event log.
 The cursor is an opaque 256-bit token, bound to one consumer, and expires after
 15 minutes. Its continuation state is server-side in the control table, so
 Hemlig needs no pagination-signing secret.
+
+`GET /v1/agent/sync` provides incremental current-state synchronization. A
+strongly consistent primary-key index stores one latest entry per secret.
+Every publication transaction conditionally advances an environment sequence,
+replaces that entry, and records its sequence on the head. The index contains
+current read consumer IDs for authorization and safe exporter metadata; neither
+ACLs nor payloads appear in responses. Current UID-scoped grants filter all
+entries. Read entries also require the indexed ACL; write-only exporters can
+receive their permitted metadata and control version without fetching S3.
+
+A page cursor pins a completed range for a fifteen-minute cycle. Its final
+checkpoint is bound to consumer, environment, grant scope, and epoch, with a
+seven-day lifetime. Unchanged checkpoints reuse their token. Old index keys are
+removed on subsequent publications; archived markers expire after eight days.
+Thus the index is current state with bounded tombstones, not retained event
+history. A concurrent update that moves beyond the captured range is seen on
+the next delta. Missing bootstrap entries need an authoritative read rather
+than an inferred revocation. Expiry or a scope/epoch change forces a new
+snapshot. See [the implementation and rollout plan](agent-sync-plan.md).
 
 ## Immediate notification path
 
@@ -334,9 +355,11 @@ CloudWatch alarm.
 The IoT policy allows an attached Thing to connect only as its exact consumer
 ID and only subscribe/receive its exact topic. It permits no IoT publish,
 wildcards, shadow, Jobs, or AWS credentials. MQTT is intentionally only a
-prompt: controllers refetch mTLS state after every hint, reconstruct snapshots
-on connect/reconnect, and resync every ten minutes. Duplicate, delayed, or
-lost broker messages cannot change authorization or inject data.
+prompt: controllers resume the mTLS version index after hints and reconnects,
+and every ten minutes. Only changed versions or local drift require per-secret
+reads. The checkpoint is saved after resources converge; a failed application
+keeps the previous checkpoint for retry. Duplicate, delayed, or lost broker
+messages cannot change authorization or inject data.
 
 ## Audit evidence
 

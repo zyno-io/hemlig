@@ -425,8 +425,11 @@ describe("console management indexes", () => {
 
     await repository.completeMutation(completed);
 
-    const command = (dynamo.send as jest.Mock).mock
-      .calls[0]?.[0] as TransactWriteCommand;
+    const command = (dynamo.send as jest.Mock).mock.calls
+      .map((call) => call[0])
+      .find(
+        (value) => value instanceof TransactWriteCommand,
+      ) as TransactWriteCommand;
     const items = command.input.TransactItems ?? [];
     const putItems = items.flatMap((item) =>
       item.Put?.Item === undefined ? [] : [item.Put.Item],
@@ -452,7 +455,13 @@ describe("console management indexes", () => {
 
   it("atomically replaces a full ACL and emits grouped grant and revocation hints", async () => {
     const dynamo = {
-      send: jest.fn().mockResolvedValue({}),
+      send: jest
+        .fn()
+        .mockResolvedValueOnce({
+          Item: { epoch: "epoch", sequence: 5, ready: true },
+        })
+        .mockResolvedValueOnce({ Item: { syncSequence: 3 } })
+        .mockResolvedValue({}),
     } as unknown as DynamoDBDocumentClient;
     const repository = new DynamoRepository(dynamo, config);
     const revokedConsumerIds = Array.from(
@@ -556,9 +565,12 @@ describe("console management indexes", () => {
 
     await repository.completeMutation(completed);
 
-    expect(dynamo.send).toHaveBeenCalledTimes(1);
-    const command = (dynamo.send as jest.Mock).mock
-      .calls[0]?.[0] as TransactWriteCommand;
+    expect(dynamo.send).toHaveBeenCalledTimes(3);
+    const command = (dynamo.send as jest.Mock).mock.calls
+      .map((call) => call[0])
+      .find(
+        (value) => value instanceof TransactWriteCommand,
+      ) as TransactWriteCommand;
     const items = command.input.TransactItems ?? [];
     const putItems = items.flatMap((item) =>
       item.Put?.Item === undefined ? [] : [item.Put.Item],
@@ -570,7 +582,8 @@ describe("console management indexes", () => {
       String(item.pk).startsWith("NOTIFICATION#"),
     );
 
-    expect(items).toHaveLength(87);
+    expect(items).toHaveLength(90);
+    expect(items.length).toBeLessThanOrEqual(100);
     expect(accessItems).toHaveLength(80);
     expect(accessItems).toEqual(
       expect.arrayContaining([
@@ -840,8 +853,11 @@ describe("console management indexes", () => {
 
     await repository.completeMutation(completed);
 
-    const command = (dynamo.send as jest.Mock).mock
-      .calls[0]?.[0] as TransactWriteCommand;
+    const command = (dynamo.send as jest.Mock).mock.calls
+      .map((call) => call[0])
+      .find(
+        (value) => value instanceof TransactWriteCommand,
+      ) as TransactWriteCommand;
     const items = command.input.TransactItems ?? [];
     expect(items).toEqual(
       expect.arrayContaining([
@@ -910,8 +926,11 @@ describe("console management indexes", () => {
 
     await repository.createEnvironment(environment);
 
-    const command = (dynamo.send as jest.Mock).mock
-      .calls[0]?.[0] as TransactWriteCommand;
+    const command = (dynamo.send as jest.Mock).mock.calls
+      .map((call) => call[0])
+      .find(
+        (value) => value instanceof TransactWriteCommand,
+      ) as TransactWriteCommand;
     expect(command.input.TransactItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

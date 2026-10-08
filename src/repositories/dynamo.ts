@@ -37,6 +37,7 @@ import type {
 } from "../domain/types";
 import type { StoredCursor } from "../services/cursor";
 import { isoNow, newId } from "../util/encoding";
+import { AgentSyncRepository, syncRecord } from "./agent-sync";
 
 export interface StoredWorkflow {
   readonly pk: string;
@@ -149,10 +150,13 @@ const maximumBoundedScan = 500;
 const maximumEnvironments = 100;
 
 export class DynamoRepository {
+  public readonly agentSync: AgentSyncRepository;
   public constructor(
     private readonly dynamo: DynamoDBDocumentClient,
     private readonly config: AppConfig,
-  ) {}
+  ) {
+    this.agentSync = new AgentSyncRepository(dynamo, config.controlTableName);
+  }
 
   public async getHead(
     environment: string,
@@ -306,6 +310,7 @@ export class DynamoRepository {
       await this.dynamo.send(
         new TransactWriteCommand({
           TransactItems: [
+            { Put: this.agentSync.emptyState(environment.name) },
             {
               Put: {
                 TableName: this.config.controlTableName,
@@ -2096,8 +2101,25 @@ export class DynamoRepository {
         "Mutation exceeds the DynamoDB transaction limit.",
       );
     }
-    await this.dynamo.send(
-      new TransactWriteCommand({ TransactItems: transaction as never }),
+    await this.agentSync.publish(
+      prepared.environment,
+      syncRecord(prepared.secretUid, prepared.control),
+      (sequence) => {
+        const headAction = transaction[0]?.Update as Record<string, unknown>;
+        return [
+          {
+            Update: {
+              ...headAction,
+              UpdateExpression: `SET ${[...setClauses, "syncSequence = :syncSequence"].join(", ")} REMOVE ${removeClauses.join(", ")}`,
+              ExpressionAttributeValues: {
+                ...headValues,
+                ":syncSequence": sequence,
+              },
+            },
+          },
+          ...transaction.slice(1),
+        ] as never;
+      },
     );
   }
 

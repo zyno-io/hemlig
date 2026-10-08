@@ -121,6 +121,7 @@ describe("POST /v1/admin/issuer", () => {
       auditQueries: {} as Application["auditQueries"],
       agentGrants: {} as Application["agentGrants"],
       agents: {} as Application["agents"],
+      agentSync: {} as Application["agentSync"],
       cursors: {} as unknown as CursorService,
       environments: {} as unknown as EnvironmentService,
       secrets: {} as unknown as SecretService,
@@ -256,6 +257,7 @@ describe("GET /v1/admin/secrets", () => {
       auditQueries: {} as Application["auditQueries"],
       agentGrants: {} as Application["agentGrants"],
       agents: {} as Application["agents"],
+      agentSync: {} as Application["agentSync"],
       cursors: {
         encode: jest.fn(() => "opaque-cursor"),
         decode: jest.fn(() => undefined),

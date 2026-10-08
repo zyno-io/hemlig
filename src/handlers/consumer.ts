@@ -26,8 +26,9 @@ export const handler = async (
     // An agent identity is deliberately unable to fall back to the generic
     // delivery routes: doing so would let a compromised namespace bypass its
     // remote AgentGrant exact-ID boundary by guessing a secret ID.
-    const isAgent =
-      (await app.repository.getAgentGrantForConsumer(consumerId)) !== undefined;
+    const resolvedGrant =
+      await app.repository.getAgentGrantForConsumer(consumerId);
+    const isAgent = resolvedGrant !== undefined;
     const operation = `${isAgent ? "agent" : "consumer"}${event.requestContext.http.method.toLowerCase()}:${event.rawPath}`;
     setAuditContext({
       actor,
@@ -41,6 +42,35 @@ export const handler = async (
       operation,
       sourceIp: event.requestContext.http.sourceIp,
     });
+    if (
+      event.requestContext.http.method === "GET" &&
+      event.rawPath === "/v1/agent/sync"
+    ) {
+      const page = await app.agentSync.sync(
+        consumerId,
+        environment,
+        {
+          syncCursor: event.queryStringParameters?.syncCursor,
+          cursor: event.queryStringParameters?.cursor,
+        },
+        resolvedGrant,
+      );
+      await app.audit.write({
+        correlationId,
+        outcome: "authorized",
+        actor,
+        operation,
+        sourceIp: event.requestContext.http.sourceIp,
+      });
+      await app.audit.write({
+        correlationId,
+        outcome: "succeeded",
+        actor,
+        operation,
+        sourceIp: event.requestContext.http.sourceIp,
+      });
+      return json(200, page);
+    }
     const decodedPath = decodeRequestPath(event.rawPath);
     const secretMatch = new RegExp(`^/v1/secrets/(${secretIdRoutePart})$`).exec(
       decodedPath,
