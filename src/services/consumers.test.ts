@@ -564,7 +564,7 @@ describe("agent self-rotation", () => {
       getConsumer: jest.fn(async () => consumer),
       getIdempotency: jest.fn(async () => undefined),
       getIdentity: jest.fn(async () => undefined),
-      countActiveConsumerApiIdentities: jest.fn(async () => 1),
+      listActiveConsumerApiFingerprints: jest.fn(async () => ["a"]),
       createApiIdentity: jest.fn(async () => undefined),
       ...repositoryOverrides,
     } as unknown as Record<string, jest.Mock>;
@@ -609,7 +609,7 @@ describe("agent self-rotation", () => {
         status: "SUCCEEDED",
       })),
       getIdentity: jest.fn(async () => identityRecord("new")),
-      countActiveConsumerApiIdentities: jest.fn(async () => 99),
+      listActiveConsumerApiFingerprints: jest.fn(async () => ["a"]),
     });
     const result = await service.rotateApiIdentity(input);
     expect(result).toMatchObject({
@@ -618,7 +618,7 @@ describe("agent self-rotation", () => {
       notAfter: "2999-01-01T00:00:00.000Z",
       shouldWriteTerminalAudit: false,
     });
-    expect(repository.countActiveConsumerApiIdentities).not.toHaveBeenCalled();
+    expect(repository.listActiveConsumerApiFingerprints).not.toHaveBeenCalled();
     expect(repository.getIdentity).toHaveBeenCalledTimes(1);
     expect(issuer.issueApiIdentity).not.toHaveBeenCalled();
   });
@@ -638,7 +638,7 @@ describe("agent self-rotation", () => {
   it("rejects when the consumer is at the active identity cap", async () => {
     const { service, issuer, repository } = build({
       getIdentity: jest.fn(async () => identityRecord("caller")),
-      countActiveConsumerApiIdentities: jest.fn(async () => 3),
+      listActiveConsumerApiFingerprints: jest.fn(async () => ["a", "b", "c"]),
     });
     await expect(service.rotateApiIdentity(input)).rejects.toMatchObject({
       statusCode: 409,
@@ -646,6 +646,54 @@ describe("agent self-rotation", () => {
     });
     expect(issuer.issueApiIdentity).not.toHaveBeenCalled();
     expect(repository.createApiIdentity).not.toHaveBeenCalled();
+  });
+
+  it("counts recent self-rotated identities the GSI has not caught up with", async () => {
+    const { service, issuer, repository } = build({
+      getConsumer: jest.fn(async () => ({
+        ...consumer,
+        apiIdentityRotationSeq: 4,
+        recentSelfRotatedApiFingerprints: ["lagging", "revoked", "a"],
+      })),
+      getIdentity: jest.fn(async (fingerprint: string) =>
+        fingerprint === "revoked"
+          ? identityRecord("revoked", { status: "REVOKED" })
+          : identityRecord(fingerprint),
+      ),
+      listActiveConsumerApiFingerprints: jest.fn(async () => ["a", "b"]),
+    });
+    await expect(service.rotateApiIdentity(input)).rejects.toMatchObject({
+      code: "identity_limit_reached",
+    });
+    expect(issuer.issueApiIdentity).not.toHaveBeenCalled();
+    expect(repository.createApiIdentity).not.toHaveBeenCalled();
+  });
+
+  it("passes the observed sequence and recent fingerprints as the lock", async () => {
+    const { service, repository } = build({
+      getConsumer: jest.fn(async () => ({
+        ...consumer,
+        apiIdentityRotationSeq: 4,
+        recentSelfRotatedApiFingerprints: ["x"],
+      })),
+      getIdentity: jest.fn(async (fingerprint: string) =>
+        fingerprint === "x" ? undefined : identityRecord(fingerprint),
+      ),
+    });
+    await service.rotateApiIdentity(input);
+    expect(repository.createApiIdentity?.mock.calls[0]?.[5]).toMatchObject({
+      rotationLock: { expectedSeq: 4, recent: ["x"] },
+    });
+  });
+
+  it("treats a consumer without the sequence attribute as seq 0", async () => {
+    const { service, repository } = build({
+      getIdentity: jest.fn(async () => identityRecord("caller")),
+    });
+    await service.rotateApiIdentity(input);
+    expect(repository.createApiIdentity?.mock.calls[0]?.[5]).toMatchObject({
+      rotationLock: { expectedSeq: 0, recent: [] },
+    });
   });
 
   it("rejects before KMS when the caller already has an active successor", async () => {
@@ -696,7 +744,7 @@ describe("agent self-rotation", () => {
       ...adminInput,
       actor: { type: "human", id: "operator" },
     });
-    expect(repository.countActiveConsumerApiIdentities).not.toHaveBeenCalled();
+    expect(repository.listActiveConsumerApiFingerprints).not.toHaveBeenCalled();
     expect(repository.getIdentity).not.toHaveBeenCalled();
     expect(repository.createApiIdentity?.mock.calls[0]?.[5]).toBeUndefined();
   });

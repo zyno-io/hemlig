@@ -2176,6 +2176,11 @@ const classifyRotationFailure = (
         "IdentityLimitReached",
         "The consumer has too many active identities; an administrator must revoke unused ones.",
       );
+    if (status === 409 && code === "identity_rotation_conflict")
+      return failure(
+        "RotationConflict",
+        "Another identity rotation for this consumer committed concurrently; retrying with the staged key.",
+      );
     if (status === 409 && code === "identity_already_rotated")
       return failure(
         "IdentityAlreadyRotated",

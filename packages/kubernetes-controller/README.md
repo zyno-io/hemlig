@@ -56,7 +56,8 @@ and `hemlig.io.previous-tls.key` (rollback: copy them back over `tls.crt` and
 rotation failure never makes the consumer `Ready=False`; it is reported on the
 separate `IdentityRotation` condition with a reason such as `RotationFailed`,
 `RotationUnsupported` (older server), `RotationRejected`, `RotationForbidden`,
-`IdentityLimitReached`, `IdentityAlreadyRotated`, `AuthenticationFailed`, or
+`IdentityLimitReached`, `IdentityAlreadyRotated`, `RotationConflict` (a concurrent
+rotation of the same consumer; retried with the same staged key), `AuthenticationFailed`, or
 `VerificationFailed`. Failed attempts retry with their own capped exponential
 backoff (60 s doubling to 6 h; reset on restart), with the periodic sweep as a
 safety net. Pending keys are discarded only when Hemlig rejects the request or

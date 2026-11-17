@@ -24,6 +24,7 @@ import type {
 } from "../domain/types";
 import { assertIdentifier } from "../domain/validation";
 import type {
+  ApiIdentityRotationLock,
   DynamoRepository,
   PreparedEnrollment,
   TruststoreStateRecord,
@@ -160,6 +161,7 @@ export class ConsumerService {
           fingerprint: string;
           rotatedAt: string;
           replaceableSuccessor?: string;
+          rotationLock?: ApiIdentityRotationLock;
         }
       | undefined;
     if (input.selfRotation !== undefined) {
@@ -189,9 +191,29 @@ export class ConsumerService {
         }
         replaceableSuccessor = caller.rotatedTo;
       }
-      const active = await this.repository.countActiveConsumerApiIdentities(
-        input.consumerId,
+      const seq = consumer.apiIdentityRotationSeq ?? 0;
+      const recent = consumer.recentSelfRotatedApiFingerprints ?? [];
+      const activeFingerprints = new Set(
+        await this.repository.listActiveConsumerApiFingerprints(
+          input.consumerId,
+        ),
       );
+      // The GSI is eventually consistent; recently self-rotated identities
+      // are re-read consistently so they always count toward the cap.
+      for (const fingerprint of recent) {
+        if (activeFingerprints.has(fingerprint)) continue;
+        const identity = await this.repository.getIdentity(fingerprint);
+        if (
+          identity !== undefined &&
+          identity.consumerId === input.consumerId &&
+          identity.kind === "api" &&
+          identity.status === "ACTIVE" &&
+          identity.notAfter > now
+        ) {
+          activeFingerprints.add(fingerprint);
+        }
+      }
+      const active = activeFingerprints.size;
       if (active >= input.selfRotation.maximumActiveIdentities) {
         throw identityLimitReached(
           `The consumer already has ${active} active API identities (maximum ${input.selfRotation.maximumActiveIdentities}). Revoke unused identities with DELETE /v1/admin/consumers/{consumerId}/api-identities/{apiFingerprint}.`,
@@ -200,6 +222,7 @@ export class ConsumerService {
       predecessor = {
         fingerprint: callerFingerprint,
         rotatedAt: now,
+        rotationLock: { expectedSeq: seq, recent },
         ...(replaceableSuccessor === undefined ? {} : { replaceableSuccessor }),
       };
     }

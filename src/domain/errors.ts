@@ -28,6 +28,9 @@ export const identityLimitReached = (message: string): ApiError =>
 export const identityAlreadyRotated = (message: string): ApiError =>
     new ApiError(409, 'identity_already_rotated', message);
 
+export const identityRotationConflict = (message: string): ApiError =>
+    new ApiError(409, 'identity_rotation_conflict', message);
+
 export const rotationReplayInactive = (message: string): ApiError =>
     new ApiError(409, 'rotation_replay_inactive', message);
 
