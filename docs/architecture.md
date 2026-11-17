@@ -105,6 +105,8 @@ leaf after a lost response while rejecting a different CSR. Before the grant is
 marked active, the bootstrap Lambda registers the public leaf with AWS IoT,
 attaches it to the consumer-named Thing and the CDK-created receive-only policy.
 The cluster retains the private key; neither Hemlig nor IoT creates one.
+Self-rotated and administrator-issued leaves of an agent consumer are registered
+the same way, and revoking any API identity revokes its IoT certificate.
 
 Agent reads need both current ACL read access and exact membership in the
 read allowlist. Agent writes need exact write membership and cannot change

@@ -566,6 +566,12 @@ describe("HemligStack", () => {
         "iot:UpdateCertificate",
       ]),
     );
+    expect(actionsOf(statementsFor(roleOf("hml-test-admin")))).toEqual(
+      expect.arrayContaining([
+        "iot:RegisterCertificateWithoutCA",
+        "iot:UpdateCertificate",
+      ]),
+    );
     expect(rotationActions.some((action) => action.startsWith("kms:GenerateDataKey"))).toBe(false);
     expect(rotationActions.some((action) => action.startsWith("apigateway:"))).toBe(false);
     // Only the audit prefix may be written to; no revision or truststore bucket access.

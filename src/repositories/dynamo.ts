@@ -13,6 +13,7 @@ import type { AppConfig } from "../aws/config";
 import {
   conflict,
   identityAlreadyRotated,
+  identityRotationConflict,
   notFound,
   serviceUnavailable,
 } from "../domain/errors";
@@ -43,6 +44,15 @@ import type {
 import type { StoredCursor } from "../services/cursor";
 import { isoNow, newId } from "../util/encoding";
 import { AgentSyncRepository, syncRecord } from "./agent-sync";
+
+/** How many newest self-rotated fingerprints the consumer profile remembers. */
+export const RECENT_SELF_ROTATED_FINGERPRINT_LIMIT = 3;
+
+/** Optimistic lock on the consumer profile for capped self-rotation. */
+export interface ApiIdentityRotationLock {
+  readonly expectedSeq: number;
+  readonly recent: readonly string[];
+}
 
 export interface StoredWorkflow {
   readonly pk: string;
@@ -1319,6 +1329,40 @@ export class DynamoRepository {
     };
   }
 
+  /** Active API identity fingerprints from the (eventually consistent) GSI. */
+  public async listActiveConsumerApiFingerprints(
+    consumerId: string,
+  ): Promise<string[]> {
+    const fingerprints: string[] = [];
+    let exclusiveStartKey: Record<string, unknown> | undefined;
+    const now = isoNow();
+    do {
+      const response = await this.dynamo.send(
+        new QueryCommand({
+          TableName: this.config.controlTableName,
+          IndexName: this.config.consumerIdentityIndex,
+          KeyConditionExpression: "identityConsumerPk = :consumer",
+          FilterExpression:
+            "#status = :active AND kind = :api AND notAfter > :now",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: {
+            ":consumer": identityConsumerPk(consumerId),
+            ":active": "ACTIVE",
+            ":api": "api",
+            ":now": now,
+          },
+          ExclusiveStartKey: exclusiveStartKey as never,
+        }),
+      );
+      for (const item of response.Items ?? []) {
+        fingerprints.push((item as { fingerprint: string }).fingerprint);
+      }
+      exclusiveStartKey = response.LastEvaluatedKey as
+        Record<string, unknown> | undefined;
+    } while (exclusiveStartKey !== undefined);
+    return fingerprints;
+  }
+
   public async countActiveConsumerApiIdentities(
     consumerId: string,
   ): Promise<number> {
@@ -1701,6 +1745,7 @@ export class DynamoRepository {
       readonly fingerprint: string;
       readonly rotatedAt: string;
       readonly replaceableSuccessor?: string;
+      readonly rotationLock?: ApiIdentityRotationLock;
     },
   ): Promise<void> {
     try {
@@ -1772,18 +1817,64 @@ export class DynamoRepository {
                     },
                   },
                 ]),
+            ...(predecessor?.rotationLock === undefined
+              ? []
+              : [
+                  {
+                    Update: {
+                      TableName: this.config.controlTableName,
+                      Key: {
+                        pk: `CONSUMER#${identity.consumerId}`,
+                        sk: "PROFILE",
+                      },
+                      UpdateExpression:
+                        "SET apiIdentityRotationSeq = :next, recentSelfRotatedApiFingerprints = :recent",
+                      ConditionExpression:
+                        "#status = :active AND ((attribute_not_exists(apiIdentityRotationSeq) AND :seq = :zero) OR apiIdentityRotationSeq = :seq)",
+                      ExpressionAttributeNames: { "#status": "status" },
+                      ExpressionAttributeValues: {
+                        ":next": predecessor.rotationLock.expectedSeq + 1,
+                        ":recent": [
+                          identity.fingerprint,
+                          ...predecessor.rotationLock.recent,
+                        ].slice(0, RECENT_SELF_ROTATED_FINGERPRINT_LIMIT),
+                        ":seq": predecessor.rotationLock.expectedSeq,
+                        ":zero": 0,
+                        ":active": "ACTIVE",
+                      },
+                    },
+                  },
+                ]),
           ],
         }),
       );
     } catch (error) {
+      const reasons = (
+        error as { CancellationReasons?: { Code?: string }[] } | null
+      )?.CancellationReasons;
+      const canceled =
+        (error as { name?: string } | null)?.name ===
+        "TransactionCanceledException";
+      // An overlapping transaction on the consumer profile cancels this one
+      // with TransactionConflict; that is transient, not a rejection.
+      if (
+        predecessor !== undefined &&
+        canceled &&
+        (reasons?.some((reason) => reason?.Code === "TransactionConflict") ===
+          true ||
+          (predecessor.rotationLock !== undefined &&
+            reasons?.[3]?.Code === "ConditionalCheckFailed"))
+      ) {
+        throw identityRotationConflict(
+          "Another identity rotation for this consumer committed concurrently; retry the request.",
+        );
+      }
       if (
         predecessor !== undefined &&
         error !== null &&
         typeof error === "object" &&
         (error as { name?: string }).name === "TransactionCanceledException" &&
-        (
-          error as { CancellationReasons?: { Code?: string }[] }
-        ).CancellationReasons?.[2]?.Code === "ConditionalCheckFailed"
+        reasons?.[2]?.Code === "ConditionalCheckFailed"
       ) {
         throw identityAlreadyRotated(
           "The calling identity has already been rotated or is no longer active.",
@@ -1803,6 +1894,37 @@ export class DynamoRepository {
       }
       throw conflict(
         `Could not create consumer API identity: ${errorMessage(error)}`,
+      );
+    }
+  }
+
+  /** Records a revoke request for an identity that is already REVOKED. */
+  public async recordReappliedApiRevocation(
+    actor: Actor,
+    idempotencyKey: string,
+    requestDigest: string,
+    consumerId: string,
+    fingerprint: string,
+  ): Promise<void> {
+    try {
+      await this.dynamo.send(
+        new PutCommand({
+          TableName: this.config.controlTableName,
+          Item: {
+            pk: idempotencyPk(actor),
+            sk: `REQUEST#${idempotencyKey}`,
+            requestDigest,
+            operationType: "consumer.api.revoke",
+            consumerId,
+            apiFingerprint: fingerprint,
+            status: "READY",
+          },
+          ConditionExpression: "attribute_not_exists(pk)",
+        }),
+      );
+    } catch (error) {
+      throw conflict(
+        `Could not record consumer API identity revocation: ${errorMessage(error)}`,
       );
     }
   }

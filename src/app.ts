@@ -23,6 +23,7 @@ export interface Application {
   readonly auditQueries: AuditQueryService;
   readonly agentGrants: AgentGrantService;
   readonly agentIdentities: AgentIdentityService;
+  readonly agentNotifications: AgentNotificationService;
   readonly agents: AgentService;
   readonly agentSync: AgentSyncService;
   readonly cursors: CursorService;
@@ -74,6 +75,7 @@ export const createApplication = (config: AppConfig): Application => {
     environments,
     secrets,
     consumers,
+    agentNotifications,
     agentIdentities,
     agents: new AgentService(repository, secrets),
     agentSync: new AgentSyncService(

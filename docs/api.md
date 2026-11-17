@@ -586,14 +586,19 @@ Signs an overlapping active API leaf using a new CSR under the same deployment
 root. Use it before retiring a leaf. The request contains only
 `apiCertificateSigningRequestPem`; the response contains the new public
 `apiCertificatePem`, its fingerprint, and the stable root fingerprint. Success
-is `201`.
+is `201`. For a consumer with an active agent grant the new leaf is also
+registered with AWS IoT before the response (a replay with the same
+idempotency key registers it again), so it can receive sync hints.
 
 #### `DELETE /v1/admin/consumers/{consumerId}/api-identities/{apiFingerprint}`
 
 Immediately changes the API identity to `REVOKED`. The consumer Lambda performs
 a strongly consistent identity lookup on every request, so application-level
 access stops without waiting for a truststore change. Revoke only after a new
-active leaf has been distributed if continuity matters.
+active leaf has been distributed if continuity matters. The leaf's AWS IoT
+certificate is also revoked (a no-op for a certificate that was never
+registered), so it can no longer connect for sync hints; retry with the same
+idempotency key if the call fails.
 
 ### Agent grants and bootstrap capabilities
 

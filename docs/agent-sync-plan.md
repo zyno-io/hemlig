@@ -184,6 +184,12 @@ AWS_PROFILE=<profile> AWS_REGION=<region> CONTROL_TABLE_NAME=<table> yarn backfi
 AWS_PROFILE=<profile> AWS_REGION=<region> CONTROL_TABLE_NAME=<table> yarn backfill:agent-sync --apply
 ```
 
+Identities revoked before the API also revoked their AWS IoT certificate remain
+ACTIVE in IoT. After upgrading, run
+`CONTROL_TABLE_NAME=<table> yarn revoke:iot-for-revoked-identities` to count
+them (dry run by default), then again with `--apply` to revoke them
+(idempotent; needs `iot:UpdateCertificate`).
+
 Verify an initial sync, an unchanged checkpoint, a changed secret, ACL removal,
 and archive/name reuse in the chosen environment before upgrading controllers.
 Compare API request counts and per-route rates with the prior six-day baseline;

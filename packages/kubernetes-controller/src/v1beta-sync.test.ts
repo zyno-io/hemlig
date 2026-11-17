@@ -1347,6 +1347,17 @@ test("C1: identity_already_rotated reports and keeps the pending key", async (t)
   assert.ok(data(f, "hemlig.io.next-csr"));
 });
 
+test("C1b: identity_rotation_conflict is transient and keeps the staged key", async (t) => {
+  const f = dueFixture(t);
+  f.onRotate(async () => {
+    throw new HemligError(409, "conflict", "identity_rotation_conflict");
+  });
+  await f.pass();
+  assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "RotationConflict");
+  assert.ok(data(f, "hemlig.io.next-tls.key"));
+  assert.ok(data(f, "hemlig.io.next-csr"));
+});
+
 test("C2: rotation_replay_inactive discards the pending key", async (t) => {
   const f = dueFixture(t);
   f.onRotate(async () => {
