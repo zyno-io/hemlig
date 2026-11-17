@@ -71,7 +71,8 @@ Source paths are relative to the [repository root](https://github.com/zyno-io/he
 | Retention worker schedule | Once a day | `cdk/stack.ts:764-767` |
 | Recovery worker schedule | Every 5 minutes | `cdk/stack.ts:759-762` |
 | Lambda timeout and memory | 29 seconds, 512 MB | `cdk/stack.ts:1169-1170` |
-| Lambda log retention | 1 year | `cdk/stack.ts:1312` |
+| API Gateway access log retention | 1 year | `cdk/stack.ts:1312` |
+| Lambda function log retention | Not set, so CloudWatch keeps them indefinitely | `cdk/stack.ts` (no `logRetention` on any function) |
 | Application CMK rotation | Automatic key rotation enabled | `cdk/stack.ts:211` |
 | Console asset noncurrent versions | Expire after 30 days | `cdk/stack.ts:859` |
 | MiniStack Object Lock (local only) | 1 day, so a developer machine never holds undeletable data | `src/scripts/dev-ministack.ts:89` |

@@ -8,7 +8,7 @@ pageType: reference
 
 Find your symptom in the table for the part of Hemlig that is failing, then follow the fix.
 
-For a Kubernetes status `reason`, go straight to [Status reasons](../reference/crds.md#status-reasons). For error codes see the [API reference](../reference/api/index.md#error-envelope).
+For a Kubernetes status `reason`, go straight to [Status reasons](../reference/crds.md#status-reasons). For error codes see the [API reference](../reference/api/errors.md).
 
 ## Administrator API
 
