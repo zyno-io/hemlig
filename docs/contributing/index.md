@@ -1,13 +1,15 @@
 ---
 title: Contributing
 description: Prerequisites, dev loop, tests per package, conventions and the PR checklist for Hemlig.
+pageType: how-to
 ---
 
 # Contributing
 
-Thanks for helping. This page is the canonical contributor guide; the root
-[`CONTRIBUTING.md`](https://github.com/zyno-io/hemlig/blob/main/CONTRIBUTING.md) links here. Where code lives:
-[Repository layout](layout.md).
+Set up the repository, run the tests and open a pull request. The root
+[`CONTRIBUTING.md`](https://github.com/zyno-io/hemlig/blob/main/CONTRIBUTING.md) links here.
+
+Where code lives: [Repository layout](layout.md). How to write docs: [Docs site and style guide](docs-site.md).
 
 ## Prerequisites
 
@@ -31,7 +33,7 @@ yarn dev:ui           # console dev server on :5273
 yarn ministack:verify # DynamoDB/S3/KMS integration checks against MiniStack
 ```
 
-Details in the [quickstart](../guide/quickstart.md).
+To try the local stack as a user, follow the [quickstart](../guide/quickstart.md).
 
 ## Tests per package
 
@@ -62,14 +64,15 @@ CI (`.github/workflows/ci.yml`) runs release tests, `lint:all`, `test`, `test:al
 
 ## Documentation
 
-Docs live in `docs/` and ship as a VitePress site. See [Docs site](docs-site.md)
-for the workflow, how Pages deploys, and how to preview locally.
+Docs live in `docs/` and ship as a VitePress site. See
+[Docs site and style guide](docs-site.md) for the workflow, the style rules and the
+page checklist.
 
 ## Pull requests
 
 1. Branch from `main`; keep commits focused.
 2. Run `yarn lint`, `yarn test` and the package tests you touched; run
-   `yarn docs:build` when editing docs.
+   `yarn docs:build` (and `yarn docs:lint`) when editing docs.
 3. Describe behavior changes and any rollout ordering (for example
    server-before-controller).
-4. Do not tag releases; see [Releasing](../operations/releasing.md).
+4. Do not tag releases; see [Releasing](releasing.md).

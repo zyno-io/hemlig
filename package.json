@@ -58,6 +58,7 @@
     "docs:dev": "yarn workspace @zyno-io/hemlig-docs docs:dev",
     "docs:build": "yarn workspace @zyno-io/hemlig-docs docs:build",
     "docs:preview": "yarn workspace @zyno-io/hemlig-docs docs:preview",
+    "docs:lint": "yarn workspace @zyno-io/hemlig-docs docs:lint",
     "format": "prettier --write .",
     "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.cdk.json --noEmit",
     "lint:all": "yarn build:all && yarn workspaces foreach -A --topological run lint",
