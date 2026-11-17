@@ -18,6 +18,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@fontsource/inter": "5.2.8",
     "@tanstack/vue-query": "^5.62.0",
     "@zyno-io/hemlig-client": "workspace:^",
     "oidc-client-ts": "^3.1.0",

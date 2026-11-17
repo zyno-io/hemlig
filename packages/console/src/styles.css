@@ -1,43 +1,249 @@
 @import "tailwindcss";
 
-@theme {
-  --color-surface: oklch(99% 0.003 260);
-  --color-surface-raised: oklch(100% 0 0);
-  --color-ink: oklch(24% 0.02 260);
-  --color-ink-muted: oklch(52% 0.02 260);
-  --color-line: oklch(91% 0.006 260);
-  --color-accent: oklch(52% 0.15 260);
-  --color-danger: oklch(52% 0.19 25);
-  --color-warn: oklch(62% 0.15 75);
-  --color-ok: oklch(55% 0.13 155);
+/*
+ * Hemlig console design system: the PixelCI design system, adopted as-is.
+ * See DESIGN.md. Tokens are CSS custom properties declared for light on the
+ * root and redeclared for dark on `html.dark`; components never branch on
+ * theme. `public/theme-init.js` sets the class before first paint (the CSP
+ * forbids inline scripts), and useTheme() keeps it in sync afterwards.
+ */
+:root {
+  --font-sans-stack:
+    "Inter var", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", sans-serif;
+  --font-mono-stack:
+    ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f3f4f6;
+  --surface-3: #eceef2;
+  --surface-hover: #f7f8fa;
+  --border: #e3e5ea;
+  --border-strong: #cfd3db;
+  --text: #15171c;
+  --text-2: #4f5562;
+  --text-3: #646a78;
+  --placeholder: #6f7583;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-text: #ffffff;
+  --accent-soft: rgba(79, 70, 229, 0.1);
+  --focus: #6366f1;
+  --link: #3d37c9;
+
+  --danger: #c4320a;
+  --danger-strong: #b42318;
+  --danger-soft: #fef1ee;
+  --danger-border: #fbd0c5;
+  --warning: #a15c07;
+  --warning-soft: #fef6e7;
+  --warning-border: #f8dfaa;
+  --success: #067647;
+  --success-soft: #ecfaf3;
+  --success-border: #b7e9d0;
+  --info: #1e5bd6;
+  --info-soft: #eef4ff;
+  --info-border: #c7d7fe;
+  --release: #6927da;
+  --release-soft: #f5f1ff;
+  --release-border: #ddd1fb;
+  --neutral: #545b69;
+  --neutral-soft: #f1f2f5;
+  --neutral-border: #dcdfe5;
+
+  --shadow-resting: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-attached:
+    0 4px 12px -2px rgba(16, 24, 40, 0.08), 0 2px 4px -2px rgba(16, 24, 40, 0.04);
+  --shadow-floating: 0 24px 48px -12px rgba(16, 24, 40, 0.18);
+
+  --r-sm: 5px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --header-h: 46px;
+
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  @theme {
-    --color-surface: oklch(19% 0.012 260);
-    --color-surface-raised: oklch(23% 0.014 260);
-    --color-ink: oklch(94% 0.006 260);
-    --color-ink-muted: oklch(70% 0.014 260);
-    --color-line: oklch(32% 0.014 260);
-    --color-accent: oklch(72% 0.13 260);
-    --color-danger: oklch(70% 0.16 25);
-    --color-warn: oklch(78% 0.13 75);
-    --color-ok: oklch(72% 0.12 155);
-  }
+html.dark {
+  --bg: #0c0d10;
+  --surface: #131418;
+  --surface-2: #191b20;
+  --surface-3: #20232a;
+  --surface-hover: #171920;
+  --border: #24272e;
+  --border-strong: #333741;
+  --text: #ececf0;
+  --text-2: #aeb2bd;
+  --text-3: #8b909c;
+  --placeholder: #7a7f8c;
+  --accent: #5b52f0;
+  --accent-hover: #675ff5;
+  --accent-text: #ffffff;
+  --accent-soft: rgba(124, 116, 255, 0.14);
+  --focus: #8b85ff;
+  --link: #a7a2ff;
+
+  --danger: #ff8a73;
+  --danger-strong: #ff9c88;
+  --danger-soft: rgba(240, 68, 56, 0.12);
+  --danger-border: rgba(240, 68, 56, 0.32);
+  --warning: #f8c55c;
+  --warning-soft: rgba(247, 144, 9, 0.12);
+  --warning-border: rgba(247, 144, 9, 0.3);
+  --success: #5ad49a;
+  --success-soft: rgba(23, 178, 106, 0.12);
+  --success-border: rgba(23, 178, 106, 0.3);
+  --info: #8db4ff;
+  --info-soft: rgba(46, 144, 250, 0.12);
+  --info-border: rgba(46, 144, 250, 0.3);
+  --release: #c2a8ff;
+  --release-soft: rgba(122, 90, 248, 0.15);
+  --release-border: rgba(122, 90, 248, 0.36);
+  --neutral: #b3b8c3;
+  --neutral-soft: rgba(148, 155, 170, 0.1);
+  --neutral-border: rgba(148, 155, 170, 0.24);
+
+  --shadow-resting: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-attached: 0 6px 16px -4px rgba(0, 0, 0, 0.5);
+  --shadow-floating: 0 24px 56px -12px rgba(0, 0, 0, 0.7);
+
+  color-scheme: dark;
 }
 
 /*
- * Tailwind v4's Preflight deliberately dropped the `cursor: pointer` that v3
- * applied to buttons, deferring to the browser default of `cursor: default`.
- * Restore it once here rather than on 49 individual elements, so a new button
- * cannot be added without it.
+ * Tailwind names for the tokens. Utilities read the custom properties at
+ * runtime, so the dark redeclaration above applies everywhere.
+ *   page bg-desk · cards bg-surface · insets bg-surface-2/-3 · row hover bg-surface-hover
+ *   borders border-line / border-line-strong · text text-ink / -ink-2 / -ink-3
+ *   tones: {danger,warning,success,info,release,neutral} + -soft + -line
  */
+@theme {
+  --font-sans: var(--font-sans-stack);
+  --font-mono: var(--font-mono-stack);
+
+  --color-desk: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-surface-hover: var(--surface-hover);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-ink-3: var(--text-3);
+  --color-placeholder: var(--placeholder);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-text: var(--accent-text);
+  --color-accent-soft: var(--accent-soft);
+  --color-focus: var(--focus);
+  --color-link: var(--link);
+
+  --color-danger: var(--danger);
+  --color-danger-strong: var(--danger-strong);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-line: var(--danger-border);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-line: var(--warning-border);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-line: var(--success-border);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-line: var(--info-border);
+  --color-release: var(--release);
+  --color-release-soft: var(--release-soft);
+  --color-release-line: var(--release-border);
+  --color-neutral: var(--neutral);
+  --color-neutral-soft: var(--neutral-soft);
+  --color-neutral-line: var(--neutral-border);
+
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+
+  --shadow-sm: var(--shadow-resting);
+  --shadow-md: var(--shadow-attached);
+  --shadow-lg: var(--shadow-floating);
+}
+
 @layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  html,
+  body,
+  #app {
+    min-height: 100%;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans-stack);
+    font-size: 14px;
+    line-height: 1.45;
+    font-feature-settings:
+      "cv11" 1,
+      "ss01" 1,
+      "tnum" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+
+  html {
+    caret-color: var(--accent);
+    accent-color: var(--accent);
+    scrollbar-color: var(--border-strong) transparent;
+  }
+
+  /* The Machine Text Rule: what a machine produced is monospace. */
+  code,
+  pre,
+  kbd,
+  .mono {
+    font-family: var(--font-mono-stack);
+    font-feature-settings: normal;
+  }
+
+  :where(code):not(pre code) {
+    font-size: 0.92em;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  a {
+    text-underline-offset: 2px;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--placeholder);
+    opacity: 1;
+  }
+
+  /*
+   * Tailwind v4's Preflight dropped the `cursor: pointer` v3 applied to
+   * buttons. Restore it once here rather than on every element.
+   */
   button:not(:disabled),
   [role="button"]:not(:disabled),
   select:not(:disabled),
   summary,
   input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled),
   input[type="file"],
   label:has(> input[type="checkbox"]:not(:disabled)) {
     cursor: pointer;
@@ -46,38 +252,497 @@
   button:disabled,
   select:disabled,
   input:disabled,
+  textarea:disabled,
   label:has(> input[type="checkbox"]:disabled) {
     cursor: not-allowed;
   }
-}
 
-html,
-body,
-#app {
-  min-height: 100%;
-}
-
-body {
-  background: var(--color-surface);
-  color: var(--color-ink);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-
-/* Native date controls otherwise keep a dark calendar icon in Chrome/Safari
- * when the console is rendered in its dark theme. */
-@media (prefers-color-scheme: dark) {
-  .date-input {
-    color-scheme: dark;
+  input[type="checkbox"],
+  input[type="radio"] {
+    width: 15px;
+    height: 15px;
   }
 
-  .date-input::-webkit-calendar-picker-indicator {
+  /* Native date controls keep a dark calendar icon unless told the scheme. */
+  html.dark .date-input::-webkit-calendar-picker-indicator {
     filter: invert(1);
     opacity: 0.85;
   }
 }
 
-code,
-pre,
-.mono {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+@layer components {
+  /* ---- Page structure -------------------------------------------------- */
+  .page {
+    margin-inline: auto;
+    max-width: 1120px;
+    padding: 28px 20px 48px;
+  }
+
+  @media (max-width: 640px) {
+    .page {
+      padding: 16px 12px 32px;
+    }
+  }
+
+  /* Sticky under the top bar: title left, the one primary action right. */
+  .page-header {
+    position: sticky;
+    top: var(--header-h);
+    z-index: 20;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: -12px -4px 20px;
+    padding: 12px 4px;
+    background: var(--bg);
+  }
+
+  .page-title {
+    font-size: 19px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    line-height: 1.45;
+    color: var(--text);
+  }
+
+  .page-subtitle {
+    font-size: 13px;
+    color: var(--text-2);
+  }
+
+  .page-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .label-caps {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.045em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+
+  .meta {
+    font-size: 12px;
+    color: var(--text-3);
+  }
+
+  .link {
+    color: var(--link);
+  }
+
+  .link:hover {
+    text-decoration: underline;
+  }
+
+  /* ---- Cards and rows (The Rows In One Card Rule) ---------------------- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-resting);
+  }
+
+  .card-body {
+    padding: 16px 18px;
+  }
+
+  .card-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .card-rows {
+    overflow: hidden;
+  }
+
+  .card-rows > * + * {
+    border-top: 1px solid var(--border);
+  }
+
+  .row {
+    padding: 14px 18px;
+  }
+
+  .row-link {
+    display: block;
+    padding: 14px 18px;
+    transition: background-color 0.12s;
+  }
+
+  .row-link:hover {
+    background: var(--surface-hover);
+  }
+
+  /* The Inset Ring Rule: flush rows draw focus inside their own edge. */
+  .row-link:focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* Tables live inside a .card; the header row uses Label caps. */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+  }
+
+  .data-table th {
+    padding: 10px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.045em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  .data-table td {
+    padding: 12px;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .data-table tr > :first-child {
+    padding-left: 18px;
+  }
+
+  .data-table tr > :last-child {
+    padding-right: 18px;
+  }
+
+  .data-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .data-table tbody tr {
+    transition: background-color 0.12s;
+  }
+
+  .data-table tbody tr:hover {
+    background: var(--surface-hover);
+  }
+
+  /* Definition lists for detail panels. */
+  .facts {
+    display: grid;
+    grid-template-columns: minmax(8rem, max-content) 1fr;
+    column-gap: 16px;
+    row-gap: 8px;
+    font-size: 13px;
+  }
+
+  .facts dt {
+    color: var(--text-3);
+  }
+
+  .facts dd {
+    min-width: 0;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+
+  /* ---- Buttons --------------------------------------------------------- */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    box-shadow: var(--shadow-resting);
+    transition:
+      background-color 0.12s,
+      border-color 0.12s,
+      color 0.12s;
+  }
+
+  .btn:hover:not(:disabled) {
+    background: var(--surface-2);
+  }
+
+  .btn:disabled {
+    opacity: 0.55;
+  }
+
+  .btn-primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    border-color: var(--accent-hover);
+    background: var(--accent-hover);
+  }
+
+  .btn-ghost {
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-2);
+    box-shadow: none;
+  }
+
+  .btn-ghost:hover:not(:disabled) {
+    color: var(--text);
+  }
+
+  /* Destructive: outlined, never filled, and always confirmed. */
+  .btn-danger {
+    color: var(--danger-strong);
+  }
+
+  .btn-sm {
+    height: 26px;
+    padding: 0 9px;
+    border-radius: var(--r-sm);
+    font-size: 12px;
+  }
+
+  .btn-icon {
+    width: 32px;
+    padding: 0;
+  }
+
+  /* ---- Fields ---------------------------------------------------------- */
+  .field-label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+  }
+
+  .field-hint {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-3);
+  }
+
+  .field-error {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--danger);
+  }
+
+  .input {
+    width: 100%;
+    min-height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13px;
+    box-shadow: var(--shadow-resting);
+    transition:
+      border-color 0.12s,
+      box-shadow 0.12s;
+  }
+
+  textarea.input {
+    padding: 8px 10px;
+    line-height: 1.45;
+  }
+
+  select.input {
+    appearance: none;
+    padding-right: 28px;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--text-3) 50%),
+      linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) 50%,
+      calc(100% - 10px) 50%;
+    background-size:
+      4px 4px,
+      4px 4px;
+    background-repeat: no-repeat;
+  }
+
+  .input:focus,
+  .input:focus-visible {
+    border-color: var(--focus);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+    outline: none;
+  }
+
+  .input:disabled {
+    opacity: 0.55;
+  }
+
+  .input[aria-invalid="true"] {
+    border-color: var(--danger);
+  }
+
+  /* ---- Tags (The Tag Triplet Rule) ------------------------------------- */
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 19px;
+    padding: 0 6px;
+    border: 1px solid var(--neutral-border);
+    border-radius: 4px;
+    background: var(--neutral-soft);
+    color: var(--neutral);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .tag-success {
+    border-color: var(--success-border);
+    background: var(--success-soft);
+    color: var(--success);
+  }
+
+  .tag-warning {
+    border-color: var(--warning-border);
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+
+  .tag-danger {
+    border-color: var(--danger-border);
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+
+  .tag-info {
+    border-color: var(--info-border);
+    background: var(--info-soft);
+    color: var(--info);
+  }
+
+  .tag-release {
+    border-color: var(--release-border);
+    background: var(--release-soft);
+    color: var(--release);
+  }
+
+  /* ---- Notices --------------------------------------------------------- */
+  .notice {
+    padding: 10px 14px;
+    border: 1px solid var(--neutral-border);
+    border-radius: var(--r-md);
+    background: var(--neutral-soft);
+    color: var(--text-2);
+    font-size: 13px;
+  }
+
+  .notice strong,
+  .notice .notice-title {
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .notice-danger {
+    border-color: var(--danger-border);
+    background: var(--danger-soft);
+  }
+
+  .notice-warning {
+    border-color: var(--warning-border);
+    background: var(--warning-soft);
+  }
+
+  .notice-info {
+    border-color: var(--info-border);
+    background: var(--info-soft);
+  }
+
+  .notice-success {
+    border-color: var(--success-border);
+    background: var(--success-soft);
+  }
+
+  /* ---- Empty state ----------------------------------------------------- */
+  .empty-state {
+    display: flex;
+    min-height: 200px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 24px 18px;
+    text-align: center;
+  }
+
+  .empty-state-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-2);
+  }
+
+  .empty-state-hint {
+    max-width: 44ch;
+    font-size: 14px;
+    color: var(--text-3);
+  }
+
+  /* ---- Code blocks ----------------------------------------------------- */
+  .code-block {
+    overflow-x: auto;
+    padding: 10px 12px;
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  /* ---- Menus ----------------------------------------------------------- */
+  .menu {
+    min-width: 200px;
+    padding: 5px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: var(--shadow-floating);
+  }
+
+  .menu-item {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 9px;
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+    text-align: left;
+  }
+
+  .menu-item:hover,
+  .menu-item:focus-visible {
+    background: var(--surface-2);
+    outline: none;
+  }
 }

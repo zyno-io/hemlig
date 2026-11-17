@@ -65,17 +65,26 @@ const copyCorrelation = async (): Promise<void> => {
 </script>
 
 <template>
-  <div class="rounded border border-danger/40 bg-danger/5 p-4 text-sm">
-    <p class="font-medium text-danger">{{ headline }}</p>
-    <p v-if="context" class="mt-1 text-ink-muted">{{ context }}</p>
-    <p v-if="detail" class="mt-1">{{ detail }}</p>
-    <p v-if="transport" class="mono mt-1 text-xs text-ink-muted">{{ transport }}</p>
-    <p v-if="guidance" class="mt-2 text-ink-muted">{{ guidance }}</p>
-    <p v-if="correlationId" class="mt-3 flex items-center gap-2 text-xs text-ink-muted">
-      <span class="mono">{{ correlationId }}</span>
-      <button class="rounded border border-line px-2 py-0.5" @click="copyCorrelation">
-        Copy correlation ID
-      </button>
+  <div class="notice notice-danger" role="alert">
+    <p class="flex items-start gap-2">
+      <svg class="mt-0.5 shrink-0 text-danger" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+        <path d="M8 1.5 15 14H1z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+        <path d="M8 6v3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        <circle cx="8" cy="11.6" r="0.9" fill="currentColor" />
+      </svg>
+      <span class="notice-title">{{ headline }}</span>
     </p>
+    <div class="mt-1 space-y-1 pl-[21px]">
+      <p v-if="context">{{ context }}</p>
+      <p v-if="detail">{{ detail }}</p>
+      <p v-if="transport" class="mono text-xs">{{ transport }}</p>
+      <p v-if="guidance">{{ guidance }}</p>
+      <p v-if="correlationId" class="flex flex-wrap items-center gap-2 pt-1 text-xs">
+        <span class="mono text-ink">{{ correlationId }}</span>
+        <button type="button" class="btn btn-sm" @click="copyCorrelation">
+          Copy correlation ID
+        </button>
+      </p>
+    </div>
   </div>
 </template>
