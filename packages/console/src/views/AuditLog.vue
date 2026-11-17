@@ -132,8 +132,8 @@ watch(selectedDate, reload, { immediate: true });
                   {{ event.reasonCode }}
                 </div>
               </td>
-              <td>
-                <span class="mono break-all text-xs">{{
+              <td class="min-w-[11rem]">
+                <span class="mono text-xs [overflow-wrap:anywhere]">{{
                   event.actor.email ?? event.actor.id
                 }}</span>
                 <div class="text-xs text-ink-3">
@@ -143,10 +143,10 @@ watch(selectedDate, reload, { immediate: true });
                   >
                 </div>
               </td>
-              <td class="mono break-all text-xs">
+              <td class="mono min-w-[15rem] text-xs [overflow-wrap:anywhere]">
                 {{ event.operation }}
               </td>
-              <td class="mono break-all text-xs text-ink-3">
+              <td class="mono min-w-[12rem] text-xs text-ink-3 [overflow-wrap:anywhere]">
                 {{ target(event) }}
               </td>
               <td class="mono whitespace-nowrap text-xs text-ink-3">

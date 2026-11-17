@@ -511,11 +511,11 @@ const reload = async (): Promise<void> => {
 
       <div
         v-if="confirming"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,12,16,0.42)] p-4 backdrop-blur-[2px]"
+        class="modal-scrim"
         role="dialog"
         aria-modal="true"
       >
-        <div class="card w-full max-w-md p-6 shadow-lg">
+        <div class="modal-panel max-w-md">
           <h2 class="text-[17px] font-semibold">Replace the payload of {{ secretId }}?</h2>
           <p class="mt-2 text-[13px] text-ink-2">
             You are submitting

@@ -481,11 +481,11 @@ const confirmGrantRevoke = async (): Promise<void> => {
 
     <div
       v-if="revokeTarget"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,12,16,0.42)] p-4 backdrop-blur-[2px]"
+      class="modal-scrim"
       role="dialog"
       aria-modal="true"
     >
-      <div class="card w-full max-w-md p-6 shadow-lg">
+      <div class="modal-panel max-w-md">
         <h2 class="text-[17px] font-semibold">Revoke this client certificate?</h2>
         <p class="mono mt-2 break-all text-xs">
           {{ revokeTarget.apiFingerprint }}
@@ -515,11 +515,11 @@ const confirmGrantRevoke = async (): Promise<void> => {
 
     <div
       v-if="revokeGrantTarget"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,12,16,0.42)] p-4 backdrop-blur-[2px]"
+      class="modal-scrim"
       role="dialog"
       aria-modal="true"
     >
-      <div class="card w-full max-w-md p-6 shadow-lg">
+      <div class="modal-panel max-w-md">
         <h2 class="text-[17px] font-semibold">Revoke this permission?</h2>
         <p class="mono mt-2 break-all text-xs">
           {{ revokeGrantTarget.permission }}: {{ revokeGrantTarget.secretId }}

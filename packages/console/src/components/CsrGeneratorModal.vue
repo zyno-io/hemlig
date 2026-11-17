@@ -83,12 +83,12 @@ const useCsr = (): void => {
 
 <template>
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,12,16,0.42)] p-4 backdrop-blur-[2px]"
+    class="modal-scrim"
     role="dialog"
     aria-modal="true"
     aria-labelledby="csr-generator-title"
   >
-    <div class="card max-h-full w-full max-w-lg overflow-y-auto p-6 shadow-lg">
+    <div class="modal-panel max-w-lg">
       <h2 id="csr-generator-title" class="text-[17px] font-semibold">Generate a key pair and CSR</h2>
 
       <p class="notice notice-warning mt-3">

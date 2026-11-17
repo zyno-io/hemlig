@@ -611,7 +611,9 @@ const tagRejection = computed(() =>
                 :to="crumbTo(folder.path)"
               >
                 <span class="flex items-center gap-2">
-                  <span aria-hidden="true">📁</span>
+                  <svg class="shrink-0 text-ink-3" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                    <path d="M1.75 3.75c0-.55.45-1 1-1h3.4l1.5 1.5h5.6c.55 0 1 .45 1 1v6.75c0 .55-.45 1-1 1H2.75c-.55 0-1-.45-1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+                  </svg>
                   <span class="mono">{{ folder.segment }}</span>
                 </span>
                 <span class="flex items-center gap-3 text-xs text-ink-3">

@@ -71,8 +71,9 @@ const tabs = computed(() => {
   return items;
 });
 
+// "secrets" also covers secret, secret-new, secret-metadata…; likewise consumers.
 const active = (name: string): boolean =>
-  String(route.name ?? "").startsWith(name);
+  String(route.name ?? "").startsWith(name.replace(/s$/, ""));
 </script>
 
 <template>
