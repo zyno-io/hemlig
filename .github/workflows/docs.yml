@@ -1,0 +1,79 @@
+name: Docs
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "openapi/**"
+      - "package.json"
+      - "yarn.lock"
+      - ".github/workflows/docs.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build docs site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # VitePress uses git history for "last updated" timestamps.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Resolve Yarn cache directory
+        id: yarn-cache
+        run: echo "path=$(yarn config get cacheFolder)" >> "$GITHUB_OUTPUT"
+      - name: Restore Yarn cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.yarn-cache.outputs.path }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('yarn.lock') }}
+      - name: Install dependencies
+        run: yarn install --immutable
+      - name: Build site (fails on dead links)
+        run: yarn docs:build
+      - name: Configure Pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Never cancel an in-progress deployment.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

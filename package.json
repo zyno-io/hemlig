@@ -5,7 +5,8 @@
   "license": "AGPL-3.0-only AND MIT",
   "packageManager": "yarn@4.10.3",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "docs"
   ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,8 +29,10 @@
     "tsconfig.cdk.json",
     "openapi",
     "docs/**/*.md",
+    "!docs/.vitepress",
+    "!docs/node_modules",
     "README.md",
-    "PLAN.md",
+    "CONTRIBUTING.md",
     "SECURITY.md",
     "LICENSE",
     "LICENSE-MIT",
@@ -54,6 +57,9 @@
     "dev:api": "yarn build && node dist/scripts/dev-ministack.js",
     "console:build": "yarn workspace @zyno-io/hemlig-console build",
     "dev:ui": "yarn workspace @zyno-io/hemlig-console dev",
+    "docs:dev": "yarn workspace @zyno-io/hemlig-docs docs:dev",
+    "docs:build": "yarn workspace @zyno-io/hemlig-docs docs:build",
+    "docs:preview": "yarn workspace @zyno-io/hemlig-docs docs:preview",
     "format": "prettier --write .",
     "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.cdk.json --noEmit",
     "lint:all": "yarn build:all && yarn workspaces foreach -A --topological run lint",

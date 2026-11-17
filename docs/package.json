@@ -1,0 +1,16 @@
+{
+  "name": "@zyno-io/hemlig-docs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Hemlig documentation site (VitePress). Not published.",
+  "license": "MIT",
+  "packageManager": "yarn@4.10.3",
+  "scripts": {
+    "docs:dev": "vitepress dev",
+    "docs:build": "vitepress build",
+    "docs:preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}
