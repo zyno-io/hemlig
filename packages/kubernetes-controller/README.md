@@ -55,11 +55,16 @@ and `hemlig.io.previous-tls.key` (rollback: copy them back over `tls.crt` and
 `tls.key`). Until verification succeeds the old identity keeps being used, and a
 rotation failure never makes the consumer `Ready=False`; it is reported on the
 separate `IdentityRotation` condition with a reason such as `RotationFailed`,
-`RotationUnsupported` (older server), `IdentityLimitReached`, or
+`RotationUnsupported` (older server), `RotationRejected`, `RotationForbidden`,
+`IdentityLimitReached`, `IdentityAlreadyRotated`, `AuthenticationFailed`, or
 `VerificationFailed`. Failed attempts retry with their own capped exponential
 backoff (60 s doubling to 6 h; reset on restart), with the periodic sweep as a
 safety net. Pending keys are discarded only when Hemlig rejects the request or
-the issued certificate is unusable.
+the issued certificate is unusable. If the current certificate can no longer
+authenticate but an issued successor (`hemlig.io.next-tls.*`) is still valid and
+verifies, the controller automatically recovers by swapping it in; the pending
+keys are never discarded on that path. The swap only applies if `tls.crt` is
+unchanged, so a concurrent operator rollback is not overwritten.
 
 Inspect state with `kubectl get hemligconsumer` (Identity-Expires and Rotation
 columns) or `status.identity` (`apiFingerprint`, `notBefore`, `notAfter`,
@@ -108,7 +113,8 @@ If the identity limit is reached (`IdentityLimitReached`), an administrator must
 revoke unused identities with `DELETE /v1/admin/consumers/{consumerId}/api-identities/{fingerprint}`.
 After a successful rotation the predecessor may rotate again once its successor
 has been revoked, which is how a rollback to `previous-tls.*` is followed by a
-fresh rotation.
+fresh rotation. The 3-identity cap is best-effort under concurrent rotations
+of distinct identities.
 
 For a release install, use the Zyno chart repository:
 

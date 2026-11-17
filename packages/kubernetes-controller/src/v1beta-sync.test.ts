@@ -139,6 +139,7 @@ const fixture = (
       "identity",
       {
         metadata: {
+          resourceVersion: "1",
           labels: { "hemlig.io/managed-by": "consumer" },
           annotations: { "hemlig.io/consumer-owner": "ns/consumer" },
         },
@@ -314,7 +315,20 @@ const fixture = (
     async replaceNamespacedSecret(input: { name: string; body: any }) {
       if (failApply)
         throw Object.assign(new Error("unavailable"), { code: 503 });
-      secrets.set(input.name, structuredClone(input.body));
+      const stored = secrets.get(input.name);
+      const version = input.body.metadata?.resourceVersion;
+      if (
+        version !== undefined &&
+        stored?.metadata?.resourceVersion !== undefined &&
+        version !== stored.metadata.resourceVersion
+      )
+        throw Object.assign(new Error("conflict"), { code: 409 });
+      const next = structuredClone(input.body);
+      if (stored?.metadata?.resourceVersion !== undefined)
+        next.metadata.resourceVersion = String(
+          Number(stored.metadata.resourceVersion) + 1,
+        );
+      secrets.set(input.name, next);
     },
     async deleteNamespacedSecret(input: { name: string }) {
       secrets.delete(input.name);
@@ -969,7 +983,7 @@ test("R12: a failed synchronization attempts no rotation", async (t) => {
   assert.equal(data(f, "hemlig.io.next-tls.key"), undefined);
 });
 
-test("R13: a new manual rotation annotation schedules a reconcile; own status updates do not", async (t) => {
+const watchedFixture = async (t: TestContext) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = fixture(t);
   const watches: { path: string; event: (phase: string, object: unknown) => void }[] = [];
@@ -989,23 +1003,43 @@ test("R13: a new manual rotation annotation schedules a reconcile; own status up
   await settle();
   const consumerWatch = watches.find((entry) => entry.path.endsWith("/hemligconsumers"));
   assert.ok(consumerWatch);
-  const before = f.counts();
   const event = (annotations: Record<string, string>, rotationRequest?: string) => ({
     apiVersion: "hemlig.io/v1beta1",
     kind: "HemligConsumer",
     metadata: { generation: 1, resourceVersion: "5", annotations },
     status: { observedGeneration: 1, identity: { rotationRequest } },
   });
-  consumerWatch.event("MODIFIED", event({}));
-  t.mock.timers.tick(250);
-  await settle();
+  const send = async (annotations: Record<string, string>, rotationRequest?: string) => {
+    consumerWatch.event("MODIFIED", event(annotations, rotationRequest));
+    t.mock.timers.tick(250);
+    await settle();
+  };
+  return {
+    f,
+    send,
+    stop: async () => {
+      abort.abort();
+      await running;
+    },
+  };
+};
+
+test("R13: a new manual rotation annotation schedules a reconcile; own status updates do not", async (t) => {
+  const { f, send, stop } = await watchedFixture(t);
+  const before = f.counts();
+  await send({});
   assert.deepEqual(f.counts(), before);
-  consumerWatch.event("MODIFIED", event({ "hemlig.io/rotate-identity": "t2" }, "t1"));
-  t.mock.timers.tick(250);
-  await settle();
+  await send({ "hemlig.io/rotate-identity": "t2" }, "t1");
   assert.equal(f.counts().sync, before.sync + 1);
-  abort.abort();
-  await running;
+  await stop();
+});
+
+test("R13b: a watch event whose rotation annotation equals the consumed request schedules no reconcile", async (t) => {
+  const { f, send, stop } = await watchedFixture(t);
+  const before = f.counts();
+  await send({ "hemlig.io/rotate-identity": "t1" }, "t1");
+  assert.deepEqual(f.counts(), before);
+  await stop();
 });
 
 /** Default CA-signing behaviour, reused by tests that wrap the rotate mock. */
@@ -1151,4 +1185,152 @@ test("G7: an expired identity reports AuthenticationFailed, retains identity sta
   assert.equal(f.secrets.has("import-a"), true);
   assert.equal(f.secrets.has("import-b"), true);
   assert.deepEqual(f.removed, ["ns/consumer"]);
+});
+
+const pendingNext = (f: Fixture) => {
+  const pair = keyPair();
+  const now = Date.now();
+  const crt = issue(
+    forge.pki.publicKeyFromPem(pair.publicKeyPem),
+    new Date(now - 3_600_000),
+    new Date(now + 365 * day),
+  );
+  Object.assign(f.secrets.get("identity").data, {
+    "hemlig.io.next-tls.key": b64(pair.privateKeyPem),
+    "hemlig.io.next-tls.crt": b64(crt),
+  });
+  return crt;
+};
+/** Old certificate is rejected by sync; any other certificate authenticates. */
+const rejectOldSync = (f: Fixture) => {
+  f.sync.mock.mockImplementation(async function (
+    this: { transport: { options: { cert?: Buffer } } },
+    query: { syncCursor?: string } = {},
+  ) {
+    if (this.transport.options.cert?.toString() === f.original)
+      throw new HemligError(403, "inactive", "identity_not_active");
+    return {
+      config: f.config,
+      snapshot: query.syncCursor === undefined,
+      changes: [...f.records.values()],
+      syncCursor: "checkpoint-1",
+    };
+  });
+};
+
+test("L2: a rejected old certificate with a valid persisted successor swaps and continues Ready", async (t) => {
+  const f = fixture(t, { identity: makeIdentity(300) });
+  await f.pass();
+  const nextCrt = pendingNext(f);
+  f.onConfig(() => f.config);
+  rejectOldSync(f);
+  await f.pass();
+  assert.equal(data(f, "tls.crt"), nextCrt);
+  assert.equal(data(f, "hemlig.io.previous-tls.crt"), f.original);
+  for (const key of pendingKeys) assert.equal(data(f, key), undefined);
+  assert.equal(condition(f.consumer, "Ready")?.status, "True");
+  assert.equal(f.ensured.at(-1)?.certificate.toString(), nextCrt);
+  assert.equal(f.rotate.mock.callCount(), 0);
+  assert.equal(f.secrets.has("import-a"), true);
+  assert.equal(importReason(f, 0), "TargetReady");
+});
+
+test("L2: a successor that fails verification leaves AuthenticationFailed with pending keys and targets kept", async (t) => {
+  const f = fixture(t, { identity: makeIdentity(300) });
+  await f.pass();
+  const nextCrt = pendingNext(f);
+  f.onConfig(() => {
+    throw new HemligError(403, "inactive", "identity_not_active");
+  });
+  rejectOldSync(f);
+  await f.pass();
+  assert.equal(condition(f.consumer, "Ready")?.reason, "AuthenticationFailed");
+  assert.equal(data(f, "tls.crt"), f.original);
+  assert.equal(data(f, "hemlig.io.next-tls.crt"), nextCrt);
+  assert.ok(data(f, "hemlig.io.next-tls.key"));
+  assert.equal(f.secrets.has("import-a"), true);
+  assert.equal(f.secrets.has("import-b"), true);
+});
+
+test("L3: an operator changing tls.crt before the swap prevents the swap and is left intact", async (t) => {
+  const f = dueFixture(t);
+  const operator = makeIdentity(200);
+  f.onConfig(() => {
+    const secret = f.secrets.get("identity");
+    secret.data["tls.crt"] = b64(operator.crtPem);
+    secret.data["tls.key"] = b64(operator.keyPem);
+    return f.config;
+  });
+  await f.pass();
+  assert.equal(data(f, "tls.crt"), operator.crtPem);
+  assert.equal(data(f, "tls.key"), operator.keyPem);
+  assert.equal(data(f, "hemlig.io.previous-tls.crt"), undefined);
+  assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "RotationFailed");
+});
+
+test("C1: identity_already_rotated reports and keeps the pending key", async (t) => {
+  const f = dueFixture(t);
+  f.onRotate(async () => {
+    throw new HemligError(409, "rotated", "identity_already_rotated");
+  });
+  await f.pass();
+  assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "IdentityAlreadyRotated");
+  assert.ok(data(f, "hemlig.io.next-tls.key"));
+  assert.ok(data(f, "hemlig.io.next-csr"));
+});
+
+test("C2: rotation_replay_inactive discards the pending key", async (t) => {
+  const f = dueFixture(t);
+  f.onRotate(async () => {
+    throw new HemligError(409, "inactive", "rotation_replay_inactive");
+  });
+  await f.pass();
+  assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "RotationRejected");
+  for (const key of pendingKeys) assert.equal(data(f, key), undefined);
+});
+
+test("C3: a 403 identity_not_active while verifying the successor discards it", async (t) => {
+  const f = dueFixture(t);
+  f.onConfig(() => {
+    throw new HemligError(403, "inactive", "identity_not_active");
+  });
+  await f.pass();
+  assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "VerificationFailed");
+  for (const key of pendingKeys) assert.equal(data(f, key), undefined);
+  assert.equal(data(f, "tls.crt"), f.original);
+});
+
+test("C4: a code-less 403 at rotate time is AuthenticationFailed and keeps the pending key", async (t) => {
+  const f = dueFixture(t);
+  f.onRotate(async () => {
+    throw new HemligError(403, "forbidden");
+  });
+  await f.pass();
+  assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "AuthenticationFailed");
+  assert.ok(data(f, "hemlig.io.next-tls.key"));
+  assert.ok(data(f, "hemlig.io.next-csr"));
+});
+
+test("L4: a resourceVersion conflict on the pending-key write is resumable with a single issuance", async (t) => {
+  const f = dueFixture(t);
+  const replace = f.core.replaceNamespacedSecret.bind(f.core);
+  let conflicted = false;
+  f.core.replaceNamespacedSecret = async (input: { name: string; body: any }) => {
+    if (!conflicted && input.body.data["hemlig.io.next-tls.key"] !== undefined) {
+      conflicted = true;
+      // A concurrent writer bumps the Secret between our read and write.
+      const stored = f.secrets.get(input.name);
+      stored.metadata.resourceVersion = "99";
+    }
+    return replace(input);
+  };
+  await f.pass();
+  assert.ok(conflicted);
+  assert.equal(f.rotate.mock.callCount(), 0);
+  assert.equal(data(f, "tls.crt"), f.original);
+  assert.equal(data(f, "hemlig.io.next-tls.key"), undefined);
+  await f.pass();
+  assert.equal(f.rotate.mock.callCount(), 1);
+  assert.notEqual(data(f, "tls.crt"), f.original);
+  for (const key of pendingKeys) assert.equal(data(f, key), undefined);
 });

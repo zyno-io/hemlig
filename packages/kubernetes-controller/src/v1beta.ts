@@ -474,31 +474,49 @@ export class HemligV1BetaController {
         );
       }
       await this.assertNamespaceAllowed(namespace, provider);
-      const loaded = await this.loadOrBootstrapIdentity(resource, provider);
+      let loaded = await this.loadOrBootstrapIdentity(resource, provider);
       loadedCertificate = loaded.certificate;
-      const oldClient = agentClient(
+      let oldClient = agentClient(
         provider.spec.apiUrl,
         loaded.certificate,
         loaded.privateKey,
       );
-      let sync: Awaited<ReturnType<HemligV1BetaController["synchronize"]>>;
-      try {
-        sync = await this.synchronize(
+      const syncWith = () =>
+        this.synchronize(
           oldClient,
           resource.status?.syncIdentity ===
             syncIdentityFor(provider.spec.apiUrl, loaded.certificate)
             ? resource.status.syncCursor
             : undefined,
         );
+      const authenticationFailed = () => {
+        this.mqtt.remove(resourceKey(resource.metadata));
+        return new ReconcileError(
+          "AuthenticationFailed",
+          "Hemlig rejected this consumer's client certificate (expired, revoked, or untrusted); see status.identity and the identity recovery runbook.",
+        );
+      };
+      let sync: Awaited<ReturnType<HemligV1BetaController["synchronize"]>>;
+      try {
+        sync = await syncWith();
       } catch (error) {
-        if (isIdentityAuthenticationFailure(error)) {
-          this.mqtt.remove(resourceKey(resource.metadata));
-          throw new ReconcileError(
-            "AuthenticationFailed",
-            "Hemlig rejected this consumer's client certificate (expired, revoked, or untrusted); see status.identity and the identity recovery runbook.",
-          );
+        if (!isIdentityAuthenticationFailure(error)) throw error;
+        const recovered = await this.recoverIssuedSuccessor(
+          resource,
+          provider,
+          loaded,
+        );
+        if (recovered === undefined) throw authenticationFailed();
+        loaded = recovered;
+        loadedCertificate = recovered.certificate;
+        oldClient = recovered.client;
+        try {
+          sync = await syncWith();
+        } catch (retryError) {
+          throw isIdentityAuthenticationFailure(retryError)
+            ? authenticationFailed()
+            : retryError;
         }
-        throw error;
       }
       const agentConfig = sync.config;
       const rotation = await this.reconcileIdentityRotation(
@@ -746,29 +764,12 @@ export class HemligV1BetaController {
     );
     const name = resource.spec.identity.secretName;
     const owner = resourceKey(resource.metadata);
-    const update = async (
+    const update = (
       mutate: (
         data: Record<string, string>,
         annotations: Record<string, string>,
       ) => void,
-    ): Promise<IdentitySecret> => {
-      const current = asSecret(
-        await this.core.readNamespacedSecret({ name, namespace }),
-      );
-      this.assertIdentityOwnership(current, owner);
-      const data = { ...current.data };
-      const annotations = { ...current.metadata?.annotations };
-      mutate(data, annotations);
-      const body = {
-        apiVersion: "v1",
-        kind: "Secret",
-        metadata: { ...current.metadata, annotations },
-        type: current.type ?? "Opaque",
-        data,
-      };
-      await this.core.replaceNamespacedSecret({ name, namespace, body });
-      return body;
-    };
+    ) => this.updateIdentitySecret(namespace, name, owner, mutate);
     const fresh = asSecret(
       await this.core.readNamespacedSecret({ name, namespace }),
     );
@@ -818,7 +819,16 @@ export class HemligV1BetaController {
           true,
         );
       }
+      const pendingKey = requiredData(secret, nextKeyDataKey);
+      const pendingCsr = requiredData(secret, nextCsrDataKey);
       secret = await update((data) => {
+        if (
+          !storedCertificateMatches(data, currentCertificate) ||
+          data[nextKeyDataKey] !== pendingKey ||
+          data[nextCsrDataKey] !== pendingCsr ||
+          data[nextCertificateDataKey] !== undefined
+        )
+          throw identitySecretChanged();
         data[nextCertificateDataKey] = b64(issued.apiCertificatePem);
       });
     }
@@ -853,32 +863,160 @@ export class HemligV1BetaController {
           error.code === "identity_not_active",
       );
     }
-    const newInfo = describeIdentity(nextCertificate);
-    let finalAnnotations: Record<string, string> = {};
-    await update((data, annotations) => {
-      const oldCertificate = data["tls.crt"];
-      const oldKey = data["tls.key"];
-      if (oldCertificate !== undefined)
-        data[previousCertificateDataKey] = oldCertificate;
-      if (oldKey !== undefined) data[previousKeyDataKey] = oldKey;
-      data["tls.crt"] = requiredData(secret, nextCertificateDataKey);
-      data["tls.key"] = requiredData(secret, nextKeyDataKey);
-      delete data[nextKeyDataKey];
-      delete data[nextCsrDataKey];
-      delete data[nextCertificateDataKey];
-      if (newInfo !== undefined)
-        annotations[apiFingerprintAnnotation] = newInfo.apiFingerprint;
-      annotations[rotatedAtAnnotation] = new Date().toISOString();
-      if (manualToken !== undefined)
-        annotations[rotationRequestAnnotation] = manualToken;
-      finalAnnotations = annotations;
-    });
+    const finalAnnotations = await this.swapIdentity(
+      resource,
+      currentCertificate,
+      requiredData(secret, nextCertificateDataKey),
+      requiredData(secret, nextKeyDataKey),
+      manualToken,
+    );
     return {
       certificate: nextCertificate,
       privateKey: nextKey,
       client: nextClient,
       annotations: finalAnnotations,
     };
+  }
+
+  private async updateIdentitySecret(
+    namespace: string,
+    name: string,
+    owner: string,
+    mutate: (
+      data: Record<string, string>,
+      annotations: Record<string, string>,
+    ) => void,
+  ): Promise<IdentitySecret> {
+    const current = asSecret(
+      await this.core.readNamespacedSecret({ name, namespace }),
+    );
+    this.assertIdentityOwnership(current, owner);
+    const data = { ...current.data };
+    const annotations = { ...current.metadata?.annotations };
+    mutate(data, annotations);
+    const body = {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: { ...current.metadata, annotations },
+      type: current.type ?? "Opaque",
+      data,
+    };
+    await this.core.replaceNamespacedSecret({ name, namespace, body });
+    return body;
+  }
+
+  /**
+   * Promotes a verified pending identity. The write only applies when the
+   * Secret still holds the certificate this pass started with and the exact
+   * pending values that were verified, so an operator's concurrent rollback or
+   * replacement is never clobbered.
+   */
+  private async swapIdentity(
+    resource: HemligConsumer,
+    currentCertificate: Buffer,
+    nextCertificate: string,
+    nextKey: string,
+    manualToken: string | undefined,
+  ): Promise<Record<string, string>> {
+    const newInfo = describeIdentity(Buffer.from(nextCertificate, "base64"));
+    let finalAnnotations: Record<string, string> = {};
+    await this.updateIdentitySecret(
+      required(resource.metadata.namespace, "consumer namespace"),
+      resource.spec.identity.secretName,
+      resourceKey(resource.metadata),
+      (data, annotations) => {
+        if (
+          !storedCertificateMatches(data, currentCertificate) ||
+          data[nextKeyDataKey] !== nextKey ||
+          data[nextCertificateDataKey] !== nextCertificate
+        )
+          throw identitySecretChanged();
+        const oldCertificate = data["tls.crt"];
+        const oldKey = data["tls.key"];
+        if (oldCertificate !== undefined)
+          data[previousCertificateDataKey] = oldCertificate;
+        if (oldKey !== undefined) data[previousKeyDataKey] = oldKey;
+        data["tls.crt"] = nextCertificate;
+        data["tls.key"] = nextKey;
+        delete data[nextKeyDataKey];
+        delete data[nextCsrDataKey];
+        delete data[nextCertificateDataKey];
+        if (newInfo !== undefined)
+          annotations[apiFingerprintAnnotation] = newInfo.apiFingerprint;
+        annotations[rotatedAtAnnotation] = new Date().toISOString();
+        if (manualToken !== undefined)
+          annotations[rotationRequestAnnotation] = manualToken;
+        finalAnnotations = annotations;
+      },
+    );
+    return finalAnnotations;
+  }
+
+  /**
+   * Recovery for an issued-but-unswapped successor when the current
+   * certificate can no longer authenticate: if the persisted successor is
+   * valid, matches its key and authenticates as this consumer, promote it.
+   * Never discards pending material; any doubt returns undefined.
+   */
+  private async recoverIssuedSuccessor(
+    resource: HemligConsumer,
+    provider: HemligProvider,
+    current: { readonly certificate: Buffer },
+  ): Promise<
+    | {
+        readonly certificate: Buffer;
+        readonly privateKey: Buffer;
+        readonly client: HemligClient;
+      }
+    | undefined
+  > {
+    try {
+      const namespace = required(
+        resource.metadata.namespace,
+        "consumer namespace",
+      );
+      const secret = asSecret(
+        await this.core.readNamespacedSecret({
+          name: resource.spec.identity.secretName,
+          namespace,
+        }),
+      );
+      const nextCertificate = valueData(secret, nextCertificateDataKey);
+      const nextKey = valueData(secret, nextKeyDataKey);
+      if (nextCertificate === undefined || nextKey === undefined)
+        return undefined;
+      const certificate = Buffer.from(nextCertificate, "base64");
+      const privateKey = Buffer.from(nextKey, "base64");
+      const info = describeIdentity(certificate);
+      const now = Date.now();
+      if (
+        info === undefined ||
+        now < Date.parse(info.notBefore) ||
+        now >= Date.parse(info.notAfter) ||
+        !publicKeysMatch(certificate.toString("utf8"), privateKey)
+      )
+        return undefined;
+      const client = agentClient(provider.spec.apiUrl, certificate, privateKey);
+      const verified = await client.getAgentConfig();
+      const known = resource.status;
+      if (
+        (known?.consumerId !== undefined &&
+          verified.consumerId !== known.consumerId) ||
+        (known?.environment !== undefined &&
+          verified.environment !== known.environment)
+      )
+        return undefined;
+      await this.swapIdentity(
+        resource,
+        current.certificate,
+        nextCertificate,
+        nextKey,
+        undefined,
+      );
+      return { certificate, privateKey, client };
+    } catch {
+      return undefined;
+    }
   }
 
   private async discardPendingIdentity(
@@ -1912,6 +2050,20 @@ class ReconcileError extends Error {
 
 /** The only condition under which an imported Secret is deleted. */
 class ImportRevokedError extends Error {}
+
+const storedCertificateMatches = (
+  data: Readonly<Record<string, string>>,
+  certificate: Buffer,
+): boolean =>
+  data["tls.crt"] !== undefined &&
+  Buffer.from(data["tls.crt"], "base64").equals(certificate);
+
+const identitySecretChanged = (): RotationError =>
+  new RotationError(
+    "RotationFailed",
+    "The identity Secret changed during rotation; retrying.",
+    false,
+  );
 
 class RotationError extends Error {
   public constructor(
