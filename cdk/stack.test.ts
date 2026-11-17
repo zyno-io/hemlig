@@ -256,6 +256,26 @@ describe("HemligStack", () => {
         ]),
       }),
     });
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      Roles: Match.arrayWith([
+        {
+          Ref: Match.stringLikeRegexp("^BootstrapFunctionServiceRole"),
+        },
+      ]),
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: [
+              "s3:GetObject",
+              "s3:GetObjectVersion",
+              "s3:GetObjectRetention",
+              "s3:PutObject",
+              "s3:PutObjectRetention",
+            ],
+          }),
+        ]),
+      }),
+    });
 
     template.resourceCountIs("AWS::CloudFront::Distribution", 1);
     template.hasResourceProperties("AWS::CloudFront::Distribution", {

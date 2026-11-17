@@ -401,6 +401,9 @@ export class HemligStack extends Stack {
     );
     grantRevisionMutation(adminFunction, revisionBucket);
     grantRevisionMutation(consumerFunction, revisionBucket);
+    // Bootstrap redemption reconciles an AgentGrant's derived ACL, which is
+    // persisted as a normal immutable control revision.
+    grantRevisionMutation(bootstrapFunction, revisionBucket);
     revisionBucket.grantRead(consumerFunction);
     grantRevisionMutation(recoveryFunction, revisionBucket);
     grantTruststorePublisher(recoveryFunction, truststoreBucket, props.apiFqdn);
