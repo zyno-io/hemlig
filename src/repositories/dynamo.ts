@@ -10,7 +10,12 @@ import {
   type DynamoDBDocumentClient,
 } from "@aws-sdk/lib-dynamodb";
 import type { AppConfig } from "../aws/config";
-import { conflict, notFound, serviceUnavailable } from "../domain/errors";
+import {
+  conflict,
+  identityAlreadyRotated,
+  notFound,
+  serviceUnavailable,
+} from "../domain/errors";
 import type {
   AccessRecord,
   AgentGrantRecord,
@@ -1692,6 +1697,11 @@ export class DynamoRepository {
     requestDigest: string,
     identity: Omit<IdentityRecord, "pk" | "sk" | "status">,
     rootFingerprint: string,
+    predecessor?: {
+      readonly fingerprint: string;
+      readonly rotatedAt: string;
+      readonly replaceableSuccessor?: string;
+    },
   ): Promise<void> {
     try {
       await this.dynamo.send(
@@ -1731,10 +1741,66 @@ export class DynamoRepository {
                 ConditionExpression: "attribute_not_exists(pk)",
               },
             },
+            ...(predecessor === undefined
+              ? []
+              : [
+                  {
+                    Update: {
+                      TableName: this.config.controlTableName,
+                      Key: {
+                        pk: `IDENTITY#${predecessor.fingerprint}`,
+                        sk: "PROFILE",
+                      },
+                      UpdateExpression:
+                        "SET rotatedTo = :successor, rotatedAt = :rotatedAt",
+                      ConditionExpression:
+                        "consumerId = :consumerId AND kind = :api AND #status = :active AND notAfter > :rotatedAt AND (attribute_not_exists(rotatedTo)" +
+                        (predecessor.replaceableSuccessor === undefined
+                          ? ")"
+                          : " OR rotatedTo = :replaceable)"),
+                      ExpressionAttributeNames: { "#status": "status" },
+                      ExpressionAttributeValues: {
+                        ":successor": identity.fingerprint,
+                        ":rotatedAt": predecessor.rotatedAt,
+                        ":consumerId": identity.consumerId,
+                        ":api": "api",
+                        ":active": "ACTIVE",
+                        ...(predecessor.replaceableSuccessor === undefined
+                          ? {}
+                          : { ":replaceable": predecessor.replaceableSuccessor }),
+                      },
+                    },
+                  },
+                ]),
           ],
         }),
       );
     } catch (error) {
+      if (
+        predecessor !== undefined &&
+        error !== null &&
+        typeof error === "object" &&
+        (error as { name?: string }).name === "TransactionCanceledException" &&
+        (
+          error as { CancellationReasons?: { Code?: string }[] }
+        ).CancellationReasons?.[2]?.Code === "ConditionalCheckFailed"
+      ) {
+        throw identityAlreadyRotated(
+          "The calling identity has already been rotated or is no longer active.",
+        );
+      }
+      if (
+        predecessor !== undefined &&
+        (error as { name?: string } | null)?.name !==
+          "TransactionCanceledException"
+      ) {
+        // A timeout or throttle may still commit. Report it as retryable so a
+        // self-rotating agent keeps (and replays) its staged key instead of
+        // discarding it and stranding an already-issued successor.
+        throw serviceUnavailable(
+          `Could not create consumer API identity: ${errorMessage(error)}`,
+        );
+      }
       throw conflict(
         `Could not create consumer API identity: ${errorMessage(error)}`,
       );

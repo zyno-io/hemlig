@@ -487,6 +487,101 @@ describe("HemligStack", () => {
     });
   });
 
+  it("isolates agent identity rotation in a least-privilege Lambda", () => {
+    const app = new App();
+    const stack = new HemligStack(app, "hml-test", {
+      environmentName: "test",
+      adminFqdn: "admin.test.example.com",
+      apiFqdn: "api.test.example.com",
+      zoneDomain: "test.example.com",
+      oidcIssuer: "https://login.example.com/tenant/v2.0",
+      oidcAudience: "hemlig-api",
+      oidcSubjectClaim: "sub",
+    });
+    const template = Template.fromStack(stack);
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "POST /v1/agent/identities/rotate",
+      AuthorizationType: "NONE",
+    });
+    template.hasResourceProperties("AWS::Lambda::Permission", {
+      FunctionName: Match.anyValue(),
+      SourceArn: Match.objectLike({
+        "Fn::Join": Match.arrayWith([
+          Match.arrayWith([
+            Match.stringLikeRegexp("/v1/agent/identities/rotate$"),
+          ]),
+        ]),
+      }),
+    });
+
+    const functions = template.findResources("AWS::Lambda::Function");
+    const roleOf = (name: string): string => {
+      const entry = Object.values(functions).find(
+        (resource) => resource.Properties.FunctionName === name,
+      );
+      expect(entry).toBeDefined();
+      return entry?.Properties.Role["Fn::GetAtt"][0] as string;
+    };
+    const statementsFor = (roleLogicalId: string): Record<string, unknown>[] =>
+      Object.values(template.findResources("AWS::IAM::Policy"))
+        .filter((policy) =>
+          (policy.Properties.Roles as { Ref: string }[]).some(
+            (role) => role.Ref === roleLogicalId,
+          ),
+        )
+        .flatMap(
+          (policy) =>
+            policy.Properties.PolicyDocument.Statement as Record<
+              string,
+              unknown
+            >[],
+        );
+    const actionsOf = (statements: Record<string, unknown>[]): string[] =>
+      statements.flatMap((statement) =>
+        [statement.Action].flat().filter((a): a is string => typeof a === "string"),
+      );
+
+    const rotation = statementsFor(roleOf("hml-test-identity-rotation"));
+    const rotationActions = actionsOf(rotation);
+    expect(rotation).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Action: "kms:Decrypt",
+          Condition: {
+            StringEquals: {
+              "kms:EncryptionContext:service": "hemlig",
+              "kms:EncryptionContext:purpose": "issuer-ca",
+            },
+          },
+        }),
+      ]),
+    );
+    expect(rotationActions).toEqual(
+      expect.arrayContaining([
+        "iot:AttachPolicy",
+        "iot:AttachThingPrincipal",
+        "iot:CreateThing",
+        "iot:DescribeCertificate",
+        "iot:RegisterCertificateWithoutCA",
+        "iot:UpdateCertificate",
+      ]),
+    );
+    expect(rotationActions.some((action) => action.startsWith("kms:GenerateDataKey"))).toBe(false);
+    expect(rotationActions.some((action) => action.startsWith("apigateway:"))).toBe(false);
+    // Only the audit prefix may be written to; no revision or truststore bucket access.
+    const s3Resources = JSON.stringify(
+      rotation.filter((statement) =>
+        [statement.Action].flat().some((a) => typeof a === "string" && a.startsWith("s3:")),
+      ),
+    );
+    expect(s3Resources).not.toContain("RevisionBucket");
+    expect(s3Resources).not.toContain("Truststore");
+    expect(JSON.stringify(rotation)).not.toContain("secret-payload");
+
+    const consumerStatements = statementsFor(roleOf("hml-test-consumer"));
+    expect(JSON.stringify(consumerStatements)).not.toContain("issuer-ca");
+  });
+
   it("adopts an explicitly supplied application key while still creating its alias", () => {
     const app = new App();
     const stack = new HemligStack(app, "hml-adopted-key", {

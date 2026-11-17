@@ -352,6 +352,12 @@ export class HemligStack extends Stack {
       "src/handlers/bootstrap.ts",
       environment,
     );
+    const identityRotationFunction = this.function(
+      "IdentityRotationFunction",
+      `${prefix}-identity-rotation`,
+      "src/handlers/identity-rotation.ts",
+      environment,
+    );
     const notificationPublisherFunction = this.function(
       "NotificationPublisherFunction",
       `${prefix}-notification-publisher`,
@@ -374,6 +380,7 @@ export class HemligStack extends Stack {
     table.grantReadWriteData(adminFunction);
     table.grantReadWriteData(consumerFunction);
     table.grantReadWriteData(bootstrapFunction);
+    table.grantReadWriteData(identityRotationFunction);
     table.grantReadWriteData(notificationPublisherFunction);
     table.grantReadWriteData(recoveryFunction);
     table.grantReadWriteData(retentionFunction);
@@ -439,6 +446,21 @@ export class HemligStack extends Stack {
         },
       }),
     );
+    // Self-rotation only unwraps the existing issuing root. It intentionally
+    // has no GenerateDataKey: a missing issuer must fail instead of minting a
+    // new root.
+    identityRotationFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["kms:Decrypt"],
+        resources: [applicationKey.keyArn],
+        conditions: {
+          StringEquals: {
+            "kms:EncryptionContext:service": "hemlig",
+            "kms:EncryptionContext:purpose": "issuer-ca",
+          },
+        },
+      }),
+    );
     // Administrators may read the current plaintext payload through the
     // administrator API. Keep that decryption limited to payload envelopes;
     // it does not broaden access to the issuer's private-key envelope.
@@ -491,6 +513,7 @@ export class HemligStack extends Stack {
     );
     auditBucket.grantPut(consumerFunction, `${auditPrefix}/*`);
     auditBucket.grantPut(bootstrapFunction, `${auditPrefix}/*`);
+    auditBucket.grantPut(identityRotationFunction, `${auditPrefix}/*`);
     auditBucket.grantPut(recoveryFunction, `${auditPrefix}/*`);
     auditBucket.grantPut(retentionFunction, `${auditPrefix}/*`);
     grantTruststorePublisher(adminFunction, truststoreBucket, props.apiFqdn);
@@ -499,19 +522,22 @@ export class HemligStack extends Stack {
       truststoreBucket,
       props.apiFqdn,
     );
-    bootstrapFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: [
-          "iot:AttachPolicy",
-          "iot:AttachThingPrincipal",
-          "iot:CreateThing",
-          "iot:DescribeCertificate",
-          "iot:RegisterCertificateWithoutCA",
-          "iot:UpdateCertificate",
-        ],
-        resources: ["*"],
-      }),
-    );
+    const agentIotProvisioningActions = [
+      "iot:AttachPolicy",
+      "iot:AttachThingPrincipal",
+      "iot:CreateThing",
+      "iot:DescribeCertificate",
+      "iot:RegisterCertificateWithoutCA",
+      "iot:UpdateCertificate",
+    ];
+    for (const function_ of [bootstrapFunction, identityRotationFunction]) {
+      function_.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: agentIotProvisioningActions,
+          resources: ["*"],
+        }),
+      );
+    }
     const notificationDeadLetterQueue = new sqs.Queue(
       this,
       "NotificationDeadLetterQueue",
@@ -592,6 +618,10 @@ export class HemligStack extends Stack {
       "BootstrapIntegration",
       bootstrapFunction,
     );
+    const identityRotationIntegration = new HttpLambdaIntegration(
+      "IdentityRotationIntegration",
+      identityRotationFunction,
+    );
     const adminApi = new apigatewayv2.HttpApi(this, "AdminApi", {
       apiName: `${prefix}-admin`,
       defaultAuthorizer: authorizer,
@@ -654,6 +684,13 @@ export class HemligStack extends Stack {
       ),
       createDefaultStage: false,
       disableExecuteApiEndpoint: true,
+    });
+    // Identity rotation holds issuer-CA decrypt and IoT registration, so it is
+    // a dedicated function rather than a branch of the generic consumer handler.
+    consumerApi.addRoutes({
+      path: "/v1/agent/identities/rotate",
+      methods: [apigatewayv2.HttpMethod.POST],
+      integration: identityRotationIntegration,
     });
     const adminAccessLogs = accessLogGroup(
       this,
