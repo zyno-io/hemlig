@@ -168,56 +168,49 @@ const pathTo = computed(() => {
 </script>
 
 <template>
-  <div class="space-y-4 text-sm">
-    <div class="flex flex-wrap items-center justify-between gap-3">
+  <div>
+    <div class="page-header">
       <div>
-        <RouterLink
-          class="text-xs text-accent hover:underline"
-          :to="catalogBackTo"
-        >
+        <RouterLink class="link text-xs" :to="catalogBackTo">
           ← Secrets
         </RouterLink>
-        <h1 class="mono text-lg font-semibold">{{ displayedSecretId }}</h1>
+        <h1 class="page-title mono">{{ displayedSecretId }}</h1>
       </div>
-      <div class="flex flex-wrap gap-2">
-        <button
-          class="rounded border border-line px-3 py-1"
-          :disabled="isFetching"
-          @click="refetch()"
-        >
+      <div class="page-actions">
+        <button class="btn" :disabled="isFetching" @click="refetch()">
           {{ isFetching ? "Refreshing…" : "Refresh" }}
         </button>
         <RouterLink
           v-if="!isArchivedView"
-          class="rounded border border-line px-3 py-1"
+          class="btn"
           :to="secretSubpageTo('secret-revisions')"
         >
           History
         </RouterLink>
         <RouterLink
           v-if="!isArchivedView"
-          class="rounded border border-line px-3 py-1"
+          class="btn"
           :to="{ name: 'audit', query: { environment: env, secretId } }"
         >
           Audit log
         </RouterLink>
         <RouterLink
           v-if="!isArchivedView"
-          class="rounded border border-line px-3 py-1"
+          class="btn"
           :to="secretSubpageTo('secret-metadata')"
         >
           Edit metadata &amp; ACL
         </RouterLink>
         <RouterLink
           v-if="!isArchivedView"
-          class="rounded bg-accent px-3 py-1 text-white"
+          class="btn btn-primary"
           :to="secretSubpageTo('secret-payload')"
         >
           Replace payload
         </RouterLink>
         <button
           v-if="!isArchivedView"
-          class="rounded border border-danger px-3 py-1 text-danger disabled:opacity-50"
+          class="btn btn-danger"
           :disabled="archiving || !data"
           @click="archiveSecret"
         >
@@ -230,108 +223,97 @@ const pathTo = computed(() => {
     <ErrorNotice v-else-if="archiveError" :error="archiveError" />
 
     <div v-else-if="data" class="grid gap-4 md:grid-cols-2">
-      <section class="rounded border border-line bg-surface-raised p-4">
-        <h2 class="font-medium">Control revision</h2>
-        <dl class="mt-3 grid grid-cols-[10rem_1fr] gap-y-1 text-xs">
-          <dt class="text-ink-muted">State</dt>
+      <section class="card card-body">
+        <h2 class="section-title">Control revision</h2>
+        <dl class="facts mt-3">
+          <dt>State</dt>
           <dd><StateBadge :state="data.state" /></dd>
-          <dt class="text-ink-muted">Environment</dt>
+          <dt>Environment</dt>
           <dd class="mono">{{ data.environment }}</dd>
-          <dt class="text-ink-muted">Control version</dt>
+          <dt>Control version</dt>
           <dd class="mono break-all">{{ data.controlVersionId }}</dd>
-          <dt class="text-ink-muted">Payload version</dt>
+          <dt>Payload version</dt>
           <dd class="mono break-all">{{ data.payloadVersionId ?? "—" }}</dd>
-          <dt class="text-ink-muted">Payload entries</dt>
+          <dt>Payload entries</dt>
           <dd class="mono">{{ data.payloadKeyCount ?? "unknown" }}</dd>
-          <dt class="text-ink-muted">Created</dt>
+          <dt>Created</dt>
           <dd class="mono">{{ data.createdAt }}</dd>
-          <dt class="text-ink-muted">Created by</dt>
+          <dt>Created by</dt>
           <dd class="mono break-all">{{ data.createdBy.id }}</dd>
         </dl>
-        <p
-          v-if="data.state === 'PENDING_VALUE'"
-          class="mt-3 rounded bg-warn/10 p-2 text-xs text-warn"
-        >
+        <p v-if="data.state === 'PENDING_VALUE'" class="notice notice-warning mt-3">
           This secret has no payload yet, so no consumer can read it. Set a
           payload to activate it.
         </p>
-        <p
-          v-else-if="data.state === 'ARCHIVED'"
-          class="mt-3 rounded bg-line/40 p-2 text-xs text-ink-muted"
-        >
+        <p v-else-if="data.state === 'ARCHIVED'" class="notice mt-3">
           This immutable record is archived. Its former secret ID may now be
           used by a new active secret.
         </p>
       </section>
 
-      <section class="rounded border border-line bg-surface-raised p-4">
-        <h2 class="font-medium">Metadata</h2>
-        <dl class="mt-3 grid grid-cols-[10rem_1fr] gap-y-1 text-xs">
-          <dt class="text-ink-muted">Description</dt>
+      <section class="card card-body">
+        <h2 class="section-title">Metadata</h2>
+        <dl class="facts mt-3">
+          <dt>Description</dt>
           <dd>{{ data.metadata.description ?? "—" }}</dd>
-          <dt class="text-ink-muted">Folder</dt>
+          <dt>Folder</dt>
           <dd>
-            <RouterLink class="mono text-accent hover:underline" :to="pathTo">
+            <RouterLink class="mono link" :to="pathTo">
               {{ folderPath(displayedSecretId) ?? "Root" }}
             </RouterLink>
           </dd>
         </dl>
-        <div class="mt-2 text-xs">
-          <span class="text-ink-muted">Tags</span>
-          <div class="mt-1">
+        <div class="mt-3 text-[13px]">
+          <span class="text-ink-3">Tags</span>
+          <div class="mt-1 flex flex-wrap gap-1">
             <span
               v-for="(value, key) in data.metadata.tags ?? {}"
               :key="key"
-              class="mr-1 inline-block rounded bg-line/40 px-1.5 py-0.5"
+              class="tag mono"
               >{{ key }}:{{ value }}</span
             >
-            <span v-if="!data.metadata.tags" class="text-ink-muted">—</span>
+            <span v-if="!data.metadata.tags" class="text-ink-3">—</span>
           </div>
         </div>
-        <p class="mt-3 text-xs text-ink-muted">
+        <p class="meta mt-3">
           Folders are derived from the secret ID. Tags are organisational only
           and never select a delivery target or grant access.
         </p>
       </section>
 
-      <section
-        class="rounded border border-line bg-surface-raised p-4 md:col-span-2"
-      >
-        <h2 class="font-medium">Access ({{ data.acl.length }} of 40)</h2>
-        <ul v-if="data.acl.length > 0" class="mt-2 space-y-1">
+      <section class="card md:col-span-2">
+        <div class="card-header">
+          <h2 class="section-title">Access ({{ data.acl.length }} of 40)</h2>
+        </div>
+        <ul v-if="data.acl.length > 0" class="card-rows">
           <li
             v-for="entry in data.acl"
             :key="entry.consumerId"
-            class="flex items-center gap-2 text-xs"
+            class="row flex items-center gap-2 text-xs"
           >
             <RouterLink
-              class="mono text-accent hover:underline"
+              class="mono link"
               :to="{
                 name: 'consumer',
                 params: { env, consumerId: entry.consumerId },
               }"
               >{{ entry.consumerId }}</RouterLink
             >
-            <span class="rounded bg-line/40 px-1.5 py-0.5">{{
-              entry.permissions.join(", ")
-            }}</span>
+            <span class="tag">{{ entry.permissions.join(", ") }}</span>
           </li>
         </ul>
-        <p v-else class="mt-2 text-xs text-ink-muted">
+        <p v-else class="card-body text-[13px] text-ink-3">
           No consumer can read this secret.
         </p>
       </section>
 
-      <section
-        v-if="!isArchivedView"
-        class="rounded border border-line bg-surface-raised p-4 md:col-span-2"
-      >
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 class="font-medium">Payload</h2>
+      <section v-if="!isArchivedView" class="card md:col-span-2">
+        <div class="card-header">
+          <h2 class="section-title">Payload</h2>
           <button
             v-if="payload !== undefined"
             type="button"
-            class="rounded border border-line px-2 py-1 text-xs"
+            class="btn btn-sm"
             @click="hidePayload"
           >
             Hide
@@ -339,45 +321,43 @@ const pathTo = computed(() => {
           <button
             v-else
             type="button"
-            class="rounded border border-line px-2 py-1 text-xs"
+            class="btn btn-sm"
             :disabled="payloadLoading || data.payloadVersionId === undefined"
             @click="revealPayload"
           >
             {{ payloadLoading ? "Revealing…" : "Reveal" }}
           </button>
         </div>
-        <p class="mt-1 text-xs text-ink-muted">
-          <template v-if="data.payloadKeyCount !== undefined">
-            {{ data.payloadKeyCount }}
-            {{ data.payloadKeyCount === 1 ? "entry" : "entries" }}.
-          </template>
-          Revealing values is a deliberate audited action. Values remain only in
-          this page until you hide them or leave it.
-        </p>
-        <ErrorNotice
-          v-if="payloadError"
-          class="mt-3"
-          :error="payloadError"
-          context="Could not reveal the current payload."
-        />
-        <div v-if="payload !== undefined" class="mt-3 overflow-x-auto">
-          <table class="w-full text-left text-xs">
-            <thead class="text-ink-muted">
+        <div class="card-body">
+          <p class="meta">
+            <template v-if="data.payloadKeyCount !== undefined">
+              {{ data.payloadKeyCount }}
+              {{ data.payloadKeyCount === 1 ? "entry" : "entries" }}.
+            </template>
+            Revealing values is a deliberate audited action. Values remain only in
+            this page until you hide them or leave it.
+          </p>
+          <ErrorNotice
+            v-if="payloadError"
+            class="mt-3"
+            :error="payloadError"
+            context="Could not reveal the current payload."
+          />
+        </div>
+        <div v-if="payload !== undefined" class="overflow-x-auto border-t border-line">
+          <table class="data-table">
+            <thead>
               <tr>
-                <th class="pb-1 pr-3 font-medium">Key</th>
-                <th class="pb-1 pr-3 font-medium">Encoding</th>
-                <th class="pb-1 font-medium">Value</th>
+                <th>Key</th>
+                <th>Encoding</th>
+                <th>Value</th>
               </tr>
             </thead>
             <tbody>
-              <tr
-                v-for="(entry, key) in payload.payload"
-                :key="key"
-                class="border-t border-line"
-              >
-                <td class="mono py-2 pr-3 align-top">{{ key }}</td>
-                <td class="mono py-2 pr-3 align-top">{{ entry.encoding }}</td>
-                <td class="mono whitespace-pre-wrap break-all py-2">
+              <tr v-for="(entry, key) in payload.payload" :key="key">
+                <td class="mono text-xs">{{ key }}</td>
+                <td class="mono text-xs">{{ entry.encoding }}</td>
+                <td class="mono whitespace-pre-wrap break-all text-xs">
                   {{ entry.value }}
                 </td>
               </tr>

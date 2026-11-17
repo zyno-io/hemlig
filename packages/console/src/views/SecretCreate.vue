@@ -97,61 +97,61 @@ const catalogBackTo = computed(() =>
 </script>
 
 <template>
-  <div class="max-w-2xl space-y-4 text-sm">
-    <div>
-      <RouterLink
-        class="text-xs text-accent hover:underline"
-        :to="catalogBackTo"
-      >
-        ← Secrets
-      </RouterLink>
-      <h1 class="text-lg font-semibold">New secret in {{ env }}</h1>
-      <p class="mt-1 text-ink-muted">
-        Step 1 of 2. Creating a secret leaves it in PENDING_VALUE; it becomes
-        deliverable once you set its first payload on the next screen.
-      </p>
-      <p v-if="path" class="mt-1 text-xs text-ink-muted">
-        This secret will be created in <span class="mono">{{ path }}</span>.
-      </p>
+  <div>
+    <div class="page-header">
+      <div>
+        <RouterLink class="link text-xs" :to="catalogBackTo">
+          ← Secrets
+        </RouterLink>
+        <h1 class="page-title">New secret in {{ env }}</h1>
+        <p class="page-subtitle">
+          Step 1 of 2. Creating a secret leaves it in PENDING_VALUE; it becomes
+          deliverable once you set its first payload on the next screen.
+        </p>
+        <p v-if="path" class="meta mt-1">
+          This secret will be created in <span class="mono">{{ path }}</span>.
+        </p>
+      </div>
     </div>
 
-    <MutationState
-      :phase="creation.phase.value"
-      intent="create this secret"
-      @reload="creation.reset()"
-    />
+    <div class="max-w-2xl space-y-4">
+      <MutationState
+        :phase="creation.phase.value"
+        intent="create this secret"
+        @reload="creation.reset()"
+      />
 
-    <form
-      class="space-y-4 rounded border border-line bg-surface-raised p-4"
-      @submit.prevent="submit"
-    >
-      <label class="block">
-        <span class="text-xs text-ink-muted">Secret ID</span>
-        <input
-          v-model="secretId"
-          required
-          placeholder="payments/stripe/api-key"
-          class="mono mt-1 w-full rounded border border-line bg-surface px-2 py-1"
-        />
-        <span v-if="idError" class="text-xs text-danger">{{ idError }}</span>
-        <span v-else class="text-xs text-ink-muted">
-          Slash-separated segments define the folder tree. A stable, readable ID is used for catalog and audit records.
-        </span>
-      </label>
-      <MetadataFields v-model="metadata" />
-      <AclEditor v-model="acl" :environment="env" />
+      <form class="card card-body space-y-4" @submit.prevent="submit">
+        <label class="block">
+          <span class="field-label">Secret ID</span>
+          <input
+            v-model="secretId"
+            required
+            placeholder="payments/stripe/api-key"
+            class="input mono"
+          />
+          <span v-if="idError" class="field-error block">{{ idError }}</span>
+          <span v-else class="field-hint block">
+            Slash-separated segments define the folder tree. A stable, readable ID is used for catalog and audit records.
+          </span>
+        </label>
+        <MetadataFields v-model="metadata" />
+        <AclEditor v-model="acl" :environment="env" />
 
-      <button
-        class="rounded bg-accent px-4 py-1.5 text-white disabled:opacity-50"
-        :disabled="!canSubmit || creation.phase.value.kind === 'submitting'"
-        type="submit"
-      >
-        {{
-          creation.phase.value.kind === "submitting"
-            ? "Creating…"
-            : "Create and set payload"
-        }}
-      </button>
-    </form>
+        <div>
+          <button
+            class="btn btn-primary"
+            :disabled="!canSubmit || creation.phase.value.kind === 'submitting'"
+            type="submit"
+          >
+            {{
+              creation.phase.value.kind === "submitting"
+                ? "Creating…"
+                : "Create and set payload"
+            }}
+          </button>
+        </div>
+      </form>
+    </div>
   </div>
 </template>
