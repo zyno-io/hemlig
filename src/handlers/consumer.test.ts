@@ -32,6 +32,20 @@ const control: ControlRevision = {
 
 describe("consumer handler agent routes", () => {
   const update = jest.fn(async () => control);
+  let nextReadIsNotModified = false;
+  const read = jest.fn(async (...parameters: unknown[]) => {
+    // Mirrors SecretService.read: onAuthorized runs only when a value is returned.
+    const onAuthorized = parameters[4] as (() => Promise<void>) | undefined;
+    if (!nextReadIsNotModified) {
+      await onAuthorized?.();
+    }
+    return {
+      controlVersionId: control.controlVersionId,
+      payloadVersionId: control.payloadVersionId,
+      payload: { token: { encoding: "base64", value: "dG9rZW4=" } },
+      notModified: nextReadIsNotModified,
+    };
+  });
   const auditWrite = jest.fn(async () => undefined);
   const sync = jest.fn(async () => ({
     config: {},
@@ -42,7 +56,9 @@ describe("consumer handler agent routes", () => {
 
   beforeEach(() => {
     update.mockClear();
+    read.mockClear();
     auditWrite.mockClear();
+    nextReadIsNotModified = false;
     sync.mockClear();
     consumerActorFromEvent.mockResolvedValue({
       type: "consumer",
@@ -62,7 +78,7 @@ describe("consumer handler agent routes", () => {
         action(
           {
             config: { maxPayloadBytes: 1_000_000 },
-            agents: { update },
+            agents: { update, read },
             agentSync: { sync },
             audit: { write: auditWrite },
             repository: {
@@ -129,5 +145,43 @@ describe("consumer handler agent routes", () => {
       syncCursor: "checkpoint",
     });
     expect(update).not.toHaveBeenCalled();
+  });
+
+  const readEvent = (headers: Record<string, string> = {}) =>
+    ({
+      rawPath:
+        "/v1/agent/secrets/platform%2Faccess%2Fwarpgate%2Ftarget-sync%2Fedge",
+      headers,
+      requestContext: {
+        requestId: "request-id",
+        http: { method: "GET", sourceIp: "127.0.0.1" },
+      },
+    }) as unknown as APIGatewayProxyEventV2;
+  const outcomes = () =>
+    (auditWrite.mock.calls as unknown as [{ outcome: string }][]).map(
+      ([entry]) => entry.outcome,
+    );
+
+  it("audits a read that delivers a value", async () => {
+    const response = await handler(readEvent());
+
+    expect(response.statusCode).toBe(200);
+    expect(read).toHaveBeenCalledWith(
+      "staging-trusted",
+      "staging",
+      "platform/access/warpgate/target-sync/edge",
+      undefined,
+      expect.any(Function),
+    );
+    expect(outcomes()).toEqual(["attempted", "authorized", "succeeded"]);
+  });
+
+  it("writes no audit events for a conditional 304 read", async () => {
+    nextReadIsNotModified = true;
+
+    const response = await handler(readEvent({ "if-none-match": '"ctl-next"' }));
+
+    expect(response.statusCode).toBe(304);
+    expect(auditWrite).not.toHaveBeenCalled();
   });
 });

@@ -35,13 +35,30 @@ export const handler = async (
       operation,
       sourceIp: event.requestContext.http.sourceIp,
     });
-    await app.audit.write({
-      correlationId,
-      outcome: "attempted",
-      actor,
-      operation,
-      sourceIp: event.requestContext.http.sourceIp,
-    });
+    const decodedPath = decodeRequestPath(event.rawPath);
+    const secretMatch = new RegExp(`^/v1/secrets/(${secretIdRoutePart})$`).exec(
+      decodedPath,
+    );
+    const agentSecretMatch = new RegExp(
+      `^/v1/agent/secrets/(${secretIdRoutePart})$`,
+    ).exec(decodedPath);
+    const isSecretRead =
+      event.requestContext.http.method === "GET" &&
+      (secretMatch !== null || agentSecretMatch !== null);
+    // A secret read is audited only when it delivers a value: its attempted
+    // and authorized events are written once the read knows it is not a
+    // conditional 304, so polling controllers do not create immutable records
+    // for unchanged secrets. Failures are still recorded through the audit
+    // context set on the read branch.
+    if (!isSecretRead) {
+      await app.audit.write({
+        correlationId,
+        outcome: "attempted",
+        actor,
+        operation,
+        sourceIp: event.requestContext.http.sourceIp,
+      });
+    }
     if (
       event.requestContext.http.method === "GET" &&
       event.rawPath === "/v1/agent/sync"
@@ -71,13 +88,6 @@ export const handler = async (
       });
       return json(200, page);
     }
-    const decodedPath = decodeRequestPath(event.rawPath);
-    const secretMatch = new RegExp(`^/v1/secrets/(${secretIdRoutePart})$`).exec(
-      decodedPath,
-    );
-    const agentSecretMatch = new RegExp(
-      `^/v1/agent/secrets/(${secretIdRoutePart})$`,
-    ).exec(decodedPath);
     const agentPayloadMatch = new RegExp(
       `^/v1/agent/secrets/(${secretIdRoutePart})/payload$`,
     ).exec(decodedPath);
@@ -232,6 +242,24 @@ export const handler = async (
         permission: "read",
         sourceIp: event.requestContext.http.sourceIp,
       });
+      const recordDelivery = async (): Promise<void> => {
+        await app.audit.write({
+          correlationId,
+          outcome: "attempted",
+          actor,
+          operation,
+          sourceIp: event.requestContext.http.sourceIp,
+        });
+        await app.audit.write({
+          correlationId,
+          outcome: "authorized",
+          actor,
+          operation,
+          target: { environment, secretId },
+          permission: "read",
+          sourceIp: event.requestContext.http.sourceIp,
+        });
+      };
       const result =
         isAgent || agentSecretMatch !== null
           ? await app.agents.read(
@@ -239,35 +267,18 @@ export const handler = async (
               environment,
               secretId,
               ifNoneMatch,
-              async () => {
-                await app.audit.write({
-                  correlationId,
-                  outcome: "authorized",
-                  actor,
-                  operation,
-                  target: { environment, secretId },
-                  permission: "read",
-                  sourceIp: event.requestContext.http.sourceIp,
-                });
-              },
+              recordDelivery,
             )
           : await app.secrets.read(
               consumerId,
               environment,
               secretId,
               ifNoneMatch,
-              async () => {
-                await app.audit.write({
-                  correlationId,
-                  outcome: "authorized",
-                  actor,
-                  operation,
-                  target: { environment, secretId },
-                  permission: "read",
-                  sourceIp: event.requestContext.http.sourceIp,
-                });
-              },
+              recordDelivery,
             );
+      if (result.notModified) {
+        return empty(304, { etag: result.controlVersionId });
+      }
       await app.audit.write({
         correlationId,
         outcome: "succeeded",
@@ -280,11 +291,7 @@ export const handler = async (
         },
         permission: "read",
         sourceIp: event.requestContext.http.sourceIp,
-        reasonCode: result.notModified ? "not_modified" : undefined,
       });
-      if (result.notModified) {
-        return empty(304, { etag: result.controlVersionId });
-      }
       return json(
         200,
         {
