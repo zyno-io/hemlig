@@ -39,7 +39,7 @@ Do not re-test these here; they are covered by `yarn test` and
   `oidcAdminScope`. This is the most common source of a failed gate 2.
 - An ACM certificate in **us-east-1** covering the console FQDN, unless the
   stack has a concrete `env` and you supplied `existingHostedZoneId`. See
-  [the deployment guide](cdk-integration.md#console-hosting).
+  [the deployment guide](../guide/deploying.md#console-hosting).
 
 ## Gate 0 — the stack deploys
 

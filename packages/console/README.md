@@ -7,7 +7,7 @@ AWS credentials, no AWS SDK, and no access to DynamoDB, S3, or KMS. Everything
 it can do, it does through the contract in
 [`openapi/consumer-secrets.yaml`](../../openapi/consumer-secrets.yaml).
 
-See [the console plan](../../docs/console-plan.md) for the boundary this sits
+See [the console plan](../../docs/design/console-plan.md) (a historical design record; see the [console guide](https://zyno-io.github.io/hemlig/guide/console) for current behavior) for the boundary this sits
 behind and why.
 
 ## Local development

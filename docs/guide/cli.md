@@ -1,8 +1,8 @@
 # Hemlig administrator CLI
 
 `@zyno-io/hemlig-cli` lives in `packages/cli` and exposes the `hemlig` executable. It
-uses [`@zyno-io/hemlig-client`](../packages/client/src/index.ts) against the
-[administrator API](api.md) and [OpenAPI contract](../openapi/consumer-secrets.yaml).
+uses [`@zyno-io/hemlig-client`](https://github.com/zyno-io/hemlig/blob/main/packages/client/src/index.ts) against the
+[administrator API](../reference/api/index.md) and [OpenAPI contract](../reference/openapi.md).
 It requires Node.js 24. It manages existing environments; it does not provision
 Hemlig infrastructure, enroll consumers, redeem bootstrap tokens, or manage
 Kubernetes `HemligSecretImport` / `HemligSecretExport` resources.
@@ -27,7 +27,7 @@ explicitly. The delivery origin is for mTLS workloads, not this CLI. There is
 no default production endpoint.
 
 ```bash
-export HEMLIG_ADMIN_URL=https://admin.hml.aws-sec.sgnl24.net
+export HEMLIG_ADMIN_URL=https://admin.hemlig.example.com
 export HEMLIG_ENVIRONMENT=production
 export HEMLIG_ADMIN_TOKEN_FILE=/run/secrets/hemlig-admin-oidc-token
 ```

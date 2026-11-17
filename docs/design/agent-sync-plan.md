@@ -1,5 +1,9 @@
 # Agent synchronization with a checkpoint
 
+::: warning Historical design record
+This document records design intent at the time it was written and may differ from current behavior. For current behavior see the [Kubernetes controller guide](/guide/kubernetes) and [delivery and agent routes](/reference/api/delivery).
+:::
+
 ## Outcome and scope
 
 An unchanged controller pass makes one authenticated sync request per ready

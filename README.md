@@ -1,71 +1,64 @@
 # Hemlig
 
-Hemlig is a standalone AWS Lambda implementation of an mTLS secrets-delivery
-API. It keeps encrypted payload revisions in S3, authorizes enrolled workload
-reads from DynamoDB, uses KMS envelope encryption, and writes application audit
-events to a separate immutable S3 prefix.
+Hemlig delivers secrets to workloads that run outside AWS without giving them an
+AWS credential. It is a Lambda service you deploy into your own AWS account: KMS
+envelope-encrypted payloads in immutable S3 Object Lock revisions, authorization
+in DynamoDB, and an audit archive. Workloads authenticate with mTLS client
+certificates issued by Hemlig itself.
 
-The repository owns the reusable CDK construct and its reference CDK app; an
-installer owns the target account, stack instantiation, deployment pipeline, and
-OIDC-provider configuration. The first installer may be the internal IaC repo,
-but any CDK app can import `hemlig/cdk`. Given administrator and delivery API
-FQDNs, an authoritative Route 53 zone, and an existing OIDC issuer/audience,
-the construct provisions `hml-`-prefixed resources. It creates a public hosted
-zone when `existingHostedZoneId` is omitted; the deployer must delegate that
-new zone's name servers at its parent registrar/zone.
+**Who it is for:** platform and security teams running Kubernetes (or other
+infrastructure) outside AWS that want AWS-grade key management, immutable history
+and auditing, delivered through a Kubernetes controller, a CLI, a Pulumi provider,
+or the HTTP API.
 
-It is now a Yarn Berry workspace monorepo. The root package remains the AWS
-service/CDK construct; [the workspace map](docs/monorepo.md) describes the
-shared client, [administrator CLI](docs/cli.md), Kubernetes import/export
-controller, and Pulumi provider.
+> Pre-1.0. Do not deliver production credentials without an isolated AWS
+> acceptance test of your OIDC and mTLS configuration.
 
-The server and administrator console are licensed under **AGPL-3.0-only**.
-The client, CLI, Kubernetes controller, Pulumi provider, CDK integration and
-OpenAPI contract are **MIT**. Commercial hosting is allowed; modified AGPL
-services must offer their corresponding source to their network users. See
-[the licensing policy](LICENSING.md) for component boundaries and earlier
-Apache releases.
+## Architecture
 
-## Current implementation
+```text
+ Administrator --(OIDC JWT)--> Admin API + Console   (adminFqdn)
+                                      |
+                                      v
+ Kubernetes controller --+      +-------------+      +--> S3 Object Lock: encrypted revisions
+ CLI / Pulumi (admin) ---+--->  |   Lambda    | -----+--> DynamoDB: control + authorization
+ workload (mTLS leaf) ---+      |  functions  |      +--> KMS: envelope keys + issuing root
+        |                       +-------------+      +--> S3 Object Lock: audit archive
+        |  (mTLS)   Delivery API (apiFqdn)    ^
+        |                                     | DynamoDB Stream
+        +<---- MQTT change hints <-- AWS IoT <-+   (payload-free, per-consumer topic)
+```
 
-The current implementation provides the payload/control-revision workflow,
-KMS AES-256-GCM envelope codec, conditional immutable S3 writes, DynamoDB
-leases/idempotency records, mTLS fingerprint authorization, OIDC actor
-extraction, secret create/update/payload/archive endpoints, organizational
-path/tag catalog browsing (with an explicit archived view), consumer
-reads/changes, immutable audit writes, and scheduled
-recovery/retention.
+- **Admin API** (`adminFqdn`): OIDC bearer JWT; manages secrets, consumers, grants.
+- **Delivery API** (`apiFqdn`): mTLS client certificate from one online issuing root.
+- **Hints**: AWS IoT MQTT tells clients to resync sooner; they still verify over mTLS.
 
-It also supports CSR-based consumer enrollment: Hemlig creates one online,
-deployment-wide issuing root, KMS-wraps that root under the same application
-CMK used for payload envelopes, signs each consumer's client-certificate CSR,
-and publishes the one root as a version-pinned API Gateway truststore. It
-supports overlapping API-leaf rotation and immediate leaf revocation. It also
-provides bounded, administrator-authorized browsing of its immutable
-application audit archive. Issuer-root rotation remains deliberately out of
-scope. Do not use this pre-1.0 project to deliver production credentials
-without an isolated AWS acceptance test for your OIDC and mTLS configuration.
+## Repository layout
 
-## Documentation
+| Path                             | What it is                                                         | License |
+| -------------------------------- | ------------------------------------------------------------------ | ------- |
+| `src/`                           | Lambda handlers, services, crypto, repositories (root `hemlig`)    | AGPL    |
+| `cdk/`                           | `hemlig/cdk` construct and reference CDK app                       | MIT     |
+| `openapi/`                       | OpenAPI 3.1 contract                                               | MIT     |
+| `packages/client`                | `@zyno-io/hemlig-client` typed HTTPS client                        | MIT     |
+| `packages/cli`                   | `@zyno-io/hemlig-cli` administrator CLI                            | MIT     |
+| `packages/kubernetes-controller` | Controller, CRDs, Helm chart                                       | MIT     |
+| `packages/pulumi-provider`       | `@zyno-io/hemlig-pulumi-provider`                                  | MIT     |
+| `packages/console`               | Vue administrator console                                          | AGPL    |
+| `docs/`                          | VitePress documentation site; `docs/design/` = historical records  | AGPL    |
 
-- [Architecture and security model](docs/architecture.md)
-- [HTTP API reference](docs/api.md)
-- [OpenAPI 3.1 contract](openapi/consumer-secrets.yaml)
-- [CDK deployment guide](docs/cdk-integration.md)
-- [Secret UID upgrade guide](docs/upgrade-secret-uids.md)
-- [Threat model](docs/threat-model.md)
-- [Monorepo and integration packages](docs/monorepo.md)
-- [Management console plan](docs/console-plan.md)
-- [AWS acceptance runbook](docs/acceptance.md)
+## Quickstart
 
-## Local development
+Local development (Node.js 24, Docker):
 
 ```sh
 corepack enable
 yarn install
 yarn build
 yarn test
-yarn ministack:up
+yarn ministack:up   # local DynamoDB/S3/KMS
+yarn dev:api        # dev admin bridge on :5274
+yarn dev:ui         # console on :5273
 ```
 
 ## Deploy with CDK
@@ -124,38 +117,38 @@ yarn cdk:deploy \
 ```
 
 The stack creates the revision and audit buckets with S3 Object Lock Compliance
-defaults (90 days and seven years respectively), one application KMS key, DynamoDB
-state and sparse GSIs, an externally configured OIDC JWT authorizer,
-custom-domain HTTP APIs, Route 53 aliases, Lambda roles, and scheduled recovery
-and retention invocations. Both execute-api endpoints are disabled. The APIs
-are public DNS endpoints protected by OIDC or mTLS—not VPC-private APIs.
-Hemlig does not create or manage administrator identities.
+defaults (90 days and seven years), one application KMS key, DynamoDB state, an
+OIDC-protected admin API, an mTLS delivery API, Route 53 aliases, and scheduled
+recovery and retention. The APIs are public DNS endpoints protected by OIDC or
+mTLS, not VPC-private. MiniStack does not validate mTLS, IAM, OIDC or Object
+Lock; use the [AWS acceptance runbook](docs/operations/acceptance.md).
 
-MiniStack exercises AWS SDK integrations locally. It does not validate API
-Gateway custom-domain mTLS, IAM policy enforcement, OIDC authorizers,
-CloudTrail delivery, or the AWS administrative behavior of Object Lock. Those
-controls require an isolated AWS acceptance environment.
+## Documentation
 
-## Lambda entry points
+Docs site: **https://zyno-io.github.io/hemlig/**
 
-- `dist/handlers/admin.handler`
-- `dist/handlers/audit-query.handler`
-- `dist/handlers/consumer.handler`
-- `dist/handlers/recovery.handler`
-- `dist/handlers/retention.handler`
+| Topic                                  | Source                                                         |
+| -------------------------------------- | -------------------------------------------------------------- |
+| What is Hemlig, concepts               | [docs/guide/](docs/guide/what-is-hemlig.md)                    |
+| Architecture and security model        | [docs/guide/architecture.md](docs/guide/architecture.md)       |
+| Deploying with CDK                     | [docs/guide/deploying.md](docs/guide/deploying.md)             |
+| Kubernetes controller                  | [docs/guide/kubernetes.md](docs/guide/kubernetes.md)           |
+| HTTP API and OpenAPI                   | [docs/reference/api/](docs/reference/api/index.md), [openapi/](openapi/consumer-secrets.yaml) |
+| Identity rotation, upgrades, releasing | [docs/operations/](docs/operations/identity-rotation.md)       |
+| Threat model                           | [docs/security/threat-model.md](docs/security/threat-model.md) |
+| Contributing                           | [CONTRIBUTING.md](CONTRIBUTING.md)                             |
+| Historical design records              | [docs/design/](docs/design/plan.md)                            |
 
-`audit-query` runs as a separate archive-read role in the normal deployment.
-It shares administrator JWT authorization with the management API, while the
-normal administrator handler remains write-only to the archive.
+Preview the site locally with `yarn docs:dev`.
 
-## Security posture
+## License
 
-Application audit events never include secret values, request bodies, tokens,
-or private keys. Normal application roles are write-only to the audit prefix;
-the dedicated audit-query role alone can list and read it. Secret payloads are
-encrypted before S3 with a new KMS data key per payload revision.
-The same CMK wraps the online issuing root with a separate encryption context;
-only the admin function has context-restricted issuer decrypt permission.
+The secrets service and administrator console are **AGPL-3.0-only**. The client,
+CLI, Kubernetes controller, Pulumi provider, CDK integration and OpenAPI contract
+are **MIT**. Commercial hosting is allowed; modified AGPL services must offer
+their corresponding source to their network users. See [LICENSING.md](LICENSING.md).
 
-See [SECURITY.md](SECURITY.md) for reporting and [PLAN.md](PLAN.md) for the
-full intended architecture and deployment contract.
+## Security
+
+Report vulnerabilities privately; see [SECURITY.md](SECURITY.md) and the
+[threat model](docs/security/threat-model.md).

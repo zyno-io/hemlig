@@ -1,5 +1,9 @@
 # Hemlig Kubernetes controller plan
 
+::: warning Historical design record
+This document records design intent at the time it was written and may differ from current behavior. For current behavior see the [Kubernetes controller guide](/guide/kubernetes), [CRD reference](/reference/crds) and [identity rotation](/operations/identity-rotation).
+:::
+
 ## Purpose and release target
 
 This plan turns the existing @zyno-io/hemlig-kubernetes-controller prototype into a

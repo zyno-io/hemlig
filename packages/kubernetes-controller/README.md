@@ -1,5 +1,7 @@
 # Hemlig Kubernetes controller
 
+Full documentation: the [Kubernetes controller guide](https://zyno-io.github.io/hemlig/guide/kubernetes), [CRD reference](https://zyno-io.github.io/hemlig/reference/crds), and [identity rotation](https://zyno-io.github.io/hemlig/operations/identity-rotation).
+
 The Node 24 controller uses `hemlig.io/v1beta1` resources and never mounts an
 administrator OIDC token. A platform administrator creates a remote Hemlig
 AgentGrant and its one-use bootstrap capability, then places that capability in
@@ -28,7 +30,7 @@ converge through the authoritative agent API. Current raw
 manifests install one replica and use a zero-surge, one-unavailable Deployment
 strategy, so an upgrade cannot briefly run two independent reconcilers. Lease
 leadership and manual enrollment are tracked in the
-[controller plan](../../docs/kubernetes-controller-plan.md) before multi-replica
+[controller design record](../../docs/design/kubernetes-controller-plan.md) before multi-replica
 support is declared.
 
 The server must support `GET /v1/agent/sync`, and existing environments must
@@ -38,7 +40,7 @@ and identity/API fingerprint are persisted in HemligConsumer status only after
 resource reconciliation succeeds. Expired or scope-changed cursors trigger a
 fresh index snapshot. Older servers or incomplete indexes fail visibly and
 back off; the controller does not fall back to per-secret polling. See the
-[sync design and rollout plan](../../docs/agent-sync-plan.md).
+[sync design record](../../docs/design/agent-sync-plan.md).
 
 ## Identity rotation and recovery
 

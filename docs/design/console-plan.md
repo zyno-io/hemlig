@@ -1,5 +1,9 @@
 # Hemlig console plan
 
+::: warning Historical design record
+This document records design intent at the time it was written and may differ from current behavior. For current behavior see the [console guide](/guide/console) and [deployment guide](/guide/deploying).
+:::
+
 This plans **Hemlig Console**, a browser management interface for the
 administrator API. The console UI and static-hosting work remain unimplemented;
 the API-readiness work recorded below is implemented in v0.3.
@@ -132,7 +136,7 @@ button that implies a missing permission.
 
 ---
 
-# Part I — Backend
+# Part I — Backend {#part-i--backend}
 
 **Owner:** root `hemlig` package and `cdk/`.
 **Deliverable:** an administrator API a browser can call, and a contract file
@@ -596,7 +600,7 @@ directly.
 
 ---
 
-# Part II — Frontend
+# Part II — Frontend {#part-ii--frontend}
 
 **Owner:** `packages/console`, package `@zyno-io/hemlig-console`, `private: true`.
 **Deliverable:** a static bundle. No server, no AWS credential, no AWS SDK.
@@ -883,7 +887,7 @@ operator has for correlating against the audit archive and access logs.
 
 ---
 
-# Part III — The seam
+# Part III — The seam {#part-iii--the-seam}
 
 Three things belong to neither side alone. Each has a named owner anyway,
 because shared ownership is how contracts rot.
@@ -916,7 +920,7 @@ The console adds no API surface of its own. If it needs a method, the method
 belongs here, which means the contract supports it, which means Part I covered
 it.
 
-## S2. The `config.json` handoff
+## S2. The `config.json` handoff {#s2-the-configjson-handoff}
 
 **Owner:** backend CDK writes it; frontend reads it.
 

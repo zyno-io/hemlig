@@ -1,5 +1,9 @@
 # Hemlig implementation plan
 
+::: warning Historical design record
+This document records design intent at the time it was written and may differ from current behavior. For current behavior see the [architecture](/guide/architecture), [concepts](/guide/concepts) and [HTTP API reference](/reference/api/).
+:::
+
 ## Scope and ownership
 
 This repository is a publishable open-source Yarn Berry monorepo for Hemlig, a
