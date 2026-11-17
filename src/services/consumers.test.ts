@@ -748,5 +748,30 @@ describe("agent self-rotation", () => {
     expect(repository.getIdentity).not.toHaveBeenCalled();
     expect(repository.createApiIdentity?.mock.calls[0]?.[5]).toBeUndefined();
   });
-});
 
+  describe("revokeApiIdentity of an already revoked identity", () => {
+    const revokeInput = {
+      consumerId: "prod-east",
+      apiFingerprint: "a".repeat(64),
+      actor: { type: "human" as const, id: "operator" },
+      idempotencyKey: "revoke-1234",
+    };
+
+    it("records the key without the status transition and reports a terminal audit", async () => {
+      const { service, repository } = build({
+        getIdentity: jest.fn(async () =>
+          identityRecord("a".repeat(64), { status: "REVOKED" }),
+        ),
+        recordReappliedApiRevocation: jest.fn(async () => undefined),
+        revokeApiIdentity: jest.fn(async () => undefined),
+      });
+      const result = await service.revokeApiIdentity(revokeInput);
+      expect(result).toMatchObject({
+        status: "REVOKED",
+        shouldWriteTerminalAudit: true,
+      });
+      expect(repository.recordReappliedApiRevocation).toHaveBeenCalledTimes(1);
+      expect(repository.revokeApiIdentity).not.toHaveBeenCalled();
+    });
+  });
+});

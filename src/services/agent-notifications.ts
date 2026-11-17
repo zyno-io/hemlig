@@ -7,6 +7,7 @@ import {
   RegisterCertificateWithoutCACommand,
   UpdateCertificateCommand,
 } from "@aws-sdk/client-iot";
+import type { DynamoRepository } from "../repositories/dynamo";
 import { conflict, serviceUnavailable } from "../domain/errors";
 
 export interface AgentMqttIdentity {
@@ -141,6 +142,24 @@ export class AgentNotificationService {
     }
   }
 }
+
+/**
+ * Provisions the leaf, then re-reads the identity (consistent read). A revoke
+ * that raced the registration may have seen "not found" and counted as a
+ * success just before the certificate was registered ACTIVE; revoking again
+ * here closes that window.
+ */
+export const provisionAndVerify = async (
+  notifications: Pick<AgentNotificationService, "provision" | "revoke">,
+  repository: Pick<DynamoRepository, "getIdentity">,
+  identity: AgentMqttIdentity,
+): Promise<void> => {
+  await notifications.provision(identity);
+  const current = await repository.getIdentity(identity.certificateFingerprint);
+  if (current === undefined || current.status !== "ACTIVE") {
+    await notifications.revoke(identity.certificateFingerprint);
+  }
+};
 
 const isNotFound = (error: unknown): boolean =>
   error instanceof Error && error.name === "ResourceNotFoundException";

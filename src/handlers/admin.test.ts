@@ -849,6 +849,7 @@ describe("admin API identity IoT synchronization", () => {
           grantStatus === undefined ? undefined : { status: grantStatus },
         ),
         markAuditSucceeded: jest.fn(async () => undefined),
+        getIdentity: jest.fn(async () => ({ status: "ACTIVE" })),
       },
       consumers: { rotateApiIdentity, revokeApiIdentity },
       agentNotifications: { provision, revoke },
@@ -926,6 +927,27 @@ describe("admin API identity IoT synchronization", () => {
     await issue();
     await issue();
     expect(provision).toHaveBeenCalledTimes(2);
+  });
+
+  it("revokes the IoT certificate if the identity was revoked mid-provision", async () => {
+    const { app, revoke } = setup("ACTIVE");
+    (app.repository.getIdentity as jest.Mock).mockResolvedValue({
+      status: "REVOKED",
+    });
+    await issue();
+    expect(revoke).toHaveBeenCalledWith(fingerprint);
+  });
+
+  it("re-applies IoT revocation for an already revoked identity", async () => {
+    const { revoke, revokeApiIdentity } = setup("ACTIVE");
+    revokeApiIdentity.mockResolvedValue({
+      ...issued,
+      status: "REVOKED" as const,
+      shouldWriteTerminalAudit: true,
+    });
+    const response = await revokeCall();
+    expect(response.statusCode).toBe(200);
+    expect(revoke).toHaveBeenCalledWith(fingerprint);
   });
 
   it("fails the request when IoT registration fails", async () => {

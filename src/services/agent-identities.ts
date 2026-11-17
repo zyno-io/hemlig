@@ -6,7 +6,10 @@ import {
 } from "../domain/errors";
 import type { Actor } from "../domain/types";
 import type { DynamoRepository } from "../repositories/dynamo";
-import type { AgentNotificationService } from "./agent-notifications";
+import {
+  provisionAndVerify,
+  type AgentNotificationService,
+} from "./agent-notifications";
 import type { ConsumerService } from "./consumers";
 import type { IssuerService } from "./issuer";
 
@@ -117,7 +120,7 @@ export class AgentIdentityService {
       );
     }
     // Idempotent: a replay re-registers a leaf whose first provisioning may have failed.
-    await this.notifications.provision({
+    await provisionAndVerify(this.notifications, this.repository, {
       consumerId: result.consumerId,
       certificateFingerprint: result.apiFingerprint,
       certificatePem: result.apiCertificatePem,

@@ -11,3 +11,4 @@ coverage/
 docs/.mdxserve/
 hemlig-kubernetes-controller-plan.png
 *.tgz
+.watchman-cookie-*

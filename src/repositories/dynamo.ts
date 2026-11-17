@@ -1852,11 +1852,18 @@ export class DynamoRepository {
       const reasons = (
         error as { CancellationReasons?: { Code?: string }[] } | null
       )?.CancellationReasons;
-      if (
-        predecessor?.rotationLock !== undefined &&
+      const canceled =
         (error as { name?: string } | null)?.name ===
-          "TransactionCanceledException" &&
-        reasons?.[3]?.Code === "ConditionalCheckFailed"
+        "TransactionCanceledException";
+      // An overlapping transaction on the consumer profile cancels this one
+      // with TransactionConflict; that is transient, not a rejection.
+      if (
+        predecessor !== undefined &&
+        canceled &&
+        (reasons?.some((reason) => reason?.Code === "TransactionConflict") ===
+          true ||
+          (predecessor.rotationLock !== undefined &&
+            reasons?.[3]?.Code === "ConditionalCheckFailed"))
       ) {
         throw identityRotationConflict(
           "Another identity rotation for this consumer committed concurrently; retry the request.",
@@ -1887,6 +1894,37 @@ export class DynamoRepository {
       }
       throw conflict(
         `Could not create consumer API identity: ${errorMessage(error)}`,
+      );
+    }
+  }
+
+  /** Records a revoke request for an identity that is already REVOKED. */
+  public async recordReappliedApiRevocation(
+    actor: Actor,
+    idempotencyKey: string,
+    requestDigest: string,
+    consumerId: string,
+    fingerprint: string,
+  ): Promise<void> {
+    try {
+      await this.dynamo.send(
+        new PutCommand({
+          TableName: this.config.controlTableName,
+          Item: {
+            pk: idempotencyPk(actor),
+            sk: `REQUEST#${idempotencyKey}`,
+            requestDigest,
+            operationType: "consumer.api.revoke",
+            consumerId,
+            apiFingerprint: fingerprint,
+            status: "READY",
+          },
+          ConditionExpression: "attribute_not_exists(pk)",
+        }),
+      );
+    } catch (error) {
+      throw conflict(
+        `Could not record consumer API identity revocation: ${errorMessage(error)}`,
       );
     }
   }

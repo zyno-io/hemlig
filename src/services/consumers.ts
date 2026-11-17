@@ -349,6 +349,27 @@ export class ConsumerService {
         shouldWriteTerminalAudit: prior.status !== "SUCCEEDED",
       };
     }
+    if (identity.status === "REVOKED") {
+      // The identity was revoked earlier (possibly before its IoT certificate
+      // could be revoked). Record this request's idempotency key without the
+      // status transition so the caller can re-apply the IoT revocation and
+      // the terminal audit/replay semantics stay intact.
+      await this.repository.recordReappliedApiRevocation(
+        input.actor,
+        input.idempotencyKey,
+        requestDigest,
+        input.consumerId,
+        input.apiFingerprint,
+      );
+      return {
+        consumerId: input.consumerId,
+        environment: identity.environment,
+        rootFingerprint: "",
+        apiFingerprint: input.apiFingerprint,
+        status: "REVOKED",
+        shouldWriteTerminalAudit: true,
+      };
+    }
     await this.repository.revokeApiIdentity(
       input.actor,
       input.idempotencyKey,

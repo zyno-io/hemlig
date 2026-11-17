@@ -30,10 +30,14 @@ const build = (
     grant?: unknown;
     matches?: boolean | Error;
     rotate?: unknown;
+    revokedAfter?: boolean;
   } = {},
 ) => {
   const order: string[] = [];
   const repository = {
+    getIdentity: jest.fn(async () =>
+      options.revokedAfter === true ? { status: "REVOKED" } : { status: "ACTIVE" },
+    ),
     getAgentGrantForConsumer: jest.fn(async () => {
       order.push("grant");
       return "grant" in options
@@ -54,7 +58,10 @@ const build = (
       return options.rotate ?? rotated;
     }),
   };
-  const notifications = { provision: jest.fn(async () => undefined) };
+  const notifications = {
+    provision: jest.fn(async () => undefined),
+    revoke: jest.fn(async () => undefined),
+  };
   const service = new AgentIdentityService(
     repository as unknown as DynamoRepository,
     consumers as unknown as ConsumerService,
@@ -136,6 +143,18 @@ describe("AgentIdentityService.rotate", () => {
       apiFingerprint: "new",
       notAfter: rotated.notAfter,
     });
+  });
+
+  it("revokes the IoT certificate when the identity was revoked during provisioning", async () => {
+    const { call, notifications } = build({ revokedAfter: true });
+    await call();
+    expect(notifications.revoke).toHaveBeenCalledWith("new");
+  });
+
+  it("does not revoke an identity that is still active", async () => {
+    const { call, notifications } = build();
+    await call();
+    expect(notifications.revoke).not.toHaveBeenCalled();
   });
 
   it("still provisions on an idempotent replay", async () => {

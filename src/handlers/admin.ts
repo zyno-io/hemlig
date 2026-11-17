@@ -24,6 +24,7 @@ import {
 } from "../domain/validation";
 import { empty, errorResponse, json, parseJsonBody } from "../http/responses";
 import type { TruststoreStateRecord } from "../repositories/dynamo";
+import { provisionAndVerify } from "../services/agent-notifications";
 import { humanOperation } from "../services/operations";
 import { IssuerService } from "../services/issuer";
 import { isoNow, sha256Hex, stableJson } from "../util/encoding";
@@ -669,7 +670,7 @@ export const handler = async (
           identity.apiCertificatePem !== undefined &&
           identity.identityStatus === "ACTIVE"
         ) {
-          await app.agentNotifications.provision({
+          await provisionAndVerify(app.agentNotifications, app.repository, {
             consumerId: identity.consumerId,
             certificateFingerprint: identity.apiFingerprint,
             certificatePem: identity.apiCertificatePem,
