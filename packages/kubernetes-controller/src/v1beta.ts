@@ -46,6 +46,8 @@ const nextCsrDataKey = "hemlig.io.next-csr";
 const nextCertificateDataKey = "hemlig.io.next-tls.crt";
 const previousCertificateDataKey = "hemlig.io.previous-tls.crt";
 const previousKeyDataKey = "hemlig.io.previous-tls.key";
+/** Binds staged next-* material to the certificate that requested it. */
+const nextPredecessorAnnotation = "hemlig.io/next-predecessor-sha256";
 const defaultRotateBeforeMilliseconds = 720 * 3_600_000;
 
 export interface ObjectMeta {
@@ -656,7 +658,17 @@ export class HemligV1BetaController {
         secretAnnotations,
         error,
       );
-    const pending = valueData(secret, nextKeyDataKey) !== undefined;
+    let pending = valueData(secret, nextKeyDataKey) !== undefined;
+    if (
+      pending &&
+      annotations[nextPredecessorAnnotation] !==
+        certificateBinding(loaded.certificate)
+    ) {
+      // Staged for a different certificate (for example an operator rolled
+      // back tls.* mid-rotation). Never promote it over the current pair.
+      await this.discardPendingIdentity(namespace, secretName, loaded.certificate);
+      pending = false;
+    }
     const token = resource.metadata.annotations?.[rotateIdentityAnnotation];
     const manual = token !== undefined && token !== annotations[rotationRequestAnnotation];
     const automatic =
@@ -793,10 +805,14 @@ export class HemligV1BetaController {
       const generated = await generateRotationCsr(
         this.config.identityKeyBits ?? 3072,
       );
-      secret = await update((data) => {
+      secret = await update((data, annotations) => {
+        if (!storedCertificateMatches(data, currentCertificate))
+          throw identitySecretChanged();
         data[nextKeyDataKey] = b64(generated.privateKeyPem);
         data[nextCsrDataKey] = b64(generated.csrPem);
         delete data[nextCertificateDataKey];
+        annotations[nextPredecessorAnnotation] =
+          certificateBinding(currentCertificate);
       });
     }
     const nextKey = Buffer.from(requiredData(secret, nextKeyDataKey), "base64");
@@ -941,6 +957,7 @@ export class HemligV1BetaController {
         delete data[nextKeyDataKey];
         delete data[nextCsrDataKey];
         delete data[nextCertificateDataKey];
+        delete annotations[nextPredecessorAnnotation];
         if (newInfo !== undefined)
           annotations[apiFingerprintAnnotation] = newInfo.apiFingerprint;
         annotations[rotatedAtAnnotation] = new Date().toISOString();
@@ -1000,6 +1017,7 @@ export class HemligV1BetaController {
       const verified = await client.getAgentConfig();
       const known = resource.status;
       if (
+        !certificateNamesConsumer(current.certificate, verified.consumerId) ||
         (known?.consumerId !== undefined &&
           verified.consumerId !== known.consumerId) ||
         (known?.environment !== undefined &&
@@ -1014,7 +1032,16 @@ export class HemligV1BetaController {
         undefined,
       );
       return { certificate, privateKey, client };
-    } catch {
+    } catch (error) {
+      // Only definitive outcomes end recovery here (a changed Secret or a
+      // successor that cannot authenticate). Transient failures go through
+      // the pass backoff instead of becoming a non-retryable auth failure.
+      if (
+        !(error instanceof RotationError) &&
+        !isIdentityAuthenticationFailure(error) &&
+        isTransientResourceError(error)
+      )
+        throw error;
       return undefined;
     }
   }
@@ -1022,22 +1049,31 @@ export class HemligV1BetaController {
   private async discardPendingIdentity(
     namespace: string,
     name: string,
+    onlyIfStaleFor?: Buffer,
   ): Promise<void> {
     try {
       const current = asSecret(
         await this.core.readNamespacedSecret({ name, namespace }),
       );
+      const annotations = { ...current.metadata?.annotations };
+      if (
+        onlyIfStaleFor !== undefined &&
+        annotations[nextPredecessorAnnotation] ===
+          certificateBinding(onlyIfStaleFor)
+      )
+        return;
       const data = { ...current.data };
       delete data[nextKeyDataKey];
       delete data[nextCsrDataKey];
       delete data[nextCertificateDataKey];
+      delete annotations[nextPredecessorAnnotation];
       await this.core.replaceNamespacedSecret({
         name,
         namespace,
         body: {
           apiVersion: "v1",
           kind: "Secret",
-          metadata: current.metadata,
+          metadata: { ...current.metadata, annotations },
           type: current.type ?? "Opaque",
           data,
         },
@@ -2057,6 +2093,24 @@ const storedCertificateMatches = (
 ): boolean =>
   data["tls.crt"] !== undefined &&
   Buffer.from(data["tls.crt"], "base64").equals(certificate);
+
+const certificateBinding = (certificate: Buffer): string =>
+  createHash("sha256").update(certificate).digest("hex");
+
+/** Hemlig leaves carry spiffe://hemlig/consumer/<consumerId> as a URI SAN. */
+const certificateNamesConsumer = (
+  certificate: Buffer,
+  consumerId: string,
+): boolean => {
+  try {
+    const subjectAltName = new X509Certificate(certificate).subjectAltName ?? "";
+    return subjectAltName
+      .split(/,\s*/)
+      .includes(`URI:spiffe://hemlig/consumer/${consumerId}`);
+  } catch {
+    return false;
+  }
+};
 
 const identitySecretChanged = (): RotationError =>
   new RotationError(

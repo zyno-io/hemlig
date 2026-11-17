@@ -27,6 +27,7 @@ const issue = (
   publicKey: forge.pki.PublicKey,
   notBefore: Date,
   notAfter: Date,
+  consumerId = "agent",
 ) => {
   const cert = forge.pki.createCertificate();
   cert.publicKey = publicKey;
@@ -38,6 +39,13 @@ const issue = (
   cert.validity.notAfter = notAfter;
   cert.setSubject([{ name: "commonName", value: "agent" }]);
   cert.setIssuer([{ name: "commonName", value: "test ca" }]);
+  // Mirrors the Hemlig issuer's URI SAN (src/services/issuer.ts).
+  cert.setExtensions([
+    {
+      name: "subjectAltName",
+      altNames: [{ type: 6, value: `spiffe://hemlig/consumer/${consumerId}` }],
+    },
+  ]);
   cert.sign(ca.key, forge.md.sha256.create());
   return forge.pki.certificateToPem(cert);
 };
@@ -1266,6 +1274,66 @@ test("L3: an operator changing tls.crt before the swap prevents the swap and is 
   assert.equal(data(f, "tls.key"), operator.keyPem);
   assert.equal(data(f, "hemlig.io.previous-tls.crt"), undefined);
   assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "RotationFailed");
+});
+
+test("L2: a successor is not promoted when the current certificate names another consumer", async (t) => {
+  const now = Date.now();
+  const f = fixture(t, {
+    identity: {
+      crtPem: issue(
+        forge.pki.publicKeyFromPem(sharedIdentityKey.publicKeyPem),
+        new Date(now - 65 * day),
+        new Date(now + 300 * day),
+        "someone-else",
+      ),
+      keyPem: sharedIdentityKey.privateKeyPem,
+    },
+  });
+  await f.pass();
+  const nextCrt = pendingNext(f);
+  f.onConfig(() => f.config);
+  rejectOldSync(f);
+  await f.pass();
+  assert.equal(condition(f.consumer, "Ready")?.reason, "AuthenticationFailed");
+  assert.equal(data(f, "tls.crt"), f.original);
+  assert.equal(data(f, "hemlig.io.next-tls.crt"), nextCrt);
+});
+
+test("L2: a transient verification failure is retried instead of reported as AuthenticationFailed", async (t) => {
+  const f = fixture(t, { identity: makeIdentity(300) });
+  await f.pass();
+  const nextCrt = pendingNext(f);
+  f.onConfig(() => {
+    throw new HemligError(503, "unavailable", "service_unavailable");
+  });
+  rejectOldSync(f);
+  await f.pass();
+  assert.notEqual(condition(f.consumer, "Ready")?.reason, "AuthenticationFailed");
+  assert.equal(data(f, "tls.crt"), f.original);
+  assert.equal(data(f, "hemlig.io.next-tls.crt"), nextCrt);
+  assert.equal(f.secrets.has("import-a"), true);
+});
+
+test("L3: an operator rollback between passes discards pending material staged for the replaced certificate", async (t) => {
+  const f = dueFixture(t);
+  let verify = false;
+  f.onConfig(() => {
+    if (!verify) throw new HemligError(503, "unavailable", "service_unavailable");
+    return f.config;
+  });
+  await f.pass();
+  assert.ok(data(f, "hemlig.io.next-tls.crt"), "successor issued and persisted");
+  const operator = makeIdentity(200);
+  const secret = f.secrets.get("identity");
+  secret.data["tls.crt"] = b64(operator.crtPem);
+  secret.data["tls.key"] = b64(operator.keyPem);
+  verify = true;
+  const issued = f.rotate.mock.callCount();
+  await f.pass();
+  assert.equal(data(f, "tls.crt"), operator.crtPem);
+  assert.equal(data(f, "tls.key"), operator.keyPem);
+  for (const key of pendingKeys) assert.equal(data(f, key), undefined);
+  assert.equal(f.rotate.mock.callCount(), issued, "operator's certificate is not due");
 });
 
 test("C1: identity_already_rotated reports and keeps the pending key", async (t) => {
