@@ -300,285 +300,263 @@ const reload = async (): Promise<void> => {
 </script>
 
 <template>
-  <div class="max-w-3xl space-y-4 text-sm">
-    <div>
-      <RouterLink
-        class="text-xs text-accent hover:underline"
-        :to="{ name: 'secret', params: { env, secretId }, query: route.query }"
-      >
-        ← {{ secretId }}
-      </RouterLink>
-      <h1 class="text-lg font-semibold">Replace payload</h1>
-    </div>
-
-    <div class="rounded border border-warn/50 bg-warn/5 p-3 text-xs text-warn">
-      <p class="font-medium">This replaces the entire payload.</p>
-      <p class="mt-1">
-        Loading the current payload is explicit and audited. Values remain only
-        in this editor; anything not listed when you save is destroyed.
-      </p>
-    </div>
-
-    <ErrorNotice v-if="error" :error="error" />
-    <ErrorNotice
-      v-if="payloadError"
-      :error="payloadError"
-      context="Could not load the current payload."
-    />
-    <MutationState
-      :phase="mutation.phase.value"
-      intent="replace this payload"
-      @reload="reload"
-    />
-
-    <div class="rounded border border-line bg-surface-raised p-4">
-      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <span class="text-xs text-ink-muted">
-          {{ rows.length }} entr{{ rows.length === 1 ? "y" : "ies" }}
-          <template v-if="currentCount !== undefined">
-            · currently stored: {{ currentCount }}
-          </template>
-        </span>
-        <div class="flex gap-1" role="tablist">
-          <button
-            v-for="tab in ['form', 'json', 'env'] as const"
-            :key="tab"
-            type="button"
-            role="tab"
-            :aria-selected="activeTab === tab"
-            :disabled="
-              activeTab === 'json' && jsonError !== undefined && tab !== 'json'
-            "
-            class="rounded border px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-            :class="
-              activeTab === tab
-                ? 'border-accent bg-accent/10 text-accent'
-                : 'border-line'
-            "
-            @click="selectTab(tab)"
-          >
-            {{ tab === "form" ? "Form" : tab === "json" ? "JSON" : ".env" }}
-          </button>
-        </div>
-        <button
-          type="button"
-          class="rounded border border-line px-2 py-1 text-xs"
-          :disabled="payloadLoading || data?.payloadVersionId === undefined"
-          @click="loadPayload"
+  <div>
+    <div class="page-header">
+      <div>
+        <RouterLink
+          class="link text-xs"
+          :to="{ name: 'secret', params: { env, secretId }, query: route.query }"
         >
-          {{
-            payloadLoading
-              ? "Loading…"
-              : payloadLoaded
-                ? "Reload current payload"
-                : "Load current payload"
-          }}
-        </button>
+          ← {{ secretId }}
+        </RouterLink>
+        <h1 class="page-title">Replace payload</h1>
+      </div>
+    </div>
+
+    <div class="max-w-3xl space-y-4">
+      <div class="notice notice-warning">
+        <p class="notice-title">This replaces the entire payload.</p>
+        <p class="mt-1">
+          Loading the current payload is explicit and audited. Values remain only
+          in this editor; anything not listed when you save is destroyed.
+        </p>
       </div>
 
-      <div v-if="activeTab === 'form'">
-        <div
-          v-for="row in rows"
-          :key="row.id"
-          class="mb-2 flex items-start gap-2"
-        >
-          <input
-            v-model="row.key"
-            spellcheck="false"
-            autocomplete="off"
-            class="mono w-52 rounded border border-line bg-surface px-2 py-1"
-          />
-          <select
-            v-model="row.encoding"
-            class="rounded border border-line bg-surface px-2 py-1 text-xs"
-          >
-            <option value="utf8">utf8</option>
-            <option value="base64">base64</option>
-          </select>
-          <div class="flex-1">
-            <input
-              v-model="row.value"
-              :type="revealed.has(row.id) ? 'text' : 'password'"
-              spellcheck="false"
-              autocomplete="off"
-              class="mono w-full rounded border border-line bg-surface px-2 py-1"
-            />
-            <span v-if="problems.rows.get(row.id)" class="text-xs text-danger">
-              {{ problems.rows.get(row.id) }}
-            </span>
+      <ErrorNotice v-if="error" :error="error" />
+      <ErrorNotice
+        v-if="payloadError"
+        :error="payloadError"
+        context="Could not load the current payload."
+      />
+      <MutationState
+        :phase="mutation.phase.value"
+        intent="replace this payload"
+        @reload="reload"
+      />
+
+      <div class="card card-body">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <span class="meta">
+            {{ rows.length }} entr{{ rows.length === 1 ? "y" : "ies" }}
+            <template v-if="currentCount !== undefined">
+              · currently stored: {{ currentCount }}
+            </template>
+          </span>
+          <div class="flex gap-1" role="tablist">
+            <button
+              v-for="tab in ['form', 'json', 'env'] as const"
+              :key="tab"
+              type="button"
+              role="tab"
+              :aria-selected="activeTab === tab"
+              :disabled="
+                activeTab === 'json' && jsonError !== undefined && tab !== 'json'
+              "
+              class="btn btn-sm"
+              :class="activeTab === tab ? 'bg-surface-3! text-ink!' : ''"
+              @click="selectTab(tab)"
+            >
+              {{ tab === "form" ? "Form" : tab === "json" ? "JSON" : ".env" }}
+            </button>
           </div>
           <button
             type="button"
-            class="rounded border border-line px-2 py-1 text-xs"
-            @click="toggleReveal(row.id)"
+            class="btn btn-sm"
+            :disabled="payloadLoading || data?.payloadVersionId === undefined"
+            @click="loadPayload"
           >
-            {{ revealed.has(row.id) ? "Hide" : "Show" }}
+            {{
+              payloadLoading
+                ? "Loading…"
+                : payloadLoaded
+                  ? "Reload current payload"
+                  : "Load current payload"
+            }}
           </button>
+        </div>
+
+        <div v-if="activeTab === 'form'">
+          <div
+            v-for="row in rows"
+            :key="row.id"
+            class="mb-2 flex items-start gap-2"
+          >
+            <input
+              v-model="row.key"
+              spellcheck="false"
+              autocomplete="off"
+              class="input mono w-52"
+            />
+            <select
+              v-model="row.encoding"
+              class="input w-24"
+            >
+              <option value="utf8">utf8</option>
+              <option value="base64">base64</option>
+            </select>
+            <div class="flex-1">
+              <input
+                v-model="row.value"
+                :type="revealed.has(row.id) ? 'text' : 'password'"
+                spellcheck="false"
+                autocomplete="off"
+                class="input mono"
+              />
+              <span v-if="problems.rows.get(row.id)" class="field-error block">
+                {{ problems.rows.get(row.id) }}
+              </span>
+            </div>
+            <button
+              type="button"
+              class="btn"
+              @click="toggleReveal(row.id)"
+            >
+              {{ revealed.has(row.id) ? "Hide" : "Show" }}
+            </button>
+            <button
+              type="button"
+              class="btn"
+              @click="rows = rows.filter((r) => r.id !== row.id)"
+            >
+              Remove
+            </button>
+          </div>
+
           <button
             type="button"
-            class="rounded border border-line px-2 py-1 text-xs"
-            @click="rows = rows.filter((r) => r.id !== row.id)"
+            class="btn mt-1"
+            @click="addRow"
           >
-            Remove
+            Add key
           </button>
+        </div>
+
+        <div v-else-if="activeTab === 'json'">
+          <p class="field-hint mb-2 mt-0">
+            Wire format: each entry carries its own encoding, so this is
+            <code class="mono">{{ "{ key: { encoding, value } }" }}</code
+            >, not a flat key/value map.
+          </p>
+          <textarea
+            v-model="jsonText"
+            rows="10"
+            spellcheck="false"
+            autocomplete="off"
+            class="input mono text-xs"
+            :aria-invalid="jsonError ? 'true' : undefined"
+            @input="onJsonInput"
+          />
+          <p v-if="jsonError" class="field-error">{{ jsonError }}</p>
+        </div>
+
+        <div v-else>
+          <p v-if="base64Keys.length > 0" class="notice notice-warning mb-2">
+            <span class="notice-title">
+              {{ base64Keys.length }} entr{{
+                base64Keys.length === 1 ? "y" : "ies"
+              }}
+              ({{ base64Keys.join(", ") }})
+              {{ base64Keys.length === 1 ? "is" : "are" }} base64-encoded.
+            </span>
+            .env cannot express an encoding. Editing here and submitting marks
+            every entry utf8, including these -- that changes what gets delivered.
+          </p>
+          <textarea
+            v-model="envText"
+            rows="10"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="DATABASE_URL=postgres://…"
+            class="input mono text-xs"
+            @input="onEnvInput"
+          />
+        </div>
+
+        <p v-if="problems.duplicates.length > 0" class="field-error">
+          Duplicate keys: {{ problems.duplicates.join(", ") }}
+        </p>
+
+        <div class="mt-4">
+          <div
+            class="flex justify-between text-xs"
+            :class="problems.oversize ? 'text-danger' : 'text-ink-3'"
+          >
+            <span
+              >{{ problems.bytes.toLocaleString() }} of
+              {{ MAX_PAYLOAD_BYTES.toLocaleString() }} bytes</span
+            >
+            <span>{{ percentUsed }}%</span>
+          </div>
+          <div class="mt-1 h-1.5 overflow-hidden rounded-sm bg-surface-3">
+            <div
+              class="h-full"
+              :class="problems.oversize ? 'bg-danger' : 'bg-accent'"
+              :style="{ width: `${percentUsed}%` }"
+            />
+          </div>
         </div>
 
         <button
-          type="button"
-          class="mt-1 rounded border border-line px-2 py-1 text-xs"
-          @click="addRow"
+          class="btn btn-primary mt-4"
+          :disabled="!canSubmit || mutation.phase.value.kind === 'submitting'"
+          @click="confirming = true"
         >
-          Add key
+          {{
+            mutation.phase.value.kind === "submitting"
+              ? "Encrypting…"
+              : "Replace payload"
+          }}
         </button>
       </div>
 
-      <div v-else-if="activeTab === 'json'">
-        <p class="mb-2 text-xs text-ink-muted">
-          Wire format: each entry carries its own encoding, so this is
-          <code class="mono">{{ "{ key: { encoding, value } }" }}</code
-          >, not a flat key/value map.
-        </p>
-        <textarea
-          v-model="jsonText"
-          rows="10"
-          spellcheck="false"
-          autocomplete="off"
-          class="mono w-full rounded border border-line bg-surface px-2 py-1 text-xs"
-          :class="jsonError ? 'border-danger' : ''"
-          @input="onJsonInput"
-        />
-        <p v-if="jsonError" class="mt-1 text-xs text-danger">{{ jsonError }}</p>
-      </div>
-
-      <div v-else>
-        <p
-          v-if="base64Keys.length > 0"
-          class="mb-2 rounded bg-warn/10 p-2 text-xs text-warn"
-        >
-          <span class="font-medium">
-            {{ base64Keys.length }} entr{{
-              base64Keys.length === 1 ? "y" : "ies"
-            }}
-            ({{ base64Keys.join(", ") }})
-            {{ base64Keys.length === 1 ? "is" : "are" }} base64-encoded.
-          </span>
-          .env cannot express an encoding. Editing here and submitting marks
-          every entry utf8, including these -- that changes what gets delivered.
-        </p>
-        <textarea
-          v-model="envText"
-          rows="10"
-          spellcheck="false"
-          autocomplete="off"
-          placeholder="DATABASE_URL=postgres://…"
-          class="mono w-full rounded border border-line bg-surface px-2 py-1 text-xs"
-          @input="onEnvInput"
-        />
-      </div>
-
-      <p v-if="problems.duplicates.length > 0" class="mt-2 text-xs text-danger">
-        Duplicate keys: {{ problems.duplicates.join(", ") }}
-      </p>
-
-      <div class="mt-4">
-        <div
-          class="flex justify-between text-xs"
-          :class="problems.oversize ? 'text-danger' : 'text-ink-muted'"
-        >
-          <span
-            >{{ problems.bytes.toLocaleString() }} of
-            {{ MAX_PAYLOAD_BYTES.toLocaleString() }} bytes</span
-          >
-          <span>{{ percentUsed }}%</span>
-        </div>
-        <div class="mt-1 h-1.5 overflow-hidden rounded bg-line">
-          <div
-            class="h-full"
-            :class="problems.oversize ? 'bg-danger' : 'bg-accent'"
-            :style="{ width: `${percentUsed}%` }"
-          />
-        </div>
-      </div>
-
-      <button
-        class="mt-4 rounded bg-accent px-4 py-1.5 text-white disabled:opacity-50"
-        :disabled="!canSubmit || mutation.phase.value.kind === 'submitting'"
-        @click="confirming = true"
-      >
-        {{
-          mutation.phase.value.kind === "submitting"
-            ? "Encrypting…"
-            : "Replace payload"
-        }}
-      </button>
-    </div>
-
-    <div
-      v-if="confirming"
-      class="fixed inset-0 z-10 flex items-center justify-center bg-black/40 p-4"
-      role="dialog"
-      aria-modal="true"
-    >
       <div
-        class="w-full max-w-md rounded border border-line bg-surface-raised p-5"
+        v-if="confirming"
+        class="modal-scrim"
+        role="dialog"
+        aria-modal="true"
       >
-        <h2 class="font-semibold">Replace the payload of {{ secretId }}?</h2>
-        <p class="mt-2 text-sm">
-          You are submitting
-          {{ rows.filter((r) => r.key.length > 0).length }} entr{{
-            rows.filter((r) => r.key.length > 0).length === 1 ? "y" : "ies"
-          }}.
-        </p>
-        <p
-          v-if="isFirstPayload"
-          class="mt-2 rounded bg-accent/10 p-2 text-sm text-accent"
-        >
-          This is the first payload. Saving it activates the secret; no stored
-          entries will be destroyed.
-        </p>
-        <p
-          v-else-if="destroyed !== undefined && destroyed > 0"
-          class="mt-2 rounded bg-danger/10 p-2 text-sm text-danger"
-        >
-          The stored payload has {{ currentCount }} entries, so this destroys
-          {{ destroyed }} of them permanently. The API cannot tell you which —
-          only how many.
-        </p>
-        <p
-          v-else-if="destroyed === undefined"
-          class="mt-2 rounded bg-warn/10 p-2 text-sm text-warn"
-        >
-          This revision predates entry counting, so how many entries exist is
-          unknown. Anything not listed will be destroyed.
-        </p>
-        <p
-          v-if="encodingDowngrades.length > 0"
-          class="mt-2 rounded bg-danger/10 p-2 text-sm text-danger"
-        >
-          {{ encodingDowngrades.length }} entr{{
-            encodingDowngrades.length === 1 ? "y" : "ies"
-          }}
-          ({{ encodingDowngrades.join(", ") }}) will change from base64 to utf8.
-          The original bytes cannot be recovered from stored ciphertext once
-          this is submitted.
-        </p>
-        <p class="mt-2 text-xs text-ink-muted">
-          Every grant-holding consumer receives the new payload on its next
-          reconciliation.
-        </p>
-        <div class="mt-4 flex justify-end gap-2">
-          <button
-            class="rounded border border-line px-3 py-1"
-            @click="confirming = false"
+        <div class="modal-panel max-w-md">
+          <h2 class="text-[17px] font-semibold">Replace the payload of {{ secretId }}?</h2>
+          <p class="mt-2 text-[13px] text-ink-2">
+            You are submitting
+            {{ rows.filter((r) => r.key.length > 0).length }} entr{{
+              rows.filter((r) => r.key.length > 0).length === 1 ? "y" : "ies"
+            }}.
+          </p>
+          <p v-if="isFirstPayload" class="notice notice-info mt-3">
+            This is the first payload. Saving it activates the secret; no stored
+            entries will be destroyed.
+          </p>
+          <p
+            v-else-if="destroyed !== undefined && destroyed > 0"
+            class="notice notice-danger mt-3"
           >
-            Cancel
-          </button>
-          <button
-            class="rounded bg-danger px-3 py-1 text-white"
-            @click="submit"
-          >
-            Replace payload
-          </button>
+            The stored payload has {{ currentCount }} entries, so this destroys
+            {{ destroyed }} of them permanently. The API cannot tell you which —
+            only how many.
+          </p>
+          <p v-else-if="destroyed === undefined" class="notice notice-warning mt-3">
+            This revision predates entry counting, so how many entries exist is
+            unknown. Anything not listed will be destroyed.
+          </p>
+          <p v-if="encodingDowngrades.length > 0" class="notice notice-danger mt-3">
+            {{ encodingDowngrades.length }} entr{{
+              encodingDowngrades.length === 1 ? "y" : "ies"
+            }}
+            ({{ encodingDowngrades.join(", ") }}) will change from base64 to utf8.
+            The original bytes cannot be recovered from stored ciphertext once
+            this is submitted.
+          </p>
+          <p class="meta mt-3">
+            Every grant-holding consumer receives the new payload on its next
+            reconciliation.
+          </p>
+          <div class="mt-5 flex justify-end gap-2">
+            <button class="btn" @click="confirming = false">Cancel</button>
+            <button class="btn btn-danger" @click="submit">
+              Replace payload
+            </button>
+          </div>
         </div>
       </div>
     </div>

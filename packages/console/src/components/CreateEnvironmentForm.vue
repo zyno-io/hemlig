@@ -91,30 +91,30 @@ const switchToConflict = async (): Promise<void> => {
 </script>
 
 <template>
-  <form class="space-y-4" @submit.prevent="submit">
+  <form class="space-y-3" @submit.prevent="submit">
     <!-- flex-col, not `block`: a `block` label leaves the inline <span> and a
          width-constrained input on the same line, jammed together. -->
-    <label class="flex max-w-xs flex-col gap-1">
-      <span class="text-xs text-ink-muted">Environment name</span>
+    <label class="block max-w-xs">
+      <span class="field-label">Environment name</span>
       <input
         v-model="name"
         required
         placeholder="staging"
-        class="mono w-full rounded border border-line bg-surface px-2 py-1"
+        class="input mono"
       />
-      <span v-if="nameError" class="text-xs text-danger">{{ nameError }}</span>
+      <span v-if="nameError" class="field-error block">{{ nameError }}</span>
     </label>
 
-    <p v-if="conflictName" class="rounded border border-accent/40 bg-accent/5 p-3 text-xs">
-      <span class="font-medium">{{ conflictName }}</span> already exists.
-      <button type="button" class="text-accent underline" @click="switchToConflict">
+    <p v-if="conflictName" class="notice notice-info">
+      <span class="notice-title">{{ conflictName }}</span> already exists.
+      <button type="button" class="link" @click="switchToConflict">
         Switch to it
       </button>
     </p>
     <ErrorNotice v-else-if="error" :error="error" context="creating this environment" />
 
     <button
-      class="rounded bg-accent px-3 py-1.5 text-white disabled:opacity-50"
+      class="btn btn-primary"
       type="submit"
       :disabled="!canSubmit"
     >

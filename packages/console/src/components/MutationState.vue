@@ -12,53 +12,53 @@ defineEmits<{ retry: []; reload: [] }>();
 </script>
 
 <template>
-  <div v-if="phase.kind === 'stale'" class="rounded border border-warn/50 bg-warn/5 p-4 text-sm">
-    <p class="font-medium text-warn">This changed while you were editing.</p>
+  <div v-if="phase.kind === 'stale'" class="notice notice-warning" role="status">
+    <p class="notice-title">This changed while you were editing.</p>
     <p class="mt-1">
       Someone else created a newer control revision, so your update was refused rather
       than silently overwriting theirs. Your draft is intact.
     </p>
-    <p class="mt-1 text-ink-muted">
+    <p class="mt-1">
       Reload the current revision, re-apply your change, and submit again.
     </p>
-    <button class="mt-3 rounded border border-line px-3 py-1" @click="$emit('reload')">
+    <button type="button" class="btn mt-3" @click="$emit('reload')">
       Reload current revision
     </button>
   </div>
 
-  <div v-else-if="phase.kind === 'unknown'" class="rounded border border-warn/50 bg-warn/5 p-4 text-sm">
-    <p class="font-medium text-warn">The outcome is unknown.</p>
+  <div v-else-if="phase.kind === 'unknown'" class="notice notice-warning" role="status">
+    <p class="notice-title">The outcome is unknown.</p>
     <p class="mt-1">
       The request to {{ intent }} may or may not have been applied.
       <template v-if="phase.reconciling"> Checking what actually happened…</template>
     </p>
-    <p v-if="!phase.reconciling && canRetry" class="mt-1 text-ink-muted">
+    <p v-if="!phase.reconciling && canRetry" class="mt-1">
       This operation replays safely, so retrying with the same key is correct.
     </p>
-    <p v-else-if="!phase.reconciling" class="mt-1 text-ink-muted">
+    <p v-else-if="!phase.reconciling" class="mt-1">
       Reload the secret and compare its revision before trying again — resubmitting could
       write it twice.
     </p>
     <div class="mt-3 flex gap-2">
-      <button v-if="canRetry" class="rounded border border-line px-3 py-1" @click="$emit('retry')">
+      <button v-if="canRetry" type="button" class="btn" @click="$emit('retry')">
         Retry with the same key
       </button>
-      <button class="rounded border border-line px-3 py-1" @click="$emit('reload')">
+      <button type="button" class="btn" @click="$emit('reload')">
         Reload
       </button>
     </div>
   </div>
 
-  <div v-else-if="phase.kind === 'reconciled-applied'" class="rounded border border-ok/50 bg-ok/5 p-4 text-sm">
-    <p class="font-medium text-ok">It was applied after all.</p>
+  <div v-else-if="phase.kind === 'reconciled-applied'" class="notice notice-success" role="status">
+    <p class="notice-title">It was applied after all.</p>
     <p class="mt-1">
       The connection failed but the change had already been committed. Nothing further is
       needed.
     </p>
   </div>
 
-  <div v-else-if="phase.kind === 'reconciled-absent'" class="rounded border border-danger/50 bg-danger/5 p-4 text-sm">
-    <p class="font-medium text-danger">It was not applied.</p>
+  <div v-else-if="phase.kind === 'reconciled-absent'" class="notice notice-danger" role="status">
+    <p class="notice-title">It was not applied.</p>
     <p class="mt-1">
       The request failed and the secret is unchanged. Submitting again is safe; a fresh
       key will be used.

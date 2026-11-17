@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 import { useEnvironmentsQuery } from "../composables/useEnvironments";
 import { rememberEnvironment, useAppStore } from "../stores/app";
+import ThemeMenu from "./ThemeMenu.vue";
 
 const store = useAppStore();
 const route = useRoute();
@@ -70,23 +71,31 @@ const tabs = computed(() => {
   return items;
 });
 
+// "secrets" also covers secret, secret-new, secret-metadata…; likewise consumers.
 const active = (name: string): boolean =>
-  String(route.name ?? "").startsWith(name);
+  String(route.name ?? "").startsWith(name.replace(/s$/, ""));
 </script>
 
 <template>
   <div class="min-h-screen">
-    <header class="border-b border-line bg-surface-raised">
-      <div
-        class="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-6 py-3"
-      >
-        <RouterLink :to="{ name: 'root' }" class="font-semibold tracking-tight">
-          Hemlig
+    <a href="#main" class="skip-link">Skip to content</a>
+    <header class="topbar">
+      <div class="topbar-row">
+        <RouterLink :to="{ name: 'root' }" class="brand" aria-label="Hemlig home">
+          <span class="brand-mark" aria-hidden="true">
+            <!-- A keyhole: hemlig is Swedish for secret. -->
+            <svg viewBox="0 0 16 16" width="14" height="14">
+              <circle cx="8" cy="6.25" r="2.6" fill="currentColor" />
+              <path d="M6.6 7.6h2.8l.9 5.15H5.7z" fill="currentColor" />
+            </svg>
+          </span>
+          <span class="brand-name">Hemlig</span>
         </RouterLink>
-        <label class="flex items-center gap-2 text-sm">
-          <span class="text-ink-muted">Environment</span>
+
+        <label class="env-switcher">
+          <span class="sr-only">Environment</span>
           <select
-            class="rounded border border-line bg-surface px-2 py-1"
+            class="input env-select mono"
             :disabled="environmentNames.length === 0"
             :value="currentEnv"
             @change="switchEnvironment"
@@ -102,50 +111,201 @@ const active = (name: string): boolean =>
               {{ environment }}
             </option>
           </select>
-          <RouterLink
-            class="text-xs text-accent hover:underline"
-            :to="{ name: 'environments' }"
-          >
-            Manage
-          </RouterLink>
         </label>
-        <div class="ml-auto flex items-center gap-3 text-sm">
-          <span
-            v-if="devMode"
-            class="rounded bg-warn/15 px-2 py-0.5 text-xs text-warn"
+
+        <nav class="primary-nav" aria-label="Primary">
+          <RouterLink
+            v-for="tab in tabs"
+            :key="tab.name"
+            :to="tab.to"
+            class="nav-link"
+            :class="{ 'nav-link-active': active(tab.name) }"
+            :aria-current="active(tab.name) ? 'page' : undefined"
           >
-            dev bridge — no identity provider
+            {{ tab.label }}
+          </RouterLink>
+        </nav>
+
+        <div class="topbar-end">
+          <span v-if="devMode" class="tag tag-warning" title="Local dev bridge: no identity provider">
+            Dev bridge
           </span>
-          <span class="text-ink-muted">{{
+          <span class="session-name meta">{{
             store.session?.displayName ?? store.session?.subject
           }}</span>
-          <button
-            v-if="!devMode"
-            class="rounded border border-line px-2 py-1 hover:bg-surface"
-            @click="store.signOut()"
-          >
+          <ThemeMenu />
+          <button v-if="!devMode" type="button" class="btn btn-ghost" @click="store.signOut()">
             Sign out
           </button>
         </div>
       </div>
-      <nav class="mx-auto flex max-w-6xl gap-1 px-6">
-        <RouterLink
-          v-for="tab in tabs"
-          :key="tab.name"
-          :to="tab.to"
-          class="border-b-2 px-3 py-2 text-sm"
-          :class="
-            active(tab.name)
-              ? 'border-accent text-ink'
-              : 'border-transparent text-ink-muted hover:text-ink'
-          "
-        >
-          {{ tab.label }}
-        </RouterLink>
-      </nav>
     </header>
-    <main class="mx-auto max-w-6xl px-6 py-6">
+    <main id="main" class="page" tabindex="-1">
       <slot />
     </main>
   </div>
 </template>
+
+<style scoped>
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 100;
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 13px;
+  font-weight: 500;
+  transform: translateY(-200%);
+  transition: transform 0.15s ease-out;
+}
+
+.skip-link:focus-visible {
+  transform: none;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
+}
+
+.topbar-row {
+  display: flex;
+  min-height: var(--header-h);
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+}
+
+.brand {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--r-sm);
+}
+
+.brand-mark {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--text);
+  color: var(--bg);
+}
+
+.brand-name {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.env-switcher {
+  flex-shrink: 0;
+}
+
+.env-select {
+  width: auto;
+  max-width: 180px;
+  font-size: 12px;
+}
+
+.primary-nav {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.nav-link {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
+}
+
+/* The scrolling nav clips outward rings; draw focus inside the link. */
+.nav-link:focus-visible {
+  outline-offset: -2px;
+}
+
+.nav-link:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.nav-link-active,
+.nav-link-active:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.topbar-end {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.session-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#main:focus {
+  outline: none;
+}
+
+@media (max-width: 1100px) {
+  .session-name {
+    display: none;
+  }
+}
+
+/* The nav moves to its own scrollable row rather than squeezing the bar. */
+@media (max-width: 900px) {
+  .topbar-row {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+
+  .primary-nav {
+    order: 3;
+    width: 100%;
+    margin: 0 -6px;
+    padding: 0 0 8px;
+  }
+}
+
+@media (max-width: 640px) {
+  .brand-name {
+    display: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .topbar-row {
+    gap: 8px;
+    padding: 0 8px;
+  }
+}
+</style>

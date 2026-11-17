@@ -16,11 +16,11 @@ const { data, error, isFetching, refetch } = useQuery({
 </script>
 
 <template>
-  <div class="space-y-4 text-sm">
-    <div class="flex items-center justify-between">
+  <div>
+    <div class="page-header">
       <div>
         <RouterLink
-          class="text-xs text-accent hover:underline"
+          class="link text-xs"
           :to="{
             name: 'secret',
             params: { env, secretId },
@@ -29,78 +29,68 @@ const { data, error, isFetching, refetch } = useQuery({
         >
           ← {{ secretId }}
         </RouterLink>
-        <h1 class="text-lg font-semibold">Revision history</h1>
+        <h1 class="page-title">Revision history</h1>
       </div>
-      <button
-        class="rounded border border-line px-3 py-1"
-        :disabled="isFetching"
-        @click="refetch()"
-      >
-        {{ isFetching ? "Refreshing…" : "Refresh" }}
-      </button>
+      <div class="page-actions">
+        <button class="btn" :disabled="isFetching" @click="refetch()">
+          {{ isFetching ? "Refreshing…" : "Refresh" }}
+        </button>
+      </div>
     </div>
 
     <ErrorNotice v-if="error" :error="error" />
 
-    <div v-else-if="data">
-      <p
-        v-if="data.truncated"
-        class="mb-3 rounded bg-warn/10 p-2 text-xs text-warn"
-      >
+    <div v-else-if="data" class="space-y-4">
+      <p v-if="data.truncated" class="notice notice-warning">
         This secret has more revisions than the response returns. Only the
         newest are shown.
       </p>
-      <table class="w-full border-collapse text-left">
-        <thead class="text-xs uppercase tracking-wide text-ink-muted">
-          <tr class="border-b border-line">
-            <th class="py-2 pr-3 font-medium">Created</th>
-            <th class="py-2 pr-3 font-medium">Control version</th>
-            <th class="py-2 pr-3 font-medium">Payload version</th>
-            <th class="py-2 pr-3 font-medium">Entries</th>
-            <th class="py-2 pr-3 font-medium">By</th>
-            <th class="py-2 font-medium">Object</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="revision in data.revisions"
-            :key="revision.controlVersionId"
-            class="border-b border-line/60"
-          >
-            <td class="mono py-2 pr-3 text-xs">{{ revision.createdAt }}</td>
-            <td class="mono py-2 pr-3 text-xs break-all">
-              {{ revision.controlVersionId }}
-              <span
-                v-if="revision.isCurrent"
-                class="ml-1 rounded bg-ok/15 px-1.5 py-0.5 text-ok"
-                >current</span
-              >
-            </td>
-            <td class="mono py-2 pr-3 text-xs break-all">
-              {{ revision.payloadVersionId ?? "—" }}
-            </td>
-            <td class="py-2 pr-3 text-xs">
-              {{ revision.payloadKeyCount ?? "—" }}
-            </td>
-            <td class="mono py-2 pr-3 text-xs break-all">
-              {{ revision.createdBy.id }}
-            </td>
-            <td class="py-2 text-xs">
-              <span v-if="revision.objectAvailable" class="text-ink-muted"
-                >retained</span
-              >
-              <span
-                v-else
-                class="text-ink-muted"
-                title="Retention removed the immutable object after its Object Lock window"
-              >
-                expired
-              </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p class="mt-3 text-xs text-ink-muted">
+      <div class="card overflow-x-auto">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Created</th>
+              <th>Control version</th>
+              <th>Payload version</th>
+              <th>Entries</th>
+              <th>By</th>
+              <th>Object</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="revision in data.revisions"
+              :key="revision.controlVersionId"
+            >
+              <td class="mono text-xs">{{ revision.createdAt }}</td>
+              <td class="mono text-xs break-all">
+                {{ revision.controlVersionId }}
+                <span v-if="revision.isCurrent" class="tag tag-success ml-1">current</span>
+              </td>
+              <td class="mono text-xs break-all">
+                {{ revision.payloadVersionId ?? "—" }}
+              </td>
+              <td class="text-xs">
+                {{ revision.payloadKeyCount ?? "—" }}
+              </td>
+              <td class="mono text-xs break-all">
+                {{ revision.createdBy.id }}
+              </td>
+              <td class="text-xs">
+                <span v-if="revision.objectAvailable" class="text-ink-3">retained</span>
+                <span
+                  v-else
+                  class="text-ink-3"
+                  title="Retention removed the immutable object after its Object Lock window"
+                >
+                  expired
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="meta">
         History is control-plane state, not audit evidence. Revisions whose
         object has expired remain listed because the record survives retention
         even though the stored body does not.

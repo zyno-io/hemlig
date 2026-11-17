@@ -38,10 +38,10 @@ watch(
 </script>
 
 <template>
-  <div v-if="environments.error.value" class="mx-auto max-w-lg space-y-3 p-8 text-sm">
+  <div v-if="environments.error.value" class="page max-w-lg space-y-3">
     <ErrorNotice :error="environments.error.value" context="loading environments" />
     <button
-      class="rounded border border-line px-3 py-1"
+      class="btn"
       :disabled="environments.isFetching.value"
       @click="environments.refetch()"
     >
@@ -49,24 +49,24 @@ watch(
     </button>
   </div>
 
-  <div v-else-if="environments.data.value === undefined" class="p-8 text-center text-sm text-ink-muted">
+  <div v-else-if="environments.data.value === undefined" class="p-8 text-center text-ink-3">
     Loading environments…
   </div>
 
-  <div v-else-if="names.length === 0" class="mx-auto max-w-xl px-6 py-10 text-sm">
-    <section class="rounded border border-line bg-surface-raised p-6">
-      <h1 class="text-lg font-semibold">Define your first environment</h1>
-      <p class="mt-2 text-ink-muted">
+  <div v-else-if="names.length === 0" class="page max-w-xl">
+    <section class="card card-body">
+      <h1 class="page-title">Define your first environment</h1>
+      <p class="mt-2 text-[13px] text-ink-2">
         Hemlig has no built-in notion of dev, staging, or prod — environments are
         administrator-defined records, and this deployment does not have any yet. Every
         secret and every consumer belongs to exactly one, so there is nothing to browse
         until at least one exists.
       </p>
-      <div class="mt-5 border-t border-line pt-5">
+      <div class="mt-4 border-t border-line pt-4">
         <CreateEnvironmentForm />
       </div>
     </section>
   </div>
 
-  <div v-else class="p-8 text-center text-sm text-ink-muted">Redirecting…</div>
+  <div v-else class="p-8 text-center text-ink-3">Redirecting…</div>
 </template>
