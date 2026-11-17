@@ -44,6 +44,7 @@
     "backfill:secret-id-folders": "yarn build && node dist/scripts/backfill-secret-id-folders.js",
     "migrate:secret-identity": "yarn build && node dist/scripts/migrate-secret-identity.js",
     "migrate:secret-uids": "yarn build && node dist/scripts/migrate-secret-uids.js",
+    "revoke:iot-for-revoked-identities": "yarn build && node dist/scripts/revoke-iot-for-revoked-identities.js",
     "reconcile:agent-grant-access": "yarn build && node dist/scripts/reconcile-agent-grant-access.js",
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "build:all": "yarn workspaces foreach -A --topological run build",

@@ -51,6 +51,12 @@ spec:
       served: true
       storage: true
       subresources: { status: {} }
+      additionalPrinterColumns:
+        - { name: Ready, type: string, jsonPath: '.status.conditions[?(@.type=="Ready")].status' }
+        - { name: Reason, type: string, jsonPath: '.status.conditions[?(@.type=="Ready")].reason' }
+        - { name: Identity-Expires, type: string, jsonPath: ".status.identity.notAfter" }
+        - { name: Rotation, type: string, jsonPath: '.status.conditions[?(@.type=="IdentityRotation")].reason' }
+        - { name: Age, type: date, jsonPath: ".metadata.creationTimestamp" }
       schema:
         openAPIV3Schema:
           type: object

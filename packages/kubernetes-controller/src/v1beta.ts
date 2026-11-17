@@ -1,4 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
+import {
+  X509Certificate,
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPair,
+  randomUUID,
+} from "node:crypto";
+import { promisify } from "node:util";
 import * as k8s from "@kubernetes/client-node";
 import mqtt, { type MqttClient } from "mqtt";
 import forge from "node-forge";
@@ -29,6 +37,18 @@ const exportPlural = "hemligsecretexports";
 const controllerLabel = "hemlig.io/managed-by";
 const consumerOwnerAnnotation = "hemlig.io/consumer-owner";
 const identityCsrDataKey = "hemlig.io.csr";
+const rotateIdentityAnnotation = "hemlig.io/rotate-identity";
+const rotationRequestAnnotation = "hemlig.io/rotation-request";
+const rotatedAtAnnotation = "hemlig.io/rotated-at";
+const apiFingerprintAnnotation = "hemlig.io/api-fingerprint";
+const nextKeyDataKey = "hemlig.io.next-tls.key";
+const nextCsrDataKey = "hemlig.io.next-csr";
+const nextCertificateDataKey = "hemlig.io.next-tls.crt";
+const previousCertificateDataKey = "hemlig.io.previous-tls.crt";
+const previousKeyDataKey = "hemlig.io.previous-tls.key";
+/** Binds staged next-* material to the certificate that requested it. */
+const nextPredecessorAnnotation = "hemlig.io/next-predecessor-sha256";
+const defaultRotateBeforeMilliseconds = 720 * 3_600_000;
 
 export interface ObjectMeta {
   readonly name?: string;
@@ -48,7 +68,18 @@ interface Condition {
   readonly lastTransitionTime: string;
 }
 
+interface IdentityStatus {
+  readonly apiFingerprint: string;
+  readonly notBefore: string;
+  readonly notAfter: string;
+  readonly rotateAfter?: string;
+  readonly lastRotationTime?: string;
+  readonly rotationRequest?: string;
+  readonly lastRotationError?: string;
+}
+
 interface ReconciliationStatus {
+  readonly identity?: IdentityStatus;
   readonly secretUid?: string;
   readonly syncCursor?: string;
   readonly syncIdentity?: string;
@@ -177,6 +208,8 @@ interface ReadyConsumer {
   readonly syncIdentity: string;
   readonly readyStatus: ReconciliationStatus;
   syncFailed: boolean;
+  /** One authoritative grant read shared by every import that needs it. */
+  revocationCheck?: Promise<AgentConfig>;
 }
 
 interface IdentitySecret {
@@ -208,6 +241,12 @@ export interface V1BetaControllerConfig {
   readonly reconcileRetryMilliseconds?: number;
   /** Upper bound for the exponential retry backoff. */
   readonly reconcileRetryMaxMilliseconds?: number;
+  /** Base backoff after a failed identity rotation attempt (default 60 s). */
+  readonly identityRotationRetryMilliseconds?: number;
+  /** Upper bound for the identity rotation backoff (default 6 h). */
+  readonly identityRotationRetryMaxMilliseconds?: number;
+  /** RSA modulus for rotated identity keys (default 3072; lowered only by tests). */
+  readonly identityKeyBits?: number;
 }
 
 /**
@@ -230,6 +269,22 @@ export class HemligV1BetaController {
   private readonly watchResourceVersions = new Map<string, string>();
   private secretDependencies = new Set<string>();
   private namespaceDependencies = new Set<string>();
+  /**
+   * In-memory rotation backoff per consumer. A failed rotation never uses the
+   * pass-level retry (it must not look like a consumer outage); it schedules
+   * its own reconcile for when the backoff elapses, and the periodic sweep is
+   * the safety net. A restart simply retries immediately.
+   */
+  private readonly rotationBackoff = new Map<
+    string,
+    {
+      attempts: number;
+      until: number;
+      token: string | undefined;
+      reason: string;
+      message: string;
+    }
+  >();
 
   public constructor(
     private readonly core: CoreApi,
@@ -411,6 +466,7 @@ export class HemligV1BetaController {
       "consumer namespace",
     );
     const name = required(resource.metadata.name, "consumer name");
+    let loadedCertificate: Buffer | undefined;
     try {
       const provider = providers.get(resource.spec.providerRef);
       if (provider === undefined) {
@@ -420,40 +476,87 @@ export class HemligV1BetaController {
         );
       }
       await this.assertNamespaceAllowed(namespace, provider);
-      const identity = await this.loadOrBootstrapIdentity(resource, provider);
-      const client = agentClient(
+      let loaded = await this.loadOrBootstrapIdentity(resource, provider);
+      loadedCertificate = loaded.certificate;
+      let oldClient = agentClient(
+        provider.spec.apiUrl,
+        loaded.certificate,
+        loaded.privateKey,
+      );
+      const syncWith = () =>
+        this.synchronize(
+          oldClient,
+          resource.status?.syncIdentity ===
+            syncIdentityFor(provider.spec.apiUrl, loaded.certificate)
+            ? resource.status.syncCursor
+            : undefined,
+        );
+      const authenticationFailed = () => {
+        this.mqtt.remove(resourceKey(resource.metadata));
+        return new ReconcileError(
+          "AuthenticationFailed",
+          "Hemlig rejected this consumer's client certificate (expired, revoked, or untrusted); see status.identity and the identity recovery runbook.",
+        );
+      };
+      let sync: Awaited<ReturnType<HemligV1BetaController["synchronize"]>>;
+      try {
+        sync = await syncWith();
+      } catch (error) {
+        if (!isIdentityAuthenticationFailure(error)) throw error;
+        const recovered = await this.recoverIssuedSuccessor(
+          resource,
+          provider,
+          loaded,
+        );
+        if (recovered === undefined) throw authenticationFailed();
+        loaded = recovered;
+        loadedCertificate = recovered.certificate;
+        oldClient = recovered.client;
+        try {
+          sync = await syncWith();
+        } catch (retryError) {
+          throw isIdentityAuthenticationFailure(retryError)
+            ? authenticationFailed()
+            : retryError;
+        }
+      }
+      const agentConfig = sync.config;
+      const rotation = await this.reconcileIdentityRotation(
+        resource,
+        provider,
+        loaded,
+        oldClient,
+        agentConfig,
+      );
+      const identity = {
+        certificate: rotation.certificate,
+        privateKey: rotation.privateKey,
+      };
+      const syncIdentity = syncIdentityFor(
         provider.spec.apiUrl,
         identity.certificate,
-        identity.privateKey,
       );
-      const syncIdentity = createHash("sha256")
-        .update(provider.spec.apiUrl)
-        .update(identity.certificate)
-        .digest("hex");
-      const sync = await this.synchronize(
-        client,
-        resource.status?.syncIdentity === syncIdentity
-          ? resource.status.syncCursor
-          : undefined,
-      );
-      const agentConfig = sync.config;
       this.mqtt.ensure({
         key: resourceKey(resource.metadata),
         ...agentConfig.mqtt,
         certificate: identity.certificate,
         privateKey: identity.privateKey,
       });
+      const { identity: _staleIdentity, ...retainedStatus } =
+        resource.status ?? {};
       const readyStatus: ReconciliationStatus = {
-        ...resource.status,
+        ...retainedStatus,
         observedGeneration: resource.metadata.generation,
         consumerId: agentConfig.consumerId,
         environment: agentConfig.environment,
         grantId: agentConfig.grant.grantId,
+        ...(rotation.status === undefined ? {} : { identity: rotation.status }),
         conditions: [
           readyCondition(
             "IdentityReady",
             "Bootstrap identity is active and scoped by Hemlig.",
           ),
+          ...(rotation.condition === undefined ? [] : [rotation.condition]),
         ],
       };
       await this.setStatus(
@@ -466,7 +569,7 @@ export class HemligV1BetaController {
       return {
         resource,
         provider,
-        client,
+        client: rotation.client,
         config: agentConfig,
         ...identity,
         readyStatus,
@@ -477,6 +580,10 @@ export class HemligV1BetaController {
         syncFailed: false,
       };
     } catch (error) {
+      const described =
+        loadedCertificate === undefined
+          ? undefined
+          : describeIdentity(loadedCertificate);
       await this.setFailure(
         namespace,
         consumerPlural,
@@ -484,9 +591,495 @@ export class HemligV1BetaController {
         resource.metadata.generation,
         resource.status,
         error,
+        described === undefined
+          ? {}
+          : {
+              identity: {
+                ...resource.status?.identity,
+                apiFingerprint: described.apiFingerprint,
+                notBefore: described.notBefore,
+                notAfter: described.notAfter,
+              },
+            },
       );
       this.scheduleTransientResourceRetry(error);
       return undefined;
+    }
+  }
+
+  /**
+   * Self-rotates the agent's mTLS identity. The old identity stays in use
+   * until the new one has authenticated; any failure returns the old identity
+   * and reports through the IdentityRotation condition only (never Ready).
+   */
+  private async reconcileIdentityRotation(
+    resource: HemligConsumer,
+    provider: HemligProvider,
+    loaded: { readonly certificate: Buffer; readonly privateKey: Buffer },
+    oldClient: HemligClient,
+    agentConfig: AgentConfig,
+  ): Promise<{
+    readonly certificate: Buffer;
+    readonly privateKey: Buffer;
+    readonly client: HemligClient;
+    readonly status: IdentityStatus | undefined;
+    readonly condition: Condition | undefined;
+  }> {
+    const unchanged = (
+      status: IdentityStatus | undefined,
+      condition: Condition | undefined,
+    ) => ({ ...loaded, client: oldClient, status, condition });
+    const info = describeIdentity(loaded.certificate);
+    if (info === undefined) return unchanged(undefined, undefined);
+    const namespace = required(
+      resource.metadata.namespace,
+      "consumer namespace",
+    );
+    const key = resourceKey(resource.metadata);
+    const secretName = resource.spec.identity.secretName;
+    let secret: IdentitySecret;
+    try {
+      secret = asSecret(
+        await this.core.readNamespacedSecret({ name: secretName, namespace }),
+      );
+    } catch {
+      return unchanged(identityStatusFor(info, undefined, {}), undefined);
+    }
+    const annotations = secret.metadata?.annotations ?? {};
+    const window = rotationWindow(resource.spec.identity.rotateBefore, info);
+    const statusFor = (
+      cert: typeof info,
+      secretAnnotations: Readonly<Record<string, string>>,
+      error?: string,
+    ) =>
+      identityStatusFor(
+        cert,
+        rotationWindow(resource.spec.identity.rotateBefore, cert),
+        secretAnnotations,
+        error,
+      );
+    let pending = valueData(secret, nextKeyDataKey) !== undefined;
+    if (
+      pending &&
+      annotations[nextPredecessorAnnotation] !==
+        certificateBinding(loaded.certificate)
+    ) {
+      // Staged for a different certificate (for example an operator rolled
+      // back tls.* mid-rotation). Never promote it over the current pair.
+      await this.discardPendingIdentity(namespace, secretName, loaded.certificate);
+      pending = false;
+    }
+    const token = resource.metadata.annotations?.[rotateIdentityAnnotation];
+    const manual = token !== undefined && token !== annotations[rotationRequestAnnotation];
+    const automatic =
+      window !== undefined && Date.now() >= Date.parse(info.notAfter) - window;
+    if (!pending && !manual && !automatic) {
+      this.rotationBackoff.delete(key);
+      return unchanged(
+        statusFor(info, annotations),
+        window === undefined
+          ? condition(
+              "IdentityRotation",
+              "True",
+              "AutomaticRotationDisabled",
+              "Automatic rotation is disabled; annotate the HemligConsumer with hemlig.io/rotate-identity to rotate manually.",
+            )
+          : condition(
+              "IdentityRotation",
+              "True",
+              "NotDue",
+              `Automatic rotation after ${new Date(Date.parse(info.notAfter) - window).toISOString()}.`,
+            ),
+      );
+    }
+    const backoff = this.rotationBackoff.get(key);
+    if (backoff !== undefined && !(manual && token !== backoff.token)) {
+      const remaining = backoff.until - Date.now();
+      if (remaining > 0) {
+        this.scheduleReconcile(remaining);
+        return unchanged(
+          statusFor(info, annotations, `${backoff.reason}: ${backoff.message}`),
+          condition(
+            "IdentityRotation",
+            "False",
+            backoff.reason,
+            backoff.message,
+          ),
+        );
+      }
+    }
+    try {
+      const rotated = await this.rotateIdentity(
+        resource,
+        provider,
+        loaded.certificate,
+        oldClient,
+        agentConfig,
+        manual ? token : undefined,
+      );
+      this.rotationBackoff.delete(key);
+      const rotatedInfo = describeIdentity(rotated.certificate) ?? info;
+      return {
+        ...rotated,
+        status: statusFor(rotatedInfo, rotated.annotations),
+        condition: condition(
+          "IdentityRotation",
+          "True",
+          "NotDue",
+          "Identity was rotated and verified.",
+        ),
+      };
+    } catch (error) {
+      const failure = classifyRotationFailure(error);
+      if (failure.discardPending) {
+        await this.discardPendingIdentity(namespace, secretName);
+      }
+      const attempts = (backoff?.attempts ?? 0) + 1;
+      const base = this.config.identityRotationRetryMilliseconds ?? 60_000;
+      const max = this.config.identityRotationRetryMaxMilliseconds ?? 21_600_000;
+      const ceiling = Math.min(max, base * 2 ** Math.min(attempts - 1, 30));
+      const delay = Math.round(ceiling / 2 + Math.random() * (ceiling / 2));
+      this.rotationBackoff.set(key, {
+        attempts,
+        until: Date.now() + delay,
+        token,
+        reason: failure.reason,
+        message: failure.message,
+      });
+      this.scheduleReconcile(delay);
+      process.stderr.write(
+        `Hemlig identity rotation for ${key} failed (${failure.reason}); retrying in ${delay} ms.\n`,
+      );
+      return unchanged(
+        statusFor(info, annotations, `${failure.reason}: ${failure.message}`),
+        condition("IdentityRotation", "False", failure.reason, failure.message),
+      );
+    }
+  }
+
+  private async rotateIdentity(
+    resource: HemligConsumer,
+    provider: HemligProvider,
+    currentCertificate: Buffer,
+    oldClient: HemligClient,
+    agentConfig: AgentConfig,
+    manualToken: string | undefined,
+  ): Promise<{
+    readonly certificate: Buffer;
+    readonly privateKey: Buffer;
+    readonly client: HemligClient;
+    readonly annotations: Readonly<Record<string, string>>;
+  }> {
+    const namespace = required(
+      resource.metadata.namespace,
+      "consumer namespace",
+    );
+    const name = resource.spec.identity.secretName;
+    const owner = resourceKey(resource.metadata);
+    const update = (
+      mutate: (
+        data: Record<string, string>,
+        annotations: Record<string, string>,
+      ) => void,
+    ) => this.updateIdentitySecret(namespace, name, owner, mutate);
+    const fresh = asSecret(
+      await this.core.readNamespacedSecret({ name, namespace }),
+    );
+    this.assertIdentityOwnership(fresh, owner);
+    const storedCertificate = valueData(fresh, "tls.crt");
+    if (
+      storedCertificate === undefined ||
+      !Buffer.from(storedCertificate, "base64").equals(currentCertificate)
+    ) {
+      throw new RotationError(
+        "RotationFailed",
+        "The identity Secret changed during reconciliation; retrying.",
+        false,
+      );
+    }
+    let secret = fresh;
+    if (
+      valueData(secret, nextKeyDataKey) === undefined ||
+      valueData(secret, nextCsrDataKey) === undefined
+    ) {
+      const generated = await generateRotationCsr(
+        this.config.identityKeyBits ?? 3072,
+      );
+      secret = await update((data, annotations) => {
+        if (!storedCertificateMatches(data, currentCertificate))
+          throw identitySecretChanged();
+        data[nextKeyDataKey] = b64(generated.privateKeyPem);
+        data[nextCsrDataKey] = b64(generated.csrPem);
+        delete data[nextCertificateDataKey];
+        annotations[nextPredecessorAnnotation] =
+          certificateBinding(currentCertificate);
+      });
+    }
+    const nextKey = Buffer.from(requiredData(secret, nextKeyDataKey), "base64");
+    if (valueData(secret, nextCertificateDataKey) === undefined) {
+      const csrPem = Buffer.from(
+        requiredData(secret, nextCsrDataKey),
+        "base64",
+      ).toString("utf8");
+      const issued = await oldClient.rotateAgentIdentity(
+        csrPem,
+        createHash("sha256").update(csrPem).digest("hex"),
+      );
+      if (
+        issued.consumerId !== agentConfig.consumerId ||
+        !publicKeysMatch(issued.apiCertificatePem, nextKey)
+      ) {
+        throw new RotationError(
+          "RotationRejected",
+          "Hemlig returned an identity that does not match the pending key; it was discarded.",
+          true,
+        );
+      }
+      const pendingKey = requiredData(secret, nextKeyDataKey);
+      const pendingCsr = requiredData(secret, nextCsrDataKey);
+      secret = await update((data) => {
+        if (
+          !storedCertificateMatches(data, currentCertificate) ||
+          data[nextKeyDataKey] !== pendingKey ||
+          data[nextCsrDataKey] !== pendingCsr ||
+          data[nextCertificateDataKey] !== undefined
+        )
+          throw identitySecretChanged();
+        data[nextCertificateDataKey] = b64(issued.apiCertificatePem);
+      });
+    }
+    const nextCertificate = Buffer.from(
+      requiredData(secret, nextCertificateDataKey),
+      "base64",
+    );
+    const nextClient = agentClient(
+      provider.spec.apiUrl,
+      nextCertificate,
+      nextKey,
+    );
+    try {
+      const verified = await nextClient.getAgentConfig();
+      if (
+        verified.consumerId !== agentConfig.consumerId ||
+        verified.environment !== agentConfig.environment
+      ) {
+        throw new RotationError(
+          "VerificationFailed",
+          "The new identity authenticated as a different consumer; it was discarded.",
+          true,
+        );
+      }
+    } catch (error) {
+      if (error instanceof RotationError) throw error;
+      throw new RotationError(
+        "VerificationFailed",
+        "The new identity could not be verified; keeping the current identity.",
+        error instanceof HemligError &&
+          error.status === 403 &&
+          error.code === "identity_not_active",
+      );
+    }
+    const finalAnnotations = await this.swapIdentity(
+      resource,
+      currentCertificate,
+      requiredData(secret, nextCertificateDataKey),
+      requiredData(secret, nextKeyDataKey),
+      manualToken,
+    );
+    return {
+      certificate: nextCertificate,
+      privateKey: nextKey,
+      client: nextClient,
+      annotations: finalAnnotations,
+    };
+  }
+
+  private async updateIdentitySecret(
+    namespace: string,
+    name: string,
+    owner: string,
+    mutate: (
+      data: Record<string, string>,
+      annotations: Record<string, string>,
+    ) => void,
+  ): Promise<IdentitySecret> {
+    const current = asSecret(
+      await this.core.readNamespacedSecret({ name, namespace }),
+    );
+    this.assertIdentityOwnership(current, owner);
+    const data = { ...current.data };
+    const annotations = { ...current.metadata?.annotations };
+    mutate(data, annotations);
+    const body = {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: { ...current.metadata, annotations },
+      type: current.type ?? "Opaque",
+      data,
+    };
+    await this.core.replaceNamespacedSecret({ name, namespace, body });
+    return body;
+  }
+
+  /**
+   * Promotes a verified pending identity. The write only applies when the
+   * Secret still holds the certificate this pass started with and the exact
+   * pending values that were verified, so an operator's concurrent rollback or
+   * replacement is never clobbered.
+   */
+  private async swapIdentity(
+    resource: HemligConsumer,
+    currentCertificate: Buffer,
+    nextCertificate: string,
+    nextKey: string,
+    manualToken: string | undefined,
+  ): Promise<Record<string, string>> {
+    const newInfo = describeIdentity(Buffer.from(nextCertificate, "base64"));
+    let finalAnnotations: Record<string, string> = {};
+    await this.updateIdentitySecret(
+      required(resource.metadata.namespace, "consumer namespace"),
+      resource.spec.identity.secretName,
+      resourceKey(resource.metadata),
+      (data, annotations) => {
+        if (
+          !storedCertificateMatches(data, currentCertificate) ||
+          data[nextKeyDataKey] !== nextKey ||
+          data[nextCertificateDataKey] !== nextCertificate
+        )
+          throw identitySecretChanged();
+        const oldCertificate = data["tls.crt"];
+        const oldKey = data["tls.key"];
+        if (oldCertificate !== undefined)
+          data[previousCertificateDataKey] = oldCertificate;
+        if (oldKey !== undefined) data[previousKeyDataKey] = oldKey;
+        data["tls.crt"] = nextCertificate;
+        data["tls.key"] = nextKey;
+        delete data[nextKeyDataKey];
+        delete data[nextCsrDataKey];
+        delete data[nextCertificateDataKey];
+        delete annotations[nextPredecessorAnnotation];
+        if (newInfo !== undefined)
+          annotations[apiFingerprintAnnotation] = newInfo.apiFingerprint;
+        annotations[rotatedAtAnnotation] = new Date().toISOString();
+        if (manualToken !== undefined)
+          annotations[rotationRequestAnnotation] = manualToken;
+        finalAnnotations = annotations;
+      },
+    );
+    return finalAnnotations;
+  }
+
+  /**
+   * Recovery for an issued-but-unswapped successor when the current
+   * certificate can no longer authenticate: if the persisted successor is
+   * valid, matches its key and authenticates as this consumer, promote it.
+   * Never discards pending material; any doubt returns undefined.
+   */
+  private async recoverIssuedSuccessor(
+    resource: HemligConsumer,
+    provider: HemligProvider,
+    current: { readonly certificate: Buffer },
+  ): Promise<
+    | {
+        readonly certificate: Buffer;
+        readonly privateKey: Buffer;
+        readonly client: HemligClient;
+      }
+    | undefined
+  > {
+    try {
+      const namespace = required(
+        resource.metadata.namespace,
+        "consumer namespace",
+      );
+      const secret = asSecret(
+        await this.core.readNamespacedSecret({
+          name: resource.spec.identity.secretName,
+          namespace,
+        }),
+      );
+      const nextCertificate = valueData(secret, nextCertificateDataKey);
+      const nextKey = valueData(secret, nextKeyDataKey);
+      if (nextCertificate === undefined || nextKey === undefined)
+        return undefined;
+      const certificate = Buffer.from(nextCertificate, "base64");
+      const privateKey = Buffer.from(nextKey, "base64");
+      const info = describeIdentity(certificate);
+      const now = Date.now();
+      if (
+        info === undefined ||
+        now < Date.parse(info.notBefore) ||
+        now >= Date.parse(info.notAfter) ||
+        !publicKeysMatch(certificate.toString("utf8"), privateKey)
+      )
+        return undefined;
+      const client = agentClient(provider.spec.apiUrl, certificate, privateKey);
+      const verified = await client.getAgentConfig();
+      const known = resource.status;
+      if (
+        !certificateNamesConsumer(current.certificate, verified.consumerId) ||
+        (known?.consumerId !== undefined &&
+          verified.consumerId !== known.consumerId) ||
+        (known?.environment !== undefined &&
+          verified.environment !== known.environment)
+      )
+        return undefined;
+      await this.swapIdentity(
+        resource,
+        current.certificate,
+        nextCertificate,
+        nextKey,
+        undefined,
+      );
+      return { certificate, privateKey, client };
+    } catch (error) {
+      // Only definitive outcomes end recovery here (a changed Secret or a
+      // successor that cannot authenticate). Transient failures go through
+      // the pass backoff instead of becoming a non-retryable auth failure.
+      if (
+        !(error instanceof RotationError) &&
+        !isIdentityAuthenticationFailure(error) &&
+        isTransientResourceError(error)
+      )
+        throw error;
+      return undefined;
+    }
+  }
+
+  private async discardPendingIdentity(
+    namespace: string,
+    name: string,
+    onlyIfStaleFor?: Buffer,
+  ): Promise<void> {
+    try {
+      const current = asSecret(
+        await this.core.readNamespacedSecret({ name, namespace }),
+      );
+      const annotations = { ...current.metadata?.annotations };
+      if (
+        onlyIfStaleFor !== undefined &&
+        annotations[nextPredecessorAnnotation] ===
+          certificateBinding(onlyIfStaleFor)
+      )
+        return;
+      const data = { ...current.data };
+      delete data[nextKeyDataKey];
+      delete data[nextCsrDataKey];
+      delete data[nextCertificateDataKey];
+      delete annotations[nextPredecessorAnnotation];
+      await this.core.replaceNamespacedSecret({
+        name,
+        namespace,
+        body: {
+          apiVersion: "v1",
+          kind: "Secret",
+          metadata: { ...current.metadata, annotations },
+          type: current.type ?? "Opaque",
+          data,
+        },
+      });
+    } catch {
+      // Best effort: a stale pending key is replaced or reused next attempt.
     }
   }
 
@@ -722,10 +1315,42 @@ export class HemligV1BetaController {
         !consumer.config.grant.capabilities.includes("read") ||
         !selected?.permissions.includes("read")
       )
-        throw new HemligError(403, "Import scope was revoked.");
+        throw new ImportRevokedError("Import scope was revoked.");
       const indexed = consumer.syncEntries.get(selected.secretUid);
       if (indexed !== undefined && !indexed.permissions.includes("read"))
-        throw new HemligError(403, "Import access was revoked.");
+        throw new ImportRevokedError("Import access was revoked.");
+      const awaiting = () =>
+        this.setStatus(
+          namespace,
+          importPlural,
+          name,
+          {
+            observedGeneration: resource.metadata.generation,
+            secretUid: selected.secretUid,
+            conditions: [
+              falseCondition(
+                "AwaitingValue",
+                "The remote secret has no value yet.",
+              ),
+            ],
+          },
+          resource.status,
+        );
+      if (indexed?.state === "PENDING_VALUE") {
+        await awaiting();
+        return;
+      }
+      if (
+        indexed === undefined &&
+        !consumer.syncSnapshot &&
+        resource.status?.observedGeneration === resource.metadata.generation &&
+        resource.status?.secretUid === selected.secretUid &&
+        resource.status?.conditions?.some(
+          (entry) =>
+            entry.type === "Ready" && entry.reason === "AwaitingValue",
+        )
+      )
+        return;
       const localVersion = await this.currentImportVersion(
         namespace,
         targetName,
@@ -744,10 +1369,20 @@ export class HemligV1BetaController {
       )
         return;
       const ifNoneMatch = currentGeneration ? localVersion : undefined;
-      const remote = await consumer.client.getAgentSecret(
-        resource.spec.secretId,
-        ifNoneMatch,
-      );
+      let remote: Awaited<ReturnType<HemligClient["getAgentSecret"]>>;
+      try {
+        remote = await consumer.client.getAgentSecret(
+          resource.spec.secretId,
+          ifNoneMatch,
+        );
+      } catch (error) {
+        if (
+          error instanceof HemligError &&
+          (error.status === 403 || error.status === 404)
+        )
+          await this.confirmImportRevocation(consumer, resource.spec.secretId);
+        throw error;
+      }
       if (remote === undefined) {
         return;
       }
@@ -788,10 +1423,7 @@ export class HemligV1BetaController {
         resource.status,
       );
     } catch (error) {
-      if (
-        error instanceof HemligError &&
-        (error.status === 403 || error.status === 404)
-      ) {
+      if (error instanceof ImportRevokedError) {
         await this.removeOwnedImport(resource);
         await this.setStatus(
           namespace,
@@ -818,9 +1450,51 @@ export class HemligV1BetaController {
         resource.status,
         error,
       );
-      consumer.syncFailed = true;
+      if (!(error instanceof ReconcileError && error.reason === "RemoteAccessDenied"))
+        consumer.syncFailed = true;
       this.scheduleTransientResourceRetry(error);
     }
+  }
+
+  /**
+   * A remote 403/404 is not proof of revocation: it can follow an expired
+   * client certificate or a secret that has no value yet. Only a successful
+   * fresh configuration read that no longer grants read authorizes deletion.
+   */
+  private async confirmImportRevocation(
+    consumer: ReadyConsumer,
+    secretId: string,
+  ): Promise<never> {
+    let config: AgentConfig;
+    try {
+      config = await (consumer.revocationCheck ??=
+        consumer.client.getAgentConfig());
+    } catch (error) {
+      if (isIdentityAuthenticationFailure(error)) {
+        throw new ReconcileError(
+          "AuthenticationFailed",
+          "Hemlig rejected this consumer's client certificate; imports are retained until access is confirmed.",
+          true,
+        );
+      }
+      throw new ReconcileError(
+        "RevocationUnconfirmed",
+        "Hemlig denied the read and the grant could not be re-checked; imports are retained.",
+        true,
+      );
+    }
+    const grant = config.grant.secretGrants.find(
+      (entry) => entry.secretId === secretId,
+    );
+    if (
+      !config.grant.capabilities.includes("read") ||
+      !grant?.permissions.includes("read")
+    )
+      throw new ImportRevokedError("Hemlig no longer grants this import.");
+    throw new ReconcileError(
+      "RemoteAccessDenied",
+      "Hemlig denied reading this secret although the grant still allows it; the import is retained.",
+    );
   }
 
   private async reconcileExport(
@@ -1122,6 +1796,7 @@ export class HemligV1BetaController {
     generation: number | undefined,
     currentStatus: ReconciliationStatus | undefined,
     error: unknown,
+    retained: Pick<ReconciliationStatus, "identity"> = {},
   ): Promise<void> {
     const reason =
       error instanceof ReconcileError ? error.reason : "ReconcileFailed";
@@ -1136,6 +1811,7 @@ export class HemligV1BetaController {
       plural,
       name,
       {
+        ...retained,
         observedGeneration: generation,
         conditions: [falseCondition(reason, message)],
       },
@@ -1384,6 +2060,11 @@ class MqttHintManager {
     this.clients.set(input.key, { fingerprint, client });
   }
 
+  public remove(key: string): void {
+    this.clients.get(key)?.client.end(true);
+    this.clients.delete(key);
+  }
+
   public stop(): void {
     for (const entry of this.clients.values()) {
       entry.client.end(true);
@@ -1396,10 +2077,256 @@ class ReconcileError extends Error {
   public constructor(
     readonly reason: string,
     message: string,
+    /** Retry the whole pass with backoff (transient, self-healing causes). */
+    readonly retryable = false,
   ) {
     super(message);
   }
 }
+
+/** The only condition under which an imported Secret is deleted. */
+class ImportRevokedError extends Error {}
+
+const storedCertificateMatches = (
+  data: Readonly<Record<string, string>>,
+  certificate: Buffer,
+): boolean =>
+  data["tls.crt"] !== undefined &&
+  Buffer.from(data["tls.crt"], "base64").equals(certificate);
+
+const certificateBinding = (certificate: Buffer): string =>
+  createHash("sha256").update(certificate).digest("hex");
+
+/** Hemlig leaves carry spiffe://hemlig/consumer/<consumerId> as a URI SAN. */
+const certificateNamesConsumer = (
+  certificate: Buffer,
+  consumerId: string,
+): boolean => {
+  try {
+    const subjectAltName = new X509Certificate(certificate).subjectAltName ?? "";
+    return subjectAltName
+      .split(/,\s*/)
+      .includes(`URI:spiffe://hemlig/consumer/${consumerId}`);
+  } catch {
+    return false;
+  }
+};
+
+const identitySecretChanged = (): RotationError =>
+  new RotationError(
+    "RotationFailed",
+    "The identity Secret changed during rotation; retrying.",
+    false,
+  );
+
+class RotationError extends Error {
+  public constructor(
+    readonly reason: string,
+    message: string,
+    readonly discardPending: boolean,
+  ) {
+    super(message);
+  }
+}
+
+const classifyRotationFailure = (
+  error: unknown,
+): {
+  readonly reason: string;
+  readonly message: string;
+  readonly discardPending: boolean;
+} => {
+  if (error instanceof RotationError) {
+    return {
+      reason: error.reason,
+      message: error.message,
+      discardPending: error.discardPending,
+    };
+  }
+  const failure = (reason: string, message: string, discardPending = false) => ({
+    reason,
+    message,
+    discardPending,
+  });
+  if (error instanceof HemligError) {
+    const { status, code } = error;
+    if (status === 400 && code === "invalid_csr")
+      return failure(
+        "RotationRejected",
+        "Hemlig rejected the certificate request; a new key will be generated.",
+        true,
+      );
+    if (status === 400 || status === 404 || status === 405)
+      return failure(
+        "RotationUnsupported",
+        "This Hemlig server does not support identity self-rotation; upgrade it or rotate manually.",
+      );
+    if (status === 403 && isIdentityAuthenticationFailure(error))
+      return failure(
+        "AuthenticationFailed",
+        "Hemlig rejected the current client certificate; rotation cannot proceed.",
+      );
+    if (status === 403)
+      return failure(
+        "RotationForbidden",
+        "The agent grant does not permit identity rotation.",
+      );
+    if (status === 409 && code === "identity_limit_reached")
+      return failure(
+        "IdentityLimitReached",
+        "The consumer has too many active identities; an administrator must revoke unused ones.",
+      );
+    if (status === 409 && code === "identity_rotation_conflict")
+      return failure(
+        "RotationConflict",
+        "Another identity rotation for this consumer committed concurrently; retrying with the staged key.",
+      );
+    if (status === 409 && code === "identity_already_rotated")
+      return failure(
+        "IdentityAlreadyRotated",
+        "This identity was already rotated to a successor that is still active.",
+      );
+    if (status === 409)
+      return failure(
+        "RotationRejected",
+        "Hemlig could not replay or accept this rotation; a new key will be generated.",
+        true,
+      );
+  }
+  return failure("RotationFailed", "Identity rotation failed; will retry.");
+};
+
+const isIdentityAuthenticationFailure = (error: unknown): boolean =>
+  error instanceof HemligError &&
+  error.status === 403 &&
+  (error.code === undefined || error.code === "identity_not_active");
+
+const condition = (
+  type: string,
+  status: "True" | "False",
+  reason: string,
+  message: string,
+): Condition => ({
+  type,
+  status,
+  reason,
+  message,
+  lastTransitionTime: new Date().toISOString(),
+});
+
+const syncIdentityFor = (apiUrl: string, certificate: Buffer): string =>
+  createHash("sha256").update(apiUrl).update(certificate).digest("hex");
+
+const b64 = (value: string): string =>
+  Buffer.from(value, "utf8").toString("base64");
+
+const parseDuration = (value: string | undefined): number => {
+  const match = /^([0-9]+)([smhd])$/.exec(value ?? "");
+  if (match === null) return defaultRotateBeforeMilliseconds;
+  const unit = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[
+    match[2] as "s" | "m" | "h" | "d"
+  ];
+  return Number.parseInt(match[1]!, 10) * unit;
+};
+
+const describeIdentity = (
+  certificate: Buffer,
+):
+  | {
+      readonly apiFingerprint: string;
+      readonly notBefore: string;
+      readonly notAfter: string;
+    }
+  | undefined => {
+  try {
+    const parsed = new X509Certificate(certificate);
+    return {
+      apiFingerprint: createHash("sha256").update(parsed.raw).digest("hex"),
+      notBefore: new Date(parsed.validFrom).toISOString(),
+      notAfter: new Date(parsed.validTo).toISOString(),
+    };
+  } catch {
+    return undefined;
+  }
+};
+
+/** Rotation lead time, clamped to half the certificate lifetime; undefined = disabled. */
+const rotationWindow = (
+  rotateBefore: string | undefined,
+  identity: { readonly notBefore: string; readonly notAfter: string },
+): number | undefined => {
+  const value = parseDuration(rotateBefore);
+  if (value === 0) return undefined;
+  const lifetime = Date.parse(identity.notAfter) - Date.parse(identity.notBefore);
+  return Math.min(value, lifetime / 2);
+};
+
+const identityStatusFor = (
+  identity: {
+    readonly apiFingerprint: string;
+    readonly notBefore: string;
+    readonly notAfter: string;
+  },
+  window: number | undefined,
+  annotations: Readonly<Record<string, string>>,
+  lastRotationError?: string,
+): IdentityStatus => {
+  const lastRotationTime = annotations[rotatedAtAnnotation];
+  const rotationRequest = annotations[rotationRequestAnnotation];
+  return {
+    apiFingerprint: identity.apiFingerprint,
+    notBefore: identity.notBefore,
+    notAfter: identity.notAfter,
+    ...(window === undefined
+      ? {}
+      : {
+          rotateAfter: new Date(
+            Date.parse(identity.notAfter) - window,
+          ).toISOString(),
+        }),
+    ...(lastRotationTime === undefined ? {} : { lastRotationTime }),
+    ...(rotationRequest === undefined ? {} : { rotationRequest }),
+    ...(lastRotationError === undefined ? {} : { lastRotationError }),
+  };
+};
+
+const publicKeysMatch = (certificatePem: string, privateKey: Buffer): boolean => {
+  try {
+    const fromCertificate = new X509Certificate(certificatePem).publicKey.export(
+      { type: "spki", format: "der" },
+    );
+    const fromKey = createPublicKey(createPrivateKey(privateKey)).export({
+      type: "spki",
+      format: "der",
+    });
+    return fromCertificate.equals(fromKey);
+  } catch {
+    return false;
+  }
+};
+
+const generateKeyPairAsync = promisify(generateKeyPair);
+
+/** Key generation runs on the libuv pool so it cannot stall the event loop. */
+const generateRotationCsr = async (
+  bits: number,
+): Promise<{ readonly privateKeyPem: string; readonly csrPem: string }> => {
+  const pair = await generateKeyPairAsync("rsa", {
+    modulusLength: bits,
+    publicExponent: 0x10001,
+    publicKeyEncoding: { type: "pkcs1", format: "pem" },
+    privateKeyEncoding: { type: "pkcs1", format: "pem" },
+  });
+  const privateKey = forge.pki.privateKeyFromPem(pair.privateKey);
+  const csr = forge.pki.createCertificationRequest();
+  csr.publicKey = forge.pki.rsa.setPublicKey(privateKey.n, privateKey.e);
+  csr.setSubject([{ name: "commonName", value: "Hemlig Kubernetes agent" }]);
+  csr.sign(privateKey, forge.md.sha256.create());
+  return {
+    privateKeyPem: pair.privateKey,
+    csrPem: forge.pki.certificationRequestToPem(csr),
+  };
+};
 
 const agentClient = (
   url: string,
@@ -1544,7 +2471,7 @@ const retryAfterMilliseconds = (error: unknown): number | undefined => {
 
 export const isTransientResourceError = (error: unknown): boolean => {
   if (error instanceof ReconcileError) {
-    return false;
+    return error.retryable;
   }
   if (!(error instanceof HemligError)) {
     // Kubernetes API failures carry a numeric status: a missing source Secret
@@ -1568,9 +2495,25 @@ const isOwnStatusUpdate = (phase: string, object: unknown): boolean => {
   }
   const resource = object as {
     readonly apiVersion?: string;
-    readonly metadata?: { readonly generation?: number };
-    readonly status?: { readonly observedGeneration?: number };
+    readonly kind?: string;
+    readonly metadata?: {
+      readonly generation?: number;
+      readonly annotations?: Readonly<Record<string, string>>;
+    };
+    readonly status?: {
+      readonly observedGeneration?: number;
+      readonly identity?: { readonly rotationRequest?: string };
+    };
   };
+  // A new manual rotation token is an input even though the generation is
+  // unchanged (annotations do not bump it).
+  const token = resource.metadata?.annotations?.[rotateIdentityAnnotation];
+  if (
+    resource.kind === "HemligConsumer" &&
+    token !== undefined &&
+    token !== resource.status?.identity?.rotationRequest
+  )
+    return false;
   return (
     resource.apiVersion === `${group}/${version}` &&
     resource.metadata?.generation !== undefined &&

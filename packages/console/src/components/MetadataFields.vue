@@ -29,25 +29,25 @@ const addTag = (): void => {
 <template>
   <div class="space-y-3">
     <label class="block">
-      <span class="text-xs text-ink-muted">Description</span>
+      <span class="field-label">Description</span>
       <textarea
         v-model="model.description"
         maxlength="1024"
         rows="2"
-        class="mt-1 w-full rounded border border-line bg-surface px-2 py-1"
+        class="input"
       />
     </label>
     <div>
-      <span class="text-xs text-ink-muted">Tags ({{ model.tags.length }} of 20)</span>
-      <div v-for="tag in model.tags" :key="tag.id" class="mt-1 flex items-start gap-2">
-        <input v-model="tag.key" placeholder="key" class="mono w-40 rounded border border-line bg-surface px-2 py-1" />
+      <span class="field-label">Tags ({{ model.tags.length }} of 20)</span>
+      <div v-for="tag in model.tags" :key="tag.id" class="mt-2 flex items-start gap-2">
+        <input v-model="tag.key" placeholder="key" class="input mono w-40" />
         <div class="flex-1">
-          <input v-model="tag.value" placeholder="value" class="mono w-full rounded border border-line bg-surface px-2 py-1" />
-          <span v-if="tagError(tag)" class="text-xs text-danger">{{ tagError(tag) }}</span>
+          <input v-model="tag.value" placeholder="value" class="input mono" />
+          <span v-if="tagError(tag)" class="field-error block">{{ tagError(tag) }}</span>
         </div>
         <button
           type="button"
-          class="rounded border border-line px-2 py-1 text-xs"
+          class="btn"
           @click="model.tags = model.tags.filter((t) => t.id !== tag.id)"
         >
           Remove
@@ -56,13 +56,13 @@ const addTag = (): void => {
       <button
         v-if="model.tags.length < 20"
         type="button"
-        class="mt-2 rounded border border-line px-2 py-1 text-xs"
+        class="btn mt-2"
         @click="addTag"
       >
         Add tag
       </button>
     </div>
-    <p class="text-xs text-ink-muted">
+    <p class="field-hint">
       Tags are organisational only. They never select a delivery target or
       grant access. Folders are derived from slash-separated secret IDs.
     </p>

@@ -31,19 +31,19 @@ const toggle = (consumerId: string): void => {
 <template>
   <div>
     <div class="flex items-baseline justify-between">
-      <span class="text-xs text-ink-muted">Consumers with read access ({{ model.length }} of 40)</span>
+      <span class="field-label mb-0">Consumers with read access ({{ model.length }} of 40)</span>
     </div>
 
-    <p v-if="error" class="mt-2 text-xs text-danger">
+    <p v-if="error" class="field-error">
       The consumer list could not be loaded, so grants cannot be edited safely.
     </p>
-    <p v-else-if="selectable.length === 0" class="mt-2 text-xs text-ink-muted">
+    <p v-else-if="selectable.length === 0" class="field-hint">
       No active consumers are enrolled in {{ environment }}.
     </p>
 
-    <ul v-else class="mt-2 space-y-1">
+    <ul v-else class="mt-2 space-y-2">
       <li v-for="consumer in selectable" :key="consumer.consumerId">
-        <label class="flex items-center gap-2 text-sm">
+        <label class="flex items-center gap-2">
           <input
             type="checkbox"
             :checked="model.includes(consumer.consumerId)"
@@ -55,8 +55,8 @@ const toggle = (consumerId: string): void => {
       </li>
     </ul>
 
-    <div v-if="removed && removed.length > 0" class="mt-3 rounded bg-warn/10 p-2 text-xs text-warn">
-      <p class="font-medium">
+    <div v-if="removed && removed.length > 0" class="notice notice-warning mt-3">
+      <p class="notice-title">
         Removing {{ removed.join(", ") }} does not delete anything on the consumer.
       </p>
       <p class="mt-1">

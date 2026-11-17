@@ -120,6 +120,8 @@ describe("POST /v1/admin/issuer", () => {
       } as unknown as AuditWriter,
       auditQueries: {} as Application["auditQueries"],
       agentGrants: {} as Application["agentGrants"],
+      agentIdentities: {} as Application["agentIdentities"],
+      agentNotifications: {} as Application["agentNotifications"],
       agents: {} as Application["agents"],
       agentSync: {} as Application["agentSync"],
       cursors: {} as unknown as CursorService,
@@ -256,6 +258,8 @@ describe("GET /v1/admin/secrets", () => {
       } as unknown as AuditWriter,
       auditQueries: {} as Application["auditQueries"],
       agentGrants: {} as Application["agentGrants"],
+      agentIdentities: {} as Application["agentIdentities"],
+      agentNotifications: {} as Application["agentNotifications"],
       agents: {} as Application["agents"],
       agentSync: {} as Application["agentSync"],
       cursors: {
@@ -814,5 +818,154 @@ describe("consumer secret grant management", () => {
         idempotencyKey: "revoke-consumer-grant",
       }),
     );
+  });
+});
+
+describe("admin API identity IoT synchronization", () => {
+  const fingerprint = "a".repeat(64);
+  const issued = {
+    consumerId: "prod-east",
+    environment: "prod",
+    rootFingerprint: "root",
+    apiFingerprint: fingerprint,
+    apiCertificatePem: "pem-new",
+    status: "ACTIVE" as const,
+    identityStatus: "ACTIVE" as const,
+    shouldWriteTerminalAudit: true,
+  };
+
+  const setup = (grantStatus: "ACTIVE" | "PENDING" | undefined) => {
+    const provision = jest.fn(async () => undefined);
+    const revoke = jest.fn(async () => undefined);
+    const rotateApiIdentity = jest.fn(async () => issued);
+    const revokeApiIdentity = jest.fn(async () => ({
+      ...issued,
+      status: "REVOKED" as const,
+    }));
+    const app = {
+      config,
+      repository: {
+        getAgentGrantForConsumer: jest.fn(async () =>
+          grantStatus === undefined ? undefined : { status: grantStatus },
+        ),
+        markAuditSucceeded: jest.fn(async () => undefined),
+        getIdentity: jest.fn(async () => ({ status: "ACTIVE" })),
+      },
+      consumers: { rotateApiIdentity, revokeApiIdentity },
+      agentNotifications: { provision, revoke },
+      audit: { write: jest.fn(async () => ({ eventId: "evt-1" })) },
+    } as unknown as Application;
+    withErrorResponse.mockImplementation(
+      async (
+        event: APIGatewayProxyEventV2,
+        action: (
+          application: Application,
+          correlationId: string,
+          setAuditContext: (context: unknown) => void,
+        ) => Promise<APIGatewayProxyStructuredResultV2>,
+      ) => {
+        try {
+          return await action(app, "corr-1", () => undefined);
+        } catch (error) {
+          return errorResponse(error, "corr-1");
+        }
+      },
+    );
+    return { app, provision, revoke, rotateApiIdentity, revokeApiIdentity };
+  };
+
+  const issue = () => {
+    const event = buildEvent(
+      "POST",
+      "/v1/admin/consumers/prod-east/api-identities",
+      { "idempotency-key": "idem-123456" },
+    );
+    (event as { body?: string }).body = JSON.stringify({
+      apiCertificateSigningRequestPem: "csr",
+    });
+    return handler(event);
+  };
+  const revokeCall = () =>
+    handler(
+      buildEvent(
+        "DELETE",
+        `/v1/admin/consumers/prod-east/api-identities/${fingerprint}`,
+        { "idempotency-key": "idem-654321" },
+      ),
+    );
+
+  it("registers an admin-issued leaf of an active agent with IoT", async () => {
+    const { provision, app } = setup("ACTIVE");
+    const response = await issue();
+    expect(response.statusCode).toBe(201);
+    expect(provision).toHaveBeenCalledWith({
+      consumerId: "prod-east",
+      certificateFingerprint: fingerprint,
+      certificatePem: "pem-new",
+    });
+    // IoT registration precedes the terminal audit.
+    const auditOrders = (app.audit.write as jest.Mock).mock.invocationCallOrder;
+    expect(provision.mock.invocationCallOrder[0]).toBeLessThan(
+      auditOrders[auditOrders.length - 1] as number,
+    );
+  });
+
+  it("does not register leaves of non-agent or not-yet-active agents", async () => {
+    for (const status of [undefined, "PENDING" as const]) {
+      const { provision } = setup(status);
+      expect((await issue()).statusCode).toBe(201);
+      expect(provision).not.toHaveBeenCalled();
+    }
+  });
+
+  it("registers again on an idempotent replay", async () => {
+    const { provision, rotateApiIdentity } = setup("ACTIVE");
+    rotateApiIdentity.mockResolvedValue({
+      ...issued,
+      shouldWriteTerminalAudit: false,
+    });
+    await issue();
+    await issue();
+    expect(provision).toHaveBeenCalledTimes(2);
+  });
+
+  it("revokes the IoT certificate if the identity was revoked mid-provision", async () => {
+    const { app, revoke } = setup("ACTIVE");
+    (app.repository.getIdentity as jest.Mock).mockResolvedValue({
+      status: "REVOKED",
+    });
+    await issue();
+    expect(revoke).toHaveBeenCalledWith(fingerprint);
+  });
+
+  it("re-applies IoT revocation for an already revoked identity", async () => {
+    const { revoke, revokeApiIdentity } = setup("ACTIVE");
+    revokeApiIdentity.mockResolvedValue({
+      ...issued,
+      status: "REVOKED" as const,
+      shouldWriteTerminalAudit: true,
+    });
+    const response = await revokeCall();
+    expect(response.statusCode).toBe(200);
+    expect(revoke).toHaveBeenCalledWith(fingerprint);
+  });
+
+  it("fails the request when IoT registration fails", async () => {
+    const { provision } = setup("ACTIVE");
+    provision.mockRejectedValue(new Error("iot down"));
+    expect((await issue()).statusCode).toBeGreaterThanOrEqual(500);
+  });
+
+  it("revokes the IoT certificate for any consumer, including replays", async () => {
+    const { revoke, revokeApiIdentity } = setup(undefined);
+    expect((await revokeCall()).statusCode).toBe(200);
+    expect(revoke).toHaveBeenCalledWith(fingerprint);
+    revokeApiIdentity.mockResolvedValue({
+      ...issued,
+      status: "REVOKED" as const,
+      shouldWriteTerminalAudit: false,
+    });
+    await revokeCall();
+    expect(revoke).toHaveBeenCalledTimes(2);
   });
 });

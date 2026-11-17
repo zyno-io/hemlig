@@ -174,6 +174,9 @@ export interface IdentityRecord {
   readonly notBefore: string;
   readonly notAfter: string;
   readonly certificatePem?: string;
+  /** Fingerprint of the identity issued by this one through self-rotation. */
+  readonly rotatedTo?: string;
+  readonly rotatedAt?: string;
   /** Sparse GSI projection for administrative identity browsing. */
   readonly identityConsumerPk?: string;
   readonly identityConsumerSk?: string;
@@ -216,6 +219,13 @@ export interface ConsumerRecord {
   /** Sparse GSI projection for administrative consumer browsing. */
   readonly consumerDirectoryPk?: string;
   readonly consumerDirectorySk?: string;
+  /**
+   * Optimistic-concurrency counter bumped by every capped self-rotation, so
+   * concurrent rotations of one consumer cannot both pass the identity cap.
+   */
+  readonly apiIdentityRotationSeq?: number;
+  /** Newest self-rotated fingerprints (read-your-writes past GSI lag). */
+  readonly recentSelfRotatedApiFingerprints?: string[];
 }
 
 /**

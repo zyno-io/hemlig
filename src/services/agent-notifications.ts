@@ -7,6 +7,7 @@ import {
   RegisterCertificateWithoutCACommand,
   UpdateCertificateCommand,
 } from "@aws-sdk/client-iot";
+import type { DynamoRepository } from "../repositories/dynamo";
 import { conflict, serviceUnavailable } from "../domain/errors";
 
 export interface AgentMqttIdentity {
@@ -31,6 +32,26 @@ export class AgentNotificationService {
     await this.ensureThing(identity.consumerId);
     await this.attachPrincipal(identity.consumerId, certificate.certificateArn);
     await this.attachPolicy(certificate.certificateArn);
+  }
+
+  /**
+   * Revokes the identity's AWS IoT certificate so it can no longer connect.
+   * A certificate that was never registered counts as success, and revoking an
+   * already revoked certificate is a no-op.
+   */
+  public async revoke(certificateFingerprint: string): Promise<void> {
+    try {
+      await this.iot.send(
+        new UpdateCertificateCommand({
+          certificateId: certificateFingerprint,
+          newStatus: "REVOKED",
+        }),
+      );
+    } catch (error) {
+      if (!isNotFound(error)) {
+        throw error;
+      }
+    }
   }
 
   private async ensureCertificate(
@@ -121,6 +142,35 @@ export class AgentNotificationService {
     }
   }
 }
+
+/**
+ * Provisions the leaf, then re-reads the identity (consistent read). A revoke
+ * that raced the registration may have seen "not found" and counted as a
+ * success just before the certificate was registered ACTIVE; revoking again
+ * here closes that window. The check also runs when provisioning fails
+ * part-way, then the provisioning error is rethrown.
+ */
+export const provisionAndVerify = async (
+  notifications: Pick<AgentNotificationService, "provision" | "revoke">,
+  repository: Pick<DynamoRepository, "getIdentity">,
+  identity: AgentMqttIdentity,
+): Promise<void> => {
+  let provisionFailure: { readonly error: unknown } | undefined;
+  try {
+    await notifications.provision(identity);
+  } catch (error) {
+    // Provisioning may fail after the certificate was registered ACTIVE, and
+    // a replay skips identities that are no longer ACTIVE, so verify anyway.
+    provisionFailure = { error };
+  }
+  const current = await repository.getIdentity(identity.certificateFingerprint);
+  if (current === undefined || current.status !== "ACTIVE") {
+    await notifications.revoke(identity.certificateFingerprint);
+  }
+  if (provisionFailure !== undefined) {
+    throw provisionFailure.error;
+  }
+};
 
 const isNotFound = (error: unknown): boolean =>
   error instanceof Error && error.name === "ResourceNotFoundException";

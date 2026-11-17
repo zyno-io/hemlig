@@ -1,7 +1,7 @@
 import { X509Certificate, createHash } from 'node:crypto';
 import type { APIGatewayProxyEventV2, APIGatewayProxyEventV2WithJWTAuthorizer } from 'aws-lambda';
 import type { AppConfig } from '../aws/config';
-import { forbidden } from '../domain/errors';
+import { forbidden, identityNotActive } from '../domain/errors';
 import type { Actor, IdentityRecord } from '../domain/types';
 
 export interface IdentityLookup {
@@ -75,13 +75,13 @@ export const consumerActorFromEvent = async (
 ): Promise<Actor> => {
     const pem = event.requestContext.authentication?.clientCert?.clientCertPem;
     if (pem === undefined) {
-        throw forbidden('A client certificate is required.');
+        throw identityNotActive('A client certificate is required.');
     }
     let certificate: X509Certificate;
     try {
         certificate = new X509Certificate(pem);
     } catch {
-        throw forbidden('The client certificate is invalid.');
+        throw identityNotActive('The client certificate is invalid.');
     }
     const fingerprint = createHash('sha256').update(certificate.raw).digest('hex');
     const identity = await identities.getIdentity(fingerprint);
@@ -92,7 +92,7 @@ export const consumerActorFromEvent = async (
         new Date(identity.notBefore).getTime() > now.getTime() ||
         new Date(identity.notAfter).getTime() <= now.getTime()
     ) {
-        throw forbidden('The client certificate is not an active consumer API identity.');
+        throw identityNotActive('The client certificate is not an active consumer API identity.');
     }
     return {
         type: 'consumer',

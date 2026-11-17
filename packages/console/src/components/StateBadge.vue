@@ -3,27 +3,27 @@ import { computed } from "vue";
 
 const props = defineProps<{ state: string }>();
 
+// DESIGN.md "Hemlig status mapping". Status always reads as a word in a tag;
+// colour is never the only signal.
 const tone = computed(() => {
   switch (props.state) {
     case "ACTIVE":
-      return "bg-ok/15 text-ok";
+    case "succeeded":
+      return "tag-success";
     case "PENDING_VALUE":
     case "PENDING":
-      return "bg-warn/15 text-warn";
-    case "ARCHIVED":
-      return "bg-line/40 text-ink-muted";
+      return "tag-warning";
     case "REVOKED":
     case "FAILED":
     case "EXPIRED":
-      return "bg-danger/15 text-danger";
+    case "failed":
+      return "tag-danger";
     default:
-      return "bg-line/40 text-ink-muted";
+      return "";
   }
 });
 </script>
 
 <template>
-  <span class="rounded px-2 py-0.5 text-xs font-medium" :class="tone">{{
-    state
-  }}</span>
+  <span class="tag" :class="tone">{{ state }}</span>
 </template>

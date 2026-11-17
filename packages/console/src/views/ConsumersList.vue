@@ -22,57 +22,65 @@ watch(() => props.env, reload, { immediate: true });
 </script>
 
 <template>
-  <div class="space-y-4 text-sm">
-    <div class="flex items-center justify-between">
-      <h1 class="text-lg font-semibold">Consumers in {{ env }}</h1>
-      <div class="flex gap-2">
-        <button class="rounded border border-line px-3 py-1" :disabled="pages.loading.value" @click="reload">
+  <div>
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Consumers in {{ env }}</h1>
+      </div>
+      <div class="page-actions">
+        <button class="btn" :disabled="pages.loading.value" @click="reload">
           {{ pages.loading.value ? "Loading…" : "Refresh" }}
         </button>
-        <RouterLink class="rounded bg-accent px-3 py-1 text-white" :to="{ name: 'consumer-new', params: { env } }">
+        <RouterLink class="btn btn-primary" :to="{ name: 'consumer-new', params: { env } }">
           Enroll consumer
         </RouterLink>
       </div>
     </div>
 
-    <ErrorNotice v-if="pages.error.value" :error="pages.error.value" />
+    <div class="space-y-4">
+      <ErrorNotice v-if="pages.error.value" :error="pages.error.value" />
 
-    <table v-if="pages.items.value.length > 0" class="w-full border-collapse text-left">
-      <thead class="text-xs uppercase tracking-wide text-ink-muted">
-        <tr class="border-b border-line">
-          <th class="py-2 pr-3 font-medium">Consumer</th>
-          <th class="py-2 pr-3 font-medium">Status</th>
-          <th class="py-2 pr-3 font-medium">Active leaves</th>
-          <th class="py-2 font-medium">Enrolled</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="consumer in pages.items.value" :key="consumer.consumerId" class="border-b border-line/60">
-          <td class="py-2 pr-3">
-            <RouterLink
-              class="mono text-accent hover:underline"
-              :to="{ name: 'consumer', params: { env, consumerId: consumer.consumerId } }"
-            >{{ consumer.consumerId }}</RouterLink>
-            <div class="mono text-xs text-ink-muted">{{ consumer.subjectUri }}</div>
-          </td>
-          <td class="py-2 pr-3"><StateBadge :state="consumer.status" /></td>
-          <td class="py-2 pr-3 text-xs">{{ consumer.activeApiIdentityCount ?? "—" }}</td>
-          <td class="mono py-2 text-xs text-ink-muted">{{ consumer.createdAt }}</td>
-        </tr>
-      </tbody>
-    </table>
+      <div v-if="pages.items.value.length > 0" class="card overflow-x-auto">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Consumer</th>
+              <th>Status</th>
+              <th>Active leaves</th>
+              <th>Enrolled</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="consumer in pages.items.value" :key="consumer.consumerId">
+              <td>
+                <RouterLink
+                  class="mono link"
+                  :to="{ name: 'consumer', params: { env, consumerId: consumer.consumerId } }"
+                >{{ consumer.consumerId }}</RouterLink>
+                <div class="mono text-xs text-ink-3">{{ consumer.subjectUri }}</div>
+              </td>
+              <td><StateBadge :state="consumer.status" /></td>
+              <td class="text-xs">{{ consumer.activeApiIdentityCount ?? "—" }}</td>
+              <td class="mono text-xs text-ink-3">{{ consumer.createdAt }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
-    <p v-else-if="pages.exhausted.value && !pages.loading.value && !pages.error.value" class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted">
-      No consumers are enrolled in {{ env }}.
-    </p>
+      <div v-else-if="pages.exhausted.value && !pages.loading.value && !pages.error.value" class="card">
+        <div class="empty-state">
+          <p class="empty-state-title">No consumers are enrolled in {{ env }}.</p>
+        </div>
+      </div>
 
-    <button
-      v-if="!pages.exhausted.value && pages.items.value.length > 0 && !pages.error.value"
-      class="rounded border border-line px-3 py-1"
-      :disabled="pages.loading.value"
-      @click="pages.loadMore()"
-    >
-      Load more
-    </button>
+      <button
+        v-if="!pages.exhausted.value && pages.items.value.length > 0 && !pages.error.value"
+        class="btn"
+        :disabled="pages.loading.value"
+        @click="pages.loadMore()"
+      >
+        Load more
+      </button>
+    </div>
   </div>
 </template>

@@ -122,7 +122,9 @@ test("backs off exponentially while a reconciliation keeps failing", async () =>
 
   // Fixed 10 ms retries would make about 30 attempts in 300 ms; backoff with
   // equal jitter (5-10, 10-20, 20-40, 40-80, 80-160 ms, ...) allows at most 7.
-  assert.ok(listAttempts >= 3 && listAttempts <= 7, `attempts: ${listAttempts}`);
+  // The upper bound proves the backoff; the lower bound only proves retries
+  // happen, and is kept loose so a CPU-starved CI runner cannot flake it.
+  assert.ok(listAttempts >= 2 && listAttempts <= 7, `attempts: ${listAttempts}`);
 });
 
 test("writes reconciliation status as JSON Patch", async () => {

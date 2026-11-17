@@ -4,6 +4,7 @@ import { EnvelopeCrypto } from "./crypto/envelope";
 import { DynamoRepository } from "./repositories/dynamo";
 import { ObjectStore } from "./repositories/object-store";
 import { AuditQueryService, AuditWriter } from "./services/audit";
+import { AgentIdentityService } from "./services/agent-identities";
 import { AgentGrantService } from "./services/agent-grants";
 import { AgentNotificationService } from "./services/agent-notifications";
 import { AgentService } from "./services/agents";
@@ -21,6 +22,8 @@ export interface Application {
   readonly audit: AuditWriter;
   readonly auditQueries: AuditQueryService;
   readonly agentGrants: AgentGrantService;
+  readonly agentIdentities: AgentIdentityService;
+  readonly agentNotifications: AgentNotificationService;
   readonly agents: AgentService;
   readonly agentSync: AgentSyncService;
   readonly cursors: CursorService;
@@ -56,6 +59,12 @@ export const createApplication = (config: AppConfig): Application => {
     clients.iot,
     config.iotNotificationPolicyName,
   );
+  const agentIdentities = new AgentIdentityService(
+    repository,
+    consumers,
+    issuer,
+    agentNotifications,
+  );
   return {
     config,
     repository,
@@ -66,6 +75,8 @@ export const createApplication = (config: AppConfig): Application => {
     environments,
     secrets,
     consumers,
+    agentNotifications,
+    agentIdentities,
     agents: new AgentService(repository, secrets),
     agentSync: new AgentSyncService(
       repository,

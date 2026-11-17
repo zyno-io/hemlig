@@ -215,8 +215,10 @@ The new leaf is signed by the same issuing root (no truststore change) and is
 registered with AWS IoT for MQTT hints. The caller's leaf stays valid until its own
 expiry or until an administrator revokes it. Each identity may have only one active
 successor, and a consumer may hold at most three active identities
-(`409 identity_already_rotated` / `409 identity_limit_reached`). A CSR problem returns
-`400 invalid_csr`.
+(`409 identity_already_rotated` / `409 identity_limit_reached`). Concurrent
+rotations of one consumer are serialized; the loser gets
+`409 identity_rotation_conflict` and should retry with the same CSR and
+`Idempotency-Key`. A CSR problem returns `400 invalid_csr`.
 
 The route is served by a dedicated Lambda that can decrypt the issuer key; the
 ordinary delivery Lambda cannot.

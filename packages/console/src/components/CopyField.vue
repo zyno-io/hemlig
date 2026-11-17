@@ -26,14 +26,14 @@ const download = (): void => {
 <template>
   <div>
     <div class="flex items-center justify-between gap-2">
-      <span class="text-xs font-medium text-ink-muted">{{ label }}</span>
+      <span class="field-label mb-0">{{ label }}</span>
       <span class="flex gap-2">
-        <button class="rounded border border-line px-2 py-0.5 text-xs" @click="copy">
+        <button class="btn btn-sm" @click="copy">
           {{ copied ? "Copied" : "Copy" }}
         </button>
         <button
           v-if="multiline"
-          class="rounded border border-line px-2 py-0.5 text-xs"
+          class="btn btn-sm"
           @click="download"
         >
           Download
@@ -42,8 +42,8 @@ const download = (): void => {
     </div>
     <pre
       v-if="multiline"
-      class="mt-1 max-h-48 overflow-auto rounded border border-line bg-surface p-2 text-xs"
+      class="code-block mono mt-1 max-h-48 overflow-auto"
     >{{ value }}</pre>
-    <p v-else class="mono mt-1 break-all text-xs">{{ value }}</p>
+    <p v-else class="mono mt-1 break-all text-xs text-ink-2">{{ value }}</p>
   </div>
 </template>

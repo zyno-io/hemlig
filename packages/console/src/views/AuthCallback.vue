@@ -21,11 +21,11 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="mx-auto max-w-lg p-8 text-sm">
-    <p v-if="!error">Completing sign-in…</p>
-    <div v-else>
-      <p class="font-medium text-danger">Sign-in could not be completed.</p>
-      <p class="mt-2 text-ink-muted">{{ error }}</p>
+  <div class="page max-w-lg">
+    <p v-if="!error" class="text-ink-2">Completing sign-in…</p>
+    <div v-else class="notice notice-danger" role="alert">
+      <p class="notice-title">Sign-in could not be completed.</p>
+      <p class="mt-1">{{ error }}</p>
     </div>
   </div>
 </template>

@@ -55,7 +55,7 @@ consumer Lambda never gains the ability to decrypt the issuer root.
 | Auth         | mTLS with a currently `ACTIVE`, unexpired identity belonging to an `ACTIVE` agent grant, otherwise `403`        |
 | Request      | `Idempotency-Key` header (required); body `{ "apiCertificateSigningRequestPem": "<PEM CSR>" }`                  |
 | Response 201 | `{ consumerId, environment, rootFingerprint, apiFingerprint, apiCertificatePem, notBefore, notAfter, status: "ACTIVE" }` |
-| Guards       | CSR must be valid RSA ≥ 2048 bits with a key different from the caller's (`400 invalid_csr`); one active successor per identity (`409 identity_already_rotated`); at most 3 `ACTIVE` unexpired leaves per consumer (`409 identity_limit_reached`; revoke old leaves via the admin API) |
+| Guards       | CSR must be valid RSA ≥ 2048 bits with a key different from the caller's (`400 invalid_csr`); one active successor per identity (`409 identity_already_rotated`); at most 3 `ACTIVE` unexpired leaves per consumer (`409 identity_limit_reached`; revoke old leaves via the admin API), enforced even under concurrent rotations (`409 identity_rotation_conflict` for the loser, retryable) |
 | After issuing | The new leaf is registered with AWS IoT so it can connect to its MQTT topic                                   |
 | Errors       | Certificate problems return `403 identity_not_active`; no active agent grant returns `403 forbidden`; a replay of a since-revoked leaf returns `409 rotation_replay_inactive` |
 | Audit        | Operation `agent.identity.rotate`, target consumer ID and new fingerprint                                       |
@@ -140,6 +140,7 @@ controller restarts); the 10-minute resync is a safety net. A new
 | `RotationUnsupported` | `400 bad_request`, `404`, `405` | kept | The server predates the rotation route (older servers answer it with `400 bad_request`). Deploy the server update; the controller keeps the old certificate |
 | `RotationRejected` | `400 invalid_csr`, `409 rotation_replay_inactive`, `409 conflict`, or an issued certificate that does not match the staged key / consumer | discarded | A fresh key and CSR are generated on the next attempt |
 | `IdentityLimitReached` | `409 identity_limit_reached` | kept | Three active leaves already exist for the consumer. [Revoke old leaves](#revoke-the-old-leaf) |
+| `RotationConflict` | `409 identity_rotation_conflict` | kept | Another certificate of the same consumer rotated at the same moment. Retried automatically with the same staged key; no action needed |
 | `IdentityAlreadyRotated` | `409 identity_already_rotated` | kept | This certificate already has an active successor (for example someone rotated it out of band). Revoke the unwanted successor, or install the successor's key pair |
 | `AuthenticationFailed` | `403 identity_not_active` (or a code-less mTLS `403`) | kept | The current certificate is expired or revoked; rotation cannot self-heal. See [expired certificate](#if-the-certificate-already-expired) |
 | `RotationForbidden` | `403 forbidden` | kept | The consumer has no `ACTIVE` agent grant |
@@ -184,7 +185,11 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" \
   https://<adminFqdn>/v1/admin/consumers/<consumerId>/api-identities/<oldFingerprint>
 ```
 
-Revocation is immediate on the next request. Revoke only after the new leaf is
+Revocation is immediate on the next request, and also revokes the leaf's AWS IoT
+certificate. Leaves revoked before your deployment revoked IoT certificates are
+still active in IoT; after upgrading, run
+`CONTROL_TABLE_NAME=<table> yarn revoke:iot-for-revoked-identities` once (a dry
+run that counts them), then again with `--apply`. Revoke only after the new leaf is
 confirmed working. If you do it too early the controller loses access and you are in
 the expired-certificate case.
 
@@ -237,20 +242,9 @@ Manual recovery:
    (`kubectl edit secret`).
 4. The controller picks up the Secret on its next pass. Delete `new.key` from your
    workstation.
-5. Force a self-rotation so the controller moves onto a leaf that is registered with
-   AWS IoT (see the warning below):
-   ```sh
-   kubectl -n <ns> annotate hemligconsumer <name> hemlig.io/rotate-identity="$(date +%s)" --overwrite
-   ```
-6. Optionally revoke the admin-issued leaf once `IdentityRotation=True` shows the new
-   fingerprint.
-
-::: warning MQTT hints
-The admin issuance route does not register the new certificate with AWS IoT. The
-controller still works over mTLS and resyncs every ten minutes, but prompt MQTT
-hints will not connect for the manually issued leaf until it is replaced by a
-self-rotated one (step 5; the self-rotation route registers its leaves).
-:::
+5. Optionally revoke the superseded leaf. The admin-issued leaf is registered
+   with AWS IoT like a self-rotated one, so MQTT hints keep working, and the
+   controller rotates it automatically inside `rotateBefore`.
 
 If you cannot or do not want to issue a leaf by hand, the alternative is to start
 over with a **new** AgentGrant and consumer ID (consumer IDs are one-to-one with a

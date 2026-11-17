@@ -123,46 +123,44 @@ const reload = async (): Promise<void> => {
 </script>
 
 <template>
-  <div class="max-w-2xl space-y-4 text-sm">
-    <div>
-      <RouterLink
-        class="text-xs text-accent hover:underline"
-        :to="{ name: 'secret', params: { env, secretId }, query: route.query }"
-      >
-        ← {{ secretId }}
-      </RouterLink>
-      <h1 class="text-lg font-semibold">Edit metadata and access</h1>
-      <p class="mt-1 text-ink-muted">
-        This creates a new control revision. It never decrypts the payload.
-      </p>
+  <div>
+    <div class="page-header">
+      <div>
+        <RouterLink
+          class="link text-xs"
+          :to="{ name: 'secret', params: { env, secretId }, query: route.query }"
+        >
+          ← {{ secretId }}
+        </RouterLink>
+        <h1 class="page-title">Edit metadata and access</h1>
+        <p class="page-subtitle">
+          This creates a new control revision. It never decrypts the payload.
+        </p>
+      </div>
     </div>
 
-    <ErrorNotice v-if="error" :error="error" />
-    <MutationState
-      :phase="update.phase.value"
-      intent="update this secret"
-      @reload="reload"
-    />
+    <div class="max-w-2xl space-y-4">
+      <ErrorNotice v-if="error" :error="error" />
+      <MutationState
+        :phase="update.phase.value"
+        intent="update this secret"
+        @reload="reload"
+      />
 
-    <form
-      v-if="data"
-      class="space-y-4 rounded border border-line bg-surface-raised p-4"
-      @submit.prevent="submit"
-    >
-      <MetadataFields v-model="metadata" />
-      <AclEditor v-model="acl" :environment="env" :removed="removed" />
-      <div class="flex items-center gap-3">
-        <button
-          class="rounded bg-accent px-4 py-1.5 text-white disabled:opacity-50"
-          :disabled="update.phase.value.kind === 'submitting'"
-          type="submit"
-        >
-          {{ update.phase.value.kind === "submitting" ? "Saving…" : "Save" }}
-        </button>
-        <span class="mono text-xs text-ink-muted"
-          >If-Match {{ loadedVersion }}</span
-        >
-      </div>
-    </form>
+      <form v-if="data" class="card card-body space-y-4" @submit.prevent="submit">
+        <MetadataFields v-model="metadata" />
+        <AclEditor v-model="acl" :environment="env" :removed="removed" />
+        <div class="flex items-center gap-3">
+          <button
+            class="btn btn-primary"
+            :disabled="update.phase.value.kind === 'submitting'"
+            type="submit"
+          >
+            {{ update.phase.value.kind === "submitting" ? "Saving…" : "Save" }}
+          </button>
+          <span class="mono meta">If-Match {{ loadedVersion }}</span>
+        </div>
+      </form>
+    </div>
   </div>
 </template>

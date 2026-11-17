@@ -1352,3 +1352,250 @@ describe("secret catalog search", () => {
     expect(result.secrets).toHaveLength(500);
   });
 });
+
+describe("agent identity self-rotation write", () => {
+  const identity = {
+    fingerprint: "new",
+    consumerId: "agent-a",
+    environment: "prod",
+    kind: "api" as const,
+    notBefore: "2026-01-01T00:00:00.000Z",
+    notAfter: "2027-01-01T00:00:00.000Z",
+    certificatePem: "pem",
+  };
+  const actor = { type: "consumer" as const, id: "caller" };
+  const cancelled = (...codes: string[]): Error =>
+    Object.assign(new Error("cancelled"), {
+      name: "TransactionCanceledException",
+      CancellationReasons: codes.map((Code) => ({ Code })),
+    });
+
+  it("adds a conditional predecessor update as the third item", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await repository.createApiIdentity(actor, "key-12345", "digest", identity, "root", {
+      fingerprint: "caller",
+      rotatedAt: "2026-06-01T00:00:00.000Z",
+    });
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as TransactWriteCommand;
+    const items = command.input.TransactItems ?? [];
+    expect(items).toHaveLength(3);
+    const update = items[2]?.Update;
+    expect(update?.Key).toEqual({ pk: "IDENTITY#caller", sk: "PROFILE" });
+    expect(update?.UpdateExpression).toBe(
+      "SET rotatedTo = :successor, rotatedAt = :rotatedAt",
+    );
+    expect(update?.ConditionExpression).not.toContain(":replaceable");
+    expect(update?.ExpressionAttributeValues).not.toHaveProperty(":replaceable");
+    expect(update?.ExpressionAttributeValues).toMatchObject({
+      ":successor": "new",
+      ":consumerId": "agent-a",
+    });
+  });
+
+  it("allows a replaceable successor only when one is supplied", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await repository.createApiIdentity(actor, "key-12345", "digest", identity, "root", {
+      fingerprint: "caller",
+      rotatedAt: "2026-06-01T00:00:00.000Z",
+      replaceableSuccessor: "old-successor",
+    });
+    const update = (
+      (dynamo.send as jest.Mock).mock.calls[0]?.[0] as TransactWriteCommand
+    ).input.TransactItems?.[2]?.Update;
+    expect(update?.ConditionExpression).toContain("rotatedTo = :replaceable");
+    expect(update?.ExpressionAttributeValues).toMatchObject({
+      ":replaceable": "old-successor",
+    });
+  });
+
+  it("keeps the two-item transaction without a predecessor", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await repository.createApiIdentity(actor, "key-12345", "digest", identity, "root");
+    const command = (dynamo.send as jest.Mock).mock
+      .calls[0]?.[0] as TransactWriteCommand;
+    expect(command.input.TransactItems).toHaveLength(2);
+  });
+
+  it("maps a failed predecessor condition to identity_already_rotated", async () => {
+    const dynamo = {
+      send: jest
+        .fn()
+        .mockRejectedValue(cancelled("None", "None", "ConditionalCheckFailed")),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await expect(
+      repository.createApiIdentity(actor, "key-12345", "digest", identity, "root", {
+        fingerprint: "caller",
+        rotatedAt: "2026-06-01T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "identity_already_rotated" });
+  });
+
+  it("adds a consumer-profile lock item as the fourth transaction item", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await repository.createApiIdentity(actor, "key-12345", "digest", identity, "root", {
+      fingerprint: "caller",
+      rotatedAt: "2026-06-01T00:00:00.000Z",
+      rotationLock: { expectedSeq: 2, recent: ["a", "b", "c"] },
+    });
+    const items = (
+      (dynamo.send as jest.Mock).mock.calls[0]?.[0] as TransactWriteCommand
+    ).input.TransactItems ?? [];
+    expect(items).toHaveLength(4);
+    const update = items[3]?.Update;
+    expect(update?.Key).toEqual({ pk: "CONSUMER#agent-a", sk: "PROFILE" });
+    expect(update?.UpdateExpression).toBe(
+      "SET apiIdentityRotationSeq = :next, recentSelfRotatedApiFingerprints = :recent",
+    );
+    expect(update?.ConditionExpression).toBe(
+      "#status = :active AND ((attribute_not_exists(apiIdentityRotationSeq) AND :seq = :zero) OR apiIdentityRotationSeq = :seq)",
+    );
+    expect(update?.ExpressionAttributeValues).toEqual({
+      ":next": 3,
+      ":recent": ["new", "a", "b"],
+      ":seq": 2,
+      ":zero": 0,
+      ":active": "ACTIVE",
+    });
+  });
+
+  it("starts a pre-existing consumer at sequence zero", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await repository.createApiIdentity(actor, "key-12345", "digest", identity, "root", {
+      fingerprint: "caller",
+      rotatedAt: "2026-06-01T00:00:00.000Z",
+      rotationLock: { expectedSeq: 0, recent: [] },
+    });
+    const update = (
+      (dynamo.send as jest.Mock).mock.calls[0]?.[0] as TransactWriteCommand
+    ).input.TransactItems?.[3]?.Update;
+    expect(update?.ExpressionAttributeValues).toMatchObject({
+      ":next": 1,
+      ":recent": ["new"],
+      ":seq": 0,
+      ":zero": 0,
+    });
+  });
+
+  it("maps a failed consumer-lock condition to identity_rotation_conflict", async () => {
+    const dynamo = {
+      send: jest
+        .fn()
+        .mockRejectedValue(
+          cancelled("None", "None", "None", "ConditionalCheckFailed"),
+        ),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await expect(
+      repository.createApiIdentity(actor, "key-12345", "digest", identity, "root", {
+        fingerprint: "caller",
+        rotatedAt: "2026-06-01T00:00:00.000Z",
+        rotationLock: { expectedSeq: 0, recent: [] },
+      }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "identity_rotation_conflict" });
+  });
+
+  it("maps TransactionConflict at any index to identity_rotation_conflict", async () => {
+    for (const codes of [
+      ["None", "TransactionConflict", "None", "None"],
+      ["None", "None", "None", "TransactionConflict"],
+    ]) {
+      const dynamo = {
+        send: jest.fn().mockRejectedValue(cancelled(...codes)),
+      } as unknown as DynamoDBDocumentClient;
+      const repository = new DynamoRepository(dynamo, config);
+      await expect(
+        repository.createApiIdentity(actor, "key-12345", "digest", identity, "root", {
+          fingerprint: "caller",
+          rotatedAt: "2026-06-01T00:00:00.000Z",
+          rotationLock: { expectedSeq: 0, recent: [] },
+        }),
+      ).rejects.toMatchObject({ code: "identity_rotation_conflict" });
+    }
+  });
+
+  it("records a re-applied revocation with an idempotency-only put", async () => {
+    const dynamo = {
+      send: jest.fn().mockResolvedValue({}),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await repository.recordReappliedApiRevocation(
+      actor,
+      "key-12345",
+      "digest",
+      "agent-a",
+      "fp",
+    );
+    const input = ((dynamo.send as jest.Mock).mock.calls[0]?.[0] as { input: Record<string, unknown> }).input;
+    expect(input.ConditionExpression).toBe("attribute_not_exists(pk)");
+    expect(input.Item).toMatchObject({
+      operationType: "consumer.api.revoke",
+      apiFingerprint: "fp",
+      status: "READY",
+    });
+  });
+
+  it("lists active API fingerprints across GSI pages", async () => {
+    const dynamo = {
+      send: jest
+        .fn()
+        .mockResolvedValueOnce({
+          Items: [{ fingerprint: "a" }],
+          LastEvaluatedKey: { pk: "x" },
+        })
+        .mockResolvedValueOnce({ Items: [{ fingerprint: "b" }] }),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await expect(
+      repository.listActiveConsumerApiFingerprints("agent-a"),
+    ).resolves.toEqual(["a", "b"]);
+  });
+
+  it("keeps an idempotency-record collision as a generic conflict", async () => {
+    const dynamo = {
+      send: jest
+        .fn()
+        .mockRejectedValue(cancelled("ConditionalCheckFailed", "None", "None")),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await expect(
+      repository.createApiIdentity(actor, "key-12345", "digest", identity, "root", {
+        fingerprint: "caller",
+        rotatedAt: "2026-06-01T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "conflict" });
+  });
+
+  it("reports an indeterminate self-rotation write as retryable", async () => {
+    const dynamo = {
+      send: jest
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error("timed out"), { name: "TimeoutError" }),
+        ),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await expect(
+      repository.createApiIdentity(actor, "key-12345", "digest", identity, "root", {
+        fingerprint: "caller",
+        rotatedAt: "2026-06-01T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ statusCode: 503, code: "service_unavailable" });
+  });
+});

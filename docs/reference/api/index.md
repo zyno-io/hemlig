@@ -136,6 +136,7 @@ payload or persist it in an HTTP cache.
 | 409    | `enrollment_failed`   | Terminal truststore publication failure; do not retry   |
 | 409    | `identity_limit_reached` | Self-rotation would exceed 3 active identities per consumer |
 | 409    | `identity_already_rotated` | The calling identity already has an active successor  |
+| 409    | `identity_rotation_conflict` | Another self-rotation for the consumer committed concurrently; retry with the same CSR and key |
 | 409    | `rotation_replay_inactive` | An idempotent rotation replay names a leaf that is no longer active |
 | 412    | `precondition_failed` | `If-Match` is no longer current                         |
 | 500    | `internal_error`      | Unexpected failure; implementation details are withheld |

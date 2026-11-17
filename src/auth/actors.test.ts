@@ -1,6 +1,9 @@
 import type { APIGatewayProxyEventV2WithJWTAuthorizer } from "aws-lambda";
 import type { AppConfig } from "../aws/config";
-import { humanActorFromEvent } from "./actors";
+import { createHash } from "node:crypto";
+import forge from "node-forge";
+import type { IdentityRecord } from "../domain/types";
+import { consumerActorFromEvent, humanActorFromEvent } from "./actors";
 
 const config: AppConfig = {
   region: "us-east-1",
@@ -167,5 +170,72 @@ describe("humanActorFromEvent", () => {
         roleScoped,
       ),
     ).toMatchObject({ id: "external-subject" });
+  });
+});
+
+describe("consumerActorFromEvent", () => {
+  const keys = forge.pki.rsa.generateKeyPair({ bits: 2048, e: 0x10001 });
+  const certificate = forge.pki.createCertificate();
+  certificate.publicKey = keys.publicKey;
+  certificate.serialNumber = "01";
+  certificate.validity.notBefore = new Date("2026-01-01T00:00:00Z");
+  certificate.validity.notAfter = new Date("2027-01-01T00:00:00Z");
+  certificate.setSubject([{ name: "commonName", value: "agent" }]);
+  certificate.setIssuer([{ name: "commonName", value: "agent" }]);
+  certificate.sign(keys.privateKey, forge.md.sha256.create());
+  const pem = forge.pki.certificateToPem(certificate);
+  const fingerprint = createHash("sha256")
+    .update(
+      Buffer.from(
+        forge.asn1.toDer(forge.pki.certificateToAsn1(certificate)).getBytes(),
+        "binary",
+      ),
+    )
+    .digest("hex");
+  const now = new Date("2026-06-01T00:00:00Z");
+  const event = (clientCertPem?: string): APIGatewayProxyEventV2WithJWTAuthorizer =>
+    ({
+      requestContext: {
+        authentication:
+          clientCertPem === undefined ? undefined : { clientCert: { clientCertPem } },
+      },
+    }) as unknown as APIGatewayProxyEventV2WithJWTAuthorizer;
+  const identity = (overrides: Partial<IdentityRecord> = {}): IdentityRecord => ({
+    pk: `IDENTITY#${fingerprint}`,
+    sk: "PROFILE",
+    fingerprint,
+    consumerId: "agent-a",
+    environment: "prod",
+    kind: "api",
+    status: "ACTIVE",
+    notBefore: "2026-01-01T00:00:00.000Z",
+    notAfter: "2027-01-01T00:00:00.000Z",
+    ...overrides,
+  });
+  const lookup = (record?: IdentityRecord) => ({
+    getIdentity: jest.fn(async () => record),
+  });
+
+  it("returns the certificate-fingerprint actor for an active identity", async () => {
+    await expect(
+      consumerActorFromEvent(event(pem), lookup(identity()), now),
+    ).resolves.toEqual({
+      type: "consumer",
+      id: fingerprint,
+      consumerId: "agent-a",
+      environment: "prod",
+    });
+  });
+
+  it.each([
+    ["a missing certificate", event(), identity()],
+    ["a malformed certificate", event("not a certificate"), identity()],
+    ["an unknown identity", event(pem), undefined],
+    ["a revoked identity", event(pem), identity({ status: "REVOKED" })],
+    ["an expired identity", event(pem), identity({ notAfter: "2026-02-01T00:00:00.000Z" })],
+  ])("rejects %s with identity_not_active", async (_name, request, record) => {
+    await expect(
+      consumerActorFromEvent(request, lookup(record), now),
+    ).rejects.toMatchObject({ statusCode: 403, code: "identity_not_active" });
   });
 });
