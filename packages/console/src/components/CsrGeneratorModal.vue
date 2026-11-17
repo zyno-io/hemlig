@@ -83,15 +83,15 @@ const useCsr = (): void => {
 
 <template>
   <div
-    class="fixed inset-0 z-10 flex items-center justify-center bg-black/40 p-4"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,12,16,0.42)] p-4 backdrop-blur-[2px]"
     role="dialog"
     aria-modal="true"
     aria-labelledby="csr-generator-title"
   >
-    <div class="w-full max-w-lg rounded border border-line bg-surface-raised p-5 text-sm">
-      <h2 id="csr-generator-title" class="font-semibold">Generate a key pair and CSR</h2>
+    <div class="card max-h-full w-full max-w-lg overflow-y-auto p-6 shadow-lg">
+      <h2 id="csr-generator-title" class="text-[17px] font-semibold">Generate a key pair and CSR</h2>
 
-      <p class="mt-2 rounded bg-warn/10 p-2 text-xs text-warn">
+      <p class="notice notice-warning mt-3">
         The private key is shown exactly once, in this browser tab only. Hemlig never
         receives it — only the CSR's public key ever leaves this page. Pasting a CSR
         generated on the consumer host is still the stronger option: it means a
@@ -100,22 +100,22 @@ const useCsr = (): void => {
 
       <template v-if="!generatedCsr">
         <label class="mt-4 block">
-          <span class="text-xs text-ink-muted">Common name</span>
+          <span class="field-label">Common name</span>
           <input
             v-model="commonNameInput"
-            class="mono mt-1 w-full rounded border border-line bg-surface px-2 py-1"
+            class="input mono"
           />
-          <span class="text-xs text-ink-muted">
+          <span class="field-hint block">
             Cosmetic only — the issued identity comes from the consumer ID, not this
             field.
           </span>
         </label>
 
         <label class="mt-3 block">
-          <span class="text-xs text-ink-muted">Key size</span>
+          <span class="field-label">Key size</span>
           <select
             :value="keySize"
-            class="mt-1 w-full rounded border border-line bg-surface px-2 py-1"
+            class="input"
             @change="onKeySizeChange"
           >
             <option :value="2048">2048-bit</option>
@@ -124,16 +124,16 @@ const useCsr = (): void => {
           </select>
         </label>
 
-        <p v-if="error" class="mt-2 text-xs text-danger">{{ error }}</p>
-        <p v-if="pending" class="mt-2 text-xs text-ink-muted">
+        <p v-if="error" class="field-error">{{ error }}</p>
+        <p v-if="pending" class="field-hint">
           Generating a {{ keySize }}-bit key can take a few seconds.
         </p>
 
         <div class="mt-4 flex justify-end gap-2">
-          <button type="button" class="rounded border border-line px-3 py-1" @click="cancel">Cancel</button>
+          <button type="button" class="btn" @click="cancel">Cancel</button>
           <button
             type="button"
-            class="rounded bg-accent px-3 py-1 text-white disabled:opacity-50"
+            class="btn btn-primary"
             :disabled="pending || commonNameInput.trim().length === 0"
             @click="generate"
           >
@@ -146,8 +146,8 @@ const useCsr = (): void => {
         <div class="mt-4 space-y-3">
           <CopyField label="Certificate signing request" :value="generatedCsr.csrPem" multiline />
 
-          <div class="rounded border border-danger/50 bg-danger/5 p-3">
-            <p class="text-xs font-medium text-danger">
+          <div class="notice notice-danger">
+            <p class="notice-title">
               Private key — shown once and only here. Hemlig never receives this. Install
               it on the consumer host now; do not leave it sitting in a downloads folder.
             </p>
@@ -159,16 +159,16 @@ const useCsr = (): void => {
           <CopyField label="Public key fingerprint (SHA-256)" :value="generatedCsr.publicKeyFingerprint" />
         </div>
 
-        <label class="mt-4 flex items-start gap-2 text-xs">
+        <label class="mt-4 flex items-start gap-2 text-[13px]">
           <input v-model="acknowledged" type="checkbox" class="mt-0.5" />
           <span>I have saved the private key somewhere safe. It will not be shown again.</span>
         </label>
 
         <div class="mt-4 flex justify-end gap-2">
-          <button type="button" class="rounded border border-line px-3 py-1" @click="cancel">Discard</button>
+          <button type="button" class="btn" @click="cancel">Discard</button>
           <button
             type="button"
-            class="rounded bg-accent px-3 py-1 text-white disabled:opacity-50"
+            class="btn btn-primary"
             :disabled="!acknowledged"
             @click="useCsr"
           >

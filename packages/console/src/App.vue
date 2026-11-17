@@ -33,13 +33,13 @@ watch([hasSession, isAuthCallback, () => store.bootError], redirectToSignIn);
 </script>
 
 <template>
-  <div v-if="store.bootError" class="mx-auto max-w-2xl p-8">
-    <h1 class="text-lg font-semibold text-danger">Hemlig Console cannot start</h1>
-    <p class="mt-2 text-sm text-ink-muted">
+  <div v-if="store.bootError" class="page max-w-2xl">
+    <h1 class="page-title text-danger">Hemlig Console cannot start</h1>
+    <p class="mt-2 text-ink-2">
       <code>/config.json</code> is missing or invalid. A partly configured console could
       target the wrong deployment, so it refuses to load.
     </p>
-    <pre class="mt-4 overflow-x-auto rounded border border-line bg-surface-raised p-3 text-xs">{{ store.bootError }}</pre>
+    <pre class="code-block mono mt-4">{{ store.bootError }}</pre>
   </div>
   <AuthCallback v-else-if="isAuthCallback" />
   <AppShell v-else-if="hasSession">

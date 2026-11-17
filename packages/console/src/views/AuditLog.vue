@@ -2,6 +2,7 @@
 import { ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import ErrorNotice from "../components/ErrorNotice.vue";
+import StateBadge from "../components/StateBadge.vue";
 import { useCursorPages } from "../composables/useCursorPages";
 import type { AuditEvent } from "../api/schemas";
 import { useAppStore } from "../stores/app";
@@ -58,156 +59,140 @@ watch(selectedDate, reload, { immediate: true });
 </script>
 
 <template>
-  <div class="space-y-4 text-sm">
-    <div class="flex flex-wrap items-end justify-between gap-3">
+  <div>
+    <div class="page-header">
       <div>
-        <h1 class="text-lg font-semibold">Audit log</h1>
-        <p class="mt-1 text-ink-muted">
+        <h1 class="page-title">Audit log</h1>
+        <p class="page-subtitle">
           Immutable application evidence for one UTC day. Viewing this page is
           itself audited.
         </p>
       </div>
+    </div>
+
+    <div class="space-y-4">
       <form
-        class="flex flex-wrap items-end gap-2"
+        class="card card-body flex flex-wrap items-end gap-3"
         @submit.prevent="applyFilter"
       >
-        <label class="grid gap-1 text-xs text-ink-muted">
-          Date (UTC)
-          <input
-            v-model="selectedDate"
-            type="date"
-            class="date-input rounded border border-line bg-surface px-2 py-1 text-sm text-ink"
-          />
+        <label class="block">
+          <span class="field-label">Date (UTC)</span>
+          <input v-model="selectedDate" type="date" class="input date-input mono w-auto" />
         </label>
-        <label class="grid gap-1 text-xs text-ink-muted">
-          Secret ID
+        <label class="block">
+          <span class="field-label">Secret ID</span>
           <input
             v-model="secretId"
             type="text"
             autocomplete="off"
             placeholder="All secrets"
-            class="w-44 rounded border border-line bg-surface px-2 py-1 text-sm text-ink"
+            class="input mono w-44"
           />
         </label>
-        <label class="grid gap-1 text-xs text-ink-muted">
-          Environment
+        <label class="block">
+          <span class="field-label">Environment</span>
           <input
             v-model="environment"
             type="text"
             autocomplete="off"
             placeholder="All environments"
-            class="w-36 rounded border border-line bg-surface px-2 py-1 text-sm text-ink"
+            class="input mono w-36"
           />
         </label>
-        <button
-          type="submit"
-          class="rounded border border-line px-3 py-1"
-          :disabled="pages.loading.value"
-        >
+        <button type="submit" class="btn" :disabled="pages.loading.value">
           Apply
         </button>
-        <button
-          type="button"
-          class="rounded border border-line px-3 py-1"
-          :disabled="pages.loading.value"
-          @click="reload"
-        >
+        <button type="button" class="btn" :disabled="pages.loading.value" @click="reload">
           {{ pages.loading.value ? "Loading…" : "Refresh" }}
         </button>
       </form>
-    </div>
 
-    <ErrorNotice v-if="pages.error.value" :error="pages.error.value" />
+      <ErrorNotice v-if="pages.error.value" :error="pages.error.value" />
 
-    <div
-      v-else-if="pages.items.value.length > 0"
-      class="overflow-x-auto rounded border border-line"
-    >
-      <table class="w-full border-collapse text-left">
-        <thead
-          class="bg-surface-raised text-xs uppercase tracking-wide text-ink-muted"
-        >
-          <tr>
-            <th class="px-3 py-2 font-medium">Time</th>
-            <th class="px-3 py-2 font-medium">Outcome</th>
-            <th class="px-3 py-2 font-medium">Actor</th>
-            <th class="px-3 py-2 font-medium">Operation</th>
-            <th class="px-3 py-2 font-medium">Target</th>
-            <th class="px-3 py-2 font-medium">Source</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="event in pages.items.value"
-            :key="event.eventId"
-            class="border-t border-line/60 align-top"
-          >
-            <td class="mono whitespace-nowrap px-3 py-2 text-xs text-ink-muted">
-              {{ event.at }}
-            </td>
-            <td class="px-3 py-2">
-              <span class="rounded bg-surface-raised px-2 py-0.5 text-xs">{{
-                event.outcome
-              }}</span>
-              <div v-if="event.reasonCode" class="mt-1 text-xs text-ink-muted">
-                {{ event.reasonCode }}
-              </div>
-            </td>
-            <td class="px-3 py-2">
-              <span class="mono break-all text-xs">{{
-                event.actor.email ?? event.actor.id
-              }}</span>
-              <div class="text-xs text-ink-muted">
-                {{ actorType(event) }}
-                <span v-if="event.actor.email">
-                  · subject: {{ event.actor.id }}</span
-                >
-              </div>
-            </td>
-            <td class="mono break-all px-3 py-2 text-xs">
-              {{ event.operation }}
-            </td>
-            <td class="break-all px-3 py-2 text-xs text-ink-muted">
-              {{ target(event) }}
-            </td>
-            <td class="mono whitespace-nowrap px-3 py-2 text-xs text-ink-muted">
-              {{ event.sourceIp ?? "—" }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+      <div v-else-if="pages.items.value.length > 0" class="card overflow-x-auto">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Outcome</th>
+              <th>Actor</th>
+              <th>Operation</th>
+              <th>Target</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="event in pages.items.value" :key="event.eventId">
+              <td class="mono whitespace-nowrap text-xs text-ink-3">
+                {{ event.at }}
+              </td>
+              <td>
+                <StateBadge :state="event.outcome" />
+                <div v-if="event.reasonCode" class="mt-1 text-xs text-ink-3">
+                  {{ event.reasonCode }}
+                </div>
+              </td>
+              <td>
+                <span class="mono break-all text-xs">{{
+                  event.actor.email ?? event.actor.id
+                }}</span>
+                <div class="text-xs text-ink-3">
+                  {{ actorType(event) }}
+                  <span v-if="event.actor.email">
+                    · subject: <span class="mono">{{ event.actor.id }}</span></span
+                  >
+                </div>
+              </td>
+              <td class="mono break-all text-xs">
+                {{ event.operation }}
+              </td>
+              <td class="mono break-all text-xs text-ink-3">
+                {{ target(event) }}
+              </td>
+              <td class="mono whitespace-nowrap text-xs text-ink-3">
+                {{ event.sourceIp ?? "—" }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
-    <p
-      v-else-if="pages.exhausted.value && !pages.loading.value"
-      class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted"
-    >
-      No audit events were recorded on {{ selectedDate }} UTC<span
-        v-if="appliedSecretId"
+      <div v-else-if="pages.exhausted.value && !pages.loading.value" class="card">
+        <div class="empty-state">
+          <p class="empty-state-title">
+            No audit events were recorded on {{ selectedDate }} UTC<span
+              v-if="appliedSecretId"
+            >
+              for {{ appliedSecretId }} </span
+            >.
+          </p>
+        </div>
+      </div>
+
+      <div
+        v-else-if="!pages.loading.value && pages.pagesFetched.value > 0"
+        class="card"
       >
-        for {{ appliedSecretId }} </span
-      >.
-    </p>
+        <div class="empty-state">
+          <p class="empty-state-title">
+            No matching events appeared in the archive pages checked so far. More
+            pages may still contain a match.
+          </p>
+        </div>
+      </div>
 
-    <p
-      v-else-if="!pages.loading.value && pages.pagesFetched.value > 0"
-      class="rounded border border-line bg-surface-raised p-6 text-center text-ink-muted"
-    >
-      No matching events appeared in the archive pages checked so far. More
-      pages may still contain a match.
-    </p>
-
-    <button
-      v-if="
-        !pages.exhausted.value &&
-        pages.pagesFetched.value > 0 &&
-        !pages.error.value
-      "
-      class="rounded border border-line px-3 py-1"
-      :disabled="pages.loading.value"
-      @click="pages.loadMore()"
-    >
-      Load more
-    </button>
+      <button
+        v-if="
+          !pages.exhausted.value &&
+          pages.pagesFetched.value > 0 &&
+          !pages.error.value
+        "
+        class="btn"
+        :disabled="pages.loading.value"
+        @click="pages.loadMore()"
+      >
+        Load more
+      </button>
+    </div>
   </div>
 </template>
