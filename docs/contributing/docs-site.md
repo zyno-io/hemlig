@@ -50,6 +50,7 @@ protection rule, ensure `main` is allowed to deploy to it.
 
 ## Publishing
 
-The `docs` workspace is `private` and is not part of any npm release. The root
-package's `files` list includes `docs/**/*.md` but excludes `.vitepress`.
+The `docs` workspace is `private` and is not part of any npm release. Because it
+is a workspace, Yarn never packs `docs/` into the root `hemlig` package; the
+published documentation is this site.
 Build output (`docs/.vitepress/dist`) and cache are git-ignored.

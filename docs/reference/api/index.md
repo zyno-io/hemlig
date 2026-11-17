@@ -6,7 +6,7 @@ description: Base URLs, authentication and common behavior for the Hemlig HTTP A
 # Hemlig API reference
 
 This is the public reference for the **implemented HTTP API**. Its
-machine-readable contract is [openapi/consumer-secrets.yaml](/reference/openapi).
+machine-readable contract is [openapi/consumer-secrets.yaml](../openapi.md).
 It includes organizational browsing, bounded immutable-audit browsing, and the
 safe CSR enrollment/certificate routes. Issuer-root rotation is intentionally
 excluded.

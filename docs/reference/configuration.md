@@ -9,7 +9,7 @@ description: CDK DeploymentConfig, reference-app context keys, and controller He
 
 Imported from `hemlig/cdk`. The reference app (`cdk/app.ts`) reads the same names
 as CDK context (`-c name=value`), with `environment` for `environmentName`. See
-[Deploying with CDK](/guide/deploying) for examples.
+[Deploying with CDK](../guide/deploying.md) for examples.
 
 | Field                        | Required     | Description                                                                                        |
 | ---------------------------- | ------------ | -------------------------------------------------------------------------------------------------- |
@@ -19,7 +19,7 @@ as CDK context (`-c name=value`), with `environment` for `environmentName`. See
 | `zoneDomain`                 | yes          | Route 53 zone name; every FQDN must be within it                                                   |
 | `oidcIssuer`                 | yes          | OIDC issuer URL (HTTPS, RSA-signed JWTs)                                                           |
 | `oidcAudience`               | yes          | Exact access-token `aud` (Entra v2: the API app's bare client ID)                                  |
-| `oidcSubjectClaim`           | no           | Immutable actor claim; default `sub`                                                               |
+| `oidcSubjectClaim`           | yes (CDK context defaults to `sub`) | Immutable actor claim                                                       |
 | `existingHostedZoneId`       | no           | Use an existing zone instead of creating one                                                       |
 | `existingApplicationKeyArn`  | no           | Adopt an existing application CMK                                                                  |
 | `consoleFqdn`                | no           | Enables console hosting and admin-API CORS; needs the three console fields below                   |
@@ -72,4 +72,4 @@ when run locally). It needs no AWS credentials and no administrator token.
 | `HEMLIG_ADMIN_TOKEN`      | CLI, Pulumi provider | Raw OIDC JWT                                      |
 
 Maintenance scripts take `CONTROL_TABLE_NAME` (and `REVISION_BUCKET_NAME` for
-`reconcile:agent-grant-access`); see [Upgrade: secret UIDs](/operations/upgrade-secret-uids).
+`reconcile:agent-grant-access`); see [Upgrade: secret UIDs](../operations/upgrade-secret-uids.md).

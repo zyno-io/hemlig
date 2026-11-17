@@ -8,7 +8,7 @@ description: Every field of the HemligProvider, HemligConsumer, HemligSecretImpo
 Group `hemlig.io`, version `v1beta1` (the CRDs also serve `v1alpha1` for imports
 and exports during migration; it is not extended). The schemas live in
 [`chart/hemlig-controller/crds/hemlig.io.yaml`](https://github.com/zyno-io/hemlig/blob/main/packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.io.yaml).
-For usage see the [controller guide](/guide/kubernetes).
+For usage see the [controller guide](../guide/kubernetes.md).
 
 ## HemligProvider (cluster-scoped)
 
@@ -30,7 +30,7 @@ Short name `hmlconsumer`. Has a `status` subresource.
 | `spec.bootstrapTokenRef.name`          | string  | yes      | Same-namespace Secret holding the `hmlb_...` capability                                                      |
 | `spec.bootstrapTokenRef.key`           | string  | yes      | Key within that Secret                                                                                       |
 | `spec.identity.secretName`             | string  | yes      | Name of the identity Secret the controller creates and owns (`tls.crt`, `tls.key`)                           |
-| `spec.identity.rotateBefore`           | string  | no       | Duration `^[0-9]+[smhd]$`: how long before certificate expiry to rotate automatically. Default `720h`; `0s`/`0h` disables; the effective window is capped at half the certificate lifetime. Honored only by releases with [identity self-rotation](/operations/identity-rotation) (accepted but ignored before) |
+| `spec.identity.rotateBefore`           | string  | no       | Duration `^[0-9]+[smhd]$`: how long before certificate expiry to rotate automatically. Default `720h`; `0s`/`0h` disables; the effective window is capped at half the certificate lifetime. Honored only by releases with [identity self-rotation](../operations/identity-rotation.md) (accepted but ignored before) |
 | `spec.allowCrossNamespaceReferences`   | boolean | no       | Lets imports and exports in other namespaces use this consumer (they must set `consumerNamespace`)           |
 
 ### Status
@@ -40,8 +40,8 @@ Short name `hmlconsumer`. Has a `status` subresource.
 | `observedGeneration`                   | Last reconciled generation                                                                           |
 | `consumerId`, `environment`, `grantId` | From the active AgentGrant                                                                           |
 | `syncCursor`, `syncIdentity`           | Saved sync checkpoint, and a hash of the provider URL and certificate it belongs to                  |
-| `conditions`                           | `Ready` (reasons in the [guide](/guide/kubernetes#status-and-conditions))                            |
-| `identity`, condition `IdentityRotation` | Certificate expiry and rotation state, in releases with rotation; see [Identity rotation](/operations/identity-rotation#observing-rotation) |
+| `conditions`                           | `Ready` (reasons in the [guide](../guide/kubernetes.md#status-and-conditions))                            |
+| `identity`, condition `IdentityRotation` | Certificate expiry and rotation state, in releases with rotation; see [Identity rotation](../operations/identity-rotation.md#observing-rotation) |
 
 ## HemligSecretImport (namespaced)
 
@@ -83,4 +83,4 @@ Status adds `sourceChecksum`.
 | `hemlig.io/import-owner`         | import target    | Owning import                                                        |
 | `hemlig.io/secret-id`, `secret-uid`, `control-version-id`, `payload-version-id`, `data-checksum` | import target | Provenance of the materialized data |
 | `hemlig.io/provider`, `grant-id`, `api-fingerprint` | identity Secret | Provider name, grant, and fingerprint of the current leaf |
-| `hemlig.io/rotate-identity`      | HemligConsumer   | Forces one rotation (see [Identity rotation](/operations/identity-rotation#force-a-rotation)) |
+| `hemlig.io/rotate-identity`      | HemligConsumer   | Forces one rotation (see [Identity rotation](../operations/identity-rotation.md#force-a-rotation)) |

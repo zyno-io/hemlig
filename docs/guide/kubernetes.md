@@ -22,7 +22,7 @@ AWS IoT notification connection.
 | `HemligSecretImport` | Namespaced | `hmlimport`    | Materializes a granted remote secret into an owned Kubernetes Secret                |
 | `HemligSecretExport` | Namespaced | `hmlexport`    | Pushes a source Secret through the consumer's write scope (cannot set ACLs)         |
 
-Field-by-field detail: [CRD reference](/reference/crds).
+Field-by-field detail: [CRD reference](../reference/crds.md).
 
 ## Install
 
@@ -37,7 +37,7 @@ helm upgrade --install hemlig-controller zyno/hemlig-controller \
 
 The chart installs the CRDs by default. Helm never upgrades CRDs from a chart's
 `crds/` directory, so on chart upgrades apply CRD changes yourself (or let Flux do
-it; see below). Values are listed in [Configuration](/reference/configuration).
+it; see below). Values are listed in [Configuration](../reference/configuration.md).
 
 ::: warning Cluster-wide RBAC
 The ClusterRole is deliberately broad: the controller lists and watches Hemlig
@@ -78,7 +78,7 @@ spec:
   upgrade: { crds: CreateReplace }
 ```
 
-See [Controller rollout via Flux](/operations/flux-rollout) for a staging-first
+See [Controller rollout via Flux](../operations/flux-rollout.md) for a staging-first
 rollout procedure.
 
 ### Without Helm
@@ -105,7 +105,7 @@ per-secret polling.
 
 An administrator creates the secrets first, then one AgentGrant naming exactly the
 secrets this namespace may read or write (`POST /v1/admin/agent-grants`, see the
-[API](/reference/api/admin-consumers#agent-grants-and-bootstrap-capabilities), or
+[API](../reference/api/admin-consumers.md#agent-grants-and-bootstrap-capabilities), or
 the [Pulumi provider](pulumi.md)), then issues the capability with
 `POST /v1/admin/agent-grants/{grantId}/bootstrap-capabilities`. The `hmlb_...`
 token is shown once and expires after 30 minutes.
@@ -188,10 +188,10 @@ A healthy consumer has `Ready=True` with reason `IdentityReady`, and shows
   exists but is not owned by this `HemligConsumer`, the reason is
   `IdentityOwnershipConflict`. Keep the identity Secret: deleting it after the
   bootstrap capability is consumed means the consumer cannot re-enroll with the same
-  grant. See [Identity rotation](/operations/identity-rotation) for renewal.
+  grant. See [Identity rotation](../operations/identity-rotation.md) for renewal.
 - **Imports** are written to an exact-owned Secret. An import refuses to overwrite
   a user-owned Secret (`TargetOwnershipConflict`). Removing the owned copy on
-  revocation is covered in [Safety](/operations/safety).
+  revocation is covered in [Safety](../operations/safety.md).
 - **Exports** reject an import-managed source (`SourceIsImportManaged`), update
   remote metadata when `spec.metadata` differs, and write the payload when the
   source checksum changes.
@@ -237,9 +237,9 @@ kubectl -n payments describe hmlconsumer payments
 
 - **Stuck on `BootstrapTokenUnavailable`**: the capability expired (30 minutes) or
   was never created. A new capability can only be issued for a grant that is still
-  `PENDING`; see [Identity rotation](/operations/identity-rotation#if-the-certificate-already-expired).
+  `PENDING`; see [Identity rotation](../operations/identity-rotation.md#if-the-certificate-already-expired).
 - **`ReconcileFailed` with HTTP 503 / sync errors**: the server may not support the
   sync route or the environment's index backfill is incomplete.
-- **Imports disappearing**: see [Safety: auth failures vs revoked grants](/operations/safety).
+- **Imports disappearing**: see [Safety: auth failures vs revoked grants](../operations/safety.md).
 - **Nothing happens after changing a Secret**: the controller watches referenced
   Secrets and namespaces; check that the namespace still matches the provider selector.

@@ -39,7 +39,7 @@ to read.
 - Issuer-root rotation is deliberately out of scope.
 - Local emulation (MiniStack) is not evidence that IAM, API Gateway mTLS or
   Object Lock behave correctly in AWS. Run the
-  [AWS acceptance runbook](/operations/acceptance) before production use.
+  [AWS acceptance runbook](../operations/acceptance.md) before production use.
 
 ::: warning Pre-1.0
 Hemlig is pre-1.0. Do not deliver production credentials with it without an

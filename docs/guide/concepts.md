@@ -30,7 +30,7 @@ slashes form folders) and metadata, an ACL and an encrypted payload.
   `ARCHIVED`. There is no public delete.
 
 Every mutation takes an `Idempotency-Key` and (for updates) an `If-Match` ETag.
-See [HTTP API](/reference/api/).
+See [HTTP API](../reference/api/index.md).
 
 ## Consumers and API identities
 
@@ -72,7 +72,7 @@ never implicitly authorizes its children.
 The controller (`hemlig.io/v1beta1`) turns four custom resources
 (`HemligProvider`, `HemligConsumer`, `HemligSecretImport`, `HemligSecretExport`)
 into the bootstrap, import and export behavior above. See
-[Kubernetes controller](kubernetes.md) and the [CRD reference](/reference/crds).
+[Kubernetes controller](kubernetes.md) and the [CRD reference](../reference/crds.md).
 
 ## MQTT change hints
 

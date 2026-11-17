@@ -48,9 +48,9 @@ yarn ministack:verify
 MiniStack does not validate API Gateway custom-domain mTLS, IAM policies, OIDC
 authorizers, CORS preflight against the real routes, CloudTrail, or Object Lock
 administrative behavior. Those need an isolated AWS account; see the
-[acceptance runbook](/operations/acceptance).
+[acceptance runbook](../operations/acceptance.md).
 
 ## Next
 
 - Deploy to AWS: [Deploying with CDK](deploying.md).
-- Package-level commands and conventions: [Contributing](/contributing/).
+- Package-level commands and conventions: [Contributing](../contributing/index.md).

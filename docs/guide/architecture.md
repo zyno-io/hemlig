@@ -7,7 +7,7 @@ consumer read ACLs; enrolled consumers receive only the payloads they may read.
 This page describes the current implementation. It includes organizational
 metadata/catalog browsing, the enrollment/truststore workflow, and bounded
 audit-archive browsing. Issuer-root rotation remains intentionally excluded. See
-[API reference](/reference/api/) for the HTTP contract and
+[API reference](../reference/api/index.md) for the HTTP contract and
 [deployment guide](deploying.md) for installation inputs.
 
 ## Goals
@@ -329,7 +329,7 @@ Thus the index is current state with bounded tombstones, not retained event
 history. A concurrent update that moves beyond the captured range is seen on
 the next delta. Missing bootstrap entries need an authoritative read rather
 than an inferred revocation. Expiry or a scope/epoch change forces a new
-snapshot. See [the implementation and rollout plan](/design/agent-sync-plan).
+snapshot. See [the implementation and rollout plan](../design/agent-sync-plan.md).
 
 ## Immediate notification path
 
@@ -375,7 +375,7 @@ or plaintext KMS material.
 Compliance retention prevents deletion or shortened retention; it does not
 make a compromised writer unable to add misleading _new_ events. Hemlig claims
 locked retention, not hash-chain tamper evidence. See the
-[threat model](/security/threat-model) for residual risks.
+[threat model](../security/threat-model.md) for residual risks.
 
 `GET /v1/admin/audit` is served by a dedicated query Lambda. It has the same
 administrator JWT authorization as other management routes, but only this role
@@ -435,5 +435,5 @@ and the same immutable-write ability needed to record archive views.
 | CSR enrollment, truststore publication, leaf rotation, leaf revocation | Implemented           |
 | Issuer-root rotation and hash-chain seals                              | Deliberately excluded |
 
-The [implementation plan](/design/plan) records longer-term issuer-root rotation and audit-boundary
+The [implementation plan](../design/plan.md) records longer-term issuer-root rotation and audit-boundary
 acceptance criteria.

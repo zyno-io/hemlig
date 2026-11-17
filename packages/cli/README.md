@@ -16,7 +16,7 @@ hemlig secret read --secret-id payments/stripe/api-key
 ```
 
 Commands: `secret create | update | write-payload | read | read-payload | archive`
-and `idempotency-key`. Mutations take `--if-match <etag>` (or `current`) and an
+and `idempotency-key`. `update`, `write-payload` and `archive` take `--if-match <etag>` (or `current`) and an
 optional `--idempotency-key`. Run `hemlig --help` for the JSON command reference.
 
 It uses the typed [`@zyno-io/hemlig-client`](https://github.com/zyno-io/hemlig/tree/main/packages/client),

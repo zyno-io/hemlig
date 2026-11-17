@@ -26,7 +26,7 @@ Only when a request that **itself authenticated successfully** shows the grant n
 longer includes read access for that secret:
 
 1. The sync configuration fetched in the current pass already shows the capability
-   or the secret's `read` permission removed (the sync entry reports `secret.revoked`).
+   or the secret's `read` permission removed (the sync entry's `permissions` no longer include `read`).
 2. After a remote `403`/`404` on the secret read, a **fresh** `GET /v1/agent/config`
    *succeeds* and no longer grants `read` for that secret ID.
 3. A cross-namespace reference is no longer permitted by the consumer's

@@ -15,7 +15,7 @@ policy is [`SECURITY.md`](https://github.com/zyno-io/hemlig/blob/main/SECURITY.m
   with a minimal reproduction and the affected version or commit.
 - Do not treat local AWS emulation as evidence that IAM, API Gateway mTLS, Object
   Lock Compliance, or cross-account policies are correct in AWS. Use the
-  [acceptance runbook](/operations/acceptance).
+  [acceptance runbook](../operations/acceptance.md).
 
 See also the [threat model](threat-model.md) and
-[architecture](/guide/architecture) for the intended security properties.
+[architecture](../guide/architecture.md) for the intended security properties.

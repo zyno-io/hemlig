@@ -41,7 +41,7 @@ hemlig --help
 ```
 
 The CLI retains its OIDC administrator authentication and JSON output contract.
-See the [CLI guide](/guide/cli) for token handling and command examples.
+See the [CLI guide](../guide/cli.md) for token handling and command examples.
 
 ## npm trusted publishing
 
@@ -104,4 +104,4 @@ committed to this repository. For pinning images by digest in a rollout see
 ## Documentation site
 
 The docs site is deployed separately from releases by `docs.yml` on every push to
-`main`; see [Docs site](/contributing/docs-site).
+`main`; see [Docs site](../contributing/docs-site.md).

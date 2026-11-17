@@ -34,7 +34,7 @@ before an actor exists are outside the application event stream and must be
 investigated through the stack's sanitized API Gateway access logs and
 control-plane logs. Audit records never
 include secret payloads, tokens, request bodies, or certificate material. See
-[architecture](/guide/architecture#audit-evidence) for archive keys and retention
+[architecture](../../guide/architecture.md#audit-evidence) for archive keys and retention
 semantics.
 
 ## Deliberately excluded routes

@@ -138,7 +138,7 @@ and JWKS endpoints from the issuer's origin — true for Entra, Okta, and Auth0,
 but not universal (Google issues from `accounts.google.com` and serves tokens
 from `oauth2.googleapis.com`). A provider that splits them needs both origins in
 `connect-src`. The console is deliberately cross-origin to
-the admin API — see [the console plan](/design/console-plan) for why CloudFront is
+the admin API — see [the console plan](../design/console-plan.md) for why CloudFront is
 kept out of the credential path.
 
 Built console assets are copied into `dist-cdk/console-dist` before packing and

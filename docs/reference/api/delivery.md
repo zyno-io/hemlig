@@ -147,7 +147,7 @@ before skipping a payload read. Local source changes retain authoritative
 If-Match and Idempotency-Key protections on exports. It saves the checkpoint in
 HemligConsumer status only after resource reconciliation succeeds. MQTT hints,
 reconnects, and periodic passes all resume that checkpoint. See the
-[design and rollout plan](/design/agent-sync-plan).
+[design and rollout plan](../../design/agent-sync-plan.md).
 
 These are mTLS delivery routes for an active AgentGrant only. A normal consumer
 may not use them, and an agent cannot use normal consumer routes to escape its
@@ -185,7 +185,7 @@ where to listen for change hints.
 
 Issues an overlapping replacement for the **calling** agent's mTLS leaf. Available
 from the first release that includes agent identity self-rotation; older servers
-answer `400 bad_request`. See [Identity rotation](/operations/identity-rotation) for
+answer `400 bad_request`. See [Identity rotation](../../operations/identity-rotation.md) for
 how the controller uses it.
 
 - **Auth:** the current client certificate, which must be `ACTIVE` and unexpired, and
@@ -235,4 +235,4 @@ rules. An agent never changes ACLs through them.
 
 Request and response shapes follow the same payload and control-revision types
 described in [Data types](data-types.md); the machine-readable definitions are
-in the [OpenAPI contract](/reference/openapi).
+in the [OpenAPI contract](../openapi.md).

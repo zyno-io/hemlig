@@ -13,7 +13,7 @@ It is MIT-licensed (see [licensing](https://github.com/zyno-io/hemlig/blob/main/
 (administrator and delivery), the three security schemes (administrator JWT,
 consumer mTLS, bootstrap capability), all routes, and the error envelope.
 
-The prose pages under [HTTP API](/reference/api/) explain behavior that a schema
+The prose pages under [HTTP API](api/index.md) explain behavior that a schema
 cannot express (idempotency, ETags, revocation semantics). When the two disagree,
 the OpenAPI file and the handlers are authoritative; please open an issue.
 

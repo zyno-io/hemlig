@@ -2,7 +2,7 @@
 
 `@zyno-io/hemlig-cli` lives in `packages/cli` and exposes the `hemlig` executable. It
 uses [`@zyno-io/hemlig-client`](https://github.com/zyno-io/hemlig/blob/main/packages/client/src/index.ts) against the
-[administrator API](/reference/api/) and [OpenAPI contract](/reference/openapi).
+[administrator API](../reference/api/index.md) and [OpenAPI contract](../reference/openapi.md).
 It requires Node.js 24. It manages existing environments; it does not provision
 Hemlig infrastructure, enroll consumers, redeem bootstrap tokens, or manage
 Kubernetes `HemligSecretImport` / `HemligSecretExport` resources.

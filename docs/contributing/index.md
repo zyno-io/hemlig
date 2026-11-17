@@ -31,7 +31,7 @@ yarn dev:ui           # console dev server on :5273
 yarn ministack:verify # DynamoDB/S3/KMS integration checks against MiniStack
 ```
 
-Details in the [quickstart](/guide/quickstart).
+Details in the [quickstart](../guide/quickstart.md).
 
 ## Tests per package
 
@@ -39,7 +39,7 @@ Details in the [quickstart](/guide/quickstart).
 | ---------------------------------- | ------------------------------------------------ | ---------------- |
 | Root service + `cdk/`              | `yarn test` (`yarn test:watch`)                  | Jest + ts-jest   |
 | Root type checks                   | `yarn lint` (service and CDK `tsc --noEmit`)     | tsc              |
-| `client`, `cli`, `kubernetes-controller`, `pulumi-provider` | `yarn workspace <name> build && yarn workspace <name> test` | `node --test` on built output |
+| `client`, `cli`, `kubernetes-controller`, `pulumi-provider` | `yarn workspace @zyno-io/hemlig-client build && yarn workspace <name> build && yarn workspace <name> test` | `node --test` on built output |
 | `console`                          | `yarn workspace @zyno-io/hemlig-console test`    | Vitest           |
 | Everything                         | `yarn lint:all`, `yarn test:all`                 |                  |
 | Release script                     | `node --test scripts/release.test.mjs`           | `node --test`    |
@@ -72,4 +72,4 @@ for the workflow, how Pages deploys, and how to preview locally.
    `yarn docs:build` when editing docs.
 3. Describe behavior changes and any rollout ordering (for example
    server-before-controller).
-4. Do not tag releases; see [Releasing](/operations/releasing).
+4. Do not tag releases; see [Releasing](../operations/releasing.md).

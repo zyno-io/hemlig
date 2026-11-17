@@ -17,8 +17,9 @@ secrets, edit metadata and ACLs, write payloads (values load only when you ask,
 and every read is audited), inspect revisions and archive secrets, manage
 environments, enroll consumers and rotate or revoke their certificates (with an
 optional in-browser CSR generator), see truststore status, and browse the audit
-archive. Agent grants and bootstrap capabilities are not in the console yet; use
-the API, the [Pulumi provider](pulumi.md) or `curl`.
+archive, and revoke a secret from an existing agent grant. Creating agent grants
+and issuing bootstrap capabilities are not in the console yet; use the API, the
+[Pulumi provider](pulumi.md) or `curl`.
 
 ## Hosting
 
@@ -50,4 +51,4 @@ yarn test     # vitest
 Contributor-facing invariants (never fetch payloads to render lists, never retry a
 `412`, empty pages are not "no results") are documented in the
 [package README](https://github.com/zyno-io/hemlig/blob/main/packages/console/README.md).
-The original [console plan](/design/console-plan) is a historical record.
+The original [console plan](../design/console-plan.md) is a historical record.

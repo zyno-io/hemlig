@@ -18,8 +18,8 @@ AWS service and the reusable CDK construct**; integrations live in `packages/`.
 | `packages/kubernetes-controller` | `@zyno-io/hemlig-kubernetes-controller` | CRDs, reconciler, Dockerfile, Helm chart (`chart/hemlig-controller`), raw manifests (`config/`) | MIT |
 | `packages/pulumi-provider`       | `@zyno-io/hemlig-pulumi-provider`       | Pulumi dynamic provider for secrets and agent grants                                         | MIT     |
 | `packages/console`               | `@zyno-io/hemlig-console`               | Vue single-page administrator console                                                         | AGPL-3.0-only |
-| `docs/`                          | `@zyno-io/hemlig-docs` (private)        | This VitePress site; `docs/design/` holds historical design records                          | MIT     |
-| `scripts/`                       | root                                    | `release.mjs` (tag validation, packing, publication) and its tests                           | MIT     |
+| `docs/`                          | `@zyno-io/hemlig-docs` (private)        | This VitePress site; `docs/design/` holds historical design records                          | AGPL-3.0-only |
+| `scripts/`                       | root                                    | `release.mjs` (tag validation, packing, publication) and its tests                           | AGPL-3.0-only |
 | `.github/workflows/`             |                                         | `ci.yml` (verify, MiniStack, image, chart, release) and `docs.yml` (docs build and Pages)    | n/a     |
 
 See [LICENSING.md](https://github.com/zyno-io/hemlig/blob/main/LICENSING.md) for the exact subtree boundaries and the
@@ -37,7 +37,7 @@ commercial-hosting source obligations.
   a second deployment topology or manages the CMK.
 - Only `client`, `cli` and `pulumi-provider` are published to npm. The root package
   (`hemlig`, imported by CDK apps as `hemlig/cdk`), the console and the controller
-  workspace are not. See [Releasing](/operations/releasing).
+  workspace are not. See [Releasing](../operations/releasing.md).
 
 ## Workspace-wide commands
 

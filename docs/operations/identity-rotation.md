@@ -141,9 +141,10 @@ controller restarts); the 10-minute resync is a safety net. A new
 | `RotationRejected` | `400 invalid_csr`, `409 rotation_replay_inactive`, `409 conflict`, or an issued certificate that does not match the staged key / consumer | discarded | A fresh key and CSR are generated on the next attempt |
 | `IdentityLimitReached` | `409 identity_limit_reached` | kept | Three active leaves already exist for the consumer. [Revoke old leaves](#revoke-the-old-leaf) |
 | `IdentityAlreadyRotated` | `409 identity_already_rotated` | kept | This certificate already has an active successor (for example someone rotated it out of band). Revoke the unwanted successor, or install the successor's key pair |
-| `AuthenticationFailed` | `403 identity_not_active` (or a code-less mTLS `403`) | kept (discarded if the *new* leaf is rejected during verification) | The current certificate is expired or revoked; rotation cannot self-heal. See [expired certificate](#if-the-certificate-already-expired) |
+| `AuthenticationFailed` | `403 identity_not_active` (or a code-less mTLS `403`) | kept | The current certificate is expired or revoked; rotation cannot self-heal. See [expired certificate](#if-the-certificate-already-expired) |
 | `RotationForbidden` | `403 forbidden` | kept | The consumer has no `ACTIVE` agent grant |
-| `RotationFailed` | `429`, `5xx`, network, Kubernetes write conflict, or verification failure | kept | Transient. The old certificate stays in use and the same CSR is replayed idempotently |
+| `VerificationFailed` | The new leaf could not authenticate (`GET /v1/agent/config`) or names a different consumer | discarded on `403 identity_not_active` or a consumer mismatch; kept otherwise | The issued leaf is not usable yet or at all. On a discard, a fresh key and CSR are generated next attempt |
+| `RotationFailed` | `429`, `5xx`, network, or a Kubernetes write conflict | kept | Transient. The old certificate stays in use and the same CSR is replayed idempotently |
 
 Crashes are safe at every step: the staged key, CSR and (once issued) the new
 certificate persist in the identity Secret, and the swap is a single
@@ -164,7 +165,7 @@ This is generic; substitute your own clusters and namespaces.
      | base64 -d | openssl x509 -noout -enddate -fingerprint -sha256
    ```
    Note which expire soonest. Prioritize anything inside 30 days.
-3. **Upgrade the controller on staging clusters** ([Flux rollout](/operations/flux-rollout)).
+3. **Upgrade the controller on staging clusters** ([Flux rollout](flux-rollout.md)).
 4. **Set `rotateBefore` on staging** (for example `2160h` so rotation happens well
    ahead of expiry) and, to prove the path end to end, force one rotation with the
    annotation above.

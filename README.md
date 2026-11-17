@@ -45,7 +45,7 @@ or the HTTP API.
 | `packages/kubernetes-controller` | Controller, CRDs, Helm chart                                       | MIT     |
 | `packages/pulumi-provider`       | `@zyno-io/hemlig-pulumi-provider`                                  | MIT     |
 | `packages/console`               | Vue administrator console                                          | AGPL    |
-| `docs/`                          | VitePress documentation site; `docs/design/` = historical records  | MIT     |
+| `docs/`                          | VitePress documentation site; `docs/design/` = historical records  | AGPL    |
 
 ## Quickstart
 
