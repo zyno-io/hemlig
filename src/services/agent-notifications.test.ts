@@ -1,5 +1,5 @@
 import { UpdateCertificateCommand, type IoTClient } from "@aws-sdk/client-iot";
-import { AgentNotificationService } from "./agent-notifications";
+import { AgentNotificationService, provisionAndVerify } from "./agent-notifications";
 
 describe("AgentNotificationService.revoke", () => {
   const build = (send: jest.Mock) =>
@@ -29,5 +29,44 @@ describe("AgentNotificationService.revoke", () => {
       });
     });
     await expect(build(send).revoke("fp")).rejects.toThrow("slow down");
+  });
+});
+
+describe("provisionAndVerify", () => {
+  const identity = {
+    consumerId: "agent",
+    certificateFingerprint: "fp",
+    certificatePem: "pem",
+  };
+  const repositoryWith = (status: string | undefined) => ({
+    getIdentity: jest.fn(async () =>
+      status === undefined ? undefined : ({ status } as never),
+    ),
+  });
+
+  it("leaves an identity that is still active registered", async () => {
+    const notifications = { provision: jest.fn(async () => {}), revoke: jest.fn(async () => {}) };
+    await provisionAndVerify(notifications, repositoryWith("ACTIVE"), identity);
+    expect(notifications.revoke).not.toHaveBeenCalled();
+  });
+
+  it("revokes when the identity was revoked during provisioning", async () => {
+    const notifications = { provision: jest.fn(async () => {}), revoke: jest.fn(async () => {}) };
+    await provisionAndVerify(notifications, repositoryWith("REVOKED"), identity);
+    expect(notifications.revoke).toHaveBeenCalledWith("fp");
+  });
+
+  it("still verifies, then rethrows, when provisioning fails part-way", async () => {
+    const failure = new Error("attach failed");
+    const notifications = {
+      provision: jest.fn(async () => {
+        throw failure;
+      }),
+      revoke: jest.fn(async () => {}),
+    };
+    await expect(
+      provisionAndVerify(notifications, repositoryWith("REVOKED"), identity),
+    ).rejects.toBe(failure);
+    expect(notifications.revoke).toHaveBeenCalledWith("fp");
   });
 });

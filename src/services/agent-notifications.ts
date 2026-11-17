@@ -147,17 +147,28 @@ export class AgentNotificationService {
  * Provisions the leaf, then re-reads the identity (consistent read). A revoke
  * that raced the registration may have seen "not found" and counted as a
  * success just before the certificate was registered ACTIVE; revoking again
- * here closes that window.
+ * here closes that window. The check also runs when provisioning fails
+ * part-way, then the provisioning error is rethrown.
  */
 export const provisionAndVerify = async (
   notifications: Pick<AgentNotificationService, "provision" | "revoke">,
   repository: Pick<DynamoRepository, "getIdentity">,
   identity: AgentMqttIdentity,
 ): Promise<void> => {
-  await notifications.provision(identity);
+  let provisionFailure: { readonly error: unknown } | undefined;
+  try {
+    await notifications.provision(identity);
+  } catch (error) {
+    // Provisioning may fail after the certificate was registered ACTIVE, and
+    // a replay skips identities that are no longer ACTIVE, so verify anyway.
+    provisionFailure = { error };
+  }
   const current = await repository.getIdentity(identity.certificateFingerprint);
   if (current === undefined || current.status !== "ACTIVE") {
     await notifications.revoke(identity.certificateFingerprint);
+  }
+  if (provisionFailure !== undefined) {
+    throw provisionFailure.error;
   }
 };
 
