@@ -35,16 +35,10 @@ export const handler = async (
       operation,
       sourceIp: event.requestContext.http.sourceIp,
     });
-    const decodedPath = decodeRequestPath(event.rawPath);
-    const secretMatch = new RegExp(`^/v1/secrets/(${secretIdRoutePart})$`).exec(
-      decodedPath,
+    const isSecretRead = isSecretReadRequest(
+      event.requestContext.http.method,
+      event.rawPath,
     );
-    const agentSecretMatch = new RegExp(
-      `^/v1/agent/secrets/(${secretIdRoutePart})$`,
-    ).exec(decodedPath);
-    const isSecretRead =
-      event.requestContext.http.method === "GET" &&
-      (secretMatch !== null || agentSecretMatch !== null);
     // A secret read is audited only when it delivers a value: its attempted
     // and authorized events are written once the read knows it is not a
     // conditional 304, so polling controllers do not create immutable records
@@ -88,6 +82,13 @@ export const handler = async (
       });
       return json(200, page);
     }
+    const decodedPath = decodeRequestPath(event.rawPath);
+    const secretMatch = new RegExp(`^/v1/secrets/(${secretIdRoutePart})$`).exec(
+      decodedPath,
+    );
+    const agentSecretMatch = new RegExp(
+      `^/v1/agent/secrets/(${secretIdRoutePart})$`,
+    ).exec(decodedPath);
     const agentPayloadMatch = new RegExp(
       `^/v1/agent/secrets/(${secretIdRoutePart})/payload$`,
     ).exec(decodedPath);
@@ -384,6 +385,33 @@ const secretUidsForPermission = (
   permission: AgentCapability,
 ): readonly string[] =>
   agentScopesForPermission(grant, permission).map((scope) => scope.secretUid);
+
+/**
+ * True only for requests the secret-read branch handles. It never throws, so
+ * a malformed path is classified as "not a read" and still gets its
+ * `attempted` event before decodeRequestPath rejects it. The agent control
+ * route also matches the multi-segment read pattern, so it is excluded first.
+ */
+const isSecretReadRequest = (method: string, rawPath: string): boolean => {
+  if (method !== "GET") {
+    return false;
+  }
+  let path: string;
+  try {
+    path = decodeURIComponent(rawPath);
+  } catch {
+    return false;
+  }
+  if (
+    new RegExp(`^/v1/agent/secrets/(${secretIdRoutePart})/control$`).test(path)
+  ) {
+    return false;
+  }
+  return (
+    new RegExp(`^/v1/secrets/(${secretIdRoutePart})$`).test(path) ||
+    new RegExp(`^/v1/agent/secrets/(${secretIdRoutePart})$`).test(path)
+  );
+};
 
 const decodeRequestPath = (value: string): string => {
   try {

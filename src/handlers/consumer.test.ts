@@ -78,7 +78,7 @@ describe("consumer handler agent routes", () => {
         action(
           {
             config: { maxPayloadBytes: 1_000_000 },
-            agents: { update, read },
+            agents: { update, read, control: jest.fn(async () => control) },
             agentSync: { sync },
             audit: { write: auditWrite },
             repository: {
@@ -183,5 +183,28 @@ describe("consumer handler agent routes", () => {
 
     expect(response.statusCode).toBe(304);
     expect(auditWrite).not.toHaveBeenCalled();
+  });
+
+  it("still audits the agent control route from its first event", async () => {
+    const response = await handler(
+      {
+        ...readEvent(),
+        rawPath:
+          "/v1/agent/secrets/platform%2Faccess%2Fwarpgate%2Ftarget-sync%2Fedge/control",
+      } as APIGatewayProxyEventV2,
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(outcomes()).toEqual(["attempted", "authorized", "succeeded"]);
+  });
+
+  it("writes attempted before rejecting a malformed request path", async () => {
+    await expect(
+      handler({
+        ...readEvent(),
+        rawPath: "/v1/secrets/%E0%A4%A",
+      } as APIGatewayProxyEventV2),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    expect(outcomes()).toEqual(["attempted"]);
   });
 });

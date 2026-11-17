@@ -29,7 +29,9 @@ activity is visible in later pages.
 
 After a caller has been resolved to an application actor, Hemlig emits attempted,
 authorized, and terminal-success or terminal-failed audit events. It writes
-terminal success before responding with plaintext. TLS or JWT failures rejected
+terminal success before responding with plaintext. A conditional `304` secret
+read delivers nothing and writes no events; a secret read that fails before
+authorization writes only its `failed` event. TLS or JWT failures rejected
 before an actor exists are outside the application event stream and must be
 investigated through the stack's sanitized API Gateway access logs and
 control-plane logs. Audit records never
