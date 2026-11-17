@@ -174,6 +174,9 @@ export interface IdentityRecord {
   readonly notBefore: string;
   readonly notAfter: string;
   readonly certificatePem?: string;
+  /** Fingerprint of the identity issued by this one through self-rotation. */
+  readonly rotatedTo?: string;
+  readonly rotatedAt?: string;
   /** Sparse GSI projection for administrative identity browsing. */
   readonly identityConsumerPk?: string;
   readonly identityConsumerSk?: string;

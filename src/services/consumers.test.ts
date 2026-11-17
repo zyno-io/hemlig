@@ -509,3 +509,196 @@ describe("consumer certificate lifecycle idempotency", () => {
     expect(result.result.apiCertificatePem).toBe("certificate");
   });
 });
+
+describe("agent self-rotation", () => {
+  const consumer: ConsumerRecord = {
+    pk: "CONSUMER#prod-east",
+    sk: "PROFILE",
+    consumerId: "prod-east",
+    environment: "prod",
+    subjectUri: "spiffe://hemlig/consumer/prod-east",
+    status: "ACTIVE",
+    createdAt: "2026-08-22T00:00:00.000Z",
+    createdBy: { type: "human", id: "operator" },
+  };
+  const identityRecord = (
+    fingerprint: string,
+    overrides: Partial<IdentityRecord> = {},
+  ): IdentityRecord => ({
+    pk: `IDENTITY#${fingerprint}`,
+    sk: "PROFILE",
+    fingerprint,
+    consumerId: "prod-east",
+    environment: "prod",
+    kind: "api",
+    status: "ACTIVE",
+    notBefore: "2026-01-01T00:00:00.000Z",
+    notAfter: "2999-01-01T00:00:00.000Z",
+    certificatePem: `pem-${fingerprint}`,
+    ...overrides,
+  });
+  const requestDigest = sha256Hex(
+    stableJson({
+      operationType: "consumer.api.rotate",
+      consumerId: "prod-east",
+      rootFingerprint: "root",
+      csrFingerprint: "csr",
+    }),
+  );
+  const actor = { type: "consumer" as const, id: "caller", consumerId: "prod-east" };
+  const input = {
+    consumerId: "prod-east",
+    apiCertificateSigningRequestPem: "CSR",
+    actor,
+    idempotencyKey: "rotation-123",
+    selfRotation: { callerFingerprint: "caller", maximumActiveIdentities: 3 },
+  };
+  const build = (
+    repositoryOverrides: Record<string, unknown>,
+  ): {
+    service: ConsumerService;
+    repository: Record<string, jest.Mock>;
+    issuer: Record<string, jest.Mock>;
+  } => {
+    const repository = {
+      getConsumer: jest.fn(async () => consumer),
+      getIdempotency: jest.fn(async () => undefined),
+      getIdentity: jest.fn(async () => undefined),
+      countActiveConsumerApiIdentities: jest.fn(async () => 1),
+      createApiIdentity: jest.fn(async () => undefined),
+      ...repositoryOverrides,
+    } as unknown as Record<string, jest.Mock>;
+    const issuer = {
+      certificateRequestFingerprint: jest.fn(() => "csr"),
+      issuerFingerprint: jest.fn(async () => "root"),
+      issueApiIdentity: jest.fn(async () => ({
+        rootFingerprint: "root",
+        subjectUri: consumer.subjectUri,
+        apiIdentity: {
+          fingerprint: "new",
+          consumerId: "prod-east",
+          environment: "prod",
+          kind: "api",
+          notBefore: "2026-08-22T00:00:00.000Z",
+          notAfter: "2999-08-22T00:00:00.000Z",
+          certificatePem: "pem-new",
+        },
+      })),
+    } as unknown as Record<string, jest.Mock>;
+    return {
+      service: new ConsumerService(
+        repository as unknown as DynamoRepository,
+        {} as ObjectStore,
+        {} as ApiGatewayV2Client,
+        issuer as unknown as IssuerService,
+        {} as AppConfig,
+        {} as EnvironmentService,
+      ),
+      repository,
+      issuer,
+    };
+  };
+
+  it("replays before any caller or cap lookup and reports validity", async () => {
+    const { service, repository, issuer } = build({
+      getIdempotency: jest.fn(async () => ({
+        requestDigest,
+        operationType: "consumer.api.rotate",
+        rootFingerprint: "root",
+        apiFingerprint: "new",
+        status: "SUCCEEDED",
+      })),
+      getIdentity: jest.fn(async () => identityRecord("new")),
+      countActiveConsumerApiIdentities: jest.fn(async () => 99),
+    });
+    const result = await service.rotateApiIdentity(input);
+    expect(result).toMatchObject({
+      apiFingerprint: "new",
+      identityStatus: "ACTIVE",
+      notAfter: "2999-01-01T00:00:00.000Z",
+      shouldWriteTerminalAudit: false,
+    });
+    expect(repository.countActiveConsumerApiIdentities).not.toHaveBeenCalled();
+    expect(repository.getIdentity).toHaveBeenCalledTimes(1);
+    expect(issuer.issueApiIdentity).not.toHaveBeenCalled();
+  });
+
+  it("rejects an inactive or foreign caller identity", async () => {
+    const { service, issuer } = build({
+      getIdentity: jest.fn(async () =>
+        identityRecord("caller", { status: "REVOKED" }),
+      ),
+    });
+    await expect(service.rotateApiIdentity(input)).rejects.toMatchObject({
+      code: "identity_not_active",
+    });
+    expect(issuer.issueApiIdentity).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the consumer is at the active identity cap", async () => {
+    const { service, issuer, repository } = build({
+      getIdentity: jest.fn(async () => identityRecord("caller")),
+      countActiveConsumerApiIdentities: jest.fn(async () => 3),
+    });
+    await expect(service.rotateApiIdentity(input)).rejects.toMatchObject({
+      statusCode: 409,
+      code: "identity_limit_reached",
+    });
+    expect(issuer.issueApiIdentity).not.toHaveBeenCalled();
+    expect(repository.createApiIdentity).not.toHaveBeenCalled();
+  });
+
+  it("rejects before KMS when the caller already has an active successor", async () => {
+    const { service, issuer } = build({
+      getIdentity: jest.fn(async (fingerprint: string) =>
+        fingerprint === "caller"
+          ? identityRecord("caller", { rotatedTo: "successor" })
+          : identityRecord("successor"),
+      ),
+    });
+    await expect(service.rotateApiIdentity(input)).rejects.toMatchObject({
+      code: "identity_already_rotated",
+    });
+    expect(issuer.issueApiIdentity).not.toHaveBeenCalled();
+  });
+
+  it("allows replacing a revoked successor", async () => {
+    const { service, repository } = build({
+      getIdentity: jest.fn(async (fingerprint: string) =>
+        fingerprint === "caller"
+          ? identityRecord("caller", { rotatedTo: "successor" })
+          : identityRecord("successor", { status: "REVOKED" }),
+      ),
+    });
+    const result = await service.rotateApiIdentity(input);
+    expect(result).toMatchObject({
+      apiFingerprint: "new",
+      identityStatus: "ACTIVE",
+      notAfter: "2999-08-22T00:00:00.000Z",
+    });
+    expect(repository.createApiIdentity).toHaveBeenCalledWith(
+      actor,
+      "rotation-123",
+      requestDigest,
+      expect.objectContaining({ fingerprint: "new" }),
+      "root",
+      expect.objectContaining({
+        fingerprint: "caller",
+        replaceableSuccessor: "successor",
+      }),
+    );
+  });
+
+  it("does not count or link a predecessor on the administrator path", async () => {
+    const { service, repository } = build({});
+    const { selfRotation: _ignored, ...adminInput } = input;
+    await service.rotateApiIdentity({
+      ...adminInput,
+      actor: { type: "human", id: "operator" },
+    });
+    expect(repository.countActiveConsumerApiIdentities).not.toHaveBeenCalled();
+    expect(repository.getIdentity).not.toHaveBeenCalled();
+    expect(repository.createApiIdentity?.mock.calls[0]?.[5]).toBeUndefined();
+  });
+});
+

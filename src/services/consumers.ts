@@ -8,6 +8,9 @@ import {
   badRequest,
   conflict,
   enrollmentFailed,
+  identityAlreadyRotated,
+  identityLimitReached,
+  identityNotActive,
   notFound,
   serviceUnavailable,
 } from "../domain/errors";
@@ -15,6 +18,7 @@ import type {
   Actor,
   ConsumerProvisioningResult,
   EnrollmentRecord,
+  IdentityRecord,
   ObjectReference,
   TruststoreRootRecord,
 } from "../domain/types";
@@ -46,6 +50,11 @@ export interface ApiIdentityInput {
   readonly apiCertificateSigningRequestPem: string;
   readonly actor: Actor;
   readonly idempotencyKey: string;
+  /** Set only for agent self-rotation; the admin route never passes it. */
+  readonly selfRotation?: {
+    readonly callerFingerprint: string;
+    readonly maximumActiveIdentities: number;
+  };
 }
 
 export interface ActiveIdentityRecoveryInput {
@@ -73,6 +82,9 @@ export interface ApiIdentityResult {
   readonly apiFingerprint: string;
   readonly apiCertificatePem?: string;
   readonly status: "ACTIVE" | "REVOKED";
+  readonly notBefore?: string;
+  readonly notAfter?: string;
+  readonly identityStatus?: IdentityRecord["status"];
   readonly shouldWriteTerminalAudit: boolean;
 }
 
@@ -143,6 +155,54 @@ export class ConsumerService {
         consumer.environment,
       );
     }
+    let predecessor:
+      | {
+          fingerprint: string;
+          rotatedAt: string;
+          replaceableSuccessor?: string;
+        }
+      | undefined;
+    if (input.selfRotation !== undefined) {
+      const callerFingerprint = input.selfRotation.callerFingerprint;
+      const now = isoNow();
+      const caller = await this.repository.getIdentity(callerFingerprint);
+      if (
+        caller === undefined ||
+        caller.consumerId !== input.consumerId ||
+        caller.kind !== "api" ||
+        caller.status !== "ACTIVE" ||
+        caller.notAfter <= now
+      ) {
+        throw identityNotActive();
+      }
+      let replaceableSuccessor: string | undefined;
+      if (caller.rotatedTo !== undefined) {
+        const successor = await this.repository.getIdentity(caller.rotatedTo);
+        if (
+          successor !== undefined &&
+          successor.status === "ACTIVE" &&
+          successor.notAfter > now
+        ) {
+          throw identityAlreadyRotated(
+            "This identity has already been rotated to an active successor.",
+          );
+        }
+        replaceableSuccessor = caller.rotatedTo;
+      }
+      const active = await this.repository.countActiveConsumerApiIdentities(
+        input.consumerId,
+      );
+      if (active >= input.selfRotation.maximumActiveIdentities) {
+        throw identityLimitReached(
+          `The consumer already has ${active} active API identities (maximum ${input.selfRotation.maximumActiveIdentities}). Revoke unused identities with DELETE /v1/admin/consumers/{consumerId}/api-identities/{apiFingerprint}.`,
+        );
+      }
+      predecessor = {
+        fingerprint: callerFingerprint,
+        rotatedAt: now,
+        ...(replaceableSuccessor === undefined ? {} : { replaceableSuccessor }),
+      };
+    }
     const issued = await this.issuer.issueApiIdentity(
       input.consumerId,
       consumer.environment,
@@ -155,6 +215,7 @@ export class ConsumerService {
         requestDigest,
         issued.apiIdentity,
         issued.rootFingerprint,
+        predecessor,
       );
     } catch (error) {
       const winner = await this.repository.getIdempotency(
@@ -178,6 +239,9 @@ export class ConsumerService {
       apiFingerprint: issued.apiIdentity.fingerprint,
       apiCertificatePem: issued.apiIdentity.certificatePem,
       status: "ACTIVE",
+      notBefore: issued.apiIdentity.notBefore,
+      notAfter: issued.apiIdentity.notAfter,
+      identityStatus: "ACTIVE",
       shouldWriteTerminalAudit: true,
     };
   }
@@ -510,6 +574,9 @@ export class ConsumerService {
       apiFingerprint,
       apiCertificatePem: identity.certificatePem,
       status: "ACTIVE",
+      notBefore: identity.notBefore,
+      notAfter: identity.notAfter,
+      identityStatus: identity.status,
       shouldWriteTerminalAudit: record.status !== "SUCCEEDED",
     };
   }

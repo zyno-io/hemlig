@@ -17,6 +17,20 @@ export const badRequest = (message: string): ApiError => new ApiError(400, 'bad_
 export const forbidden = (message = 'The caller is not permitted to perform this operation.'): ApiError =>
     new ApiError(403, 'forbidden', message);
 
+export const identityNotActive = (message = 'The client certificate is not an active consumer API identity.'): ApiError =>
+    new ApiError(403, 'identity_not_active', message);
+
+export const invalidCsr = (message: string): ApiError => new ApiError(400, 'invalid_csr', message);
+
+export const identityLimitReached = (message: string): ApiError =>
+    new ApiError(409, 'identity_limit_reached', message);
+
+export const identityAlreadyRotated = (message: string): ApiError =>
+    new ApiError(409, 'identity_already_rotated', message);
+
+export const rotationReplayInactive = (message: string): ApiError =>
+    new ApiError(409, 'rotation_replay_inactive', message);
+
 export const notFound = (message = 'The requested resource was not found.'): ApiError =>
     new ApiError(404, 'not_found', message);
 

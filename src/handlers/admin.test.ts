@@ -120,6 +120,7 @@ describe("POST /v1/admin/issuer", () => {
       } as unknown as AuditWriter,
       auditQueries: {} as Application["auditQueries"],
       agentGrants: {} as Application["agentGrants"],
+      agentIdentities: {} as Application["agentIdentities"],
       agents: {} as Application["agents"],
       agentSync: {} as Application["agentSync"],
       cursors: {} as unknown as CursorService,
@@ -256,6 +257,7 @@ describe("GET /v1/admin/secrets", () => {
       } as unknown as AuditWriter,
       auditQueries: {} as Application["auditQueries"],
       agentGrants: {} as Application["agentGrants"],
+      agentIdentities: {} as Application["agentIdentities"],
       agents: {} as Application["agents"],
       agentSync: {} as Application["agentSync"],
       cursors: {
