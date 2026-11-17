@@ -1789,6 +1789,18 @@ export class DynamoRepository {
           "The calling identity has already been rotated or is no longer active.",
         );
       }
+      if (
+        predecessor !== undefined &&
+        (error as { name?: string } | null)?.name !==
+          "TransactionCanceledException"
+      ) {
+        // A timeout or throttle may still commit. Report it as retryable so a
+        // self-rotating agent keeps (and replays) its staged key instead of
+        // discarding it and stranding an already-issued successor.
+        throw serviceUnavailable(
+          `Could not create consumer API identity: ${errorMessage(error)}`,
+        );
+      }
       throw conflict(
         `Could not create consumer API identity: ${errorMessage(error)}`,
       );

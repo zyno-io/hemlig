@@ -1455,4 +1455,21 @@ describe("agent identity self-rotation write", () => {
       }),
     ).rejects.toMatchObject({ statusCode: 409, code: "conflict" });
   });
+
+  it("reports an indeterminate self-rotation write as retryable", async () => {
+    const dynamo = {
+      send: jest
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error("timed out"), { name: "TimeoutError" }),
+        ),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+    await expect(
+      repository.createApiIdentity(actor, "key-12345", "digest", identity, "root", {
+        fingerprint: "caller",
+        rotatedAt: "2026-06-01T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ statusCode: 503, code: "service_unavailable" });
+  });
 });
