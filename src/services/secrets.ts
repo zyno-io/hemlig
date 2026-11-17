@@ -399,6 +399,11 @@ export class SecretService {
     return this.getControl(head);
   }
 
+  /**
+   * Authorizes and reads a consumer's secret. `onAuthorized` runs after
+   * authorization only when a payload will be returned, never for a
+   * conditional `notModified` hit.
+   */
   public async read(
     consumerId: string,
     consumerEnvironment: string,
@@ -430,15 +435,17 @@ export class SecretService {
     ) {
       throw forbidden();
     }
-    if (onAuthorized !== undefined) {
-      await onAuthorized();
-    }
     if (ifNoneMatch === head.controlVersionId) {
+      // Nothing is delivered on a conditional hit, so it is not an audited
+      // delivery and onAuthorized is not invoked.
       return {
         notModified: true,
         controlVersionId: head.controlVersionId,
         payloadVersionId: head.payloadVersionId,
       };
+    }
+    if (onAuthorized !== undefined) {
+      await onAuthorized();
     }
     const activePayload = await this.readActivePayload(
       consumerEnvironment,

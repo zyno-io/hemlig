@@ -86,5 +86,6 @@ topic; it grants no publish.
 ## Audit
 
 Mutations and secret-value reads emit `attempted`, `authorized` and
-`succeeded`/`failed` events to a separate Object Lock archive. Events never
+`succeeded`/`failed` events to a separate Object Lock archive. A conditional
+`304` read delivers nothing and is not recorded. Events never
 contain payloads, tokens or private keys.

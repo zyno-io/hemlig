@@ -35,13 +35,24 @@ export const handler = async (
       operation,
       sourceIp: event.requestContext.http.sourceIp,
     });
-    await app.audit.write({
-      correlationId,
-      outcome: "attempted",
-      actor,
-      operation,
-      sourceIp: event.requestContext.http.sourceIp,
-    });
+    const isSecretRead = isSecretReadRequest(
+      event.requestContext.http.method,
+      event.rawPath,
+    );
+    // A secret read is audited only when it delivers a value: its attempted
+    // and authorized events are written once the read knows it is not a
+    // conditional 304, so polling controllers do not create immutable records
+    // for unchanged secrets. Failures are still recorded through the audit
+    // context set on the read branch.
+    if (!isSecretRead) {
+      await app.audit.write({
+        correlationId,
+        outcome: "attempted",
+        actor,
+        operation,
+        sourceIp: event.requestContext.http.sourceIp,
+      });
+    }
     if (
       event.requestContext.http.method === "GET" &&
       event.rawPath === "/v1/agent/sync"
@@ -232,6 +243,24 @@ export const handler = async (
         permission: "read",
         sourceIp: event.requestContext.http.sourceIp,
       });
+      const recordDelivery = async (): Promise<void> => {
+        await app.audit.write({
+          correlationId,
+          outcome: "attempted",
+          actor,
+          operation,
+          sourceIp: event.requestContext.http.sourceIp,
+        });
+        await app.audit.write({
+          correlationId,
+          outcome: "authorized",
+          actor,
+          operation,
+          target: { environment, secretId },
+          permission: "read",
+          sourceIp: event.requestContext.http.sourceIp,
+        });
+      };
       const result =
         isAgent || agentSecretMatch !== null
           ? await app.agents.read(
@@ -239,35 +268,18 @@ export const handler = async (
               environment,
               secretId,
               ifNoneMatch,
-              async () => {
-                await app.audit.write({
-                  correlationId,
-                  outcome: "authorized",
-                  actor,
-                  operation,
-                  target: { environment, secretId },
-                  permission: "read",
-                  sourceIp: event.requestContext.http.sourceIp,
-                });
-              },
+              recordDelivery,
             )
           : await app.secrets.read(
               consumerId,
               environment,
               secretId,
               ifNoneMatch,
-              async () => {
-                await app.audit.write({
-                  correlationId,
-                  outcome: "authorized",
-                  actor,
-                  operation,
-                  target: { environment, secretId },
-                  permission: "read",
-                  sourceIp: event.requestContext.http.sourceIp,
-                });
-              },
+              recordDelivery,
             );
+      if (result.notModified) {
+        return empty(304, { etag: result.controlVersionId });
+      }
       await app.audit.write({
         correlationId,
         outcome: "succeeded",
@@ -280,11 +292,7 @@ export const handler = async (
         },
         permission: "read",
         sourceIp: event.requestContext.http.sourceIp,
-        reasonCode: result.notModified ? "not_modified" : undefined,
       });
-      if (result.notModified) {
-        return empty(304, { etag: result.controlVersionId });
-      }
       return json(
         200,
         {
@@ -377,6 +385,33 @@ const secretUidsForPermission = (
   permission: AgentCapability,
 ): readonly string[] =>
   agentScopesForPermission(grant, permission).map((scope) => scope.secretUid);
+
+/**
+ * True only for requests the secret-read branch handles. It never throws, so
+ * a malformed path is classified as "not a read" and still gets its
+ * `attempted` event before decodeRequestPath rejects it. The agent control
+ * route also matches the multi-segment read pattern, so it is excluded first.
+ */
+const isSecretReadRequest = (method: string, rawPath: string): boolean => {
+  if (method !== "GET") {
+    return false;
+  }
+  let path: string;
+  try {
+    path = decodeURIComponent(rawPath);
+  } catch {
+    return false;
+  }
+  if (
+    new RegExp(`^/v1/agent/secrets/(${secretIdRoutePart})/control$`).test(path)
+  ) {
+    return false;
+  }
+  return (
+    new RegExp(`^/v1/secrets/(${secretIdRoutePart})$`).test(path) ||
+    new RegExp(`^/v1/agent/secrets/(${secretIdRoutePart})$`).test(path)
+  );
+};
 
 const decodeRequestPath = (value: string): string => {
   try {

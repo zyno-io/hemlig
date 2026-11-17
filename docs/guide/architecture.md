@@ -358,8 +358,9 @@ messages cannot change authorization or inject data.
 
 After the handler resolves an application actor, mutations and secret-value
 reads emit `attempted` and `authorized` events, then write `succeeded` before a
-successful response. A conditional `304` secret read is audited, as are
-scheduled recovery and retention actions; post-authorization failures for
+successful response. A conditional `304` secret read delivers nothing and
+writes no audit events, so polling controllers do not fill the archive.
+Scheduled recovery and retention actions are audited; post-authorization failures for
 audited operations are best-effort recorded as `failed`. Routine metadata,
 configuration, change-feed, and audit-archive reads are not application audit
 events. TLS or JWT requests rejected before an actor exists must be investigated

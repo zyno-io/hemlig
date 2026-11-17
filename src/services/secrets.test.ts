@@ -227,6 +227,38 @@ describe("SecretService.read", () => {
   });
 });
 
+describe("SecretService.read conditional hits", () => {
+  it("returns notModified without invoking onAuthorized or reading the payload", async () => {
+    const repository = {
+      getAccessAndHead: jest.fn().mockResolvedValue({ access, head }),
+    };
+    const objects = { getJson: jest.fn() };
+    const crypto = { decrypt: jest.fn() };
+    const service = new SecretService(
+      repository as never,
+      objects as never,
+      crypto as never,
+      config,
+      {} as never,
+    );
+    const authorized = jest.fn().mockResolvedValue(undefined);
+
+    await expect(
+      service.read(
+        "prod-east",
+        "prod",
+        "database-credentials",
+        head.controlVersionId,
+        authorized,
+      ),
+    ).resolves.toMatchObject({ notModified: true });
+
+    expect(authorized).not.toHaveBeenCalled();
+    expect(objects.getJson).not.toHaveBeenCalled();
+    expect(crypto.decrypt).not.toHaveBeenCalled();
+  });
+});
+
 describe("SecretService.create", () => {
   it("rejects an environment that an administrator has not defined", async () => {
     const environments = {

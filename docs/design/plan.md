@@ -193,8 +193,9 @@ values, request bodies, authorization tokens, certificates/private keys, or
 KMS context values. The audit writer retries bounded transient failures.
 
 After an application actor has been resolved, mutations and secret-value reads
-emit the applicable outcome sequence, including a `304` secret read,
-enrollment, rotation, and revocation. A decrypted payload or a successful route
+emit the applicable outcome sequence, including enrollment, rotation, and
+revocation. A conditional `304` secret read delivers nothing and writes no
+audit events; a failed read is still recorded as `failed`. A decrypted payload or a successful route
 response is never returned until its terminal audit write has succeeded. Routine
 metadata, configuration, change-feed, and audit-archive reads are not recorded.
 TLS or JWT failures rejected before an actor exists are outside this application
@@ -309,9 +310,9 @@ Its HTTP `ETag` is the control version; a successful body includes both
 `controlVersionId` and `payloadVersionId`, and the operator records both
 annotations. This makes an ACL/metadata state change observable even when the
 payload bytes are unchanged.
-It writes attempted/authorized audit evidence first. If `If-None-Match` matches
-the current version, it writes a terminal `succeeded` event with `notModified`
-before returning 304, without S3/KMS work. Otherwise it loads the referenced
+If `If-None-Match` matches the current version, it returns 304 without S3/KMS
+work and without audit events. Otherwise it writes attempted/authorized audit
+evidence, loads the referenced
 control/payload revisions, verifies their checksums and binding, calls KMS
 `Decrypt` with the exact context, GCM-decrypts, writes terminal audit success,
 and only then returns the payload over mTLS.
