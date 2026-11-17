@@ -1,111 +1,109 @@
 ---
 title: API data types
-description: Identifiers, environments, metadata, ACLs, payloads and control revisions.
+description: Identifier formats, environments, metadata, ACLs, payloads and control revisions used by the Hemlig API.
+pageType: reference
 ---
 
 # Data types
 
+These are the shapes shared across the route pages. Numeric limits are owned by [Limits and timings](../limits.md).
+
 ## Identifiers
 
-Consumer IDs must match:
+| Type | Pattern | Notes |
+| --- | --- | --- |
+| Consumer ID | `^[a-z][a-z0-9-]{2,63}$` | Unique across the deployment |
+| Secret ID | `^[a-z][a-z0-9-]{2,63}(/[a-z][a-z0-9-]{2,63})*$` | At most 256 characters. No leading, trailing or empty segments. |
+| Environment name | `^[a-z][a-z0-9-]{0,63}$` | Must be defined before use |
+| Secret UID | `sec-...` | Immutable; assigned at creation. See [Secret UID](../glossary.md#secret-uid). |
+| Control revision ID | `ctl-...` | The ETag |
+| Payload revision ID | `pay-...` | |
 
-```text
-^[a-z][a-z0-9-]{2,63}$
-```
-
-Secret IDs use the same segment grammar, but may contain `/` between
-segments (maximum 256 characters overall):
-
-```text
-^[a-z][a-z0-9-]{2,63}(/[a-z][a-z0-9-]{2,63})*$
-```
-
-This rejects leading and trailing slashes and empty segments (`//`).
-`POST /v1/admin/secrets` requires a caller-supplied `secretId`.
+`POST /v1/admin/secrets` requires a caller-supplied `secretId`. The ID is unique among live secrets in an environment and reusable after archive.
 
 ## Environments
 
-Administrators define logical secret/consumer environments at runtime with
-`POST /v1/admin/environments`, then discover them with
-`GET /v1/admin/environments`. A name must match
-`^[a-z][a-z0-9-]{0,63}$`. New secret creation, consumer enrollment, and
-environment-scoped catalog browsing require an existing definition; a fresh
-deployment intentionally starts with none. The registry supports up to 100
-environments.
+An administrator defines each [environment](../glossary.md#environment) with [`POST /v1/admin/environments`](admin-secrets.md#post-v1-admin-environments). Secret creation, consumer enrollment and catalog browsing need an existing definition. A fresh deployment has none.
 
 ## Folders
 
-A folder is the parent prefix of a slash-separated secret ID. For example,
-`payments/stripe/api-key` appears under `payments/stripe`. Folders are not
-stored independently: an empty folder disappears until a secret exists below
-it. The console's **New folder** flow only prefixes the ID of the next secret.
+A [folder](../glossary.md#folder) is the parent prefix of a secret ID. `payments/stripe/api-key` appears under `payments/stripe`.
 
-## Metadata and ACL
+- Folders are derived for browsing only. An empty folder does not exist.
+- A folder never grants access, to a consumer or to an agent. Agent authorization is exact [secret UID](../glossary.md#secret-uid) membership in an [AgentGrant](../glossary.md#agentgrant).
+
+## Metadata
+
+| Field | Required | Limit | Notes |
+| --- | --- | --- | --- |
+| `description` | No | 1,024 characters | Free text |
+| `tags` | No | 20 keys | Lowercase keys to short exact-match values |
+
+Tags and descriptions are returned to administrators only. They never select a delivery target or grant access, and the consumer API never returns them. `metadata.path` is not supported.
+
+## ACL
 
 ```json
 {
-  "metadata": {
-    "description": "Optional human-readable description"
-  },
-  "acl": [{ "consumerId": "prod-east", "permissions": ["read"] }]
+  "metadata": { "description": "Stripe API key" },
+  "acl": [{ "consumerId": "payments-prod", "permissions": ["read"] }]
 }
 ```
 
-`description` is optional and at most 1,024 characters. `tags` is an optional
-map of up to 20 lowercase keys to short exact-match values, for example
-`owner: payments` and `system: billing`. Tags are returned only to
-administrators; they never select a delivery target, grant access, or appear
-in the consumer API. Folders and agent authorization are both derived from the
-slash-separated secret ID; metadata never adds another path namespace.
+| Rule | Value |
+| --- | --- |
+| Entries | At most 40, one per consumer |
+| Permission | `read` only |
+| Who can be listed | An active [direct consumer](../glossary.md#direct-consumer) in the secret's environment |
 
-An ACL has zero to forty unique consumers and only supports the `read` permission.
-Every grant must identify an already-enrolled, active consumer in the same
-environment as the secret. Removing a consumer keeps a `REVOKED` tombstone in
-its snapshot so the operator removes the corresponding Kubernetes Secret.
-The environment must first be defined by an administrator. Hemlig stores that
-definition in the control table and rejects secret creation and consumer
-enrollment for an unknown environment.
+Removing a consumer leaves a `REVOKED` [tombstone](../glossary.md#tombstone) in its change snapshot so an offline workload learns it lost access.
+
+::: warning Agents are never in an ACL
+An [agent](../glossary.md#agent) cannot be added to an ACL. Its access is managed by its AgentGrant, and the server derives the matching read row from the grant. A request that adds, changes or removes an agent's ACL row returns `409 conflict`. Change the grant instead; see [Administrator consumer and grant routes](admin-consumers.md#put-v1-admin-agent-grants-grantid).
+:::
 
 ## Payload
 
-A payload is an object of Secret data entries. The serialized JSON body must
-not exceed 768,000 bytes (750 KiB). Keys allow letters, digits, `.`, `_`, and
-`-`; values are explicit UTF-8 or canonical base64.
+A payload is a map of entry names to values. The serialized JSON body is at most 768,000 bytes.
 
 ```json
 {
   "username": { "encoding": "utf8", "value": "service-account" },
-  "password": {
-    "encoding": "base64",
-    "value": "Y29ycmVjdC1ob3JzZS1iYXR0ZXJ5LXN0YXBsZQ=="
-  }
+  "password": { "encoding": "base64", "value": "c2VjcmV0" }
 }
 ```
 
-Base64 must use canonical RFC 4648 padding. Use `utf8` for ordinary text.
+| Part | Rule |
+| --- | --- |
+| Entry name | Letters, digits, `.`, `_` and `-` |
+| `encoding` | `utf8` or `base64` |
+| `value` | Text for `utf8`; canonical RFC 4648 base64 with padding for `base64` |
 
 ## Control revision
 
-Admin routes return an immutable control revision. Its `controlVersionId` is
-the optimistic-concurrency ETag for subsequent updates.
+Admin routes return an immutable control revision. Its `controlVersionId` is the ETag for the next update.
 
+::: details Example control revision
 ```json
 {
   "schemaVersion": 1,
-  "secretId": "database-credentials",
+  "secretUid": "sec-0f5c2d1e-8a47-4c0e-9b1d-3a6e7f2c9d10",
+  "secretId": "payments/stripe/api-key",
   "controlVersionId": "ctl-92b9be7b-4e03-4a8c-87be-6a2d0af66147",
   "payloadVersionId": "pay-8436f80a-00ee-48d2-8a18-3a1194279ddc",
-  "payloadKeyCount": 2,
+  "payloadKeyCount": 1,
   "environment": "prod",
   "state": "ACTIVE",
-  "createdAt": "2026-08-22T19:37:12.441Z",
-  "createdBy": { "type": "human", "id": "external-oidc-subject" },
-  "metadata": { "description": "Database credentials" },
-  "acl": [{ "consumerId": "prod-east", "permissions": ["read"] }]
+  "createdAt": "2030-01-01T00:00:00.000Z",
+  "createdBy": { "type": "human", "id": "example-subject" },
+  "metadata": { "description": "Stripe API key" },
+  "acl": [{ "consumerId": "payments-prod", "permissions": ["read"] }]
 }
 ```
+:::
 
-New secrets are `PENDING_VALUE` until a payload update succeeds, after which
-they become `ACTIVE`. `payloadKeyCount` is written with a payload revision and
-copied to later metadata/ACL-only revisions. It lets a caller warn about a
-destructive replacement without retaining or exposing payload key names.
+| Field | Meaning |
+| --- | --- |
+| `state` | `PENDING_VALUE` after create, `ACTIVE` once a payload exists, `ARCHIVED` (terminal). See [Secret state](../glossary.md#secret-state). |
+| `payloadVersionId` | Absent until the first payload write |
+| `payloadKeyCount` | Number of payload entries. Metadata-only revisions copy it. It never reveals entry names. |
