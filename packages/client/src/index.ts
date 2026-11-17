@@ -137,6 +137,11 @@ export interface ConsumerProvisioningResult {
   readonly status: "ACTIVE";
 }
 
+export interface AgentIdentityRotation extends ConsumerProvisioningResult {
+  readonly notBefore: string;
+  readonly notAfter: string;
+}
+
 export interface AgentGrant {
   readonly grantId: string;
   readonly consumerId: string;
@@ -322,6 +327,23 @@ export class HemligClient {
 
   public async getAgentConfig(): Promise<AgentConfig> {
     return this.request("GET", "/v1/agent/config");
+  }
+
+  /**
+   * Replaces the calling mTLS identity with a leaf for a new key. Reuse the same
+   * idempotency key (for example a hash of the CSR) when retrying a CSR.
+   */
+  public async rotateAgentIdentity(
+    apiCertificateSigningRequestPem: string,
+    idempotencyKey: string,
+  ): Promise<AgentIdentityRotation> {
+    return this.request(
+      "POST",
+      "/v1/agent/identities/rotate",
+      undefined,
+      { apiCertificateSigningRequestPem },
+      idempotencyKey,
+    );
   }
 
   public async getAgentSecret(

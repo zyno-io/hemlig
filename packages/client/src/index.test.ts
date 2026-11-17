@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   HemligClient,
+  HemligError,
   type HemligTransport,
   type TransportRequest,
 } from "./index";
@@ -286,4 +287,69 @@ test("agent control and payload updates use only mTLS transport headers", async 
     "/v1/agent/secrets/payments-api/payload",
   );
   assert.equal(requests[1]?.headers?.["if-match"], '"ctl-current"');
+});
+
+test("agent identity rotation posts the CSR with an idempotency key and no authorization", async () => {
+  const requests: TransportRequest[] = [];
+  const transport: HemligTransport = {
+    request: async (request) => {
+      requests.push(request);
+      return {
+        status: 201,
+        headers: {},
+        body: {
+          consumerId: "agent-a",
+          environment: "prod",
+          rootFingerprint: "root",
+          apiFingerprint: "new",
+          apiCertificatePem: "pem",
+          notBefore: "2026-01-01T00:00:00.000Z",
+          notAfter: "2027-01-01T00:00:00.000Z",
+          status: "ACTIVE",
+        },
+      };
+    },
+  };
+  const client = new HemligClient(
+    new URL("https://api.example.test"),
+    transport,
+  );
+
+  const rotation = await client.rotateAgentIdentity("CSR-PEM", "csr-hash-key");
+
+  assert.equal(rotation.notAfter, "2027-01-01T00:00:00.000Z");
+  assert.equal(requests[0]?.method, "POST");
+  assert.equal(requests[0]?.url.pathname, "/v1/agent/identities/rotate");
+  assert.equal(requests[0]?.headers?.["idempotency-key"], "csr-hash-key");
+  assert.equal(requests[0]?.headers?.authorization, undefined);
+  assert.deepEqual(requests[0]?.body, {
+    apiCertificateSigningRequestPem: "CSR-PEM",
+  });
+});
+
+test("agent identity rotation surfaces the server error code", async () => {
+  const transport: HemligTransport = {
+    request: async () => ({
+      status: 409,
+      headers: {},
+      body: {
+        error: {
+          code: "identity_limit_reached",
+          message: "too many",
+          correlationId: "c",
+        },
+      },
+    }),
+  };
+  const client = new HemligClient(
+    new URL("https://api.example.test"),
+    transport,
+  );
+  await assert.rejects(
+    client.rotateAgentIdentity("CSR", "key-12345"),
+    (error: unknown) =>
+      error instanceof HemligError &&
+      error.status === 409 &&
+      error.code === "identity_limit_reached",
+  );
 });
