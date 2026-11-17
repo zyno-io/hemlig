@@ -10,17 +10,6 @@ repository owns the resources, policies, handlers, and defaults embodied by the
 construct. The bundled `cdk/app.ts` is a reference app, not the required
 deployment boundary.
 
-## Pre-1.0 rename migration
-
-Hemlig is a new protocol and deployment namespace, not an in-place cosmetic
-rename of a Clavis installation. It uses `hml-` resource names,
-`service=hemlig` KMS encryption contexts, `spiffe://hemlig/...` certificate
-identities, `HEMLIG_*` runtime configuration, and `hemlig.io` Kubernetes CRDs.
-Deploy it as a new service, re-enroll workload identities, and migrate secret
-control metadata and payloads through the administrator API. Do not point a
-Hemlig Lambda at an existing Clavis table, bucket, or issuing root: its old
-encrypted revisions and mTLS identity records are intentionally incompatible.
-
 `DeploymentConfig` requires `adminFqdn`, `apiFqdn`, `zoneDomain`,
 `oidcIssuer`, and `oidcAudience`; `environmentName` is set by the installer.
 The reference app accepts the `environment` context key and defaults it to
@@ -149,7 +138,7 @@ and JWKS endpoints from the issuer's origin — true for Entra, Okta, and Auth0,
 but not universal (Google issues from `accounts.google.com` and serves tokens
 from `oauth2.googleapis.com`). A provider that splits them needs both origins in
 `connect-src`. The console is deliberately cross-origin to
-the admin API — see [the console plan](console-plan.md) for why CloudFront is
+the admin API — see [the console plan](/design/console-plan) for why CloudFront is
 kept out of the credential path.
 
 Built console assets are copied into `dist-cdk/console-dist` before packing and

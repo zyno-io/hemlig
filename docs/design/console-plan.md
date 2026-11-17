@@ -1,5 +1,9 @@
 # Hemlig console plan
 
+::: warning Historical design record
+This document records design intent at the time it was written and may differ from current behavior. For current behavior see the [console guide](/guide/console) and [deployment guide](/guide/deploying).
+:::
+
 This plans **Hemlig Console**, a browser management interface for the
 administrator API. The console UI and static-hosting work remain unimplemented;
 the API-readiness work recorded below is implemented in v0.3.

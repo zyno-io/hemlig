@@ -4,11 +4,11 @@ Hemlig delivers Kubernetes Secret payloads to non-AWS workloads without giving
 those consumers AWS credentials. Administrators define encrypted secrets and
 consumer read ACLs; enrolled consumers receive only the payloads they may read.
 
-This document describes the v0.4 implementation. It includes organizational
+This page describes the current implementation. It includes organizational
 metadata/catalog browsing, the enrollment/truststore workflow, and bounded
 audit-archive browsing. Issuer-root rotation remains intentionally excluded. See
-[API reference](api.md) for the HTTP contract and
-[deployment guide](cdk-integration.md) for installation inputs.
+[API reference](/reference/api/) for the HTTP contract and
+[deployment guide](deploying.md) for installation inputs.
 
 ## Goals
 
@@ -21,33 +21,24 @@ audit-archive browsing. Issuer-root rotation remains intentionally excluded. See
 
 ## System overview
 
-```mermaid
-flowchart LR
-  administrator[Administrator] -->|OIDC JWT| adminApi[Admin HTTP API]
-  bootstrap[Namespace bootstrap Secret] -->|one-use token + CSR| bootstrapApi[Bootstrap route]
-  operator[Consumer operator] -->|mTLS leaf| consumerApi[Consumer HTTP API]
-  adminApi --> adminLambda[Admin Lambda]
-  adminApi --> auditQueryLambda[Audit query Lambda]
-  bootstrapApi --> bootstrapLambda[Bootstrap Lambda]
-  consumerApi --> consumerLambda[Consumer Lambda]
-  adminLambda --> table[(DynamoDB control table)]
-  consumerLambda --> table
-  adminLambda --> kms[one Hemlig application CMK]
-  consumerLambda --> kms
-  adminLambda --> revisions[(S3 immutable revisions)]
-  consumerLambda --> revisions
-  adminLambda --> audit[(S3 Object Lock audit archive)]
-  auditQueryLambda --> audit
-  consumerLambda --> audit
-  bootstrapLambda --> iot[AWS IoT Core]
-  table -->|DynamoDB Stream| notificationLambda[Notification Lambda]
-  notificationLambda -->|QoS 1 payload-free hint| iot
-  recovery[Recovery Lambda] --> table
-  adminLambda --> truststore[(S3 versioned truststore)]
-  recovery --> truststore
-  adminLambda --> domain[API Gateway consumer domain]
-  recovery --> domain
-  retention[Retention Lambda] --> revisions
+```text
+Administrator --OIDC JWT--> Admin HTTP API (adminFqdn)
+                              |-- Admin Lambda ---------> DynamoDB control table
+                              |                           S3 immutable revisions
+                              |                           S3 Object Lock audit archive (write)
+                              |                           KMS application CMK
+                              |                           S3 truststore + API Gateway domain
+                              `-- Audit-query Lambda ---> S3 audit archive (read)
+
+Namespace bootstrap Secret --one-use token + CSR--> Bootstrap route (adminFqdn)
+                              `-- Bootstrap Lambda -----> issuing root (KMS) + AWS IoT Core
+
+Workload / controller --mTLS leaf--> Delivery HTTP API (apiFqdn)
+                              `-- Consumer Lambda ------> DynamoDB, S3 revisions, KMS (payload context only)
+
+DynamoDB Stream --> Notification Lambda --QoS 1, payload-free hint--> AWS IoT Core --> controller
+EventBridge (5 min) --> Recovery Lambda --> DynamoDB, truststore, API Gateway domain
+EventBridge (daily) --> Retention Lambda --> S3 revisions
 ```
 
 The CDK stack binds an organization-owned OIDC issuer/audience, creates custom
@@ -338,7 +329,7 @@ Thus the index is current state with bounded tombstones, not retained event
 history. A concurrent update that moves beyond the captured range is seen on
 the next delta. Missing bootstrap entries need an authoritative read rather
 than an inferred revocation. Expiry or a scope/epoch change forces a new
-snapshot. See [the implementation and rollout plan](agent-sync-plan.md).
+snapshot. See [the implementation and rollout plan](/design/agent-sync-plan).
 
 ## Immediate notification path
 
@@ -384,7 +375,7 @@ or plaintext KMS material.
 Compliance retention prevents deletion or shortened retention; it does not
 make a compromised writer unable to add misleading _new_ events. Hemlig claims
 locked retention, not hash-chain tamper evidence. See the
-[threat model](threat-model.md) for residual risks.
+[threat model](/security/threat-model) for residual risks.
 
 `GET /v1/admin/audit` is served by a dedicated query Lambda. It has the same
 administrator JWT authorization as other management routes, but only this role
@@ -444,5 +435,5 @@ and the same immutable-write ability needed to record archive views.
 | CSR enrollment, truststore publication, leaf rotation, leaf revocation | Implemented           |
 | Issuer-root rotation and hash-chain seals                              | Deliberately excluded |
 
-[PLAN.md](../PLAN.md) records longer-term issuer-root rotation and audit-boundary
+The [implementation plan](/design/plan) records longer-term issuer-root rotation and audit-boundary
 acceptance criteria.

@@ -1,4 +1,4 @@
-# Hemlig releases
+# Releasing
 
 Pushing a tag such as `v0.2.0` runs `.github/workflows/ci.yml`. All service,
 workspace, MiniStack, Helm and package checks must pass before publishing.
@@ -41,7 +41,7 @@ hemlig --help
 ```
 
 The CLI retains its OIDC administrator authentication and JSON output contract.
-See the [CLI guide](cli.md) for token handling and command examples.
+See the [CLI guide](/guide/cli) for token handling and command examples.
 
 ## npm trusted publishing
 
@@ -84,3 +84,24 @@ Tag builds do not cancel an in-progress release when another run starts.
 Creating or pushing a release tag is a publication action. Merge the workflow
 and configure the npm trusted publishers before tagging a version you intend
 to release.
+
+## Controller image and Helm chart
+
+| Artifact                | Published when            | Name                                                                    |
+| ----------------------- | ------------------------- | ----------------------------------------------------------------------- |
+| Controller image        | Push to `main`            | `ghcr.io/zyno-io/hemlig-controller:main` (mutable)                       |
+| Controller image        | Tag `vX.Y.Z`              | `ghcr.io/zyno-io/hemlig-controller:vX.Y.Z`                               |
+| Helm chart              | Tag `vX.Y.Z`              | `hemlig-controller-X.Y.Z.tgz` as an immutable release in `zyno-io/charts`; the charts repository regenerates the public index at `https://zyno-io.github.io/charts` |
+
+The chart is packaged with `--version X.Y.Z --app-version vX.Y.Z`, so a published
+chart defaults its image tag to the matching `vX.Y.Z`. Publishing the chart needs
+the `CHARTS_REPO_TOKEN` secret (fine-grained, Contents read/write on
+`zyno-io/charts`); the job fails if the chart release already exists. Pull request
+builds build but do not push the image (`ci` tag). Generated chart archives are never
+committed to this repository. For pinning images by digest in a rollout see
+[Controller rollout via Flux](flux-rollout.md).
+
+## Documentation site
+
+The docs site is deployed separately from releases by `docs.yml` on every push to
+`main`; see [Docs site](/contributing/docs-site).
