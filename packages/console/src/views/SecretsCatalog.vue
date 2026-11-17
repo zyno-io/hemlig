@@ -655,6 +655,13 @@ const tagRejection = computed(() =>
                 >
                   {{ secret.secretId }}
                 </RouterLink>
+                <p
+                  v-if="secret.metadata.description"
+                  class="secret-description mt-0.5 max-w-xl truncate text-xs text-ink-muted"
+                  :title="secret.metadata.description"
+                >
+                  {{ secret.metadata.description }}
+                </p>
               </td>
               <td class="py-2 pr-3 text-xs">
                 <span
@@ -726,6 +733,13 @@ const tagRejection = computed(() =>
               >
                 {{ secret.secretId }}
               </RouterLink>
+              <p
+                v-if="secret.metadata.description"
+                class="secret-description mt-0.5 max-w-xl truncate text-xs text-ink-muted"
+                :title="secret.metadata.description"
+              >
+                {{ secret.metadata.description }}
+              </p>
             </td>
             <td class="mono py-2 pr-3 text-xs">
               {{ secretFolderPath(secret.secretId) ?? "Root" }}
@@ -855,6 +869,13 @@ const tagRejection = computed(() =>
                 >
                   {{ secret.secretId }}
                 </RouterLink>
+                <p
+                  v-if="secret.metadata.description"
+                  class="secret-description mt-0.5 max-w-xl truncate text-xs text-ink-muted"
+                  :title="secret.metadata.description"
+                >
+                  {{ secret.metadata.description }}
+                </p>
               </td>
               <td class="mono py-2 pr-3 text-xs">
                 {{ secretFolderPath(secret.secretId) ?? "Root" }}
