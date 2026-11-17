@@ -201,6 +201,9 @@ html.dark {
   }
 
   html {
+    /* Keep focused and anchored elements clear of the sticky top bar and
+       page header (WCAG 2.4.11). */
+    scroll-padding-top: calc(var(--header-h) + 84px);
     caret-color: var(--accent);
     accent-color: var(--accent);
     scrollbar-color: var(--border-strong) transparent;
@@ -263,11 +266,6 @@ html.dark {
     height: 15px;
   }
 
-  /* Native date controls keep a dark calendar icon unless told the scheme. */
-  html.dark .date-input::-webkit-calendar-picker-indicator {
-    filter: invert(1);
-    opacity: 0.85;
-  }
 }
 
 @layer components {
@@ -297,6 +295,18 @@ html.dark {
     margin: -12px -4px 20px;
     padding: 12px 4px;
     background: var(--bg);
+  }
+
+  /* Below 900px the top bar wraps to two rows and actions wrap, so a sticky
+     header would cover the content it introduces. */
+  @media (max-width: 900px) {
+    .page-header {
+      position: static;
+    }
+
+    html {
+      scroll-padding-top: 88px;
+    }
   }
 
   .page-title {
@@ -798,6 +808,10 @@ html.dark {
   .menu-item:hover,
   .menu-item:focus-visible {
     background: var(--surface-2);
-    outline: none;
+  }
+
+  .menu-item:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
   }
 }

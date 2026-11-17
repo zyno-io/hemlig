@@ -240,6 +240,11 @@ const active = (name: string): boolean =>
     color 0.12s;
 }
 
+/* The scrolling nav clips outward rings; draw focus inside the link. */
+.nav-link:focus-visible {
+  outline-offset: -2px;
+}
+
 .nav-link:hover {
   background: var(--surface-2);
   color: var(--text);
