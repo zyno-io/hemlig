@@ -217,380 +217,324 @@ const confirmGrantRevoke = async (): Promise<void> => {
 </script>
 
 <template>
-  <div class="space-y-4 text-sm">
-    <div class="flex items-center justify-between">
+  <div>
+    <div class="page-header">
       <div>
-        <RouterLink
-          class="text-xs text-accent hover:underline"
-          :to="{ name: 'consumers', params: { env } }"
-        >
+        <RouterLink class="link text-xs" :to="{ name: 'consumers', params: { env } }">
           ← Consumers
         </RouterLink>
-        <h1 class="mono text-lg font-semibold">{{ consumerId }}</h1>
+        <h1 class="page-title mono">{{ consumerId }}</h1>
       </div>
-      <button class="rounded border border-line px-3 py-1" @click="refresh">
-        Refresh
-      </button>
-    </div>
-
-    <ErrorNotice v-if="consumer.error.value" :error="consumer.error.value" />
-
-    <section
-      v-if="consumer.data.value"
-      class="rounded border border-line bg-surface-raised p-4"
-    >
-      <dl class="grid grid-cols-[10rem_1fr] gap-y-1 text-xs">
-        <dt class="text-ink-muted">Status</dt>
-        <dd><StateBadge :state="consumer.data.value.status" /></dd>
-        <dt class="text-ink-muted">Environment</dt>
-        <dd class="mono">{{ consumer.data.value.environment }}</dd>
-        <dt class="text-ink-muted">SPIFFE identity</dt>
-        <dd class="mono break-all">{{ consumer.data.value.subjectUri }}</dd>
-        <dt class="text-ink-muted">Enrolled</dt>
-        <dd class="mono">{{ consumer.data.value.createdAt }}</dd>
-        <dt v-if="consumer.data.value.rootFingerprint" class="text-ink-muted">
-          Root fingerprint
-        </dt>
-        <dd v-if="consumer.data.value.rootFingerprint" class="mono break-all">
-          {{ consumer.data.value.rootFingerprint }}
-        </dd>
-      </dl>
-    </section>
-
-    <MutationState
-      :phase="rotation.phase.value"
-      :can-retry="rotation.canRetry.value"
-      intent="sign a new client certificate"
-      @retry="rotation.retry()"
-      @reload="identities.refetch()"
-    />
-    <MutationState
-      :phase="revocation.phase.value"
-      :can-retry="revocation.canRetry.value"
-      intent="revoke this identity"
-      @retry="revocation.retry()"
-      @reload="identities.refetch()"
-    />
-    <MutationState
-      :phase="grantRevocation.phase.value"
-      :can-retry="grantRevocation.canRetry.value"
-      intent="revoke this grant"
-      @retry="grantRevocation.retry()"
-      @reload="reloadGrants"
-    />
-    <MutationState
-      :phase="agentGrantRevocation.phase.value"
-      :can-retry="agentGrantRevocation.canRetry.value"
-      intent="revoke this grant"
-      @retry="agentGrantRevocation.retry()"
-      @reload="consumer.refetch()"
-    />
-
-    <div
-      v-if="
-        rotation.phase.value.kind === 'succeeded' &&
-        rotation.result.value?.apiCertificatePem
-      "
-      class="rounded border border-ok/50 bg-ok/5 p-4"
-    >
-      <p class="font-medium text-ok">
-        New certificate issued. This is shown once.
-      </p>
-      <div class="mt-3 space-y-3">
-        <CopyField
-          label="Leaf fingerprint"
-          :value="rotation.result.value.apiFingerprint"
-        />
-        <CopyField
-          label="Client certificate"
-          :value="rotation.result.value.apiCertificatePem"
-          multiline
-        />
+      <div class="page-actions">
+        <button class="btn" @click="refresh">Refresh</button>
       </div>
     </div>
 
-    <section class="rounded border border-line bg-surface-raised p-4">
-      <div class="flex items-center justify-between">
-        <h2 class="font-medium">API identities</h2>
-        <button
-          class="rounded border border-line px-3 py-1 text-xs"
-          @click="rotating = !rotating"
-        >
-          Rotate leaf
-        </button>
-      </div>
+    <div class="space-y-4">
+      <ErrorNotice v-if="consumer.error.value" :error="consumer.error.value" />
 
-      <div v-if="rotating" class="mt-3 rounded border border-line p-3">
-        <p class="text-xs text-ink-muted">
-          Rotation is additive: the new leaf becomes active alongside the
-          current one, so distribute it before revoking anything.
-        </p>
-        <textarea
-          v-model="csr"
-          rows="6"
-          spellcheck="false"
-          placeholder="-----BEGIN CERTIFICATE REQUEST-----"
-          class="mono mt-2 w-full rounded border border-line bg-surface px-2 py-1 text-xs"
-        />
-        <button
-          type="button"
-          class="mt-2 rounded border border-line px-2 py-1 text-xs"
-          @click="showGenerator = true"
-        >
-          Generate key and CSR
-        </button>
-        <p v-if="csrProblem" class="mt-1 text-xs text-danger">
-          {{ csrProblem }}
-        </p>
-        <button
-          class="mt-2 rounded bg-accent px-3 py-1 text-white disabled:opacity-50"
-          :disabled="rotation.phase.value.kind === 'submitting'"
-          @click="submitRotation"
-        >
-          {{
-            rotation.phase.value.kind === "submitting"
-              ? "Signing…"
-              : "Sign certificate"
-          }}
-        </button>
-      </div>
+      <section v-if="consumer.data.value" class="card card-body">
+        <dl class="facts">
+          <dt>Status</dt>
+          <dd><StateBadge :state="consumer.data.value.status" /></dd>
+          <dt>Environment</dt>
+          <dd class="mono">{{ consumer.data.value.environment }}</dd>
+          <dt>SPIFFE identity</dt>
+          <dd class="mono break-all">{{ consumer.data.value.subjectUri }}</dd>
+          <dt>Enrolled</dt>
+          <dd class="mono">{{ consumer.data.value.createdAt }}</dd>
+          <dt v-if="consumer.data.value.rootFingerprint">Root fingerprint</dt>
+          <dd v-if="consumer.data.value.rootFingerprint" class="mono break-all">
+            {{ consumer.data.value.rootFingerprint }}
+          </dd>
+        </dl>
+      </section>
 
-      <ErrorNotice
-        v-if="identities.error.value"
-        class="mt-3"
-        :error="identities.error.value"
+      <MutationState
+        :phase="rotation.phase.value"
+        :can-retry="rotation.canRetry.value"
+        intent="sign a new client certificate"
+        @retry="rotation.retry()"
+        @reload="identities.refetch()"
+      />
+      <MutationState
+        :phase="revocation.phase.value"
+        :can-retry="revocation.canRetry.value"
+        intent="revoke this identity"
+        @retry="revocation.retry()"
+        @reload="identities.refetch()"
+      />
+      <MutationState
+        :phase="grantRevocation.phase.value"
+        :can-retry="grantRevocation.canRetry.value"
+        intent="revoke this grant"
+        @retry="grantRevocation.retry()"
+        @reload="reloadGrants"
+      />
+      <MutationState
+        :phase="agentGrantRevocation.phase.value"
+        :can-retry="agentGrantRevocation.canRetry.value"
+        intent="revoke this grant"
+        @retry="agentGrantRevocation.retry()"
+        @reload="consumer.refetch()"
       />
 
-      <table
-        v-else-if="identities.data.value"
-        class="mt-3 w-full border-collapse text-left"
+      <div
+        v-if="
+          rotation.phase.value.kind === 'succeeded' &&
+          rotation.result.value?.apiCertificatePem
+        "
+        class="notice notice-success"
       >
-        <thead class="text-xs uppercase tracking-wide text-ink-muted">
-          <tr class="border-b border-line">
-            <th class="py-2 pr-3 font-medium">Fingerprint</th>
-            <th class="py-2 pr-3 font-medium">Status</th>
-            <th class="py-2 pr-3 font-medium">Valid until</th>
-            <th class="py-2 font-medium"></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="identity in identities.data.value.apiIdentities"
-            :key="identity.apiFingerprint"
-            class="border-b border-line/60"
-          >
-            <td class="mono py-2 pr-3 text-xs break-all">
-              {{ identity.apiFingerprint }}
-            </td>
-            <td class="py-2 pr-3">
-              <StateBadge :state="displayStatus(identity)" />
-            </td>
-            <td class="mono py-2 pr-3 text-xs">
-              {{ identity.notAfter }}
-              <span
-                v-if="expiringSoon(identity)"
-                class="ml-1 rounded bg-warn/15 px-1.5 py-0.5 text-warn"
-                >soon</span
-              >
-            </td>
-            <td class="py-2 text-right">
-              <button
-                v-if="identity.status === 'ACTIVE'"
-                class="rounded border border-danger/50 px-2 py-1 text-xs text-danger"
-                @click="revokeTarget = identity"
-              >
-                Revoke
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="rounded border border-line bg-surface-raised p-4">
-      <div class="flex items-center justify-between">
-        <div>
-          <h2 class="font-medium">Grants</h2>
-          <p
-            v-if="consumer.data.value?.agentGrant"
-            class="mt-1 text-xs text-ink-muted"
-          >
-            Canonical exact permissions from this consumer's AgentGrant. Read
-            access is projected automatically into the delivery feed.
-          </p>
-          <p v-else class="mt-1 text-xs text-ink-muted">
-            Effective secret ACL permissions for this consumer.
-          </p>
+        <p class="notice-title">New certificate issued. This is shown once.</p>
+        <div class="mt-3 space-y-3">
+          <CopyField
+            label="Leaf fingerprint"
+            :value="rotation.result.value.apiFingerprint"
+          />
+          <CopyField
+            label="Client certificate"
+            :value="rotation.result.value.apiCertificatePem"
+            multiline
+          />
         </div>
-        <button
-          class="rounded border border-line px-3 py-1 text-xs"
-          :disabled="grants.loading.value"
-          @click="reloadGrants"
-        >
-          {{ grants.loading.value ? "Loading…" : "Refresh" }}
-        </button>
       </div>
 
-      <ErrorNotice
-        v-if="
-          grants.error.value && consumer.data.value?.agentGrant === undefined
-        "
-        class="mt-3"
-        :error="grants.error.value"
-      />
+      <section class="card">
+        <div class="card-header">
+          <h2 class="section-title">API identities</h2>
+          <button class="btn" @click="rotating = !rotating">Rotate leaf</button>
+        </div>
 
-      <table
-        v-else-if="managedSecretPermissions.length > 0"
-        class="mt-3 w-full border-collapse text-left"
-      >
-        <thead class="text-xs uppercase tracking-wide text-ink-muted">
-          <tr class="border-b border-line">
-            <th class="py-2 pr-3 font-medium">Secret</th>
-            <th class="py-2 pr-3 font-medium">Permission</th>
-            <th class="py-2 font-medium"></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="grant in managedSecretPermissions"
-            :key="`${grant.secretUid}:${grant.permission}`"
-            class="border-b border-line/60"
-          >
-            <td class="py-2 pr-3">
-              <RouterLink
-                class="mono text-xs text-accent hover:underline"
-                :to="{
-                  name: 'secret',
-                  params: { env, secretId: grant.secretId },
-                }"
-                >{{ grant.secretId }}</RouterLink
-              >
-              <div class="mono mt-0.5 text-[0.65rem] text-ink-muted">
-                {{ grant.secretUid }}
-              </div>
-            </td>
-            <td class="py-2 pr-3 text-xs">{{ grant.permission }}</td>
-            <td class="py-2 text-right">
+        <div v-if="rotating" class="card-body border-b border-line">
+          <div class="rounded-md bg-surface-2 p-3">
+            <p class="field-hint mt-0">
+              Rotation is additive: the new leaf becomes active alongside the
+              current one, so distribute it before revoking anything.
+            </p>
+            <textarea
+              v-model="csr"
+              rows="6"
+              spellcheck="false"
+              placeholder="-----BEGIN CERTIFICATE REQUEST-----"
+              class="input mono mt-2 text-xs"
+            />
+            <button type="button" class="btn mt-2" @click="showGenerator = true">
+              Generate key and CSR
+            </button>
+            <p v-if="csrProblem" class="field-error">
+              {{ csrProblem }}
+            </p>
+            <div class="mt-2">
               <button
-                class="rounded border border-danger/50 px-2 py-1 text-xs text-danger"
-                :aria-label="`Revoke ${grant.permission} permission for ${grant.secretId}`"
-                @click="revokeGrantTarget = grant"
+                class="btn btn-primary"
+                :disabled="rotation.phase.value.kind === 'submitting'"
+                @click="submitRotation"
               >
-                Revoke
+                {{
+                  rotation.phase.value.kind === "submitting"
+                    ? "Signing…"
+                    : "Sign certificate"
+                }}
               </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p
-        v-else-if="
-          (consumer.data.value?.agentGrant !== undefined ||
-            grants.exhausted.value) &&
-          !grants.loading.value
-        "
-        class="mt-3 rounded border border-line p-3 text-center text-xs text-ink-muted"
-      >
-        This consumer has no secret permissions.
-      </p>
+            </div>
+          </div>
+        </div>
 
-      <button
-        v-if="
-          consumer.data.value?.agentGrant === undefined &&
-          !grants.exhausted.value &&
-          managedSecretPermissions.length > 0 &&
-          !grants.error.value
-        "
-        class="mt-3 rounded border border-line px-3 py-1 text-xs"
-        :disabled="grants.loading.value"
-        @click="grants.loadMore()"
-      >
-        {{ grants.loading.value ? "Loading…" : "Load more" }}
-      </button>
-    </section>
+        <div v-if="identities.error.value" class="card-body">
+          <ErrorNotice :error="identities.error.value" />
+        </div>
+
+        <div v-else-if="identities.data.value" class="overflow-x-auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Fingerprint</th>
+                <th>Status</th>
+                <th>Valid until</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="identity in identities.data.value.apiIdentities"
+                :key="identity.apiFingerprint"
+              >
+                <td class="mono text-xs break-all">
+                  {{ identity.apiFingerprint }}
+                </td>
+                <td>
+                  <StateBadge :state="displayStatus(identity)" />
+                </td>
+                <td class="mono text-xs">
+                  {{ identity.notAfter }}
+                  <span v-if="expiringSoon(identity)" class="tag tag-warning ml-1">soon</span>
+                </td>
+                <td class="text-right">
+                  <button
+                    v-if="identity.status === 'ACTIVE'"
+                    class="btn btn-sm btn-danger"
+                    @click="revokeTarget = identity"
+                  >
+                    Revoke
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="section-title">Grants</h2>
+            <p v-if="consumer.data.value?.agentGrant" class="meta">
+              Canonical exact permissions from this consumer's AgentGrant. Read
+              access is projected automatically into the delivery feed.
+            </p>
+            <p v-else class="meta">
+              Effective secret ACL permissions for this consumer.
+            </p>
+          </div>
+          <button class="btn" :disabled="grants.loading.value" @click="reloadGrants">
+            {{ grants.loading.value ? "Loading…" : "Refresh" }}
+          </button>
+        </div>
+
+        <div
+          v-if="
+            grants.error.value && consumer.data.value?.agentGrant === undefined
+          "
+          class="card-body"
+        >
+          <ErrorNotice :error="grants.error.value" />
+        </div>
+
+        <div v-else-if="managedSecretPermissions.length > 0" class="overflow-x-auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Secret</th>
+                <th>Permission</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="grant in managedSecretPermissions"
+                :key="`${grant.secretUid}:${grant.permission}`"
+              >
+                <td>
+                  <RouterLink
+                    class="mono link text-xs"
+                    :to="{
+                      name: 'secret',
+                      params: { env, secretId: grant.secretId },
+                    }"
+                    >{{ grant.secretId }}</RouterLink
+                  >
+                  <div class="mono mt-0.5 text-[11px] text-ink-3">
+                    {{ grant.secretUid }}
+                  </div>
+                </td>
+                <td class="text-xs">{{ grant.permission }}</td>
+                <td class="text-right">
+                  <button
+                    class="btn btn-sm btn-danger"
+                    :aria-label="`Revoke ${grant.permission} permission for ${grant.secretId}`"
+                    @click="revokeGrantTarget = grant"
+                  >
+                    Revoke
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p
+          v-else-if="
+            (consumer.data.value?.agentGrant !== undefined ||
+              grants.exhausted.value) &&
+            !grants.loading.value
+          "
+          class="card-body text-center text-[13px] text-ink-3"
+        >
+          This consumer has no secret permissions.
+        </p>
+
+        <div
+          v-if="
+            consumer.data.value?.agentGrant === undefined &&
+            !grants.exhausted.value &&
+            managedSecretPermissions.length > 0 &&
+            !grants.error.value
+          "
+          class="card-body border-t border-line"
+        >
+          <button class="btn" :disabled="grants.loading.value" @click="grants.loadMore()">
+            {{ grants.loading.value ? "Loading…" : "Load more" }}
+          </button>
+        </div>
+      </section>
+    </div>
 
     <div
       v-if="revokeTarget"
-      class="fixed inset-0 z-10 flex items-center justify-center bg-black/40 p-4"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,12,16,0.42)] p-4 backdrop-blur-[2px]"
       role="dialog"
       aria-modal="true"
     >
-      <div
-        class="w-full max-w-md rounded border border-line bg-surface-raised p-5"
-      >
-        <h2 class="font-semibold">Revoke this client certificate?</h2>
+      <div class="card w-full max-w-md p-6 shadow-lg">
+        <h2 class="text-[17px] font-semibold">Revoke this client certificate?</h2>
         <p class="mono mt-2 break-all text-xs">
           {{ revokeTarget.apiFingerprint }}
         </p>
-        <p class="mt-2 text-sm">
+        <p class="mt-2 text-[13px] text-ink-2">
           Revocation takes effect immediately. The delivery API reads the
           identity strongly consistently on every request, so it does not wait
           for truststore propagation.
         </p>
-        <p
-          v-if="activeCount <= 1"
-          class="mt-2 rounded bg-danger/10 p-2 text-sm text-danger"
-        >
+        <p v-if="activeCount <= 1" class="notice notice-danger mt-3">
           This is the last active identity for {{ consumerId }}. Revoking it
           stops the consumer from reading any secret until a new leaf is issued
           and installed.
         </p>
-        <p v-else class="mt-2 text-xs text-ink-muted">
+        <p v-else class="meta mt-2">
           {{ activeCount - 1 }} other active identit{{
             activeCount - 1 === 1 ? "y" : "ies"
           }}
           will remain.
         </p>
-        <div class="mt-4 flex justify-end gap-2">
-          <button
-            class="rounded border border-line px-3 py-1"
-            @click="revokeTarget = undefined"
-          >
-            Cancel
-          </button>
-          <button
-            class="rounded bg-danger px-3 py-1 text-white"
-            @click="confirmRevoke"
-          >
-            Revoke
-          </button>
+        <div class="mt-5 flex justify-end gap-2">
+          <button class="btn" @click="revokeTarget = undefined">Cancel</button>
+          <button class="btn btn-danger" @click="confirmRevoke">Revoke</button>
         </div>
       </div>
     </div>
 
     <div
       v-if="revokeGrantTarget"
-      class="fixed inset-0 z-10 flex items-center justify-center bg-black/40 p-4"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,12,16,0.42)] p-4 backdrop-blur-[2px]"
       role="dialog"
       aria-modal="true"
     >
-      <div
-        class="w-full max-w-md rounded border border-line bg-surface-raised p-5"
-      >
-        <h2 class="font-semibold">Revoke this permission?</h2>
+      <div class="card w-full max-w-md p-6 shadow-lg">
+        <h2 class="text-[17px] font-semibold">Revoke this permission?</h2>
         <p class="mono mt-2 break-all text-xs">
           {{ revokeGrantTarget.permission }}: {{ revokeGrantTarget.secretId }}
         </p>
-        <p v-if="consumer.data.value?.agentGrant" class="mt-2 text-sm">
+        <p v-if="consumer.data.value?.agentGrant" class="mt-2 text-[13px] text-ink-2">
           This removes the exact permission from the canonical AgentGrant and
           reconciles its read delivery access automatically.
         </p>
-        <p v-else class="mt-2 text-sm">
+        <p v-else class="mt-2 text-[13px] text-ink-2">
           This removes {{ consumerId }} from the secret ACL immediately and
           sends a durable delivery revocation.
         </p>
-        <div class="mt-4 flex justify-end gap-2">
-          <button
-            class="rounded border border-line px-3 py-1"
-            @click="revokeGrantTarget = undefined"
-          >
-            Cancel
-          </button>
-          <button
-            class="rounded bg-danger px-3 py-1 text-white"
-            @click="confirmGrantRevoke"
-          >
-            Revoke
-          </button>
+        <div class="mt-5 flex justify-end gap-2">
+          <button class="btn" @click="revokeGrantTarget = undefined">Cancel</button>
+          <button class="btn btn-danger" @click="confirmGrantRevoke">Revoke</button>
         </div>
       </div>
     </div>
