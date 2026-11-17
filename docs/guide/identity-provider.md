@@ -1,9 +1,137 @@
 ---
-title: "Connect your identity provider"
-description: "Configure the OIDC token requirements for the administrator API and verify a token with curl."
-search: false
+title: Connect your identity provider
+description: Configure the OIDC token requirements for the administrator API and verify a token with curl.
+pageType: how-to
 ---
 
 # Connect your identity provider
 
-Being written.
+Configure your OIDC provider so its access tokens satisfy the administrator API, then verify a real token with curl before you rely on it.
+
+Hemlig does not create users, app registrations or administrator groups. Your provider must expose an HTTPS OIDC issuer with a JWKS and issue RSA-signed JWTs.
+
+**Before you start:** you need admin rights in your provider and the [CDK config](deploying.md#_3-fill-in-the-oidc-values) fields in front of you. About 15 minutes.
+
+## What the API checks
+
+Every administrator request is checked twice: by API Gateway, then again by the admin Lambda. A token must be an **access token**, not an ID token.
+
+| Requirement | Config field | Checked by | Token claim |
+| --- | --- | --- | --- |
+| Issuer matches exactly | `oidcIssuer` | Gateway and Lambda | `iss` |
+| Audience matches | `oidcAudience` | Gateway and Lambda | `aud` (or `client_id` when `aud` is absent) |
+| Signature and expiry | none | Gateway | n/a |
+| Administrator scope | `oidcAdminScope` | Gateway and Lambda, when set | `scope` or `scp` |
+| Administrator role | `oidcAdminRole` | Lambda, when set | `roles` or `role` |
+| Stable identity | `oidcSubjectClaim` (default `sub`) | Lambda | the configured claim must be present |
+
+The scope and role are optional for API-only use, but `oidcAdminScope` is **required** when you enable the [console](console.md). A scope is one token, not a list.
+
+`oidcSubjectClaim` is recorded as the owner of every change and drives idempotency. Pick a claim that never changes for a person.
+
+::: tip Scope on automation tokens
+When `oidcAdminScope` is set, every administrator token must carry it, including tokens for automation. Some providers put machine-to-machine grants in a `roles` claim and no scope. For those, leave `oidcAdminScope` unset and restrict access with `oidcAdminRole`.
+:::
+
+## Provider notes
+
+Replace the placeholder hosts, tenant and application IDs with your own.
+
+::: code-group
+
+```text [Entra]
+oidcIssuer   https://login.microsoftonline.com/TENANT_ID/v2.0
+oidcAudience API application (client) ID, not the api:// URI
+oidcAdminScope  hemlig.admin   (short name, as carried in scp)
+oidcConsoleAccessScope  api://API_APP_ID/hemlig.admin
+oidcAdminRole   app role value, carried in roles
+```
+
+```text [Okta]
+oidcIssuer   https://example.okta.com/oauth2/AUTH_SERVER_ID
+oidcAudience the custom authorization server's Audience
+oidcAdminScope  a custom scope on that server, carried in scp
+oidcAdminRole   a custom claim named roles (optional)
+```
+
+```text [Auth0]
+oidcIssuer   https://example.auth0.com/   (the trailing slash is part of it)
+oidcAudience the API Identifier
+oidcAdminScope  a permission on that API, carried in scope
+oidcAdminRole   leave unset
+```
+
+```text [Keycloak]
+oidcIssuer   https://login.example.com/realms/REALM
+oidcAudience add an Audience mapper; the default aud is account
+oidcAdminScope  a client scope carried in scope
+oidcAdminRole   a mapper that emits a multivalued claim named roles
+```
+
+:::
+
+Points that commonly go wrong:
+
+- **Entra** must issue v2 tokens: set `accessTokenAcceptedVersion` to `2` in the API app's manifest. A v1 token has a different issuer and an `api://` audience, and fails at the gateway. A browser requests the resource-qualified scope; the token carries only the short name.
+- **Okta** needs a custom authorization server. Org-server tokens are not meant for your own API.
+- **Auth0** normally ignores custom claims without a namespaced name, so it cannot emit the plain `roles` claim Hemlig reads. Use the scope instead.
+- **Keycloak** puts realm roles in a nested `realm_access.roles` claim. Add a mapper to emit a top-level `roles` claim.
+
+### Console client registration
+
+The console is a browser app using the authorization-code flow with PKCE. Register it as a single-page application and allow these redirect URIs for your `consoleFqdn`.
+
+| Purpose | URI |
+| --- | --- |
+| Sign-in callback | `https://console.example.com/auth/callback` |
+| Silent token renewal | `https://console.example.com/silent.html` |
+| Post-logout | `https://console.example.com` |
+
+The client ID becomes `oidcClientId`. The console also requests `openid`, `profile` and `email`; `email` is display-only.
+
+## Verify your token
+
+Obtain an access token with your provider's normal tooling, then check it in two steps. Do not paste production tokens into third-party decoders.
+
+1. Decode the claims locally.
+
+   ```sh
+   export TOKEN=paste-an-access-token-here
+   python3 -I -c "import base64,json,sys;p=sys.argv[1].split('.')[1];print(json.dumps(json.loads(base64.urlsafe_b64decode(p+'='*(-len(p)%4))),indent=1))" "$TOKEN"
+   ```
+
+   Expected output is a JSON object. Compare it with your config:
+
+   | Claim | Must equal |
+   | --- | --- |
+   | `iss` | `oidcIssuer`, character for character (watch trailing slashes and `/v2.0`) |
+   | `aud` | `oidcAudience`. A client ID that is not the audience, or an ID token, means you asked for the wrong thing |
+   | `scp` or `scope` | contains `oidcAdminScope`, when configured |
+   | `roles` or `role` | contains `oidcAdminRole`, when configured |
+   | your `oidcSubjectClaim` | is present |
+
+2. Call the API.
+
+   ```sh
+   export HEMLIG_ADMIN_URL=https://admin.example.com
+   curl -sS -o /dev/null -w '%{http_code}\n' \
+     "$HEMLIG_ADMIN_URL/v1/admin/environments" \
+     -H "authorization: Bearer $TOKEN"
+   ```
+
+   Expected output:
+
+   ```text
+   200
+   ```
+
+| Status | Meaning | Fix |
+| --- | --- | --- |
+| `401` | API Gateway rejected the token before Lambda | Audience, issuer, signature, expiry or scope. Get a new token |
+| `403` | Gateway accepted it; the Lambda refused it | Gateway and Lambda disagree on issuer, audience, scope or role. Fix the config; a new token will not help |
+
+## Next steps
+
+- [Deploy Hemlig to AWS](deploying.md)
+- [Host the console](console.md)
+- [Configuration reference](../reference/configuration.md)
