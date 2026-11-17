@@ -266,6 +266,29 @@ describe("SecretsCatalog tree browsing", () => {
     expect(url.searchParams.get("catalogPath")).toBe("payments/stripe");
   });
 
+  it("shows each secret's description under its ID, and nothing when absent", async () => {
+    const { wrapper } = await mountCatalog(
+      defaultApi({
+        getSecretsTree: async () => ({
+          ...emptyTreePage,
+          secrets: [
+            secretFixture({
+              metadata: { description: "Stripe live API key for checkout" },
+            }),
+            secretFixture({ secretId: "no-description" }),
+          ],
+        }),
+      }),
+    );
+    const descriptions = wrapper.findAll(".secret-description");
+    expect(descriptions).toHaveLength(1);
+    expect(descriptions[0]?.text()).toBe("Stripe live API key for checkout");
+    // Long descriptions are truncated visually; the full text stays available.
+    expect(descriptions[0]?.attributes("title")).toBe(
+      "Stripe live API key for checkout",
+    );
+  });
+
   it("renders a derived folder normally", async () => {
     const api = defaultApi({
       getSecretsTree: async () => ({
@@ -368,6 +391,27 @@ describe("SecretsCatalog search", () => {
       // Search is environment-wide, not scoped to the folder being browsed —
       // this must be visible, not a silent behind-the-scenes widening.
       expect(wrapper.text()).toContain("Showing search results across all of");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows descriptions in search results", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = defaultApi({
+        listSecrets: async () => ({
+          secrets: [
+            secretFixture({ metadata: { description: "Checkout key" } }),
+          ],
+          generatedAt: "2026-08-23T00:00:00.000Z",
+        }),
+      });
+      const { wrapper } = await mountCatalog(api);
+      await searchInput(wrapper).setValue("checkout");
+      await vi.advanceTimersByTimeAsync(300);
+      await flushPromises();
+      expect(wrapper.find(".secret-description").text()).toBe("Checkout key");
     } finally {
       vi.useRealTimers();
     }
