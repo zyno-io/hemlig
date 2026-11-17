@@ -6,6 +6,8 @@ COPY . .
 # Build the controller and its workspace dependencies, then bundle it into one
 # file so the runtime image needs no node_modules. Third-party license and
 # notice files from the production dependency closure ship alongside it.
+# supports-color is only an optional, try/catch require of debug that resolves
+# here through dev tooling; keep it out so the bundle matches that closure.
 RUN corepack enable \
   && yarn install --immutable \
   && yarn workspaces foreach -R --topological \
@@ -14,6 +16,7 @@ RUN corepack enable \
   && yarn esbuild packages/kubernetes-controller/dist/main.js \
     --bundle --platform=node --target=node24 --format=cjs \
     --minify-syntax --minify-whitespace --legal-comments=eof \
+    --external:supports-color \
     --outfile=/out/main.js \
   && rm -rf node_modules packages/*/node_modules \
   && yarn workspaces focus --production @zyno-io/hemlig-kubernetes-controller \
