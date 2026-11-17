@@ -128,10 +128,15 @@ payload or persist it in an HTTP cache.
 | Status | Code                  | Meaning                                                 |
 | ------ | --------------------- | ------------------------------------------------------- |
 | 400    | `bad_request`         | Invalid JSON, route, header, ID, ACL, or payload        |
-| 403    | `forbidden`           | Invalid JWT, certificate, identity, or grant            |
+| 400    | `invalid_csr`         | Identity rotation CSR is malformed, too weak, or reuses the caller's key |
+| 403    | `forbidden`           | Invalid JWT, or a grant/ACL decision                    |
+| 403    | `identity_not_active` | The client certificate is missing, unknown, revoked, or outside its validity |
 | 404    | `not_found`           | Missing secret or active payload                        |
 | 409    | `conflict`            | Used idempotency key or unavailable revision lease      |
 | 409    | `enrollment_failed`   | Terminal truststore publication failure; do not retry   |
+| 409    | `identity_limit_reached` | Self-rotation would exceed 3 active identities per consumer |
+| 409    | `identity_already_rotated` | The calling identity already has an active successor  |
+| 409    | `rotation_replay_inactive` | An idempotent rotation replay names a leaf that is no longer active |
 | 412    | `precondition_failed` | `If-Match` is no longer current                         |
 | 500    | `internal_error`      | Unexpected failure; implementation details are withheld |
 | 503    | `service_unavailable` | Storage or KMS consistency/availability failure         |

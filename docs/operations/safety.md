@@ -36,13 +36,18 @@ The status condition is `Ready=False` with reason `AccessRevoked`.
 
 ## When it never deletes
 
-| Situation                                                                   | Behavior                                                                          |
-| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| The confirmation call fails (`identity_not_active`, API Gateway mTLS `403`, network error, `5xx`) | Keep the Secret; `Ready=False`, reason `AuthenticationFailed` or `RemoteAccessDenied`; sync marked failed (cursor not advanced); retry with backoff |
-| The confirmation call succeeds but the grant **still** includes read          | Keep the Secret; same failure handling                                            |
-| The consumer itself is not ready (bad provider, missing bootstrap token, ...)  | Keep the Secret; import reports `ConsumerNotReady`                                |
-| The controller is down or being upgraded                                      | Secrets stay as last written                                                      |
-| The `HemligSecretImport` resource is deleted                                  | The controller does not delete the target on resource deletion; `deletionPolicy` is in the schema but is not read by the current controller |
+| Situation | Import condition | Sync cursor | Retry |
+| --- | --- | --- | --- |
+| Remote `403`/`404`, and the confirmation call fails with a certificate problem (`identity_not_active`, code-less mTLS `403`) | `Ready=False`, `AuthenticationFailed` | not advanced | backoff |
+| Remote `403`/`404`, and the confirmation call fails for another reason (network, `5xx`) | `Ready=False`, `RevocationUnconfirmed` | not advanced | backoff |
+| Remote `403`/`404`, but the confirmed grant **still** includes read | `Ready=False`, `RemoteAccessDenied` | advances | next change or resync |
+| The secret exists but has no value yet (sync state `PENDING_VALUE`) | `Ready=False`, `AwaitingValue` (no remote read) | advances | next change |
+| The consumer itself is not ready (expired certificate, bad provider, missing bootstrap token) | `ConsumerNotReady`; consumer reports e.g. `AuthenticationFailed` | n/a | backoff |
+| The controller is down or being upgraded | unchanged | n/a | n/a |
+| The `HemligSecretImport` resource is deleted | the target is not deleted; `deletionPolicy` is in the schema but is not read by the current controller | n/a | n/a |
+
+In every row the existing target Secret is left exactly as last written. One
+confirmation call is made per consumer per pass, however many imports fail.
 
 ## Reading the signals
 

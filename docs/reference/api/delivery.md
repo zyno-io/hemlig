@@ -181,6 +181,46 @@ connection details (endpoint, client ID, private topic) for this identity. The
 Kubernetes controller reads this to learn what it may import or export and
 where to listen for change hints.
 
+### `POST /v1/agent/identities/rotate`
+
+Issues an overlapping replacement for the **calling** agent's mTLS leaf. Available
+from the first release that includes agent identity self-rotation; older servers
+answer `400 bad_request`. See [Identity rotation](/operations/identity-rotation) for
+how the controller uses it.
+
+- **Auth:** the current client certificate, which must be `ACTIVE` and unexpired, and
+  whose consumer must have an `ACTIVE` AgentGrant (`403 identity_not_active` /
+  `403 forbidden` otherwise).
+- **Headers:** `Idempotency-Key` (8 to 128 characters, required). Replaying the same
+  key from the same certificate returns the same leaf.
+- **Body:** `{ "apiCertificateSigningRequestPem": "<PEM CSR>" }`. RSA, at least 2048
+  bits, and a key different from the caller's.
+
+`201` response:
+
+```json
+{
+  "consumerId": "payments-cluster",
+  "environment": "prod",
+  "rootFingerprint": "…",
+  "apiFingerprint": "…",
+  "apiCertificatePem": "-----BEGIN CERTIFICATE-----…",
+  "notBefore": "2027-06-03T00:00:00.000Z",
+  "notAfter": "2028-06-02T00:00:00.000Z",
+  "status": "ACTIVE"
+}
+```
+
+The new leaf is signed by the same issuing root (no truststore change) and is
+registered with AWS IoT for MQTT hints. The caller's leaf stays valid until its own
+expiry or until an administrator revokes it. Each identity may have only one active
+successor, and a consumer may hold at most three active identities
+(`409 identity_already_rotated` / `409 identity_limit_reached`). A CSR problem returns
+`400 invalid_csr`.
+
+The route is served by a dedicated Lambda that can decrypt the issuer key; the
+ordinary delivery Lambda cannot.
+
 ### Agent secret routes
 
 These apply the AgentGrant's exact-secret allowlist on top of the ordinary ACL

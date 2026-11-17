@@ -55,9 +55,9 @@ consumer Lambda never gains the ability to decrypt the issuer root.
 | Auth         | mTLS with a currently `ACTIVE`, unexpired identity belonging to an `ACTIVE` agent grant, otherwise `403`        |
 | Request      | `Idempotency-Key` header (required); body `{ "apiCertificateSigningRequestPem": "<PEM CSR>" }`                  |
 | Response 201 | `{ consumerId, environment, rootFingerprint, apiFingerprint, apiCertificatePem, notBefore, notAfter, status: "ACTIVE" }` |
-| Guards       | CSR public key must differ from the caller's key (`400`); at most 3 `ACTIVE` unexpired leaves per consumer after issuance (`409`; revoke old leaves via the admin API) |
+| Guards       | CSR must be valid RSA ≥ 2048 bits with a key different from the caller's (`400 invalid_csr`); one active successor per identity (`409 identity_already_rotated`); at most 3 `ACTIVE` unexpired leaves per consumer (`409 identity_limit_reached`; revoke old leaves via the admin API) |
 | After issuing | The new leaf is registered with AWS IoT so it can connect to its MQTT topic                                   |
-| Errors       | Certificate problems return `403` with code `identity_not_active`; grant denials return `forbidden`            |
+| Errors       | Certificate problems return `403 identity_not_active`; no active agent grant returns `403 forbidden`; a replay of a since-revoked leaf returns `409 rotation_replay_inactive` |
 | Audit        | Operation `agent.identity.rotate`, target consumer ID and new fingerprint                                       |
 
 The same issuing root signs the new leaf, so the API Gateway truststore does not
@@ -128,14 +128,26 @@ Re-using the same token does nothing.
 
 ## Failure modes
 
-| Symptom (`IdentityRotation` reason / error)   | Cause and action                                                                                 |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `RotationUnsupported`                         | The server answered `404`/`405`: it does not have the rotation route yet. Controller keeps the old certificate. Deploy the server update first |
-| `400` on the CSR                              | Staged CSR discarded; a fresh one is generated next pass                                         |
-| `409` too many active identities              | Three active leaves already exist. Revoke old leaves (below)                                     |
-| `403 identity_not_active`                     | The *current* certificate is expired or revoked. Rotation cannot self-heal; see [expired certificate](#if-the-certificate-already-expired) |
-| Network / 5xx during issue or verify          | Old certificate stays in use, consumer stays `Ready`; retried with backoff                       |
-| Crash between stage and swap                  | Safe: `next-*` keys persist and the same CSR is replayed idempotently                             |
+Rotation failures are reported on the `IdentityRotation` condition and in
+`status.identity.lastRotationError`. They never set `Ready=False` while the
+current certificate still authenticates. Failed attempts retry with their own
+capped exponential backoff (60 s doubling to 6 h, with jitter; reset when the
+controller restarts); the 10-minute resync is a safety net. A new
+`hemlig.io/rotate-identity` token bypasses the backoff.
+
+| `IdentityRotation` reason | Server response | Staged key | Cause and action |
+| --- | --- | --- | --- |
+| `RotationUnsupported` | `400 bad_request`, `404`, `405` | kept | The server predates the rotation route (older servers answer it with `400 bad_request`). Deploy the server update; the controller keeps the old certificate |
+| `RotationRejected` | `400 invalid_csr`, `409 rotation_replay_inactive`, `409 conflict`, or an issued certificate that does not match the staged key / consumer | discarded | A fresh key and CSR are generated on the next attempt |
+| `IdentityLimitReached` | `409 identity_limit_reached` | kept | Three active leaves already exist for the consumer. [Revoke old leaves](#revoke-the-old-leaf) |
+| `IdentityAlreadyRotated` | `409 identity_already_rotated` | kept | This certificate already has an active successor (for example someone rotated it out of band). Revoke the unwanted successor, or install the successor's key pair |
+| `AuthenticationFailed` | `403 identity_not_active` (or a code-less mTLS `403`) | kept (discarded if the *new* leaf is rejected during verification) | The current certificate is expired or revoked; rotation cannot self-heal. See [expired certificate](#if-the-certificate-already-expired) |
+| `RotationForbidden` | `403 forbidden` | kept | The consumer has no `ACTIVE` agent grant |
+| `RotationFailed` | `429`, `5xx`, network, Kubernetes write conflict, or verification failure | kept | Transient. The old certificate stays in use and the same CSR is replayed idempotently |
+
+Crashes are safe at every step: the staged key, CSR and (once issued) the new
+certificate persist in the identity Secret, and the swap is a single
+resourceVersion-guarded write.
 
 ## Ops runbook: renew cluster identities
 
@@ -175,6 +187,14 @@ Revocation is immediate on the next request. Revoke only after the new leaf is
 confirmed working. If you do it too early the controller loses access and you are in
 the expired-certificate case.
 
+### Roll back to the previous leaf
+
+If a new leaf misbehaves after the swap, copy `hemlig.io.previous-tls.crt` /
+`hemlig.io.previous-tls.key` back over `tls.crt` / `tls.key` in the identity Secret
+(while the previous leaf is still valid and not revoked). Revoke the faulty successor
+with the admin API: an identity may only have one active successor, and revoking it
+lets the restored leaf rotate again later.
+
 ## If the certificate already expired
 
 A controller whose leaf has expired (or been revoked) cannot rotate itself, and its
@@ -211,14 +231,24 @@ Manual recovery:
    kubectl -n <ns> patch secret <identity-secret> --type merge -p \
      "{\"data\":{\"tls.crt\":\"$(base64 < new.crt | tr -d '\n')\",\"tls.key\":\"$(base64 < new.key | tr -d '\n')\"}}"
    ```
-4. The controller picks up the Secret on its next pass. Then revoke the expired leaf
-   (optional; it is already unusable) and delete `new.key` from your workstation.
+   Remove any stale `hemlig.io.next-tls.key`, `hemlig.io.next-csr` and
+   `hemlig.io.next-tls.crt` keys left from an interrupted rotation
+   (`kubectl edit secret`).
+4. The controller picks up the Secret on its next pass. Delete `new.key` from your
+   workstation.
+5. Force a self-rotation so the controller moves onto a leaf that is registered with
+   AWS IoT (see the warning below):
+   ```sh
+   kubectl -n <ns> annotate hemligconsumer <name> hemlig.io/rotate-identity="$(date +%s)" --overwrite
+   ```
+6. Optionally revoke the admin-issued leaf once `IdentityRotation=True` shows the new
+   fingerprint.
 
 ::: warning MQTT hints
 The admin issuance route does not register the new certificate with AWS IoT. The
 controller still works over mTLS and resyncs every ten minutes, but prompt MQTT
 hints will not connect for the manually issued leaf until it is replaced by a
-self-rotated one (the self-rotation route registers its leaves).
+self-rotated one (step 5; the self-rotation route registers its leaves).
 :::
 
 If you cannot or do not want to issue a leaf by hand, the alternative is to start
