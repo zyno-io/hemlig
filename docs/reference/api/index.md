@@ -1,151 +1,109 @@
 ---
 title: HTTP API overview
-description: Base URLs, authentication and common behavior for the Hemlig HTTP API.
+description: Base URLs, authentication, headers, idempotency and pagination shared by every Hemlig HTTP route.
+pageType: reference
 ---
 
-# Hemlig API reference
+# HTTP API overview
 
-This is the public reference for the **implemented HTTP API**. Its
-machine-readable contract is [openapi/consumer-secrets.yaml](../openapi.md).
-It includes organizational browsing, bounded immutable-audit browsing, and the
-safe CSR enrollment/certificate routes. Issuer-root rotation is intentionally
-excluded.
+Hemlig serves two HTTPS APIs. This page covers what every route shares; the route pages list each endpoint once.
+
+The machine-readable contract is the [OpenAPI document](../openapi.md). It also covers the bootstrap route.
 
 ## Base URLs
 
-| API           | URL                   | Caller                               |
-| ------------- | --------------------- | ------------------------------------ |
-| Administrator | `https://<adminFqdn>` | Administrator with a valid JWT       |
-| Delivery      | `https://<apiFqdn>`   | Enrolled workload identity over mTLS |
+| API | URL | Caller | Credential |
+| --- | --- | --- | --- |
+| [Administrator API](../glossary.md#administrator-api) | `https://admin.example.com` | Administrator, or an agent redeeming a bootstrap token | OIDC access token, or bootstrap token |
+| [Delivery API](../glossary.md#delivery-api) | `https://api.example.com` | Enrolled workload | Client certificate (mTLS) |
 
-The CDK stack receives both FQDNs. `apiFqdn` names a generic delivery endpoint,
-even though Kubernetes workloads are its first consumer. It disables each generated API Gateway
-`execute-api` endpoint, so clients must use these custom domains.
+Both hosts come from the CDK stack inputs `adminFqdn` and `apiFqdn`. The stack disables the generated `execute-api` endpoints, so clients must use these custom domains.
 
 ## Authentication
 
 ### Administrator API
 
-Use a bearer JWT from the external OIDC/OAuth provider configured in CDK.
-API Gateway validates its issuer and audience; Hemlig verifies those claims
-again and records the configured immutable subject claim (`sub` by default) as
-the actor. The provider must issue a token with the configured `aud`, or with
-the configured `client_id` only when `aud` is absent.
-
-When the deployment configures a browser console origin, it also configures an
-exact administrator OAuth scope. API Gateway and Hemlig both require that scope
-in `scope` or `scp`. When `oidcAdminRole` is configured, Hemlig also requires
-that exact value in the token's `roles` (or `role`) claim. This is opt-in only to preserve existing non-browser
-automation until its identity-provider configuration is ready.
+Send an OIDC access token for the API audience:
 
 ```http
-Authorization: Bearer <JWT>
+Authorization: Bearer eyJ...
 ```
 
-Secret and consumer mutations need an `Idempotency-Key` of 8–128 characters.
-Use one durable random value per intended operation. Reusing a key returns
-`409 conflict`; retain the initial response instead of treating a retry as a
-new operation.
+API Gateway validates the issuer and audience, and Hemlig checks them again. The audit [actor](../glossary.md#actor) is the configured subject claim (`sub` by default).
+
+The required `aud`, scope and role claims are owned by [Identity provider](../../guide/identity-provider.md). The token must be an access token, not an ID token.
 
 ### Delivery API
 
-The caller presents an API leaf certificate during TLS negotiation. After a
-truststore has been published, API Gateway validates its chain; Hemlig then
-hashes the DER bytes and checks for an `ACTIVE` enrolled identity record in
-DynamoDB. The request never accepts a client-supplied consumer ID.
+The caller presents a [client certificate](../glossary.md#client-certificate) during the TLS handshake. API Gateway validates the chain against the published [truststore](../glossary.md#truststore). Hemlig then looks up the certificate's [fingerprint](../glossary.md#fingerprint) and requires an `ACTIVE`, unexpired identity.
 
-An administrator enrolls a consumer through `POST /v1/admin/consumers`. The
-request supplies a signed RSA CSR. Hemlig has one deployment-wide issuing root:
-it verifies the CSR, signs the submitted public key as a `clientAuth` leaf with
-the URI SAN `spiffe://hemlig/consumer/<consumerId>`, writes the one-root
-truststore at a unique S3 version, and waits for an `AVAILABLE` no-warning
-domain configuration before marking the leaf `ACTIVE`. The consumer operator
-retains its private key; Hemlig never accepts, stores, or returns private-key
-material. If API Gateway rejects the bundle with warnings, Hemlig rolls back to
-the last known bundle when one exists, marks the operation failed, and releases
-the publication lease.
+The request never carries a consumer ID. It always comes from the identity record. How certificates are issued and trusted is owned by [Identity and trust](../../guide/identity-and-trust.md).
 
-### Namespace-agent bootstrap
+An [agent](../glossary.md#agent) uses the same delivery host. On the ordinary secret routes its [AgentGrant](../glossary.md#agentgrant) applies as well; see [Delivery and agent routes](delivery.md).
 
-Kubernetes and other constrained automation must not hold an administrator
-OIDC token. An administrator first creates an **AgentGrant** with a new
-consumer ID, one environment, `read` and/or `write` capability, and explicit
-per-secret permissions. It then issues a single-use, 30-minute bootstrap
-capability. Hemlig stores only its SHA-256 digest.
+### Bootstrap route
+
+`POST /v1/bootstrap/redeem` is on the administrator host but takes no JWT. It accepts only a [bootstrap token](../glossary.md#bootstrap-token):
 
 ```http
-POST /v1/bootstrap/redeem
-Authorization: Bootstrap hmlb_<256-bit-random-value>
-Content-Type: application/json
-
-{ "apiCertificateSigningRequestPem": "-----BEGIN CERTIFICATE REQUEST-----…" }
+Authorization: Bootstrap hmlb_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG
 ```
 
-The route receives no desired consumer ID, environment, ACL, metadata, or endpoint
-from the caller. Those values come only from the pre-created AgentGrant. It
-returns the public mTLS leaf and the fixed grant scope. A retry with the same
-CSR returns the same enrollment result after a lost response; a different CSR
-is rejected. After successful redemption, the leaf is also registered with AWS
-IoT Core for its private notification topic. The bootstrap value can never be
-used as a general API token.
+See [Administrator consumer and grant routes](admin-consumers.md#post-v1-bootstrap-redeem).
 
-An active agent identity cannot bypass its grant by calling ordinary delivery
-endpoints: Hemlig applies its AgentGrant UID-bound allowlist there too. The
-administrator selects exact IDs, and Hemlig records their current immutable
-UIDs. Each selection authorizes that one secret only; a folder name never
-implicitly authorizes its children, and archiving then reusing an ID does not
-transfer the grant. This is independent of console folders, which are
-always derived from the slash-separated secret ID.
+## Headers
 
-## Common behavior
+| Header | Used on | Meaning |
+| --- | --- | --- |
+| `Authorization` | Administrator routes | `Bearer` OIDC access token |
+| `Authorization` | Bootstrap redemption | `Bootstrap` one-use token |
+| `Idempotency-Key` | Selected mutations (see [Idempotency](#idempotency)) | 8 to 128 characters, one per intended operation |
+| `If-Match` | Secret updates, payload writes, archive, agent writes | Current control-revision ETag |
+| `If-None-Match` | Consumer and agent secret reads | Optional ETag; a match returns `304` |
+| `ETag` | Control-revision and secret responses, `304` | Current control-revision ID |
 
-### Headers
+Quotes around an ETag are accepted and stripped. Every response carries `Cache-Control: no-store`. Never log a payload or put it in an HTTP cache.
 
-| Header            | Routes                    | Meaning                                |
-| ----------------- | ------------------------- | -------------------------------------- |
-| `Authorization`   | Admin routes              | Administrator JWT                      |
-| `Authorization`   | Bootstrap redemption      | One-use `Bootstrap hmlb_…` capability  |
-| `Idempotency-Key` | Admin mutations           | 8–128-character operation key          |
-| `If-Match`        | `PUT` secret routes       | Required current control-revision ETag |
-| `If-None-Match`   | Consumer secret read      | Optional current control-revision ETag |
-| `ETag`            | Secret response and `304` | Current control revision ID            |
+## Idempotency
 
-Responses include `Cache-Control: no-store`. Clients must not log a secret
-payload or persist it in an HTTP cache.
+An [idempotency key](../glossary.md#idempotency-key) is a random value (8 to 128 characters) that you generate once per intended operation. Keys are scoped to the caller. The table shows which routes need one and what a second use does.
 
-### Error envelope
+| Route family | Key | Reusing the key |
+| --- | --- | --- |
+| Secret create, metadata or ACL update, payload write, archive | Required | `409 conflict`. The original response is not replayed. |
+| Remove a consumer from a secret ACL (`DELETE .../grants/{secretId}`) | Required | `409 conflict`, as above |
+| Agent secret writes (`PUT /v1/agent/secrets/...`) | Required | `409 conflict`, as above |
+| Enroll a consumer (`POST /v1/admin/consumers`) | Required | Same request: resumes a prepared enrollment or returns the recorded certificate. Different request: `409 conflict`. A terminal truststore failure returns `409 enrollment_failed`. |
+| Issue another client certificate (`POST .../api-identities`) | Required | Same CSR: returns the same certificate and re-registers it with AWS IoT for an agent. Different request: `409 conflict`. |
+| Revoke a client certificate (`DELETE .../api-identities/{fingerprint}`) | Required | Returns `200` and re-applies the AWS IoT revocation |
+| Agent self-rotation (`POST /v1/agent/identities/rotate`) | Required | Same key from the same certificate: returns the same new certificate |
+| Provision the issuing root (`POST /v1/admin/issuer`) | Required (validated) | Safe to repeat: `201` when it creates the root, `200` afterwards |
+| Create an environment, create or update an AgentGrant, issue a bootstrap token | Not used | Not applicable |
+| Bootstrap redemption | Not used | A retry with the same CSR returns the same result; a different CSR is rejected |
 
-```json
-{
-  "error": {
-    "code": "precondition_failed",
-    "message": "If-Match does not name the current control revision.",
-    "correlationId": "01J..."
-  }
-}
-```
+Do not mint a new key to get past a `409`. After a lost response, read the current state and decide what to reconcile. See [Errors](errors.md).
 
-| Status | Code                  | Meaning                                                 |
-| ------ | --------------------- | ------------------------------------------------------- |
-| 400    | `bad_request`         | Invalid JSON, route, header, ID, ACL, or payload        |
-| 400    | `invalid_csr`         | Identity rotation CSR is malformed, too weak, or reuses the caller's key |
-| 403    | `forbidden`           | Invalid JWT, or a grant/ACL decision                    |
-| 403    | `identity_not_active` | The client certificate is missing, unknown, revoked, or outside its validity |
-| 404    | `not_found`           | Missing secret or active payload                        |
-| 409    | `conflict`            | Used idempotency key or unavailable revision lease      |
-| 409    | `enrollment_failed`   | Terminal truststore publication failure; do not retry   |
-| 409    | `identity_limit_reached` | Self-rotation would exceed 3 active identities per consumer |
-| 409    | `identity_already_rotated` | The calling identity already has an active successor  |
-| 409    | `identity_rotation_conflict` | Another self-rotation for the consumer committed concurrently; retry with the same CSR and key |
-| 409    | `rotation_replay_inactive` | An idempotent rotation replay names a leaf that is no longer active |
-| 412    | `precondition_failed` | `If-Match` is no longer current                         |
-| 500    | `internal_error`      | Unexpected failure; implementation details are withheld |
-| 503    | `service_unavailable` | Storage or KMS consistency/availability failure         |
+## Pagination
+
+List routes return a page and, when more remain, an opaque `nextCursor`. Pass it back unchanged as `cursor` until it is absent.
+
+- A cursor is bound to the caller and to the filters of the request that created it. A different caller or filter is rejected.
+- A page can be empty or short while `nextCursor` is still present, because filters apply after a bounded read. Keep following cursors.
+- Search (`q`) and the folder tree return one bounded answer with `truncated` instead of a cursor. `truncated: true` means the scan hit its bound and results may be missing.
+- Agent sync uses `cursor` for pages within one cycle and `syncCursor` for the checkpoint between cycles.
+
+Cursor lifetimes, page sizes and scan bounds are in [Pagination and sync](../limits.md#pagination-and-sync).
+
+## Errors
+
+Every failure uses one envelope with a stable `code` and a `correlationId`. All codes, statuses and recommended actions are in [Errors](errors.md).
 
 ## Route pages
 
-- [Data types](data-types.md)
-- [Administrator: secrets](admin-secrets.md)
-- [Administrator: consumers, certificates and agent grants](admin-consumers.md)
-- [Delivery and agent routes](delivery.md)
-- [Audit browsing, audit behavior and excluded routes](audit.md)
+| Page | Routes |
+| --- | --- |
+| [Data types](data-types.md) | Shared shapes: IDs, environments, metadata, ACL, payload, control revision |
+| [Administrator: secrets](admin-secrets.md) | Environments, secret catalog, tree, create, update, payload, archive, revisions, archived lookup |
+| [Administrator: consumers, certificates and grants](admin-consumers.md) | Consumers, client certificates, issuing root, AgentGrants, bootstrap |
+| [Delivery and agent routes](delivery.md) | Consumer reads, change snapshots, agent configuration, sync and writes, self-rotation |
+| [Audit](audit.md) | Audit archive browsing and audit behavior |
