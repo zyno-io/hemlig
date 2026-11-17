@@ -52,7 +52,7 @@ const run = async (): Promise<void> => {
   if (tableName === undefined || tableName.trim().length === 0) {
     throw new Error("CONTROL_TABLE_NAME is required.");
   }
-  const dryRun = process.argv.includes("--dry-run");
+  const dryRun = !process.argv.includes("--apply");
   const region = process.env.AWS_REGION ?? "us-east-1";
   const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
   // The policy name is unused by revoke().
@@ -64,7 +64,9 @@ const run = async (): Promise<void> => {
     dryRun,
   );
   process.stdout.write(
-    `${dryRun ? "Would revoke" : "Revoked"} the AWS IoT certificate of ${count} revoked API identit${count === 1 ? "y" : "ies"}.\n`,
+    dryRun
+      ? `Dry run: ${count} revoked API identit${count === 1 ? "y" : "ies"} found; re-run with --apply to revoke their AWS IoT certificates.\n`
+      : `Revoked the AWS IoT certificate of ${count} revoked API identit${count === 1 ? "y" : "ies"}.\n`,
   );
 };
 

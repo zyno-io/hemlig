@@ -186,9 +186,9 @@ AWS_PROFILE=<profile> AWS_REGION=<region> CONTROL_TABLE_NAME=<table> yarn backfi
 
 Identities revoked before the API also revoked their AWS IoT certificate remain
 ACTIVE in IoT. After upgrading, run
-`CONTROL_TABLE_NAME=<table> yarn revoke:iot-for-revoked-identities --dry-run` to
-count them, then without `--dry-run` to revoke them (idempotent; needs
-`iot:UpdateCertificate`).
+`CONTROL_TABLE_NAME=<table> yarn revoke:iot-for-revoked-identities` to count
+them (dry run by default), then again with `--apply` to revoke them
+(idempotent; needs `iot:UpdateCertificate`).
 
 Verify an initial sync, an unchanged checkpoint, a changed secret, ACL removal,
 and archive/name reuse in the chosen environment before upgrading controllers.
