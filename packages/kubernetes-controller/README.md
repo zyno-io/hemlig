@@ -107,15 +107,17 @@ a new bootstrap capability). Instead:
    stale `hemlig.io.next-*` keys:
    `kubectl -n payments patch secret hemlig-payments-client --type json -p '[{"op":"replace","path":"/data/tls.crt","value":"<b64>"},{"op":"replace","path":"/data/tls.key","value":"<b64>"}]'`
 4. Run the on-demand rotation above so the controller moves onto a leaf issued
-   through self-rotation (which is registered with AWS IoT), then have the
-   administrator revoke the admin-issued leaf if desired.
+   through self-rotation, then have the administrator revoke the admin-issued
+   leaf if desired. (Admin-issued leaves of an agent consumer are also
+   registered with AWS IoT.)
 
 If the identity limit is reached (`IdentityLimitReached`), an administrator must
 revoke unused identities with `DELETE /v1/admin/consumers/{consumerId}/api-identities/{fingerprint}`.
 After a successful rotation the predecessor may rotate again once its successor
 has been revoked, which is how a rollback to `previous-tls.*` is followed by a
-fresh rotation. The 3-identity cap is best-effort under concurrent rotations
-of distinct identities.
+fresh rotation. The 3-identity cap is enforced under concurrent self-rotations
+(a losing rotation is retried as `RotationConflict`); administrator-issued
+identities are not capped.
 
 For a release install, use the Zyno chart repository:
 

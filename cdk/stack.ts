@@ -530,7 +530,11 @@ export class HemligStack extends Stack {
       "iot:RegisterCertificateWithoutCA",
       "iot:UpdateCertificate",
     ];
-    for (const function_ of [bootstrapFunction, identityRotationFunction]) {
+    for (const function_ of [
+      bootstrapFunction,
+      identityRotationFunction,
+      adminFunction,
+    ]) {
       function_.addToRolePolicy(
         new iam.PolicyStatement({
           actions: agentIotProvisioningActions,

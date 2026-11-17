@@ -659,6 +659,22 @@ export const handler = async (
           actor,
           idempotencyKey: key,
         });
+        // Idempotent: a replay re-registers a leaf whose first provisioning
+        // may have failed, so a retry with the same key repairs IoT.
+        const grant = await app.repository.getAgentGrantForConsumer(
+          identity.consumerId,
+        );
+        if (
+          grant?.status === "ACTIVE" &&
+          identity.apiCertificatePem !== undefined &&
+          identity.identityStatus === "ACTIVE"
+        ) {
+          await app.agentNotifications.provision({
+            consumerId: identity.consumerId,
+            certificateFingerprint: identity.apiFingerprint,
+            certificatePem: identity.apiCertificatePem,
+          });
+        }
         const response = () => json(201, apiIdentityResponse(identity));
         return identity.shouldWriteTerminalAudit
           ? humanOperation(
@@ -691,6 +707,9 @@ export const handler = async (
           actor,
           idempotencyKey: key,
         });
+        // Also on replay; revoking is idempotent and a never-registered
+        // certificate (non-agent consumer) counts as already revoked.
+        await app.agentNotifications.revoke(identity.apiFingerprint);
         const response = () => json(200, apiIdentityResponse(identity));
         return identity.shouldWriteTerminalAudit
           ? humanOperation(

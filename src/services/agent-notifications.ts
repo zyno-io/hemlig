@@ -33,6 +33,26 @@ export class AgentNotificationService {
     await this.attachPolicy(certificate.certificateArn);
   }
 
+  /**
+   * Revokes the identity's AWS IoT certificate so it can no longer connect.
+   * A certificate that was never registered counts as success, and revoking an
+   * already revoked certificate is a no-op.
+   */
+  public async revoke(certificateFingerprint: string): Promise<void> {
+    try {
+      await this.iot.send(
+        new UpdateCertificateCommand({
+          certificateId: certificateFingerprint,
+          newStatus: "REVOKED",
+        }),
+      );
+    } catch (error) {
+      if (!isNotFound(error)) {
+        throw error;
+      }
+    }
+  }
+
   private async ensureCertificate(
     identity: AgentMqttIdentity,
   ): Promise<{ readonly certificateArn: string }> {
