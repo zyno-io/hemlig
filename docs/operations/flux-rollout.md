@@ -1,9 +1,12 @@
 ---
 title: Rolling out controller upgrades via Flux
 description: A staging-first, pinned, verifiable procedure for upgrading the Hemlig controller with Flux.
+pageType: how-to
 ---
 
 # Rolling out controller upgrades via Flux
+
+Upgrade the controller one cluster class at a time, with everything pinned, and verify before moving on.
 
 The controller runs with cluster-wide RBAC and holds each namespace's identity, so
 upgrade it deliberately: pin exact versions, roll **staging clusters first**, verify,
@@ -15,7 +18,7 @@ then production. This procedure is generic; adapt the repository layout to yours
   fleet drift apart. Pin the chart version, and pin the image by digest.
 - **One cluster class at a time.** Staging, observe, then production.
 - **Server before controller** when a controller release needs a newer Hemlig
-  service (for example [identity rotation](identity-rotation.md#server-side)).
+  service (for example [identity rotation](identity-rotation.md#version-requirements)).
   Controllers against an older server degrade visibly but keep working.
 - **A single replica.** Upgrades use a zero-surge strategy; expect a short gap in
   reconciliation while the pod restarts. Imported Secrets stay in place.
@@ -23,11 +26,11 @@ then production. This procedure is generic; adapt the repository layout to yours
 ## 1. Choose the release
 
 Release tags publish the image `ghcr.io/zyno-io/hemlig-controller:<tag>` and the
-chart `hemlig-controller-<version>` (see [Releasing](releasing.md)). Resolve the
+chart `hemlig-controller-<version>` (see [Releasing](../contributing/releasing.md)). Resolve the
 image digest:
 
 ```sh
-docker buildx imagetools inspect ghcr.io/zyno-io/hemlig-controller:v0.2.0 \
+docker buildx imagetools inspect ghcr.io/zyno-io/hemlig-controller:vX.Y.Z \
   --format '{{ .Manifest.Digest }}'
 ```
 
@@ -65,7 +68,7 @@ spec:
   upgrade: { crds: CreateReplace }
   values:
     image:
-      tag: "v0.2.0@sha256:<digest>"
+      tag: "vX.Y.Z@sha256:<digest>"
 ```
 
 ## 3. Staging first
@@ -84,7 +87,7 @@ spec:
    ```
    - Every `HemligConsumer` is `Ready=True`.
    - Imports and exports are `Ready=True`; no new `AccessRevoked`, `AuthenticationFailed`,
-     or `ReconcileFailed`.
+     or `ReconcileFailed` (see [Status reasons](../reference/crds.md#status-reasons)).
    - Logs show no repeating "reconciliation failed; retrying".
    - If the release includes identity rotation, force one rotation on a staging
      consumer and confirm `IdentityRotation=True`.
@@ -103,3 +106,8 @@ next cluster.
 Revert the pinned commit, chart version and digest to the previous values and
 reconcile. CRDs are updated with `CreateReplace`; check the release notes before
 rolling back across a CRD schema change.
+
+## Next steps
+
+- [Identity rotation](identity-rotation.md)
+- [Status reasons](../reference/crds.md#status-reasons)
