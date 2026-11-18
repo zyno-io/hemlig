@@ -272,6 +272,7 @@ describe("consumer handler agent routes", () => {
   describe("failures before the final audit context", () => {
     const useRealWrapper = (
       getAgentGrantForConsumer: jest.Mock = jest.fn(async () => ({})),
+      claimIdentityRejectionAudit: jest.Mock = jest.fn(async () => true),
     ) => {
       // The real wrapper caches its application at module scope, so reuse
       // that cached object and point its fakes at this scenario.
@@ -280,18 +281,22 @@ describe("consumer handler agent routes", () => {
       };
       createApplication.mockReturnValue({
         audit: { write: auditWrite },
-        repository: { getAgentGrantForConsumer },
+        repository: { getAgentGrantForConsumer, claimIdentityRejectionAudit },
       });
       const shared = jest.requireActual("./shared") as {
         readonly withErrorResponse: typeof withErrorResponse;
         readonly getApplication: () => {
           audit: { write: unknown };
-          repository: { getAgentGrantForConsumer: unknown };
+          repository: {
+            getAgentGrantForConsumer: unknown;
+            claimIdentityRejectionAudit: unknown;
+          };
         };
       };
       const app = shared.getApplication();
       app.audit.write = auditWrite;
       app.repository.getAgentGrantForConsumer = getAgentGrantForConsumer;
+      app.repository.claimIdentityRejectionAudit = claimIdentityRejectionAudit;
       const realWrapper = shared.withErrorResponse;
       withErrorResponse.mockImplementation(realWrapper);
       jest.spyOn(console, "error").mockImplementation(() => undefined);
@@ -337,6 +342,55 @@ describe("consumer handler agent routes", () => {
           reasonCode: "identity_not_active",
         }),
       ]);
+    });
+
+    describe("rejection rate limit", () => {
+      const rejected = () =>
+        consumerActorFromEvent.mockRejectedValue(
+          new IdentityRejectedError(
+            { type: "consumer", id: "fp", consumerId: "c", environment: "staging" },
+            "The client certificate is not an active consumer API identity.",
+          ),
+        );
+
+      it("records the first rejection, suppresses a repeat, and records again after the window", async () => {
+        const claim = jest
+          .fn()
+          .mockResolvedValueOnce(true)
+          .mockResolvedValueOnce(false)
+          .mockResolvedValueOnce(true);
+        useRealWrapper(undefined, claim);
+        rejected();
+
+        const first = await handler(readEvent());
+        expect(auditWrite).toHaveBeenCalledTimes(1);
+        const second = await handler(readEvent());
+        expect(auditWrite).toHaveBeenCalledTimes(1);
+        expect(second.statusCode).toBe(403);
+        expect(second.body?.replace(/"correlationId":"[^"]*"/, "")).toBe(
+          first.body?.replace(/"correlationId":"[^"]*"/, ""),
+        );
+        await handler(readEvent());
+        expect(auditWrite).toHaveBeenCalledTimes(2);
+        expect(claim).toHaveBeenCalledWith("fp", 600);
+      });
+
+      it("fails open when the limiter errors", async () => {
+        useRealWrapper(
+          undefined,
+          jest.fn(async () => {
+            throw new Error("dynamo down");
+          }),
+        );
+        rejected();
+
+        const response = await handler(readEvent());
+
+        expect(response.statusCode).toBe(403);
+        expect(events()).toEqual([
+          expect.objectContaining({ outcome: "failed", reasonCode: "identity_not_active" }),
+        ]);
+      });
     });
 
     it("audits an unknown fingerprint with only the fingerprint", async () => {

@@ -194,7 +194,7 @@ describe("identity rotation handler", () => {
     ) as { readonly withErrorResponse: typeof withErrorResponse };
     createApplication.mockReturnValue({
       audit: { write: auditWrite },
-      repository: {},
+      repository: { claimIdentityRejectionAudit: jest.fn(async () => true) },
     });
     withErrorResponse.mockImplementation(realWrapper);
     consumerActorFromEvent.mockRejectedValue(
@@ -217,5 +217,28 @@ describe("identity rotation handler", () => {
         reasonCode: "identity_not_active",
       }),
     );
+  });
+
+  it("records attempted then failed for a failure after the actor resolves", async () => {
+    const { createApplication } = jest.requireMock("../app") as {
+      readonly createApplication: jest.Mock;
+    };
+    const { withErrorResponse: realWrapper } = jest.requireActual(
+      "./shared",
+    ) as { readonly withErrorResponse: typeof withErrorResponse };
+    createApplication.mockReturnValue({
+      audit: { write: auditWrite },
+      repository: {},
+    });
+    withErrorResponse.mockImplementation(realWrapper);
+
+    const response = await handler(event({ headers: {} }));
+
+    expect(response.statusCode).toBe(400);
+    expect(
+      (auditWrite.mock.calls as unknown as [{ outcome: string }][]).map(
+        ([entry]) => entry.outcome,
+      ),
+    ).toEqual(["attempted", "failed"]);
   });
 });

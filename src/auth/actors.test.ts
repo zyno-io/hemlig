@@ -210,6 +210,11 @@ describe("consumerActorFromEvent", () => {
     status: "ACTIVE",
     notBefore: "2026-01-01T00:00:00.000Z",
     notAfter: "2027-01-01T00:00:00.000Z",
+    certificatePem: "-----BEGIN CERTIFICATE-----stored-----END CERTIFICATE-----",
+    rotatedTo: "successor-fingerprint",
+    rotatedAt: "2026-03-01T00:00:00.000Z",
+    identityConsumerPk: "CONSUMER#agent-a",
+    identityConsumerSk: "IDENTITY#x",
     ...overrides,
   });
   const lookup = (record?: IdentityRecord) => ({
@@ -246,8 +251,7 @@ describe("consumerActorFromEvent", () => {
     const error = await consumerActorFromEvent(event(pem), lookup(record), now).catch(
       (caught: unknown) => caught,
     );
-    expect(error).toMatchObject({ actor: { type: "consumer", id: fingerprint, ...known } });
-    expect(JSON.stringify((error as { actor: unknown }).actor)).not.toContain("BEGIN");
+    expect((error as { actor: unknown }).actor).toEqual({ type: "consumer", id: fingerprint, ...known });
   });
 
   it.each([

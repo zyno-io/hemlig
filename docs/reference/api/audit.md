@@ -49,13 +49,13 @@ Returns one UTC day of immutable application events, newest first. Any authentic
 
 ## Which requests write events
 
-Current behavior as of v0.3.2. `operation` is `admin<method>:<path>` for administrator routes, `consumer<method>:<path>` or `agent<method>:<path>` for delivery routes, plus `bootstrap.redeem` and `agent.identity.rotate`.
+Current behavior as of v0.3.2, plus the rows marked v0.3.6. `operation` is `admin<method>:<path>` for administrator routes, `consumer<method>:<path>` or `agent<method>:<path>` for delivery routes, plus `bootstrap.redeem` and `agent.identity.rotate`.
 
 | Request | Events written |
 | --- | --- |
 | Administrator route (not the audit route) | `attempted`, `authorized`, then `succeeded` or `failed` |
 | CORS preflight (`OPTIONS`) | None |
-| Consumer or agent route: config, control, writes | `attempted`, then `authorized` and `succeeded` after the operation. A failure writes `attempted` and `failed` |
+| Consumer or agent route: config, control, writes | `attempted`, then `authorized` and `succeeded` after the operation. A failure writes `attempted` and `failed`. From v0.3.6, a failure before the actor is resolved to a consumer and environment (a rejected certificate, a missing `consumerId` or environment, or a grant-lookup error) writes `failed` only, with a `consumer<method>:<path>` operation even for an agent identity |
 | `GET /v1/changes` | `attempted`, `authorized` (before the capability check), then `succeeded` or `failed` |
 | Secret read that delivers a value | `attempted`, `authorized`, `succeeded` |
 | Conditional secret read answered `304` | None |
@@ -64,7 +64,7 @@ Current behavior as of v0.3.2. `operation` is `admin<method>:<path>` for adminis
 | `POST /v1/agent/identities/rotate` | `attempted` first, then `authorized` once the caller passes the checks, then `succeeded`. A failure before that writes `attempted` and `failed` |
 | `POST /v1/bootstrap/redeem` | `attempted`, `authorized`, `succeeded` once the token is redeemed; a rejected token writes none |
 | `GET /v1/admin/audit` | None |
-| Rejected Hemlig-issued client certificate (revoked, unknown, not yet valid or expired identity) | `failed` with `reasonCode: identity_not_active`. The actor is the certificate fingerprint, with `consumerId` and `environment` only if the identity exists. |
+| Rejected Hemlig-issued client certificate (revoked, unknown, not yet valid or expired identity) | From v0.3.6, `failed` with `reasonCode: identity_not_active`, at most once per fingerprint per 10 minutes (repeats inside the window write nothing, since a revoked certificate can still reach the API). The actor is the certificate fingerprint, with `consumerId` and `environment` only if the identity exists. |
 | Missing or unparseable certificate, or JWT or TLS rejection before an actor exists | None. Use the stack's API Gateway access logs. |
 
 A `failed` event carries `reasonCode: request_failed`, except a rejected certificate, which carries `identity_not_active`. The server writes `succeeded` before it responds with a plaintext payload.

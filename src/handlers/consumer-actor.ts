@@ -5,6 +5,9 @@ import type { Actor } from "../domain/types";
 import type { Application } from "../app";
 import type { RequestAuditContext } from "./shared";
 
+/** One rejected-identity event per fingerprint per window; see the repository. */
+const identityRejectionAuditWindowSeconds = 10 * 60;
+
 /**
  * Resolves the consumer actor and sets a provisional audit context at once, so
  * a later failure is recorded. A rejected certificate that parsed is audited
@@ -22,7 +25,10 @@ export const resolveConsumerActor = async (
   try {
     actor = await consumerActorFromEvent(event, app.repository);
   } catch (error) {
-    if (error instanceof IdentityRejectedError) {
+    if (
+      error instanceof IdentityRejectedError &&
+      (await mayAuditRejection(app, error.actor.id))
+    ) {
       setAuditContext({
         actor: error.actor,
         operation,
@@ -34,4 +40,19 @@ export const resolveConsumerActor = async (
   }
   setAuditContext({ actor, operation, sourceIp });
   return actor;
+};
+
+// Fails open: if the limiter itself errors, the event is still recorded.
+const mayAuditRejection = async (
+  app: Application,
+  fingerprint: string,
+): Promise<boolean> => {
+  try {
+    return await app.repository.claimIdentityRejectionAudit(
+      fingerprint,
+      identityRejectionAuditWindowSeconds,
+    );
+  } catch {
+    return true;
+  }
 };

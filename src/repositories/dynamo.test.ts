@@ -106,6 +106,57 @@ describe("opaque cursor storage", () => {
   });
 });
 
+describe("identity rejection audit limiter", () => {
+  it("claims a per-fingerprint window through the table TTL attribute", async () => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-06-01T00:00:00Z"));
+    try {
+      const dynamo = {
+        send: jest.fn().mockResolvedValue({}),
+      } as unknown as DynamoDBDocumentClient;
+      const repository = new DynamoRepository(dynamo, config);
+      const now = Math.floor(Date.now() / 1000);
+
+      await expect(
+        repository.claimIdentityRejectionAudit("fp", 600),
+      ).resolves.toBe(true);
+
+      const command = (dynamo.send as jest.Mock).mock.calls[0]?.[0] as PutCommand;
+      expect(command.input).toEqual({
+        TableName: "control",
+        Item: {
+          pk: "AUDIT_SUPPRESS#fp",
+          sk: "IDENTITY_NOT_ACTIVE",
+          ttl: now + 600,
+        },
+        ConditionExpression: "attribute_not_exists(pk) OR #ttl < :now",
+        ExpressionAttributeNames: { "#ttl": "ttl" },
+        ExpressionAttributeValues: { ":now": now },
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("returns false inside the window and rethrows other errors", async () => {
+    const collision = new Error("conditional write failed");
+    collision.name = "ConditionalCheckFailedException";
+    const dynamo = {
+      send: jest
+        .fn()
+        .mockRejectedValueOnce(collision)
+        .mockRejectedValueOnce(new Error("throttled")),
+    } as unknown as DynamoDBDocumentClient;
+    const repository = new DynamoRepository(dynamo, config);
+
+    await expect(
+      repository.claimIdentityRejectionAudit("fp", 600),
+    ).resolves.toBe(false);
+    await expect(
+      repository.claimIdentityRejectionAudit("fp", 600),
+    ).rejects.toThrow("throttled");
+  });
+});
+
 describe("secret ID catalog index", () => {
   it("keys every secret under its parent ID path", () => {
     expect(catalogSk("payments/stripe/api-key")).toBe(
