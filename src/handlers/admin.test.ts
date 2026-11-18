@@ -488,6 +488,56 @@ describe("slash-separated admin secret IDs", () => {
     );
   });
 
+  it("lists agent-managed ACL consumers on the admin control response", async () => {
+    const app = {
+      config,
+      audit: { write: jest.fn(async () => ({})) },
+      repository: {
+        getAgentGrantForConsumer: jest.fn(async (consumerId: string) =>
+          consumerId === "agent-consumer" ? { grantId: "grant-1" } : undefined,
+        ),
+      },
+      secrets: {
+        getControlRevision: jest.fn(async (environment, secretId) => ({
+          schemaVersion: 1,
+          secretId,
+          controlVersionId: "ctl-1",
+          environment,
+          state: "ACTIVE",
+          metadata: {},
+          acl: [
+            { consumerId: "human-consumer", permissions: ["read"] },
+            { consumerId: "agent-consumer", permissions: ["read"] },
+          ],
+        })),
+      },
+    } as unknown as Application;
+    withErrorResponse.mockImplementation(
+      async (
+        _event: APIGatewayProxyEventV2,
+        action: (
+          application: Application,
+          correlationId: string,
+          setAuditContext: (context: unknown) => void,
+        ) => Promise<APIGatewayProxyStructuredResultV2>,
+      ) => action(app, "corr-1", () => undefined),
+    );
+
+    const response = await handler(
+      buildEvent(
+        "GET",
+        "/v1/admin/secrets/payments-api",
+        {},
+        { environment: "prod" },
+      ),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body as string)).toMatchObject({
+      agentManagedConsumerIds: ["agent-consumer"],
+    });
+  });
+
   it("does not treat the payload route suffix as part of the secret ID", async () => {
     const readAdminPayload = jest.fn(async (environment, secretId) => ({
       controlVersionId: "ctl-1",

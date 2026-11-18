@@ -5,6 +5,7 @@ import {
   HemligError,
   type AgentGrant,
   type BootstrapCapability,
+  type ControlRevision,
   type Grant,
   type SecretMetadata,
   type SecretPayload,
@@ -122,6 +123,49 @@ type HemligAgentGrantClientFactory = (
 ) => HemligAgentGrantClient;
 type AdminTokenSource = () => string;
 
+/**
+ * Agent-enrolled consumers' ACL rows are server-managed and cannot be changed
+ * by admin writes. Keep the server's row for any such consumer the declared
+ * ACL does not mention. Older servers omit the field, so nothing is preserved.
+ */
+function desiredAclFor(
+  declared: readonly Grant[],
+  control: ControlRevision,
+): Grant[] {
+  const mentioned = new Set(declared.map((grant) => grant.consumerId));
+  const preserved = (control.acl ?? []).filter(
+    (grant) =>
+      (control.agentManagedConsumerIds ?? []).includes(grant.consumerId) &&
+      !mentioned.has(grant.consumerId),
+  );
+  return [...declared, ...preserved];
+}
+
+function normalizeAcl(acl: readonly Grant[]): string {
+  return JSON.stringify(
+    acl
+      .map((grant) => ({
+        consumerId: grant.consumerId,
+        permissions: [...grant.permissions].sort(),
+      }))
+      .sort((a, b) =>
+        a.consumerId < b.consumerId ? -1 : a.consumerId > b.consumerId ? 1 : 0,
+      ),
+  );
+}
+
+function sameAcl(
+  serverAcl: readonly Grant[],
+  desired: readonly Grant[],
+  control: ControlRevision,
+): boolean {
+  // Without the field (older server) keep the exact historical comparison.
+  if (control.agentManagedConsumerIds === undefined) {
+    return JSON.stringify(serverAcl) === JSON.stringify(desired);
+  }
+  return normalizeAcl(serverAcl) === normalizeAcl(desired);
+}
+
 export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
   public constructor(
     private readonly createClient: HemligSecretClientFactory = clientFor,
@@ -160,16 +204,17 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
         "The existing Hemlig secret belongs to a different environment.",
       );
     }
+    const desiredAcl = desiredAclFor(inputs.acl, control);
     if (
       JSON.stringify(control.metadata) !== JSON.stringify(inputs.metadata) ||
-      JSON.stringify(control.acl ?? []) !== JSON.stringify(inputs.acl)
+      !sameAcl(control.acl ?? [], desiredAcl, control)
     ) {
       control = await client.updateAdminSecret(
         adminToken,
         inputs.environment,
         inputs.secretId,
         control.controlVersionId,
-        { metadata: inputs.metadata, acl: inputs.acl },
+        { metadata: inputs.metadata, acl: desiredAcl },
         randomUUID(),
       );
     }
@@ -227,16 +272,17 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
       );
     }
     let control = current;
+    const desiredAcl = desiredAclFor(news.acl, current);
     if (
       JSON.stringify(current.metadata) !== JSON.stringify(news.metadata) ||
-      JSON.stringify(current.acl ?? []) !== JSON.stringify(news.acl)
+      !sameAcl(current.acl ?? [], desiredAcl, current)
     ) {
       control = await client.updateAdminSecret(
         adminToken,
         news.environment,
         news.secretId,
         current.controlVersionId,
-        { metadata: news.metadata, acl: news.acl },
+        { metadata: news.metadata, acl: desiredAcl },
         randomUUID(),
       );
     }

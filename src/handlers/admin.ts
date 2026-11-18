@@ -9,6 +9,7 @@ import type {
   AgentGrantRecord,
   ConsumerRecord,
   EnvironmentRecord,
+  Grant,
   HeadRecord,
   IdentityRecord,
   IssuerRecord,
@@ -198,6 +199,7 @@ export const handler = async (
           actor,
           idempotencyKey: key,
         });
+        const createdResponse = await withAgentManaged(app, control);
         return await humanOperation(
           app,
           actor,
@@ -210,7 +212,7 @@ export const handler = async (
             secretId: control.secretId,
             controlVersionId: control.controlVersionId,
           },
-          () => json(201, control, { etag: control.controlVersionId }),
+          () => json(201, createdResponse, { etag: control.controlVersionId }),
         );
       }
       // Every admin request writes three audit objects into a seven-year Object
@@ -871,7 +873,9 @@ export const handler = async (
           },
           sourceIp: event.requestContext.http.sourceIp,
         });
-        return json(200, control, { etag: control.controlVersionId });
+        return json(200, await withAgentManaged(app, control), {
+          etag: control.controlVersionId,
+        });
       }
       if (
         event.requestContext.http.method === "GET" &&
@@ -944,6 +948,7 @@ export const handler = async (
           actor,
           idempotencyKey: key,
         });
+        const updatedResponse = await withAgentManaged(app, control);
         return await humanOperation(
           app,
           actor,
@@ -956,7 +961,7 @@ export const handler = async (
             secretId: control.secretId,
             controlVersionId: control.controlVersionId,
           },
-          () => json(200, control, { etag: control.controlVersionId }),
+          () => json(200, updatedResponse, { etag: control.controlVersionId }),
         );
       }
       if (
@@ -981,6 +986,7 @@ export const handler = async (
           actor,
           idempotencyKey: key,
         });
+        const payloadResponse = await withAgentManaged(app, control);
         return await humanOperation(
           app,
           actor,
@@ -994,7 +1000,7 @@ export const handler = async (
             controlVersionId: control.controlVersionId,
             payloadVersionId: control.payloadVersionId ?? "",
           },
-          () => json(200, control, { etag: control.controlVersionId }),
+          () => json(200, payloadResponse, { etag: control.controlVersionId }),
         );
       }
       throw badRequest(
@@ -1002,6 +1008,35 @@ export const handler = async (
       );
     },
   );
+};
+
+/**
+ * Adds the read-only `agentManagedConsumerIds` field: ACL consumers that have
+ * an AgentGrant. Their rows are server-managed, so admin clients (such as the
+ * Pulumi provider) must preserve them when writing an ACL.
+ */
+const withAgentManaged = async <T extends { readonly acl?: readonly Grant[] }>(
+  app: {
+    readonly repository: {
+      getAgentGrantForConsumer(
+        consumerId: string,
+      ): Promise<AgentGrantRecord | undefined>;
+    };
+  },
+  control: T,
+): Promise<T & { readonly agentManagedConsumerIds: string[] }> => {
+  const consumerIds = [
+    ...new Set((control.acl ?? []).map((grant) => grant.consumerId)),
+  ];
+  const grants = await Promise.all(
+    consumerIds.map((id) => app.repository.getAgentGrantForConsumer(id)),
+  );
+  return {
+    ...control,
+    agentManagedConsumerIds: consumerIds.filter(
+      (_id, index) => grants[index] !== undefined,
+    ),
+  };
 };
 
 const parseObjectBody = (body: string | undefined): Record<string, unknown> => {

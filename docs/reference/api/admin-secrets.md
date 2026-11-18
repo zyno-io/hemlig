@@ -187,6 +187,12 @@ Content-Type: application/json
 Either field may be omitted to retain its current value. Success is `200 OK`
 with the replacement control revision and new ETag. A stale ETag is `412`.
 
+Admin control responses (`GET`, create, and both `PUT` routes) include a
+read-only `agentManagedConsumerIds` array: the consumer IDs in `acl` that have
+an AgentGrant. Those ACL rows are managed by the grant, and an admin write that
+adds, removes, or changes one is rejected with `409`. Clients that replace the
+ACL must send these rows back unchanged. The field is derived and never stored.
+
 ## `POST /v1/admin/secrets/{secretId}/archive`
 
 Archives the current secret identity without deleting immutable revision
