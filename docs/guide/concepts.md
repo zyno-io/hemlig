@@ -87,5 +87,6 @@ topic; it grants no publish.
 
 Mutations and secret-value reads emit `attempted`, `authorized` and
 `succeeded`/`failed` events to a separate Object Lock archive. A conditional
-`304` read delivers nothing and is not recorded. Events never
+`304` read and a successful agent sync poll deliver no secret value and are
+not recorded; failures are. Events never
 contain payloads, tokens or private keys.
