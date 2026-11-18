@@ -30,6 +30,7 @@ Imported from `hemlig/cdk`. The reference app (`cdk/app.ts`) reads the same name
 | `oidcAdminRole` | no | none | Role required from `roles` or `role` after JWT validation. One role token |
 | `consoleCertificateArn` | no | sibling stack | ACM certificate in `us-east-1`. Needs `consoleFqdn`. Without it the stack creates a certificate stack, which needs a concrete `env` and `existingHostedZoneId` |
 | `bootstrapQualifier` | no | none | CDK bootstrap qualifier, 1 to 10 lowercase letters or digits. Set it whenever you use a non-default synthesizer |
+| `tracing` | no | `false` | `true` turns on AWS X-Ray active tracing for every Lambda function. Off by default: traces add cost and little beyond CloudWatch Logs and Lambda metrics |
 
 Synthesis fails with a message naming the rule if the `adminFqdn`, `apiFqdn` and `consoleFqdn` are not distinct, an FQDN is outside the zone, or `consoleFqdn` is set without `oidcAdminScope`, `oidcConsoleAccessScope` and `oidcClientId`.
 

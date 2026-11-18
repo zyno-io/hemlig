@@ -32,6 +32,13 @@ export interface DeploymentConfig {
    * stack. Supply this whenever the parent stack uses a non-default synthesizer.
    */
   readonly bootstrapQualifier?: string;
+  /**
+   * Turn on AWS X-Ray active tracing for every Lambda function. Off by default:
+   * the functions carry no X-Ray instrumentation beyond the invoke segment, and
+   * stored traces can be the largest line on a small deployment's bill.
+   * Errors are still visible through CloudWatch Logs and Lambda metrics.
+   */
+  readonly tracing?: boolean;
 }
 
 export const deploymentConfigFromContext = (context: {
@@ -65,6 +72,17 @@ export const deploymentConfigFromContext = (context: {
     "existingApplicationKeyArn",
   );
   const bootstrapQualifier = optionalContext(context, "bootstrapQualifier");
+  const tracingContext = context.tryGetContext("tracing");
+  if (
+    tracingContext !== undefined &&
+    tracingContext !== true &&
+    tracingContext !== false &&
+    tracingContext !== "true" &&
+    tracingContext !== "false"
+  ) {
+    throw new Error('context tracing must be "true" or "false".');
+  }
+  const tracing = tracingContext === true || tracingContext === "true";
   if (!/^[a-z][a-z0-9-]{1,31}$/.test(environmentName)) {
     throw new Error("context environment must match ^[a-z][a-z0-9-]{1,31}$");
   }
@@ -193,6 +211,7 @@ export const deploymentConfigFromContext = (context: {
       ? {}
       : { existingApplicationKeyArn }),
     ...(bootstrapQualifier === undefined ? {} : { bootstrapQualifier }),
+    ...(tracing ? { tracing } : {}),
   };
 };
 
