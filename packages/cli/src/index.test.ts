@@ -1019,3 +1019,127 @@ test("revoke-identity 404 maps to exit 4 and reports the rejected mutation", asy
   assert.equal(result.exitCode, 4);
   assert.equal(JSON.parse(result.stderr).error.outcome, "rejected");
 });
+
+function pagedTransport(
+  requests: TransportRequest[],
+  pages: (cursor: string | null) => unknown,
+): HemligTransport {
+  return {
+    async request(request: TransportRequest) {
+      requests.push(request);
+      return {
+        status: 200,
+        headers: {},
+        body:
+          request.method === "DELETE"
+            ? { consumerId: "payments-prod", status: "REVOKED" }
+            : pages(request.url.searchParams.get("cursor")),
+      };
+    },
+  };
+}
+
+const revokeByPrefix = (prefix: string) => [
+  "consumer",
+  "revoke-identity",
+  ...consumerTarget,
+  "--fingerprint",
+  prefix,
+];
+
+test("prefix resolution follows pages and finds a match on page 2", async () => {
+  const requests: TransportRequest[] = [];
+  const result = await execute(revokeByPrefix("9f2c11223344"), {
+    env: consumerEnv,
+    transport: pagedTransport(requests, (cursor) =>
+      cursor === null
+        ? {
+            ...identityPage,
+            apiIdentities: identityPage.apiIdentities.slice(0, 1),
+            nextCursor: "page-2",
+          }
+        : {
+            ...identityPage,
+            apiIdentities: identityPage.apiIdentities.slice(2),
+          },
+    ),
+  });
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(
+    requests.map((r) => r.method),
+    ["GET", "GET", "DELETE"],
+  );
+  assert.equal(requests[1]!.url.searchParams.get("cursor"), "page-2");
+  assert.ok(requests[2]!.url.pathname.endsWith(fpC));
+});
+
+test("a repeated cursor fails closed with exit 7 and no DELETE", async () => {
+  const requests: TransportRequest[] = [];
+  const result = await execute(revokeByPrefix("9f2c11223344"), {
+    env: consumerEnv,
+    transport: pagedTransport(requests, () => ({
+      ...identityPage,
+      nextCursor: "same",
+    })),
+  });
+  assert.equal(result.exitCode, 7);
+  assert.equal(JSON.parse(result.stderr).error.code, "invalid_response");
+  assert.match(result.stderr, /full 64-hex/);
+  assert.ok(requests.every((r) => r.method === "GET"));
+});
+
+test("exceeding the page cap fails closed with exit 7 and no DELETE", async () => {
+  const requests: TransportRequest[] = [];
+  let n = 0;
+  const result = await execute(revokeByPrefix("9f2c11223344"), {
+    env: consumerEnv,
+    transport: pagedTransport(requests, () => ({
+      ...identityPage,
+      apiIdentities: [],
+      nextCursor: `cursor-${(n += 1)}`,
+    })),
+  });
+  assert.equal(result.exitCode, 7);
+  assert.equal(JSON.parse(result.stderr).error.outcome, "not_sent");
+  assert.ok(requests.length >= 100);
+  assert.ok(requests.every((r) => r.method === "GET"));
+});
+
+test("a malformed identity list is a protocol error (exit 7), not a network error", async () => {
+  for (const body of [
+    { consumerId: "x" },
+    { apiIdentities: [{ status: "ACTIVE" }] },
+  ]) {
+    const requests: TransportRequest[] = [];
+    const result = await execute(revokeByPrefix("9f2c11223344"), {
+      env: consumerEnv,
+      transport: pagedTransport(requests, () => body),
+    });
+    assert.equal(result.exitCode, 7);
+    assert.equal(JSON.parse(result.stderr).error.code, "invalid_response");
+    assert.ok(requests.every((r) => r.method === "GET"));
+  }
+});
+
+test("a matched fingerprint that is not 64 hex is never sent to DELETE", async () => {
+  const requests: TransportRequest[] = [];
+  const result = await execute(revokeByPrefix("9f2c11223344"), {
+    env: consumerEnv,
+    transport: pagedTransport(requests, () => ({
+      ...identityPage,
+      apiIdentities: [
+        { apiFingerprint: "9f2c11223344/../x", status: "ACTIVE" },
+      ],
+    })),
+  });
+  assert.equal(result.exitCode, 7);
+  assert.ok(requests.every((r) => r.method === "GET"));
+});
+
+test("a too-short consumer id is rejected before any request", async () => {
+  const result = await execute(["consumer", "get", "--consumer-id", "a"], {
+    env: consumerEnv,
+  });
+  assert.equal(result.exitCode, 2);
+  assert.equal(result.requests.length, 0);
+});

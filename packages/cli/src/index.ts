@@ -25,6 +25,7 @@ import {
 } from "./login";
 import {
   ConsumerInputError,
+  ConsumerProtocolError,
   consumerCommands,
   resolveFingerprint,
   validConsumerId,
@@ -799,6 +800,8 @@ function classifyError(
       code: error.code,
       message: error.message,
     };
+  if (error instanceof ConsumerProtocolError)
+    return { exitCode: 7, code: "invalid_response", message: error.message };
   if (error instanceof CliError)
     return {
       exitCode: error.exitCode,

@@ -145,7 +145,7 @@ Payloads and stdin are never echoed in diagnostics. A payload read prints the va
 
 `list` and `identities` return one page. Pass `nextCursor` from the receipt as `--cursor` for the next.
 
-`--fingerprint` is the full 64-hex SHA-256 or a unique prefix of at least 12 hex characters. A prefix is resolved against that consumer's identities. No match, or several, exits 2 and lists the candidates; nothing is revoked.
+`--fingerprint` is the full 64-hex SHA-256 or a unique prefix of at least 12 hex characters. A prefix is resolved against that consumer's identities. No match, or several, exits 2 and nothing is revoked; several matches also list the candidates.
 
 After the workload uses its new certificate, check the identities, then revoke the superseded one by prefix:
 

@@ -31,7 +31,8 @@ Token sources, in order: `--token-file`, `HEMLIG_ADMIN_TOKEN_FILE`,
 Commands: `secret create | update | write-payload | read | read-payload | archive`,
 `consumer list | get | identities | revoke-identity`, `login`, `logout` and
 `idempotency-key`. `update`, `write-payload` and `archive` take `--if-match <etag>`
-(or `current`) and an optional `--idempotency-key`, as does `consumer revoke-identity`. Run `hemlig --help` for the JSON command reference.
+(or `current`) and an optional `--idempotency-key`. `consumer revoke-identity` takes
+`--idempotency-key` only, not `--if-match`. Run `hemlig --help` for the JSON command reference.
 
 It uses the typed [`@zyno-io/hemlig-client`](https://github.com/zyno-io/hemlig/tree/main/packages/client),
 does not provision Hemlig infrastructure, enroll consumers, redeem bootstrap tokens,

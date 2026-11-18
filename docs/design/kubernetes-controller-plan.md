@@ -100,7 +100,8 @@ even if a controller receives a request for another secret ID.
 
 Node 24 is the project-wide floor:
 
-- Every workspace and root package declares engines.node as 24.x.
+- The root and private workspaces declare engines.node as 24.x; the published
+  packages (CLI, client, Pulumi provider) declare >=24.
 - The Kubernetes controller Docker build and runtime images use node:24-alpine.
 - Every CDK Lambda uses nodejs24.x and bundles with a node24 target.
 - CI, release images, local tooling, MiniStack scripts, and documentation use
