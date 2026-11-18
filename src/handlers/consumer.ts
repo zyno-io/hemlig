@@ -2,19 +2,24 @@ import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
-import { consumerActorFromEvent } from "../auth/actors";
-import type { AgentCapability, AgentGrantRecord } from "../domain/types";
+import type { Actor, AgentCapability, AgentGrantRecord } from "../domain/types";
 import { badRequest, forbidden } from "../domain/errors";
 import { empty, json, parseJsonBody } from "../http/responses";
 import { isObject, parseMetadata, parsePayload } from "../domain/validation";
 import { isoNow } from "../util/encoding";
+import { resolveConsumerActor } from "./consumer-actor";
 import { withErrorResponse } from "./shared";
 
 export const handler = async (
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyStructuredResultV2> =>
   withErrorResponse(event, async (app, correlationId, setAuditContext) => {
-    const actor = await consumerActorFromEvent(event, app.repository);
+    const actor = await resolveConsumerActor(
+      event,
+      app,
+      `consumer${event.requestContext.http.method.toLowerCase()}:${event.rawPath}`,
+      setAuditContext,
+    );
     const consumerId = actor.consumerId;
     if (consumerId === undefined) {
       throw forbidden();
@@ -449,7 +454,7 @@ const requireIfMatch = (value: string | undefined): string => {
 const agentMutationAudit = async (
   app: Parameters<Parameters<typeof withErrorResponse>[1]>[0],
   correlationId: string,
-  actor: Awaited<ReturnType<typeof consumerActorFromEvent>>,
+  actor: Actor,
   operation: string,
   event: APIGatewayProxyEventV2,
   environment: string,

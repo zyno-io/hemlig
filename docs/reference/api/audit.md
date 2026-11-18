@@ -64,9 +64,10 @@ Current behavior as of v0.3.2. `operation` is `admin<method>:<path>` for adminis
 | `POST /v1/agent/identities/rotate` | `attempted` first, then `authorized` once the caller passes the checks, then `succeeded`. A failure before that writes `attempted` and `failed` |
 | `POST /v1/bootstrap/redeem` | `attempted`, `authorized`, `succeeded` once the token is redeemed; a rejected token writes none |
 | `GET /v1/admin/audit` | None |
-| JWT or TLS rejection before an actor exists | None. Use the stack's API Gateway access logs. |
+| Rejected Hemlig-issued client certificate (revoked, unknown, not yet valid or expired identity) | `failed` with `reasonCode: identity_not_active`. The actor is the certificate fingerprint, with `consumerId` and `environment` only if the identity exists. |
+| Missing or unparseable certificate, or JWT or TLS rejection before an actor exists | None. Use the stack's API Gateway access logs. |
 
-A `failed` event carries `reasonCode: request_failed`. The server writes `succeeded` before it responds with a plaintext payload.
+A `failed` event carries `reasonCode: request_failed`, except a rejected certificate, which carries `identity_not_active`. The server writes `succeeded` before it responds with a plaintext payload.
 
 ## Deliberately excluded routes
 

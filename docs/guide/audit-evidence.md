@@ -27,7 +27,8 @@ This page describes behaviour in v0.3.2. Terms: [audit event](../reference/gloss
 | Recovery and retention worker actions | Yes | Per action |
 | Audit-archive reads (`GET /v1/admin/audit`) | No | None |
 | `OPTIONS` preflight | No | None |
-| Rejected TLS or token before an actor exists | No | None here; use API Gateway logs |
+| Rejected Hemlig-issued client certificate (revoked, unknown, not yet valid or expired identity) | Yes | `failed` with `identity_not_active`, actor is the certificate fingerprint |
+| Missing or unparseable certificate, or a rejected token, before an actor exists | No | None here; use API Gateway logs |
 
 Two points are easy to miss:
 

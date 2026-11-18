@@ -1,5 +1,6 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import type { ControlRevision } from "../domain/types";
+import { IdentityRejectedError } from "../domain/errors";
 
 jest.mock("../auth/actors", () => ({
   consumerActorFromEvent: jest.fn(),
@@ -266,5 +267,145 @@ describe("consumer handler agent routes", () => {
       } as APIGatewayProxyEventV2),
     ).rejects.toMatchObject({ code: "bad_request" });
     expect(outcomes()).toEqual(["attempted"]);
+  });
+
+  describe("failures before the final audit context", () => {
+    const useRealWrapper = (
+      getAgentGrantForConsumer: jest.Mock = jest.fn(async () => ({})),
+    ) => {
+      // The real wrapper caches its application at module scope, so reuse
+      // that cached object and point its fakes at this scenario.
+      const { createApplication } = jest.requireMock("../app") as {
+        readonly createApplication: jest.Mock;
+      };
+      createApplication.mockReturnValue({
+        audit: { write: auditWrite },
+        repository: { getAgentGrantForConsumer },
+      });
+      const shared = jest.requireActual("./shared") as {
+        readonly withErrorResponse: typeof withErrorResponse;
+        readonly getApplication: () => {
+          audit: { write: unknown };
+          repository: { getAgentGrantForConsumer: unknown };
+        };
+      };
+      const app = shared.getApplication();
+      app.audit.write = auditWrite;
+      app.repository.getAgentGrantForConsumer = getAgentGrantForConsumer;
+      const realWrapper = shared.withErrorResponse;
+      withErrorResponse.mockImplementation(realWrapper);
+      jest.spyOn(console, "error").mockImplementation(() => undefined);
+    };
+    const events = () =>
+      (auditWrite.mock.calls as unknown as [Record<string, unknown>][]).map(
+        ([entry]) => entry,
+      );
+
+    it("audits a rejected identity with its fingerprint and attributes", async () => {
+      useRealWrapper();
+      consumerActorFromEvent.mockRejectedValue(
+        new IdentityRejectedError(
+          {
+            type: "consumer",
+            id: "fp",
+            consumerId: "staging-trusted",
+            environment: "staging",
+          },
+          "The client certificate is not an active consumer API identity.",
+        ),
+      );
+
+      const response = await handler(readEvent());
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body as string).error).toMatchObject({
+        code: "identity_not_active",
+        message: "The client certificate is not an active consumer API identity.",
+      });
+      expect(events()).toEqual([
+        expect.objectContaining({
+          outcome: "failed",
+          actor: {
+            type: "consumer",
+            id: "fp",
+            consumerId: "staging-trusted",
+            environment: "staging",
+          },
+          operation:
+            "consumerget:/v1/agent/secrets/platform%2Faccess%2Fwarpgate%2Ftarget-sync%2Fedge",
+          sourceIp: "127.0.0.1",
+          reasonCode: "identity_not_active",
+        }),
+      ]);
+    });
+
+    it("audits an unknown fingerprint with only the fingerprint", async () => {
+      useRealWrapper();
+      consumerActorFromEvent.mockRejectedValue(
+        new IdentityRejectedError({ type: "consumer", id: "fp" }, "no"),
+      );
+
+      await handler(readEvent());
+
+      expect(events()).toHaveLength(1);
+      expect(events()[0]).toMatchObject({
+        outcome: "failed",
+        actor: { type: "consumer", id: "fp" },
+        reasonCode: "identity_not_active",
+      });
+      expect(events()[0]?.actor).toEqual({ type: "consumer", id: "fp" });
+    });
+
+    it("writes no events when there is no usable certificate", async () => {
+      useRealWrapper();
+      const { identityNotActive } = jest.requireActual(
+        "../domain/errors",
+      ) as typeof import("../domain/errors");
+      consumerActorFromEvent.mockRejectedValue(identityNotActive("none"));
+
+      const response = await handler(readEvent());
+
+      expect(response.statusCode).toBe(403);
+      expect(auditWrite).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["consumerId", { type: "consumer", id: "fp", environment: "staging" }],
+      ["environment", { type: "consumer", id: "fp", consumerId: "c" }],
+    ])("audits an actor without %s", async (_name, actor) => {
+      useRealWrapper();
+      consumerActorFromEvent.mockResolvedValue(actor);
+
+      const response = await handler(readEvent());
+
+      expect(response.statusCode).toBe(403);
+      expect(events()).toEqual([
+        expect.objectContaining({
+          outcome: "failed",
+          actor,
+          reasonCode: "request_failed",
+          operation: expect.stringMatching(/^consumerget:/),
+        }),
+      ]);
+    });
+
+    it("audits a failing grant lookup", async () => {
+      useRealWrapper(
+        jest.fn(async () => {
+          throw new Error("lookup failed");
+        }),
+      );
+
+      const response = await handler(readEvent());
+
+      expect(response.statusCode).toBe(500);
+      expect(events()).toEqual([
+        expect.objectContaining({
+          outcome: "failed",
+          operation: expect.stringMatching(/^consumerget:/),
+          reasonCode: "request_failed",
+        }),
+      ]);
+    });
   });
 });

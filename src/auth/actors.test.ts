@@ -238,4 +238,25 @@ describe("consumerActorFromEvent", () => {
       consumerActorFromEvent(request, lookup(record), now),
     ).rejects.toMatchObject({ statusCode: 403, code: "identity_not_active" });
   });
+
+  it.each([
+    ["a revoked identity", identity({ status: "REVOKED" }), { consumerId: "agent-a", environment: "prod" }],
+    ["an unknown identity", undefined, {}],
+  ])("attaches the attributable actor for %s", async (_name, record, known) => {
+    const error = await consumerActorFromEvent(event(pem), lookup(record), now).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({ actor: { type: "consumer", id: fingerprint, ...known } });
+    expect(JSON.stringify((error as { actor: unknown }).actor)).not.toContain("BEGIN");
+  });
+
+  it.each([
+    ["a missing certificate", event()],
+    ["a malformed certificate", event("not a certificate")],
+  ])("attaches no actor for %s", async (_name, request) => {
+    const error = await consumerActorFromEvent(request, lookup(identity()), now).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).not.toHaveProperty("actor");
+  });
 });

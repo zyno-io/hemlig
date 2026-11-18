@@ -2,11 +2,11 @@ import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
-import { consumerActorFromEvent } from "../auth/actors";
 import { badRequest, invalidCsr } from "../domain/errors";
 import { isObject } from "../domain/validation";
 import { json, parseJsonBody } from "../http/responses";
 import { humanOperation } from "../services/operations";
+import { resolveConsumerActor } from "./consumer-actor";
 import { withErrorResponse } from "./shared";
 
 /**
@@ -23,10 +23,14 @@ export const handler = async (
     ) {
       throw badRequest("The requested identity route is not supported.");
     }
-    const actor = await consumerActorFromEvent(event, app.repository);
     const operation = "agent.identity.rotate";
     const sourceIp = event.requestContext.http.sourceIp;
-    setAuditContext({ actor, operation, sourceIp });
+    const actor = await resolveConsumerActor(
+      event,
+      app,
+      operation,
+      setAuditContext,
+    );
     await app.audit.write({
       correlationId,
       outcome: "attempted",
