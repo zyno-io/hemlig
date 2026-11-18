@@ -198,6 +198,8 @@ export default withMermaid(
     },
     outline: { level: [2, 3], label: "On this page" },
   },
-  mermaid: {},
+  // "neutral" keeps diagrams grey-on-white in light mode instead of mermaid's
+  // default purple; the plugin switches to its dark theme automatically.
+  mermaid: { theme: "neutral" },
   }),
 );

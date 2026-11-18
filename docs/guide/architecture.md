@@ -13,28 +13,29 @@ Read [Concepts](concepts.md) first for the vocabulary. This page shows the parts
 ## Components
 
 ```mermaid
-flowchart LR
-  admin["Administrator<br/>(console, CLI, Pulumi)"]
-  agent["Kubernetes controller<br/>(agent)"]
+flowchart TB
+  admin["Administrator<br/>console · CLI · Pulumi"]
+  agent["Kubernetes controller"]
   direct["Direct consumer"]
 
-  admin -- "OIDC token" --> adminapi["Administrator API<br/>admin + audit-query Lambdas"]
-  agent -- "bootstrap token + CSR" --> boot["Bootstrap route<br/>bootstrap Lambda"]
-  agent -- "client certificate" --> deliv["Delivery API<br/>consumer + rotation Lambdas"]
-  direct -- "client certificate" --> deliv
+  adminapi["Administrator API"]
+  boot["Bootstrap route"]
+  deliv["Delivery API"]
 
-  adminapi --> ddb[("DynamoDB<br/>control table")]
-  adminapi --> s3rev[("S3 revisions")]
-  adminapi --> s3aud[("S3 audit archive<br/>Object Lock")]
-  adminapi --> kms{{"KMS<br/>application CMK"}}
-  boot --> kms
-  boot --> iot["AWS IoT Core"]
-  deliv --> ddb
-  deliv --> s3rev
-  deliv --> kms
-  ddb -- "stream" --> notify["Notification Lambda"]
-  notify -- "change hint" --> iot
-  iot -- "MQTT" --> agent
+  store[("DynamoDB · S3 · KMS")]
+  notify["Notification Lambda"]
+  iot["AWS IoT Core"]
+
+  admin -- "OIDC token" --> adminapi
+  agent -- "bootstrap token + CSR" --> boot
+  agent -- "client certificate" --> deliv
+  direct -- "client certificate" --> deliv
+  adminapi --> store
+  boot --> store
+  deliv --> store
+  store -- "change stream" --> notify
+  notify -- "hint" --> iot
+  iot -. "MQTT hint to the controller" .-> agent
 ```
 
 | Component | Job |
