@@ -17,9 +17,11 @@ import {
   jwtExpiry,
   loginViaConsole,
   openInBrowser,
-  readCachedToken,
+  parseHttpsOrigin,
+  readCachedLogin,
   removeCachedToken,
-  writeCachedToken,
+  writeCachedLogin,
+  type CachedLogin,
 } from "./login";
 
 const commands = [
@@ -62,7 +64,7 @@ const help = {
       "Per-request timeout (1–300000 milliseconds); default 30000.",
   },
   output:
-    "One JSON receipt on stdout; one JSON error on stderr. No prompts or automatic retries.",
+    "One JSON receipt on stdout; one JSON error on stderr. No prompts or automatic retries. Exception: login also prints its sign-in URL and confirmation code on stderr on success.",
   exitCodes: {
     "0": "Success",
     "2": "Usage or invalid local input",
@@ -189,9 +191,12 @@ export async function runCli(
         parsed.values["console-url"] ?? env.HEMLIG_CONSOLE_URL,
         "Supply --console-url or HEMLIG_CONSOLE_URL.",
         "Console URL",
+        true,
       );
-      const url = async (target: string): Promise<void> => {
-        await stderr(`Open this URL to sign in to the Hemlig CLI:\n${target}\n`);
+      const url = async (target: string, code: string): Promise<void> => {
+        await stderr(
+          `Open this URL to sign in to the Hemlig CLI:\n${target}\nConfirm the browser shows code ${code}\n`,
+        );
       };
       const result = await loginViaConsole({
         consoleOrigin,
@@ -202,9 +207,13 @@ export async function runCli(
           : (dependencies.openBrowser ?? openInBrowser),
         announce: url,
       });
-      await writeCachedToken(configDir, result.token);
+      await writeCachedLogin(configDir, {
+        token: result.token,
+        consoleOrigin: consoleOrigin.origin,
+        adminOrigin: result.adminOrigin,
+      });
       await stdout(
-        `${JSON.stringify({ loggedIn: true, expiresAt: result.expiresAt.toISOString() })}\n`,
+        `${JSON.stringify({ loggedIn: true, adminUrl: result.adminOrigin, expiresAt: result.expiresAt.toISOString() })}\n`,
       );
       return 0;
     }
@@ -237,7 +246,26 @@ export async function runCli(
         usage("An option is not supported by this command.");
     }
     const values = parsed.values;
-    const origin = adminOrigin(values["admin-url"] ?? env.HEMLIG_ADMIN_URL);
+    // The cached login is only a candidate when no explicit token source exists.
+    const explicitToken =
+      values["token-file"] !== undefined ||
+      env.HEMLIG_ADMIN_TOKEN_FILE !== undefined ||
+      env.HEMLIG_ADMIN_TOKEN !== undefined;
+    let cachedLogin: CachedLogin | undefined;
+    let cacheError: unknown;
+    if (!explicitToken) {
+      try {
+        cachedLogin = await readCachedLogin(configDir);
+      } catch (error) {
+        cacheError =
+          error instanceof LoginError
+            ? error
+            : new CliError(9, "input_io_error", "Cannot read cached login.");
+      }
+    }
+    const origin = adminOrigin(
+      values["admin-url"] ?? env.HEMLIG_ADMIN_URL ?? cachedLogin?.adminOrigin,
+    );
     const environment = values.environment ?? env.HEMLIG_ENVIRONMENT;
     if (!environment || !/^[a-z][a-z0-9-]{0,63}$/.test(environment)) {
       usage("Supply a valid logical --environment or HEMLIG_ENVIRONMENT.");
@@ -295,11 +323,17 @@ export async function runCli(
           );
     let cached = false;
     if (tokenText === undefined) {
-      try {
-        tokenText = await readCachedToken(configDir);
-        cached = tokenText !== undefined;
-      } catch {
-        throw new CliError(9, "input_io_error", "Cannot read cached login token.");
+      if (cacheError !== undefined) throw cacheError;
+      if (cachedLogin !== undefined) {
+        if (origin.origin !== cachedLogin.adminOrigin) {
+          throw new CliError(
+            3,
+            "login_mismatch",
+            `Cached login is for ${cachedLogin.adminOrigin}; run \`hemlig login\` for this API.`,
+          );
+        }
+        tokenText = cachedLogin.token;
+        cached = true;
       }
     }
     const token = tokenText?.trim();
@@ -459,25 +493,18 @@ function httpsOrigin(
   value: string | undefined,
   missing: string,
   label: string,
+  strictHost = false,
 ): URL {
   if (!value) usage(missing);
-  let url: URL;
   try {
-    url = new URL(value);
+    new URL(value);
   } catch {
     return usage(`Invalid ${label.toLowerCase().replace(" url", "")} origin.`);
   }
-  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-  if (
-    (url.protocol !== "https:" && !(url.protocol === "http:" && local)) ||
-    url.username ||
-    url.password ||
-    url.pathname !== "/" ||
-    url.search ||
-    url.hash
-  )
-    usage(
-      `${label} must be an HTTPS origin (HTTP is allowed only on loopback).`,
+  const url = parseHttpsOrigin(value, strictHost);
+  if (url === undefined)
+    return usage(
+      `${label} must be an HTTPS origin (HTTP is allowed only on loopback)${strictHost ? ", with a plain hostname" : ""}.`,
     );
   return url;
 }
@@ -649,7 +676,14 @@ function classifyError(error: unknown): {
 } {
   if (error instanceof LoginError)
     return {
-      exitCode: error.code === "login_timeout" ? 8 : 7,
+      exitCode:
+        error.code === "login_timeout"
+          ? 8
+          : error.code === "login_invalid"
+            ? 3
+            : error.code === "config_dir_unsafe"
+              ? 9
+              : 7,
       code: error.code,
       message: error.message,
     };

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
+import { confirmationCode } from "../auth/confirmationCode";
 import { useAppStore } from "../stores/app";
 
 /**
@@ -13,6 +14,9 @@ const store = useAppStore();
 const route = useRoute();
 
 const RENEW_WITHIN_MS = 5 * 60 * 1000;
+/** Authorize stays disabled this long after the page becomes visible (clickjacking guard). */
+const ARM_DELAY_MS = 1500;
+
 
 const single = (value: unknown): string | undefined =>
   typeof value === "string" ? value : undefined;
@@ -34,11 +38,41 @@ const signedInAs = computed(
   () => store.session?.email ?? store.session?.displayName ?? store.session?.subject ?? "—",
 );
 
+const code = ref<string | undefined>();
+watch(
+  state,
+  async (value) => {
+    code.value = undefined;
+    if (value !== undefined) code.value = await confirmationCode(value);
+  },
+  { immediate: true },
+);
+
+const armed = ref(false);
+let armTimer: ReturnType<typeof setTimeout> | undefined;
+const arm = (): void => {
+  armed.value = false;
+  clearTimeout(armTimer);
+  if (document.visibilityState === "visible") {
+    armTimer = setTimeout(() => {
+      armed.value = true;
+    }, ARM_DELAY_MS);
+  }
+};
+onMounted(() => {
+  arm();
+  document.addEventListener("visibilitychange", arm);
+});
+onBeforeUnmount(() => {
+  clearTimeout(armTimer);
+  document.removeEventListener("visibilitychange", arm);
+});
+
 const phase = ref<"idle" | "sending" | "cancelled">("idle");
 const error = ref<string | undefined>();
 
 const authorize = async (): Promise<void> => {
-  if (!valid.value || phase.value === "sending") return;
+  if (!valid.value || !armed.value || phase.value === "sending") return;
   error.value = undefined;
   phase.value = "sending";
   try {
@@ -46,6 +80,8 @@ const authorize = async (): Promise<void> => {
     if (token === undefined) {
       throw new Error("This console session has no access token to hand over.");
     }
+    // The API this token is for; the CLI binds the cached login to it.
+    const adminUrl = new URL(store.requireConfig().adminApiUrl).origin;
     const form = document.createElement("form");
     form.method = "POST";
     form.action = `http://127.0.0.1:${port.value}/callback`;
@@ -54,6 +90,7 @@ const authorize = async (): Promise<void> => {
     for (const [name, value] of [
       ["access_token", token],
       ["state", state.value!],
+      ["admin_url", adminUrl],
     ] as const) {
       const input = document.createElement("input");
       input.type = "hidden";
@@ -97,7 +134,16 @@ const cancel = (): void => {
 
       <section v-else class="card card-body max-w-xl">
         <h2 class="section-title">Authorize the Hemlig CLI on this computer?</h2>
-        <dl class="facts mt-2">
+        <div class="mt-3">
+          <p class="text-[13px] text-ink-2">Confirmation code</p>
+          <p class="mono text-2xl font-semibold tracking-wider" data-testid="confirmation-code">
+            {{ code ?? "…" }}
+          </p>
+          <p class="mt-1 text-[13px] text-ink-2">
+            Only authorize if this matches the code in your terminal.
+          </p>
+        </div>
+        <dl class="facts mt-3">
           <dt>Target</dt>
           <dd class="mono">{{ target }}</dd>
           <dt>Signed in as</dt>
@@ -114,7 +160,7 @@ const cancel = (): void => {
           <button
             type="button"
             class="btn btn-primary"
-            :disabled="phase === 'sending'"
+            :disabled="phase === 'sending' || !armed || code === undefined"
             @click="authorize"
           >
             {{ phase === "sending" ? "Authorizing…" : "Authorize" }}

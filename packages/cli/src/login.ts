@@ -1,6 +1,6 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir } from "node:os";
@@ -8,6 +8,55 @@ import { join } from "node:path";
 
 /** Same syntax screen the CLI applies to every bearer token; not verification. */
 export const JWT_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+/**
+ * Parses an HTTPS origin (HTTP only on loopback). Rejects userinfo, any path
+ * other than `/`, a query and a fragment. With `strictHost`, the hostname is
+ * also limited to [A-Za-z0-9.-] so it can never carry shell or URL syntax.
+ */
+export function parseHttpsOrigin(
+  value: string,
+  strictHost = false,
+): URL | undefined {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (
+    (url.protocol !== "https:" && !(url.protocol === "http:" && local)) ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  )
+    return undefined;
+  if (strictHost && !/^[A-Za-z0-9.-]+$/.test(url.hostname)) return undefined;
+  return url;
+}
+
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/**
+ * Short confirmation code shown by both the CLI and the console so an operator
+ * can tell a link they started from one a third party crafted. SHA-256 of the
+ * state string, first 5 bytes, Crockford base32, formatted XXXX-XXXX. The
+ * console implements the same function with crypto.subtle.
+ */
+export function confirmationCode(state: string): string {
+  const bytes = createHash("sha256").update(state, "utf8").digest().subarray(0, 5);
+  let bits = 0n;
+  for (const byte of bytes) bits = (bits << 8n) | BigInt(byte);
+  let out = "";
+  for (let i = 7; i >= 0; i--) out += CROCKFORD[Number((bits >> BigInt(i * 5)) & 31n)];
+  return `${out.slice(0, 4)}-${out.slice(4)}`;
+}
+
+const DONE_PAGE =
+  "<!doctype html><title>Hemlig CLI</title><p>Hemlig CLI signed in. You can close this tab.</p>";
 
 const MAX_BODY_BYTES = 16 * 1024;
 export const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
@@ -50,27 +99,85 @@ export function jwtExpiry(token: string): number | undefined {
   }
 }
 
-export async function readCachedToken(
+export interface CachedLogin {
+  readonly version: 1;
+  readonly token: string;
+  readonly consoleOrigin: string;
+  readonly adminOrigin: string;
+}
+
+/** Returns undefined when no login is cached; throws LoginError when the file is unusable. */
+export async function readCachedLogin(
   configDir: string,
-): Promise<string | undefined> {
+): Promise<CachedLogin | undefined> {
+  let text: string;
   try {
-    return (await readFile(tokenCachePath(configDir), "utf8")).trim();
+    text = await readFile(tokenCachePath(configDir), "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+  const bad = new LoginError(
+    "login_invalid",
+    "Cached login is unreadable; run `hemlig login`.",
+  );
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw bad;
+  }
+  const v = value as Partial<Record<string, unknown>> | null;
+  if (
+    typeof v !== "object" ||
+    v === null ||
+    v.version !== 1 ||
+    typeof v.token !== "string" ||
+    !JWT_PATTERN.test(v.token) ||
+    typeof v.consoleOrigin !== "string" ||
+    typeof v.adminOrigin !== "string" ||
+    parseHttpsOrigin(v.consoleOrigin)?.origin !== v.consoleOrigin ||
+    parseHttpsOrigin(v.adminOrigin)?.origin !== v.adminOrigin
+  )
+    throw bad;
+  return v as unknown as CachedLogin;
+}
+
+/** Creates the directory privately, refusing a symlink or another user's directory. */
+async function ensurePrivateDir(configDir: string): Promise<void> {
+  await mkdir(configDir, { recursive: true, mode: 0o700 });
+  const info = await lstat(configDir);
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw new LoginError(
+      "config_dir_unsafe",
+      "The CLI config directory is a symlink or not a directory; refusing to store a token there.",
+    );
+  }
+  if (process.platform !== "win32") {
+    if (info.uid !== process.getuid!()) {
+      throw new LoginError(
+        "config_dir_unsafe",
+        "The CLI config directory is owned by another user; refusing to store a token there.",
+      );
+    }
+    await chmod(configDir, 0o700);
+  }
 }
 
 /** Atomic write: temp file in the same directory, then rename. */
-export async function writeCachedToken(
+export async function writeCachedLogin(
   configDir: string,
-  token: string,
+  login: Omit<CachedLogin, "version">,
 ): Promise<void> {
-  await mkdir(configDir, { recursive: true, mode: 0o700 });
+  await ensurePrivateDir(configDir);
   const path = tokenCachePath(configDir);
   const temp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   try {
-    await writeFile(temp, `${token}\n`, { mode: 0o600, flag: "wx" });
+    await writeFile(
+      temp,
+      `${JSON.stringify({ version: 1, ...login })}\n`,
+      { mode: 0o600, flag: "wx" },
+    );
     await rename(temp, path);
   } catch (error) {
     await rm(temp, { force: true });
@@ -82,18 +189,32 @@ export async function removeCachedToken(configDir: string): Promise<void> {
   await rm(tokenCachePath(configDir), { force: true });
 }
 
+/**
+ * Opener argv per platform. Never a shell: the URL contains `&`, which cmd.exe
+ * would treat as a command separator, so Windows uses rundll32 directly.
+ */
+export function browserCommand(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+): [string, string[]] {
+  if (platform === "darwin") return ["open", [url]];
+  if (platform === "win32")
+    return ["rundll32", ["url.dll,FileProtocolHandler", url]];
+  return ["xdg-open", [url]];
+}
+
 /** Default opener; failures are non-fatal because the URL is always printed. */
 export function openInBrowser(
   url: string,
   platform: NodeJS.Platform = process.platform,
+  spawnImpl: typeof spawn = spawn,
 ): void {
-  const [command, args]: [string, string[]] =
-    platform === "darwin"
-      ? ["open", [url]]
-      : platform === "win32"
-        ? ["cmd", ["/c", "start", '""', url]]
-        : ["xdg-open", [url]];
-  const child = spawn(command, args, { stdio: "ignore", detached: true });
+  const [command, args] = browserCommand(url, platform);
+  const child = spawnImpl(command, args, {
+    stdio: "ignore",
+    detached: true,
+    shell: false,
+  });
   child.on("error", () => {});
   child.unref();
 }
@@ -104,7 +225,15 @@ export interface LoginOptions {
   readonly timeoutMs: number;
   readonly now: () => number;
   readonly open: ((url: string) => void | Promise<void>) | undefined;
-  readonly announce: (url: string) => void | Promise<void>;
+  readonly announce: (url: string, code: string) => void | Promise<void>;
+  /** How long to keep serving /done after the POST before closing anyway. */
+  readonly doneGraceMs?: number;
+}
+
+export interface LoginResult {
+  readonly token: string;
+  readonly expiresAt: Date;
+  readonly adminOrigin: string;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -145,20 +274,30 @@ async function readBody(request: IncomingMessage): Promise<string | undefined> {
 /**
  * Listens on 127.0.0.1 for one valid POST /callback from the console's
  * /cli-login page and resolves with the access token. Anything else is
- * rejected and the wait continues until the timeout.
+ * rejected and the wait continues until the timeout. A valid POST is answered
+ * with a 303 to GET /done; the server closes once that page has been sent.
  */
 export async function loginViaConsole(
   options: LoginOptions,
-): Promise<{ token: string; expiresAt: Date }> {
+): Promise<LoginResult> {
   const state = randomBytes(32).toString("base64url");
   const expectedOrigin = options.consoleOrigin.origin;
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    let accepted: LoginResult | undefined;
     let timer: NodeJS.Timeout | undefined;
     const server = createServer(async (request, response) => {
       try {
         const path = (request.url ?? "").split("?")[0];
+        if (accepted !== undefined) {
+          // Token already received: serve only the post-redirect page, then close.
+          if (request.method === "GET" && path === "/done") {
+            response.once("finish", () => finish(() => resolve(accepted!), false));
+            return reply(response, 200, DONE_PAGE);
+          }
+          return reply(response, 404, "Not found");
+        }
         if (request.method !== "POST" || path !== "/callback") {
           return reply(response, 404, "Not found");
         }
@@ -192,12 +331,24 @@ export async function loginViaConsole(
         if (exp === undefined || exp * 1000 <= options.now()) {
           return reply(response, 400, "Token is expired or has no expiry");
         }
-        reply(
-          response,
-          200,
-          "<!doctype html><title>Hemlig CLI</title><p>Hemlig CLI signed in. You can close this tab.</p>",
+        const admin = parseHttpsOrigin(form.get("admin_url") ?? "");
+        if (admin === undefined) {
+          return reply(response, 400, "Invalid admin_url");
+        }
+        accepted = {
+          token,
+          expiresAt: new Date(exp * 1000),
+          adminOrigin: admin.origin,
+        };
+        // 303 to a GET page so reloading the tab cannot re-send the token. The
+        // listener stays up for that GET, with a grace timer in case the browser
+        // never follows the redirect.
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(
+          () => finish(() => resolve(accepted!), true),
+          options.doneGraceMs ?? 5000,
         );
-        finish(() => resolve({ token, expiresAt: new Date(exp * 1000) }), false);
+        reply(response, 303, "", { location: "/done" });
       } catch {
         if (!response.headersSent) reply(response, 400, "Bad request");
       }
@@ -236,7 +387,7 @@ export async function loginViaConsole(
       );
       void (async () => {
         try {
-          await options.announce(url.toString());
+          await options.announce(url.toString(), confirmationCode(state));
           await options.open?.(url.toString());
         } catch {
           // The URL has been printed; a failed opener must not abort the wait.

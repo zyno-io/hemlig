@@ -73,10 +73,16 @@ class OidcDriver implements AuthDriver {
   public async initialize(): Promise<Session | undefined> {
     try {
       const user = await this.manager.signinSilent();
-      return user === null ? undefined : this.adopt(user);
+      return user === null ? undefined : this.publicSession(user);
     } catch {
       return undefined;
     }
+  }
+
+  /** The session view held in reactive state; it never carries the access token. */
+  private publicSession(user: User): Session {
+    const { token: _token, ...session } = this.adopt(user);
+    return session;
   }
 
   public async signIn(returnTo?: string): Promise<void> {
@@ -86,7 +92,7 @@ class OidcDriver implements AuthDriver {
 
   public async completeSignIn(): Promise<CompletedSession | undefined> {
     const user = await this.manager.signinRedirectCallback();
-    const { token: _token, ...session } = this.adopt(user);
+    const session = this.publicSession(user);
     const returnTo = safeReturnTo((user.state as { returnTo?: unknown } | undefined)?.returnTo);
     return returnTo === undefined ? session : { ...session, returnTo };
   }

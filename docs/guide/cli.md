@@ -61,30 +61,42 @@ hemlig logout
 ```
 
 1. The CLI listens on `127.0.0.1` (random port) and opens
-   `<console>/cli-login?port=…&state=…`. The URL is also printed on stderr;
-   `--no-browser` prints it only.
-2. Sign in to the console if needed, then choose **Authorize**. The console
-   renews its token if it expires within 5 minutes and POSTs it to
-   `http://127.0.0.1:<port>/callback` as a form body, never in a URL.
+   `<console>/cli-login?port=…&state=…`. The URL and a confirmation code
+   (`XXXX-XXXX`, derived from `state`) are printed on stderr; `--no-browser`
+   prints them without opening a browser. The console URL must be an HTTPS
+   origin with a plain hostname (`localhost` and `127.0.0.1` allowed over HTTP).
+2. The console page shows the same code. Authorize only if it matches the code
+   in your terminal; the button enables 1.5 s after the page is visible. The
+   console renews its token if it expires within 5 minutes and POSTs it, with
+   its admin API origin (`admin_url`), to `http://127.0.0.1:<port>/callback`
+   as a form body, never in a URL.
 3. The CLI accepts one `POST /callback` whose `state` matches its random
    256-bit nonce and whose `Origin` is absent, `null` or the console origin
    (browsers send `null` for this cross-origin form POST); anything else is
-   rejected and it keeps waiting. `state` is the authenticator. It gives up
-   after 5 minutes.
-4. The token is cached at `$XDG_CONFIG_HOME/hemlig/admin-token`
-   (`~/.config/hemlig/admin-token`; `%APPDATA%\hemlig\admin-token` on Windows),
-   directory mode `0700`, file mode `0600`. stdout receives
-   `{"loggedIn":true,"expiresAt":"…"}`.
+   rejected and it keeps waiting. `state` is the authenticator. It answers with
+   a `303` to a "signed in" page so a reload cannot re-send the token, then
+   closes. It gives up after 5 minutes.
+4. The login is cached as JSON (`version`, `token`, `consoleOrigin`,
+   `adminOrigin`) at `$XDG_CONFIG_HOME/hemlig/admin-token`
+   (`~/.config/hemlig/admin-token`; `%APPDATA%\hemlig\admin-token` on Windows).
+   The directory is forced to `0700` (a symlink or another user's directory is
+   refused) and the file is `0600`. stdout receives
+   `{"loggedIn":true,"adminUrl":"…","expiresAt":"…"}`.
 5. The token is short-lived and grants full admin access. When it expires,
-   commands exit `3` with `Login expired; run hemlig login.`; log in again.
-6. `hemlig logout` deletes the file and prints `{"loggedIn":false}`.
+   commands exit `3` with ``Login expired; run `hemlig login`.``; log in again.
+6. The cached login works only for its own API. If `--admin-url` /
+   `HEMLIG_ADMIN_URL` is unset, the cached `adminUrl` is used; if it names a
+   different API, commands exit `3` with
+   ``Cached login is for <adminOrigin>; run `hemlig login` for this API.``
+   An unreadable cache also exits `3`.
+7. `hemlig logout` deletes the file and prints `{"loggedIn":false}`.
 
-| Order | Token source                                |
-| ----- | ------------------------------------------- |
-| 1     | `--token-file`                              |
-| 2     | `HEMLIG_ADMIN_TOKEN_FILE`                   |
-| 3     | `HEMLIG_ADMIN_TOKEN`                        |
-| 4     | Cached login token (expiry checked locally) |
+| Order | Token source                                                  |
+| ----- | ------------------------------------------------------------- |
+| 1     | `--token-file`                                                |
+| 2     | `HEMLIG_ADMIN_TOKEN_FILE`                                     |
+| 3     | `HEMLIG_ADMIN_TOKEN`                                          |
+| 4     | Cached login (expiry and API checked locally; no other source) |
 
 `login` accepts only `--console-url` and `--no-browser`. It opens a browser but
 never reads stdin.
@@ -218,7 +230,8 @@ There is no archived payload read or UID mutation command.
 ## Output and exit codes
 
 Success emits exactly one JSON object plus newline on stdout, with no stderr
-output. There are no progress banners, prompts, tables, or automatic retries.
+output. The one exception is `hemlig login`, which prints its sign-in URL and
+confirmation code on stderr. There are no progress banners, prompts, tables, or automatic retries.
 Flags may precede the command. `--help` also returns JSON.
 
 ```json
@@ -268,7 +281,7 @@ or `unknown` for service/protocol/network errors after attempting the mutation.
 | ---- | ------------------------------------------------------------------------------ |
 | 0    | Success                                                                        |
 | 2    | Usage, invalid local JSON/header/configuration, or API 400                     |
-| 3    | API 401/403 authentication or authorization failure                            |
+| 3    | API 401/403, or an expired, mismatched or unreadable cached login              |
 | 4    | API 404 secret or active payload missing                                       |
 | 5    | API 409 conflict, including a used operation key                               |
 | 6    | API 412 stale control revision                                                 |

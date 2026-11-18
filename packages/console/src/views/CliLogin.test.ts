@@ -1,17 +1,27 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRouter } from "vue-router";
 import { useAppStore } from "../stores/app";
+import { confirmationCode } from "../auth/confirmationCode";
 import CliLogin from "./CliLogin.vue";
 
 const goodState = "A".repeat(43);
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+});
 
 const mountAt = async (query: string) => {
   const pinia = createPinia();
   setActivePinia(pinia);
   const store = useAppStore();
   store.adoptSession({ subject: "sub-1", email: "admin@example.test" });
+  store.config = {
+    deploymentName: "d",
+    adminApiUrl: "https://admin.example.test/",
+    auth: { mode: "oidc", authority: "https://login.example.com", clientId: "c", scopes: ["s"] },
+  };
   const accessToken = vi.spyOn(store, "accessToken").mockResolvedValue("hdr.body.sig");
   const router = createRouter({
     history: createMemoryHistory(),
@@ -20,10 +30,16 @@ const mountAt = async (query: string) => {
   await router.push(`/cli-login?${query}`);
   await router.isReady();
   const wrapper = mount(CliLogin, { global: { plugins: [pinia, router] } });
+  await flushPromises();
   return { wrapper, accessToken };
 };
 
+const arm = async (): Promise<void> => {
+  await vi.advanceTimersByTimeAsync(1500);
+};
+
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.innerHTML = "";
 });
@@ -51,6 +67,28 @@ describe("CliLogin", () => {
     expect(wrapper.text()).toContain("127.0.0.1:40000");
     expect(wrapper.text()).toContain("admin@example.test");
     expect(wrapper.text()).toContain("full administrator access");
+    expect(wrapper.text()).toContain("Only authorize if this matches the code in your terminal.");
+    expect(wrapper.get('[data-testid="confirmation-code"]').text()).toBe(
+      await confirmationCode(goodState),
+    );
+  });
+
+  it("derives the same confirmation code as the CLI for a fixed state", async () => {
+    // Vector shared with packages/cli/src/login.test.ts.
+    expect(await confirmationCode("A".repeat(43))).toBe("1W07-71DP");
+  });
+
+  it("keeps Authorize disabled for 1.5 s and ignores early clicks", async () => {
+    const submit = vi.spyOn(HTMLFormElement.prototype, "submit").mockImplementation(() => {});
+    const { wrapper } = await mountAt(`port=40000&state=${goodState}`);
+    const button = wrapper.findAll("button").find((b) => b.text() === "Authorize")!;
+    expect(button.attributes("disabled")).toBeDefined();
+    await button.trigger("click");
+    await vi.advanceTimersByTimeAsync(1400);
+    expect(button.attributes("disabled")).toBeDefined();
+    expect(submit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(button.attributes("disabled")).toBeUndefined();
   });
 
   it("Authorize renews if needed and submits a loopback form POST", async () => {
@@ -59,6 +97,7 @@ describe("CliLogin", () => {
       submitted = this;
     });
     const { wrapper, accessToken } = await mountAt(`port=40000&state=${goodState}`);
+    await arm();
     await wrapper.findAll("button").find((b) => b.text() === "Authorize")!.trigger("click");
     await flushPromises();
 
@@ -68,13 +107,18 @@ describe("CliLogin", () => {
     expect(submitted!.getAttribute("action")).toBe("http://127.0.0.1:40000/callback");
     expect(submitted!.enctype).toBe("application/x-www-form-urlencoded");
     const fields = Object.fromEntries(new FormData(submitted!).entries());
-    expect(fields).toEqual({ access_token: "hdr.body.sig", state: goodState });
+    expect(fields).toEqual({
+      access_token: "hdr.body.sig",
+      state: goodState,
+      admin_url: "https://admin.example.test",
+    });
   });
 
   it("shows an error and posts nothing when no token is available", async () => {
     const submit = vi.spyOn(HTMLFormElement.prototype, "submit").mockImplementation(() => {});
     const { wrapper, accessToken } = await mountAt(`port=40000&state=${goodState}`);
     accessToken.mockResolvedValue(undefined);
+    await arm();
     await wrapper.findAll("button").find((b) => b.text() === "Authorize")!.trigger("click");
     await flushPromises();
     expect(submit).not.toHaveBeenCalled();
