@@ -126,6 +126,28 @@ describe("deploymentConfigFromContext", () => {
     expect(config.bootstrapQualifier).toBe("hmlsec01");
   });
 
+  it("defaults tracing off and accepts only true or false", () => {
+    const base = {
+      adminFqdn: "admin.example.com",
+      apiFqdn: "api.example.com",
+      zoneDomain: "example.com",
+      oidcIssuer: "https://login.example.com/tenant/v2.0",
+      oidcAudience: "hemlig-api",
+    };
+    expect(deploymentConfigFromContext(context(base)).tracing).toBeUndefined();
+    expect(
+      deploymentConfigFromContext(context({ ...base, tracing: "true" }))
+        .tracing,
+    ).toBe(true);
+    expect(
+      deploymentConfigFromContext(context({ ...base, tracing: "false" }))
+        .tracing,
+    ).toBeUndefined();
+    expect(() =>
+      deploymentConfigFromContext(context({ ...base, tracing: "yes" })),
+    ).toThrow('context tracing must be "true" or "false".');
+  });
+
   it("accepts an existing application key ARN for explicit key adoption", () => {
     const config = deploymentConfigFromContext(
       context({

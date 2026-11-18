@@ -53,6 +53,8 @@ const auditPrefix = "audit";
 const truststoreKeyPrefix = "truststores";
 
 export class HemligStack extends Stack {
+  private readonly tracing: lambda.Tracing;
+
   public constructor(
     scope: Construct,
     id: string,
@@ -67,6 +69,9 @@ export class HemligStack extends Stack {
       crossRegionReferences:
         props.crossRegionReferences ?? props.consoleFqdn !== undefined,
     });
+
+    this.tracing =
+      props.tracing === true ? lambda.Tracing.ACTIVE : lambda.Tracing.DISABLED;
 
     if (props.consoleFqdn !== undefined && props.oidcAdminScope === undefined) {
       throw new Error(
@@ -1168,7 +1173,7 @@ export class HemligStack extends Stack {
       handler: "handler",
       memorySize: 512,
       timeout: Duration.seconds(29),
-      tracing: lambda.Tracing.ACTIVE,
+      tracing: this.tracing,
       environment,
       bundling: {
         minify: true,

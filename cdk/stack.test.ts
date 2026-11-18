@@ -66,7 +66,10 @@ describe("HemligStack", () => {
     template.resourceCountIs("AWS::KMS::Key", 1);
     const resources = template.toJSON().Resources as Record<
       string,
-      { readonly DeletionPolicy?: string; readonly UpdateReplacePolicy?: string }
+      {
+        readonly DeletionPolicy?: string;
+        readonly UpdateReplacePolicy?: string;
+      }
     >;
     const retainedResources = Object.entries(resources).filter(
       ([, resource]) =>
@@ -560,7 +563,9 @@ describe("HemligStack", () => {
         );
     const actionsOf = (statements: Record<string, unknown>[]): string[] =>
       statements.flatMap((statement) =>
-        [statement.Action].flat().filter((a): a is string => typeof a === "string"),
+        [statement.Action]
+          .flat()
+          .filter((a): a is string => typeof a === "string"),
       );
 
     const rotation = statementsFor(roleOf("hml-test-identity-rotation"));
@@ -594,12 +599,20 @@ describe("HemligStack", () => {
         "iot:UpdateCertificate",
       ]),
     );
-    expect(rotationActions.some((action) => action.startsWith("kms:GenerateDataKey"))).toBe(false);
-    expect(rotationActions.some((action) => action.startsWith("apigateway:"))).toBe(false);
+    expect(
+      rotationActions.some((action) =>
+        action.startsWith("kms:GenerateDataKey"),
+      ),
+    ).toBe(false);
+    expect(
+      rotationActions.some((action) => action.startsWith("apigateway:")),
+    ).toBe(false);
     // Only the audit prefix may be written to; no revision or truststore bucket access.
     const s3Resources = JSON.stringify(
       rotation.filter((statement) =>
-        [statement.Action].flat().some((a) => typeof a === "string" && a.startsWith("s3:")),
+        [statement.Action]
+          .flat()
+          .some((a) => typeof a === "string" && a.startsWith("s3:")),
       ),
     );
     expect(s3Resources).not.toContain("RevisionBucket");
@@ -626,6 +639,51 @@ describe("HemligStack", () => {
     const template = Template.fromStack(stack);
     template.resourceCountIs("AWS::KMS::Key", 0);
     template.resourceCountIs("AWS::KMS::Alias", 1);
+  });
+
+  it("leaves X-Ray tracing off unless tracing is enabled", () => {
+    const base = {
+      environmentName: "test",
+      adminFqdn: "admin.test.example.com",
+      apiFqdn: "api.test.example.com",
+      zoneDomain: "test.example.com",
+      oidcIssuer: "https://login.example.com/tenant/v2.0",
+      oidcAudience: "hemlig-api",
+      oidcSubjectClaim: "sub",
+    };
+    const off = Template.fromStack(
+      new HemligStack(new App(), "hml-test-trace-off", base),
+    );
+    const offFunctions = Object.values(
+      off.findResources("AWS::Lambda::Function"),
+    ) as { Properties: { TracingConfig?: unknown } }[];
+    expect(offFunctions.length).toBeGreaterThan(0);
+    for (const fn of offFunctions) {
+      expect(fn.Properties.TracingConfig).toBeUndefined();
+    }
+    expect(JSON.stringify(off.toJSON())).not.toContain("xray:PutTraceSegments");
+
+    const on = Template.fromStack(
+      new HemligStack(new App(), "hml-test-trace-on", {
+        ...base,
+        tracing: true,
+      }),
+    );
+    // Only Hemlig's own functions; CDK helper Lambdas are not affected.
+    const onFunctions = (
+      Object.values(on.findResources("AWS::Lambda::Function")) as {
+        Properties: {
+          Description?: unknown;
+          TracingConfig?: { Mode?: string };
+        };
+      }[]
+    ).filter((fn) =>
+      JSON.stringify(fn.Properties.Description ?? "").includes("Hemlig "),
+    );
+    expect(onFunctions).toHaveLength(8);
+    for (const fn of onFunctions) {
+      expect(fn.Properties.TracingConfig).toEqual({ Mode: "Active" });
+    }
   });
 
   it("skips console hosting entirely when consoleFqdn is not configured", () => {
