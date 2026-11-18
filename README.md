@@ -1,15 +1,18 @@
 # Hemlig
 
-Hemlig delivers secrets to workloads that run outside AWS without giving them an
-AWS credential. It is a Lambda service you deploy into your own AWS account: KMS
-envelope-encrypted payloads in immutable S3 Object Lock revisions, authorization
-in DynamoDB, and an audit archive. Workloads authenticate with mTLS client
-certificates issued by Hemlig itself.
+Hemlig is a serverless secrets manager you deploy into your own AWS account. Compared
+with AWS Secrets Manager there is no per-secret monthly fee, access is granted
+on the secret from one console, CLI or Pulumi provider instead of an IAM role
+per workload, and changes are pushed to Kubernetes clusters, which can also
+export their own Secrets back. Underneath it is Lambda, KMS envelope-encrypted
+payloads in immutable S3 Object Lock revisions, DynamoDB, and an audit archive.
+Workloads authenticate with mTLS client certificates issued by Hemlig, so they
+never hold AWS credentials.
 
-**Who it is for:** platform and security teams running Kubernetes (or other
-infrastructure) outside AWS that want AWS-grade key management, immutable history
-and auditing, delivered through a Kubernetes controller, a CLI, a Pulumi provider,
-or the HTTP API.
+**Who it is for:** platform and security teams that want AWS-grade key
+management, immutable history and auditing without managing IAM per workload or
+paying per secret, delivered to Kubernetes (in or out of AWS), servers and CI
+through a Kubernetes controller, a CLI, a Pulumi provider, or the HTTP API.
 
 > Pre-1.0. Do not deliver production credentials without an isolated AWS
 > acceptance test of your OIDC and mTLS configuration.
@@ -35,17 +38,17 @@ or the HTTP API.
 
 ## Repository layout
 
-| Path                             | What it is                                                         | License |
-| -------------------------------- | ------------------------------------------------------------------ | ------- |
-| `src/`                           | Lambda handlers, services, crypto, repositories (root `hemlig`)    | AGPL    |
-| `cdk/`                           | `hemlig/cdk` construct and reference CDK app                       | MIT     |
-| `openapi/`                       | OpenAPI 3.1 contract                                               | MIT     |
-| `packages/client`                | `@zyno-io/hemlig-client` typed HTTPS client                        | MIT     |
-| `packages/cli`                   | `@zyno-io/hemlig-cli` administrator CLI                            | MIT     |
-| `packages/kubernetes-controller` | Controller, CRDs, Helm chart                                       | MIT     |
-| `packages/pulumi-provider`       | `@zyno-io/hemlig-pulumi-provider`                                  | MIT     |
-| `packages/console`               | Vue administrator console                                          | AGPL    |
-| `docs/`                          | VitePress documentation site; `docs/design/` = historical records  | AGPL    |
+| Path                             | What it is                                                        | License |
+| -------------------------------- | ----------------------------------------------------------------- | ------- |
+| `src/`                           | Lambda handlers, services, crypto, repositories (root `hemlig`)   | AGPL    |
+| `cdk/`                           | `hemlig/cdk` construct and reference CDK app                      | MIT     |
+| `openapi/`                       | OpenAPI 3.1 contract                                              | MIT     |
+| `packages/client`                | `@zyno-io/hemlig-client` typed HTTPS client                       | MIT     |
+| `packages/cli`                   | `@zyno-io/hemlig-cli` administrator CLI                           | MIT     |
+| `packages/kubernetes-controller` | Controller, CRDs, Helm chart                                      | MIT     |
+| `packages/pulumi-provider`       | `@zyno-io/hemlig-pulumi-provider`                                 | MIT     |
+| `packages/console`               | Vue administrator console                                         | AGPL    |
+| `docs/`                          | VitePress documentation site; `docs/design/` = historical records | AGPL    |
 
 ## Quickstart
 
@@ -127,17 +130,17 @@ Lock; use the [AWS acceptance runbook](docs/operations/acceptance.md).
 
 Docs site: **https://zyno-io.github.io/hemlig/**
 
-| Topic                                  | Source                                                         |
-| -------------------------------------- | -------------------------------------------------------------- |
-| What is Hemlig, concepts               | [docs/guide/](docs/guide/what-is-hemlig.md)                    |
-| Architecture and security model        | [docs/guide/architecture.md](docs/guide/architecture.md)       |
-| Deploying with CDK                     | [docs/guide/deploying.md](docs/guide/deploying.md)             |
-| Kubernetes controller                  | [docs/guide/kubernetes.md](docs/guide/kubernetes.md)           |
+| Topic                                  | Source                                                                                        |
+| -------------------------------------- | --------------------------------------------------------------------------------------------- |
+| What is Hemlig, concepts               | [docs/guide/](docs/guide/what-is-hemlig.md)                                                   |
+| Architecture and security model        | [docs/guide/architecture.md](docs/guide/architecture.md)                                      |
+| Deploying with CDK                     | [docs/guide/deploying.md](docs/guide/deploying.md)                                            |
+| Kubernetes controller                  | [docs/guide/kubernetes.md](docs/guide/kubernetes.md)                                          |
 | HTTP API and OpenAPI                   | [docs/reference/api/](docs/reference/api/index.md), [openapi/](openapi/consumer-secrets.yaml) |
-| Identity rotation, upgrades, releasing | [docs/operations/](docs/operations/identity-rotation.md)       |
-| Threat model                           | [docs/security/threat-model.md](docs/security/threat-model.md) |
-| Contributing                           | [CONTRIBUTING.md](CONTRIBUTING.md)                             |
-| Historical design records              | [docs/design/](docs/design/plan.md)                            |
+| Identity rotation, upgrades, releasing | [docs/operations/](docs/operations/identity-rotation.md)                                      |
+| Threat model                           | [docs/security/threat-model.md](docs/security/threat-model.md)                                |
+| Contributing                           | [CONTRIBUTING.md](CONTRIBUTING.md)                                                            |
+| Historical design records              | [docs/design/](docs/design/plan.md)                                                           |
 
 Preview the site locally with `yarn docs:dev`.
 

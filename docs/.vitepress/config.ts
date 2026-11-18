@@ -13,7 +13,7 @@ export default withMermaid(
   defineConfig({
     title: "Hemlig",
     description:
-      "mTLS secrets delivery for non-AWS workloads, backed by AWS Lambda, S3, DynamoDB and KMS.",
+      "A serverless secrets manager you deploy in your own AWS account. No per-secret fees, access granted on the secret instead of an IAM role per workload, and changes pushed to Kubernetes.",
     base: "/hemlig/",
     lang: "en-US",
     cleanUrls: true,
@@ -41,7 +41,7 @@ export default withMermaid(
           "meta",
           {
             property: "og:image:alt",
-            content: "Hemlig: mTLS secrets delivery for workloads outside AWS",
+            content: "Hemlig: serverless secrets, without the IAM sprawl",
           },
         ],
         ["meta", { name: "twitter:card", content: "summary_large_image" }],

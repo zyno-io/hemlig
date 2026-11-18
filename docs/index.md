@@ -1,15 +1,15 @@
 ---
 layout: home
 title: Hemlig
-description: A secrets service you deploy in your own AWS account. Workloads outside AWS fetch secrets over mutual TLS and never hold an AWS credential.
+description: A serverless secrets manager you deploy in your own AWS account. No per-secret fees, access granted on the secret instead of an IAM role per workload, and changes pushed to Kubernetes.
 hero:
   name: Hemlig
-  text: Secrets for workloads outside AWS
-  tagline: Deploy it in your own AWS account. Your clusters and servers fetch secrets over mutual TLS, with no AWS credentials on them.
+  text: Serverless secrets, without the IAM sprawl
+  tagline: A secrets manager that runs in your own AWS account. No per-secret fees, one console for who can read what, and delivery to Kubernetes or any server.
   actions:
     - theme: brand
-      text: How it works
-      link: /guide/architecture
+      text: What is Hemlig
+      link: /guide/what-is-hemlig
     - theme: alt
       text: Quickstart
       link: /guide/quickstart
@@ -17,22 +17,22 @@ hero:
       text: First secret in Kubernetes
       link: /guide/first-secret
 features:
-  - title: No AWS credentials on consumers
-    details: Workloads prove who they are with a client certificate issued by Hemlig. Everything else stays behind API Gateway, Lambda and KMS.
-    link: /guide/identity-and-trust
-    linkText: Identity and trust
-  - title: Immutable, audited revisions
+  - title: Access without a role per workload
+    details: Grant a secret to a workload or a whole cluster from the console, CLI or Pulumi. No IAM policies to write, and workloads never hold AWS credentials.
+    link: /guide/managing-secrets
+    linkText: Manage secrets
+  - title: No per-secret fee
+    details: Lambda, DynamoDB, S3 and a single KMS key, billed per request. Adding a secret adds no monthly charge.
+    link: /guide/what-is-hemlig#compared-with-aws-secrets-manager
+    linkText: Compare with Secrets Manager
+  - title: Immutable, audited history
     details: Every change is a new revision that cannot be altered or deleted early. Audit events go to a separate locked archive.
     link: /guide/secrets-and-encryption
     linkText: Secrets and encryption
-  - title: Kubernetes native
-    details: A controller copies granted secrets into Kubernetes Secrets, and can push application-owned Secrets back, with change hints for fast updates.
+  - title: Pushed, in both directions
+    details: Changes reach clusters in seconds through change hints, not a polling interval. Clusters can also export their own Secrets back, under the same grants.
     link: /guide/kubernetes
     linkText: Install the controller
-  - title: Operable
-    details: Overlapping identity rotation, revocation, explicit upgrade paths, and an AWS acceptance runbook for what emulators cannot prove.
-    link: /operations/acceptance
-    linkText: Validate in AWS
 ---
 
 ## Start by role

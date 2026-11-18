@@ -1,7 +1,7 @@
 {
   "name": "hemlig",
   "version": "0.1.0",
-  "description": "Hemlig: a Lambda, S3, DynamoDB, and KMS backed secrets delivery API for non-AWS workloads.",
+  "description": "Hemlig: a serverless secrets manager in your own AWS account, backed by Lambda, S3, DynamoDB and KMS.",
   "license": "AGPL-3.0-only AND MIT",
   "packageManager": "yarn@4.10.3",
   "workspaces": [

@@ -16,7 +16,7 @@ matter more than speed (confirmed 2026-11-17).
 ## Product Purpose
 
 The Hemlig console is the browser interface to the Hemlig administrator API:
-mTLS secrets delivery for non-AWS workloads. It lets an administrator create and
+a serverless secrets manager in the operator's own AWS account. It lets an administrator create and
 update secrets and their payloads, organize them in folders and tags, enroll
 consumers and rotate or revoke their certificates, check truststore status, and
 browse the immutable audit archive. Success means an administrator can make a
