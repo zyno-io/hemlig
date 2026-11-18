@@ -17,7 +17,6 @@ const RENEW_WITHIN_MS = 5 * 60 * 1000;
 /** Authorize stays disabled this long after the page becomes visible (clickjacking guard). */
 const ARM_DELAY_MS = 1500;
 
-
 const single = (value: unknown): string | undefined =>
   typeof value === "string" ? value : undefined;
 
@@ -29,13 +28,21 @@ const port = computed(() => {
 });
 const state = computed(() => {
   const raw = single(route.query.state);
-  return raw !== undefined && /^[A-Za-z0-9_-]{32,128}$/.test(raw) ? raw : undefined;
+  return raw !== undefined && /^[A-Za-z0-9_-]{32,128}$/.test(raw)
+    ? raw
+    : undefined;
 });
-const valid = computed(() => port.value !== undefined && state.value !== undefined);
+const valid = computed(
+  () => port.value !== undefined && state.value !== undefined,
+);
 const target = computed(() => `127.0.0.1:${port.value}`);
 
 const signedInAs = computed(
-  () => store.session?.email ?? store.session?.displayName ?? store.session?.subject ?? "—",
+  () =>
+    store.session?.email ??
+    store.session?.displayName ??
+    store.session?.subject ??
+    "—",
 );
 
 const code = ref<string | undefined>();
@@ -53,7 +60,9 @@ let armTimer: ReturnType<typeof setTimeout> | undefined;
 const arm = (): void => {
   armed.value = false;
   clearTimeout(armTimer);
-  if (document.visibilityState === "visible") {
+  // Arm only while this window actually has focus; a click that lands before
+  // the focus event (for example right after a pop-up closes) stays inert.
+  if (document.visibilityState === "visible" && document.hasFocus()) {
     armTimer = setTimeout(() => {
       armed.value = true;
     }, ARM_DELAY_MS);
@@ -131,20 +140,29 @@ const cancel = (): void => {
       <section v-if="!valid" class="notice notice-danger max-w-xl" role="alert">
         <p class="notice-title">This CLI sign-in link is invalid.</p>
         <p class="mt-1">
-          The port or state is missing or malformed. Run <code>hemlig login</code> again.
+          The port or state is missing or malformed. Run
+          <code>hemlig login</code> again.
         </p>
       </section>
 
-      <section v-else-if="phase === 'cancelled'" class="card card-body max-w-xl">
+      <section
+        v-else-if="phase === 'cancelled'"
+        class="card card-body max-w-xl"
+      >
         <p class="font-medium">Cancelled</p>
         <p class="mt-1 text-[13px] text-ink-2">Nothing was sent to the CLI.</p>
       </section>
 
       <section v-else class="card card-body max-w-xl">
-        <h2 class="section-title">Authorize the Hemlig CLI on this computer?</h2>
+        <h2 class="section-title">
+          Authorize the Hemlig CLI on this computer?
+        </h2>
         <div class="mt-3">
           <p class="text-[13px] text-ink-2">Confirmation code</p>
-          <p class="mono text-2xl font-semibold tracking-wider" data-testid="confirmation-code">
+          <p
+            class="mono text-2xl font-semibold tracking-wider"
+            data-testid="confirmation-code"
+          >
             {{ code ?? "…" }}
           </p>
           <p class="mt-1 text-[13px] text-ink-2">
@@ -173,7 +191,12 @@ const cancel = (): void => {
           >
             {{ phase === "sending" ? "Authorizing…" : "Authorize" }}
           </button>
-          <button type="button" class="btn" :disabled="phase === 'sending'" @click="cancel">
+          <button
+            type="button"
+            class="btn"
+            :disabled="phase === 'sending'"
+            @click="cancel"
+          >
             Cancel
           </button>
         </div>
