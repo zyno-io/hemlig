@@ -1,12 +1,12 @@
 ---
 title: Repository layout
 description: Map of the Hemlig monorepo, workspace ownership and licensing boundaries.
+pageType: reference
 ---
 
 # Repository layout
 
-Hemlig is a Yarn 4 (Berry) workspace monorepo. The **root `hemlig` package is the
-AWS service and the reusable CDK construct**; integrations live in `packages/`.
+Hemlig is a Yarn 4 workspace monorepo: the root `hemlig` package is the AWS service and the reusable CDK construct, and integrations live in `packages/`.
 
 | Path                             | Package / owner                         | What it is                                                                                   | License |
 | -------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------- | ------- |
@@ -37,7 +37,7 @@ commercial-hosting source obligations.
   a second deployment topology or manages the CMK.
 - Only `client`, `cli` and `pulumi-provider` are published to npm. The root package
   (`hemlig`, imported by CDK apps as `hemlig/cdk`), the console and the controller
-  workspace are not. See [Releasing](../operations/releasing.md).
+  workspace are not. See [Releasing](releasing.md).
 
 ## Workspace-wide commands
 
@@ -50,17 +50,19 @@ yarn test:all    # build then test every workspace
 The docs workspace deliberately only defines `docs:*` scripts, so these
 `foreach` commands skip it. Build docs with `yarn docs:build`.
 
-## Possible future layout
+::: details Possible future layout
 
-::: tip Not planned work
 This is a note about a direction, not a commitment.
-:::
 
 The root package mixes the service (`src/`), the construct (`cdk/`) and the
 workspace tooling. A cleaner shape would move `src/` and `cdk/` into a
-`packages/server` workspace. This has **not** been done on purpose: downstream CDK
-apps import `hemlig/cdk` from the root package, so moving it is a breaking change
-to every installer's import path and the published package contents. It would need
+`packages/server` workspace.
+
+This has **not** been done on purpose: downstream CDK apps import `hemlig/cdk`
+from the root package, so moving it is a breaking change to every installer's
+import path and the published package contents. It would need
 a coordinated migration (for example a root package that re-exports
 `@zyno-io/hemlig-server/cdk`, a deprecation period, and updated release tooling).
 Until then the layout above is canonical.
+
+:::

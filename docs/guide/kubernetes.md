@@ -1,58 +1,44 @@
 ---
 title: Kubernetes controller
-description: Install the Hemlig controller, bootstrap a namespace, import and export Secrets, and troubleshoot.
+description: Install the Hemlig controller and bootstrap a namespace so it can import and export secrets.
+pageType: how-to
 ---
 
 # Kubernetes controller
 
-The controller (`hemlig.io/v1beta1`, image `ghcr.io/zyno-io/hemlig-controller`)
-materializes Hemlig secrets into Kubernetes Secrets and exports application-owned
-Secrets back to Hemlig. It **never holds an administrator OIDC token**. A platform
-administrator creates an AgentGrant and a one-use bootstrap capability; the
-controller generates and keeps its own private key in the namespace, redeems the
-capability once, and uses the resulting mTLS leaf for all later API calls and its
-AWS IoT notification connection.
+Install the Hemlig controller in a cluster, then connect a namespace to Hemlig with a bootstrap token.
+
+The [controller](../reference/glossary.md#kubernetes-controller) copies Hemlig secrets into Kubernetes Secrets and pushes application Secrets back. It never holds an administrator token. It redeems a one-use [bootstrap token](../reference/glossary.md#bootstrap-token) and then authenticates with its own [client certificate](../reference/glossary.md#client-certificate).
+
+**Role:** cluster administrator (install), platform team (bootstrap). **Before you start:** a deployed Hemlig stack and Kubernetes 1.28 or later.
 
 ## Resources
 
-| Kind                 | Scope      | Short name     | Role                                                                                 |
-| -------------------- | ---------- | -------------- | ------------------------------------------------------------------------------------ |
-| `HemligProvider`     | Cluster    | `hmlprovider`  | Public endpoint URLs plus the namespace label selector allowed to use them          |
-| `HemligConsumer`     | Namespaced | `hmlconsumer`  | Points at a same-namespace bootstrap Secret; owns the identity Secret               |
-| `HemligSecretImport` | Namespaced | `hmlimport`    | Materializes a granted remote secret into an owned Kubernetes Secret                |
-| `HemligSecretExport` | Namespaced | `hmlexport`    | Pushes a source Secret through the consumer's write scope (cannot set ACLs)         |
+| Kind | Scope | Short name | Role |
+| --- | --- | --- | --- |
+| `HemligProvider` | Cluster | `hmlprovider` | Hemlig endpoint URLs, plus which namespaces may use them |
+| `HemligConsumer` | Namespaced | `hmlconsumer` | Holds the bootstrap token and owns the identity Secret |
+| `HemligSecretImport` | Namespaced | `hmlimport` | Copies a granted Hemlig secret into a Kubernetes Secret |
+| `HemligSecretExport` | Namespaced | `hmlexport` | Pushes a Kubernetes Secret into Hemlig |
 
-Field-by-field detail: [CRD reference](../reference/crds.md).
+Every field is in the [CRD reference](../reference/crds.md).
 
-## Install
+## Install the controller
 
-### Helm
+::: warning Cluster-wide RBAC
+The ClusterRole is broad: the controller lists and watches Hemlig resources and source Secrets in all namespaces. Provider selectors and the AgentGrant limit which Hemlig secrets a namespace can use, not this Kubernetes permission. Review the chart before installing.
+:::
 
-```sh
+::: code-group
+
+```sh [Helm]
 helm repo add zyno https://zyno-io.github.io/charts
 helm repo update
 helm upgrade --install hemlig-controller zyno/hemlig-controller \
   --namespace hemlig-system --create-namespace
 ```
 
-The chart installs the CRDs by default. Helm never upgrades CRDs from a chart's
-`crds/` directory, so on chart upgrades apply CRD changes yourself (or let Flux do
-it; see below). Values are listed in [Configuration](../reference/configuration.md).
-
-::: warning Cluster-wide RBAC
-The ClusterRole is deliberately broad: the controller lists and watches Hemlig
-resources and source Secrets across namespaces. `HemligProvider` selectors and the
-remote AgentGrant bound which *remote* secrets a namespace can use, but do not
-narrow this Kubernetes RBAC grant. Review it before installing. A single replica
-is enforced (no leader election yet), with a zero-surge rollout so two reconcilers
-never overlap.
-:::
-
-### Flux
-
-Using the same chart and image from Flux. `CreateReplace` keeps CRDs current on upgrades:
-
-```yaml
+```yaml [Flux]
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
 metadata:
@@ -72,45 +58,49 @@ spec:
   chart:
     spec:
       chart: hemlig-controller
-      version: "<chart-version>"   # pin an exact chart version
+      version: "0.3.2"   # pin an exact chart version
       sourceRef: { kind: HelmRepository, name: zyno }
   install: { crds: CreateReplace }
   upgrade: { crds: CreateReplace }
 ```
 
-See [Controller rollout via Flux](../operations/flux-rollout.md) for a staging-first
-rollout procedure.
-
-### Without Helm
-
-Apply the [CRDs](https://github.com/zyno-io/hemlig/blob/main/packages/kubernetes-controller/config/crds.yaml) and the
-[manager manifest](https://github.com/zyno-io/hemlig/blob/main/packages/kubernetes-controller/config/manager.yaml).
-To build the image yourself from the repository root:
-
-```sh
+```sh [Without Helm]
+# Apply the CRDs and manager manifest from packages/kubernetes-controller/config/
+kubectl apply -f packages/kubernetes-controller/config/crds.yaml
+# manager.yaml has no Namespace resource
+kubectl create namespace hemlig-system
+# The manifest image is a placeholder. Replace it with a release version
+sed 's#ghcr.io/hemlig/kubernetes-controller:REPLACE_WITH_VERSION#ghcr.io/zyno-io/hemlig-controller:<version>#' \
+  packages/kubernetes-controller/config/manager.yaml | kubectl apply -f -
+# To build the image yourself, from the repository root:
 docker build -f packages/kubernetes-controller/Dockerfile -t hemlig-controller:dev .
 ```
 
-## Server prerequisites
+:::
 
-The server must support `GET /v1/agent/sync`. Existing environments must run the
-dry-run-first `yarn backfill:agent-sync` once before upgrading controllers; new
-environments initialize their index automatically. Older servers or incomplete
-indexes fail visibly and back off. The controller does not fall back to
-per-secret polling.
+The chart installs the CRDs. Helm never upgrades CRDs from a chart, so on chart upgrades apply CRD changes yourself, or use Flux with `CreateReplace` as above. Values are in [Configuration](../reference/configuration.md). The controller runs as one replica (there is no leader election) with a zero-surge rollout. For upgrades see [Controller rollout via Flux](../operations/flux-rollout.md).
 
-## Walkthrough
+Verify:
 
-### 1. Administrator: create the grant and bootstrap capability
+```sh
+kubectl -n hemlig-system rollout status deploy/hemlig-controller
+```
 
-An administrator creates the secrets first, then one AgentGrant naming exactly the
-secrets this namespace may read or write (`POST /v1/admin/agent-grants`, see the
-[API](../reference/api/admin-consumers.md#agent-grants-and-bootstrap-capabilities), or
-the [Pulumi provider](pulumi.md)), then issues the capability with
-`POST /v1/admin/agent-grants/{grantId}/bootstrap-capabilities`. The `hmlb_...`
-token is shown once and expires after 30 minutes.
+Expected output:
 
-### 2. Put the capability in the namespace
+```text
+deployment "hemlig-controller" successfully rolled out
+```
+
+### Server prerequisite
+
+The server must serve `GET /v1/agent/sync`. A deployment created before that route existed needs the one-off `backfill:agent-sync` script before you upgrade controllers. Fresh deployments need nothing. Steps are in [Upgrades](../operations/upgrades.md#backfill-agent-sync).
+
+## Bootstrap a namespace
+
+An administrator first [creates the grant and issues a token](agent-grants.md). Then the platform team does the following.
+
+1. Put the token in a Secret and label the namespace so the provider accepts it.
 
 ```sh
 kubectl create namespace payments
@@ -119,7 +109,7 @@ kubectl -n payments create secret generic payments-bootstrap \
   --from-literal=token='hmlb_...'
 ```
 
-### 3. Declare the resources
+2. Declare the provider and the consumer.
 
 ```yaml
 apiVersion: hemlig.io/v1beta1
@@ -127,8 +117,8 @@ kind: HemligProvider
 metadata:
   name: production
 spec:
-  bootstrapUrl: https://admin.hemlig.example.com   # adminFqdn
-  apiUrl: https://api.hemlig.example.com           # apiFqdn
+  bootstrapUrl: https://admin.example.com   # your adminFqdn
+  apiUrl: https://api.example.com           # your apiFqdn
   allowedNamespaces:
     matchLabels:
       hemlig.io/provider-production: "true"
@@ -142,104 +132,45 @@ spec:
   providerRef: production
   bootstrapTokenRef: { name: payments-bootstrap, key: token }
   identity: { secretName: hemlig-payments-client }
----
-apiVersion: hemlig.io/v1beta1
-kind: HemligSecretImport
-metadata:
-  name: payments-api
-  namespace: payments
-spec:
-  consumerRef: payments
-  secretId: payments/production/api-key
-  target: { name: payments-api, type: Opaque }
----
-apiVersion: hemlig.io/v1beta1
-kind: HemligSecretExport
-metadata:
-  name: payments-api-source
-  namespace: payments
-spec:
-  consumerRef: payments
-  secretId: payments/production/api-key-source
-  source: { name: payments-api-source }
-  metadata: { description: Payments API }
 ```
 
-The AgentGrant must explicitly select `payments/production/api-key` (read) and
-`payments/production/api-key-source` (write). Kubernetes RBAC cannot widen that.
-An export does **not** create the remote secret: an administrator must create it
-and add it to the grant first (otherwise `RemoteSecretNotFound`).
-
-### 4. Check status
+3. Verify.
 
 ```sh
-kubectl -n payments get hmlconsumer,hmlimport,hmlexport
-kubectl -n payments get hmlconsumer payments -o yaml
+kubectl -n payments get hmlconsumer payments
 ```
 
-A healthy consumer has `Ready=True` with reason `IdentityReady`, and shows
-`consumerId`, `environment`, `grantId`, and a `syncCursor` in `status`.
+Expected output:
 
-## Behavior
-
-- **Identity Secret.** The controller creates `identity.secretName` (type `Opaque`)
-  with `tls.key` and a CSR, redeems the bootstrap capability, then stores the
-  issued `tls.crt`. The Secret carries owner markers; if one with that name already
-  exists but is not owned by this `HemligConsumer`, the reason is
-  `IdentityOwnershipConflict`. Keep the identity Secret: deleting it after the
-  bootstrap capability is consumed means the consumer cannot re-enroll with the same
-  grant. See [Identity rotation](../operations/identity-rotation.md) for renewal.
-- **Imports** are written to an exact-owned Secret. An import refuses to overwrite
-  a user-owned Secret (`TargetOwnershipConflict`). Removing the owned copy on
-  revocation is covered in [Safety](../operations/safety.md).
-- **Exports** reject an import-managed source (`SourceIsImportManaged`), update
-  remote metadata when `spec.metadata` differs, and write the payload when the
-  source checksum changes.
-- **Sync.** Source changes debounce for 250 ms. MQTT QoS 1 hints trigger a prompt
-  index sync; every ten minutes it also queries the version index after its saved
-  checkpoint. Unchanged imports and exports make no per-secret remote read. The
-  checkpoint is saved only after resources converge. An expired or scope-changed
-  cursor triggers a fresh snapshot.
-- **Retries** use capped exponential backoff with jitter (up to five minutes).
-- **Cross-namespace use.** By default `consumerRef` resolves in the resource's own
-  namespace (one consumer per namespace). A platform may share one consumer by
-  setting `allowCrossNamespaceReferences: true` on it and naming
-  `consumerRef` plus `consumerNamespace` on each workload resource. Every namespace
-  allowed to refer to it shares its identity and the union of its grants. The
-  bootstrap and identity Secrets stay in the consumer's namespace.
-
-## Status and conditions
-
-Each resource has a `Ready` condition. Common reasons:
-
-| Resource | Reason                       | Meaning / action                                                          |
-| -------- | ---------------------------- | ------------------------------------------------------------------------- |
-| Consumer | `IdentityReady`              | Enrolled and syncing                                                      |
-| Consumer | `ProviderNotFound`           | `providerRef` names no `HemligProvider`                                   |
-| Consumer | `ProviderNotPermitted`       | Namespace labels do not match the provider's `allowedNamespaces`          |
-| Consumer | `BootstrapTokenUnavailable`  | Bootstrap Secret or key missing (and no identity yet)                     |
-| Consumer | `IdentityOwnershipConflict`  | Identity Secret exists but is not owned by this consumer                  |
-| Consumer | `ReconcileFailed`            | Other error (for example Hemlig returned 403/409/503); see logs            |
-| Import / Export | `ConsumerNotReady`    | Referenced consumer is not ready                                          |
-| Import   | `TargetReady`                | Secret materialized                                                       |
-| Import   | `AccessRevoked`              | Grant no longer includes this import; owned Secret removed                |
-| Import   | `TargetOwnershipConflict`    | Target Secret is owned by something else                                  |
-| Export   | `RemoteReady`                | Source written                                                            |
-| Export   | `RemoteSecretNotFound`       | Administrator must create the secret and add it to the AgentGrant         |
-| Export   | `SourceIsImportManaged`      | Source is an import target                                                |
-
-## Troubleshooting
-
-```sh
-kubectl -n hemlig-system logs -l app.kubernetes.io/name=hemlig-controller --tail=100
-kubectl -n payments describe hmlconsumer payments
+```text
+NAME       READY   REASON          IDENTITY-EXPIRES   ROTATION   AGE
+payments   True    IdentityReady   2031-01-01T...     NotDue     1m
 ```
 
-- **Stuck on `BootstrapTokenUnavailable`**: the capability expired (30 minutes) or
-  was never created. A new capability can only be issued for a grant that is still
-  `PENDING`; see [Identity rotation](../operations/identity-rotation.md#if-the-certificate-already-expired).
-- **`ReconcileFailed` with HTTP 503 / sync errors**: the server may not support the
-  sync route or the environment's index backfill is incomplete.
-- **Imports disappearing**: see [Safety: auth failures vs revoked grants](../operations/safety.md).
-- **Nothing happens after changing a Secret**: the controller watches referenced
-  Secrets and namespaces; check that the namespace still matches the provider selector.
+If `READY` is not `True`, look the reason up in [Status reasons](../reference/crds.md#status-reasons) or in [Troubleshooting](../operations/troubleshooting.md#controller).
+
+::: warning Keep the identity Secret
+The controller stores its private key and certificate in `hemlig-payments-client`. If you delete it after the token was used, the consumer cannot enroll again with the same grant, because the token is spent. Recovery steps are in [Identity rotation](../operations/identity-rotation.md#if-the-certificate-already-expired). If a Secret with that name already exists and is not owned by the consumer, the reason is `IdentityOwnershipConflict`.
+:::
+
+## How the controller behaves
+
+| Topic | Behavior |
+| --- | --- |
+| Sync | A change in a watched Secret is picked up after a 250 ms debounce. MQTT [change hints](../reference/glossary.md#change-hint) trigger a prompt sync. A resync also runs on the interval in [Limits and timings](../reference/limits.md#controller). See [Sync and notifications](sync-and-notifications.md) |
+| Retries | Capped exponential backoff with jitter; see [Limits and timings](../reference/limits.md#controller) |
+| Imports | Written to a Secret the import owns. It never overwrites a Secret owned by something else. See [Import a secret](import-secret.md) |
+| Exports | Reject an import target as their source. See [Export a Secret](export-secret.md) |
+| Deletion | An import target is removed only when Hemlig confirms access was revoked. See [Safety](../operations/safety.md) |
+
+### Share one consumer across namespaces
+
+By default a consumer serves only its own namespace. Setting `allowCrossNamespaceReferences: true` on it lets other namespaces name it through `consumerRef` and `consumerNamespace`.
+
+**Every namespace allowed to refer to it shares its identity and the union of all its grants.** Use one consumer per namespace unless you want that. The bootstrap and identity Secrets stay in the consumer's namespace.
+
+## Next steps
+
+- [Import a secret into your namespace](import-secret.md)
+- [Export a Kubernetes Secret to Hemlig](export-secret.md)
+- [Troubleshooting](../operations/troubleshooting.md#controller)

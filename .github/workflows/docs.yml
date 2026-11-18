@@ -49,6 +49,8 @@ jobs:
         run: yarn install --immutable
       - name: Build site (fails on dead links)
         run: yarn docs:build
+      - name: Lint docs
+        run: yarn docs:lint
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
