@@ -1,18 +1,50 @@
 ---
 title: What is Hemlig
-description: Hemlig is a secrets service you deploy in your own AWS account. It delivers secrets over mutual TLS to workloads outside AWS, which never hold an AWS credential.
+description: Hemlig is a serverless secrets manager you deploy in your own AWS account, and how it compares with AWS Secrets Manager.
 pageType: explanation
 ---
 
 # What is Hemlig
 
-Hemlig is a secrets service you deploy in your own AWS account. It delivers secrets over [mutual TLS](../reference/glossary.md#mtls) to workloads outside AWS, which never hold an AWS credential.
+Hemlig is a serverless secrets manager you deploy in your own AWS account. It keeps AWS KMS, S3 and DynamoDB as the system of record, and puts a simpler layer on top: one place to decide who can read which secret, with no per-secret fee and changes pushed to your clusters.
 
-## The problem it solves
+## Why not AWS Secrets Manager
 
-- Kubernetes clusters, VMs and CI runners outside AWS still need secrets such as API keys and database passwords.
-- The usual fix is to hand those workloads AWS keys. Those keys are the risk: they leak, they outlive their purpose and they grant more than one secret.
-- Hemlig keeps AWS KMS, S3 and DynamoDB as the system of record and gives workloads only a short path to the secrets they were granted.
+AWS already stores secrets. Using it well still means:
+
+- **A monthly fee per secret.** Splitting credentials finely costs more every month.
+- **IAM for every reader.** Each workload needs a role and a policy, and "who can read this secret?" is answered by reading policies.
+- **An AWS identity on every workload.** Off AWS that means [IAM Roles Anywhere](https://aws.amazon.com/iam/roles-anywhere/), which needs a certificate authority of your own (or AWS Private CA), trust anchors, profiles and certificate renewal on each host.
+- **Polling.** Kubernetes add-ons such as External Secrets Operator refresh on an interval.
+
+Hemlig answers each one:
+
+- **No per-secret fee.** It runs on pay-per-request services with a single KMS key.
+- **Access lives on the secret.** Use an [ACL](../reference/glossary.md#acl) for a single workload or an [AgentGrant](../reference/glossary.md#agentgrant) for a cluster, from the console, CLI or Pulumi.
+- **Identity is built in.** Hemlig is the certificate authority. A one-time bootstrap token enrolls a cluster, and the controller rotates its own certificate.
+- **Changes are pushed.** A [change hint](../reference/glossary.md#change-hint) tells clusters to fetch new values within seconds. Clusters can also export their own Secrets back.
+
+## Compared with AWS Secrets Manager
+
+| | AWS Secrets Manager | Hemlig |
+| --- | --- | --- |
+| Pricing | Per secret per month, plus API calls | Per request only: Lambda, DynamoDB, S3, one KMS key |
+| Who can read a secret | IAM roles and policies per workload | ACL or AgentGrant on the secret, in the console, CLI or Pulumi |
+| Workload credential off AWS | IAM Roles Anywhere plus your own CA | A Hemlig client certificate, enrolled with a one-time token |
+| Credential renewal | Your PKI renews host certificates | The controller rotates its own certificate |
+| Kubernetes | Add-ons such as External Secrets Operator | Built-in controller |
+| Getting changes | Clients poll | Pushed change hints, with a resync safety net |
+| Cluster to store (export) | External Secrets `PushSecret` | `HemligSecretExport`, under the same grants |
+| History | Versions with staging labels | Immutable revisions under S3 Object Lock |
+| Audit | CloudTrail | A separate write-once audit archive |
+
+## When AWS Secrets Manager fits better
+
+- **Workloads inside AWS that use native integrations**: ECS task definitions, Lambda, CloudFormation dynamic references or RDS-managed passwords. Hemlig has none of these.
+- **Managed credential rotation** for RDS and other supported services. Hemlig stores what you write.
+- **Multi-Region replication.** A Hemlig deployment lives in one Region.
+- **A handful of secrets.** Hemlig has a small fixed monthly cost of its own, so a few dozen secrets is roughly break-even.
+- **No appetite to operate it.** You deploy and upgrade Hemlig yourself, and it is pre-1.0.
 
 ## How it works in one picture
 
@@ -87,6 +119,7 @@ Follow this path end to end in [Tutorial: your first secret in Kubernetes](first
 | --- | --- | --- |
 | Encryption at rest | Every revision has its own KMS-protected key | [Secrets and encryption](secrets-and-encryption.md) |
 | Immutable history | Changes add a revision; none is overwritten | [Secrets and encryption](secrets-and-encryption.md) |
+| Access without IAM | Grants live on the secret, not in IAM policies | [Concepts](concepts.md#direct-consumer-or-agent) |
 | No AWS credentials on workloads | Workloads hold a Hemlig certificate only | [Identity and trust](identity-and-trust.md) |
 | An audit trail | Events go to a separate write-once archive | [Audit evidence](audit-evidence.md) |
 | Kubernetes integration | A controller imports and exports Secrets | [Kubernetes controller](kubernetes.md) |
@@ -94,6 +127,7 @@ Follow this path end to end in [Tutorial: your first secret in Kubernetes](first
 
 ## What Hemlig does not do
 
+- It does not rotate database or service credentials for you. You write new values; consumers pick them up.
 - It has no delete route. Secrets are archived, not deleted.
 - It does not manage your identity provider, users or administrator groups.
 - It does not rotate the issuing root certificate.

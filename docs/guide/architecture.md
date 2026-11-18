@@ -6,7 +6,7 @@ pageType: explanation
 
 # Architecture
 
-Hemlig is a set of AWS Lambda functions around one DynamoDB table and a few S3 buckets, so workloads outside AWS can read secrets without holding AWS credentials.
+Hemlig is a set of AWS Lambda functions around one DynamoDB table, a few S3 buckets and one KMS key. Workloads read secrets with a Hemlig client certificate, so they never hold AWS credentials.
 
 Read [Concepts](concepts.md) first for the vocabulary. This page shows the parts and the boundaries between them.
 

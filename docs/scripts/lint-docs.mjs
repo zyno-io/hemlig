@@ -16,6 +16,7 @@ const allowedHosts = [
   "ghcr.io",
   "docs.npmjs.com",
   "vitepress.dev",
+  "aws.amazon.com",
   "localhost",
   "127.0.0.1",
 ];
@@ -71,12 +72,19 @@ const errors = [];
 for (const [file, { frontmatter, body }] of pages) {
   const rel = relative(docsRoot, file);
   const fail = (message) => errors.push(`${rel}: ${message}`);
-  if (frontmatter.layout === "home" || frontmatter.sidebar === "false") continue;
+  if (frontmatter.layout === "home" || frontmatter.sidebar === "false")
+    continue;
   if (frontmatter.search === "false" && /Being written\./.test(body)) continue;
 
   if (!frontmatter.description) fail("missing frontmatter `description`");
-  if (!/^(tutorial|how-to|reference|explanation)$/.test(frontmatter.pageType ?? "")) {
-    fail("frontmatter `pageType` must be tutorial, how-to, reference or explanation");
+  if (
+    !/^(tutorial|how-to|reference|explanation)$/.test(
+      frontmatter.pageType ?? "",
+    )
+  ) {
+    fail(
+      "frontmatter `pageType` must be tutorial, how-to, reference or explanation",
+    );
   }
 
   const lines = body.split("\n");
@@ -87,18 +95,25 @@ for (const [file, { frontmatter, body }] of pages) {
   lines.forEach((line, index) => {
     const at = `${rel}:${index + 1}`;
     if (/^(```|~~~)/.test(line)) {
-      if (!fenced && /^(```|~~~)\s*$/.test(line)) errors.push(`${at}: code fence without a language`);
+      if (!fenced && /^(```|~~~)\s*$/.test(line))
+        errors.push(`${at}: code fence without a language`);
       fenced = !fenced;
       return;
     }
     if (fenced) return;
-    if (/^:::\s*info\b/.test(line)) errors.push(`${at}: \`::: info\` is not allowed`);
+    if (/^:::\s*info\b/.test(line))
+      errors.push(`${at}: \`::: info\` is not allowed`);
     for (const phrase of bannedPhrases) {
-      if (line.includes(phrase)) errors.push(`${at}: banned phrase "${phrase}"`);
+      if (line.includes(phrase))
+        errors.push(`${at}: banned phrase "${phrase}"`);
     }
     for (const m of line.matchAll(/https?:\/\/([A-Za-z0-9.-]+)/g)) {
       const host = m[1].toLowerCase();
-      if (!allowedHosts.some((allowed) => host === allowed || host.endsWith(`.${allowed}`))) {
+      if (
+        !allowedHosts.some(
+          (allowed) => host === allowed || host.endsWith(`.${allowed}`),
+        )
+      ) {
         errors.push(`${at}: hostname ${host} is not in the allowlist`);
       }
     }
@@ -114,7 +129,10 @@ for (const [file, { frontmatter, body }] of pages) {
       }
     }
     // A paragraph may take at most 6 lines at 80 columns (480 characters).
-    if (line.trim() === "" || /^\s*(#|\||:::|[-*]\s|\d+\.\s|```|<)/.test(line)) {
+    if (
+      line.trim() === "" ||
+      /^\s*(#|\||:::|[-*]\s|\d+\.\s|```|<)/.test(line)
+    ) {
       paragraphChars = 0;
     } else {
       const before = paragraphChars;
@@ -125,16 +143,24 @@ for (const [file, { frontmatter, body }] of pages) {
     }
   });
 
-  const linkText = body.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`/g, "");
-  for (const m of linkText.matchAll(/\]\(([^)\s]+\.md)?#([^)\s]+)\)|\]\(([^)\s#]+\.md)\)/g)) {
+  const linkText = body
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`[^`\n]*`/g, "");
+  for (const m of linkText.matchAll(
+    /\]\(([^)\s]+\.md)?#([^)\s]+)\)|\]\(([^)\s#]+\.md)\)/g,
+  )) {
     const target = m[1] ?? m[3];
     const anchor = m[2];
     if (target === undefined && anchor === undefined) continue;
     if (target?.startsWith("http")) continue;
-    const targetFile = target === undefined ? file : resolve(dirname(file), target);
+    const targetFile =
+      target === undefined ? file : resolve(dirname(file), target);
     const targetPage = pages.get(targetFile);
     if (targetPage === undefined) {
-      if (!existsSync(targetFile) && !relative(docsRoot, targetFile).startsWith("design")) {
+      if (
+        !existsSync(targetFile) &&
+        !relative(docsRoot, targetFile).startsWith("design")
+      ) {
         fail(`link target ${target} does not exist`);
       }
       continue;
