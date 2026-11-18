@@ -2,15 +2,19 @@
   "name": "@zyno-io/hemlig-docs",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "description": "Hemlig documentation site (VitePress). Not published.",
   "license": "AGPL-3.0-only",
   "packageManager": "yarn@4.10.3",
   "scripts": {
     "docs:dev": "vitepress dev",
     "docs:build": "vitepress build",
+    "docs:lint": "node scripts/lint-docs.mjs",
     "docs:preview": "vitepress preview"
   },
   "devDependencies": {
-    "vitepress": "1.6.4"
+    "mermaid": "11.12.0",
+    "vitepress": "1.6.4",
+    "vitepress-plugin-mermaid": "2.0.17"
   }
 }
