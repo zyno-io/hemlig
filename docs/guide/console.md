@@ -97,7 +97,7 @@ A fresh deployment has no environments. The console prompts you to create the fi
 
 ## CLI authorization
 
-The `/cli-login` page lets a signed-in administrator hand a token to `hemlig login` on this computer; see [CLI sign in](cli.md#sign-in).
+The `/cli-login` page lets a signed-in administrator hand a token to `hemlig login` on this computer; see [CLI sign in](cli.md#sign-in-with-hemlig-login).
 
 ## Local development
 
