@@ -95,6 +95,10 @@ A fresh deployment has no environments. The console prompts you to create the fi
 | Agent grants | Revoke a secret from an existing grant | Create a grant or issue a bootstrap token. Use the API, the [Pulumi provider](pulumi.md) or curl |
 | Audit | Browse the audit archive | |
 
+## CLI authorization
+
+The `/cli-login` page lets a signed-in administrator hand a token to `hemlig login` on this computer; see [CLI sign in](cli.md#sign-in-with-hemlig-login).
+
 ## Local development
 
 See the [quickstart](quickstart.md). From `packages/console`:

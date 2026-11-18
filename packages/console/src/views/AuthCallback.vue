@@ -13,7 +13,9 @@ onMounted(async () => {
     if (session === undefined) {
       throw new Error("The identity provider did not return a session.");
     }
-    await router.replace({ name: "root" });
+    // The sign-in round trip carries the original path and query (for example
+    // /cli-login?port=…&state=…); fall back to the root when there was none.
+    await router.replace(session.returnTo ?? { name: "root" });
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : String(caught);
   }

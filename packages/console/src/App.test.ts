@@ -1,6 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { createMemoryHistory, createRouter, type Router } from "vue-router";
 import App from "./App.vue";
 import { useAppStore } from "./stores/app";
@@ -19,6 +19,11 @@ const createRouterForPath = (): Router =>
     routes: [
       { path: "/", name: "root", component: { template: '<div data-testid="route-content" />' } },
       {
+        path: "/cli-login",
+        name: "cli-login",
+        component: { template: '<div data-testid="route-content" />' },
+      },
+      {
         path: "/auth/callback",
         name: "auth-callback",
         component: { template: '<div data-testid="callback-route-content" />' },
@@ -29,7 +34,7 @@ const createRouterForPath = (): Router =>
 const mountApp = async (
   path: string,
   { session = false }: { session?: boolean } = {},
-): Promise<{ wrapper: ReturnType<typeof mount>; signIn: ReturnType<typeof vi.spyOn> }> => {
+): Promise<{ wrapper: ReturnType<typeof mount>; signIn: MockInstance<(returnTo?: string) => Promise<void>> }> => {
   const pinia = createPinia();
   setActivePinia(pinia);
   const store = useAppStore();
@@ -58,6 +63,12 @@ describe("App", () => {
     expect(signIn).toHaveBeenCalledOnce();
     expect(wrapper.find('[data-testid="app-shell"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="route-content"]').exists()).toBe(false);
+  });
+
+  it("starts sign-in with the full path and query so /cli-login survives the round trip", async () => {
+    const { signIn } = await mountApp("/cli-login?port=40000&state=abc");
+
+    expect(signIn).toHaveBeenCalledWith("/cli-login?port=40000&state=abc");
   });
 
   it("mounts the authenticated shell and router outlet when a session exists", async () => {

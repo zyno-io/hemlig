@@ -6,7 +6,7 @@ import { HemligStack } from "./stack";
 const defaultCsp =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
   "font-src 'self'; connect-src 'self' https://admin.test.example.com https://login.example.com; " +
-  "frame-src 'self' https://login.example.com; form-action 'none'; base-uri 'none'; " +
+  "frame-src 'self' https://login.example.com; form-action http://127.0.0.1:*; base-uri 'none'; " +
   "object-src 'none'; frame-ancestors 'none'";
 const silentRenewCsp = defaultCsp.replace(
   "frame-ancestors 'none'",
@@ -376,7 +376,9 @@ describe("HemligStack", () => {
       const csp = policy.Properties.ResponseHeadersPolicyConfig
         .SecurityHeadersConfig.ContentSecurityPolicy
         .ContentSecurityPolicy as string;
-      expect(csp).not.toContain("*");
+      // The only wildcard is the loopback port in form-action (hemlig login relay).
+      expect(csp).toContain("form-action http://127.0.0.1:*;");
+      expect(csp.replace("http://127.0.0.1:*", "")).not.toContain("*");
     }
 
     // Nothing else binds a response-headers policy to a behavior: swapping the

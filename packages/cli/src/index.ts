@@ -9,6 +9,20 @@ import {
   type HemligTransport,
   type SecretPayload,
 } from "@zyno-io/hemlig-client";
+import {
+  DEFAULT_LOGIN_TIMEOUT_MS,
+  JWT_PATTERN,
+  LoginError,
+  defaultConfigDir,
+  jwtExpiry,
+  loginViaConsole,
+  openInBrowser,
+  parseHttpsOrigin,
+  readCachedLogin,
+  removeCachedToken,
+  writeCachedLogin,
+  type CachedLogin,
+} from "./login";
 
 const commands = [
   "create",
@@ -21,13 +35,24 @@ const commands = [
 type Command = (typeof commands)[number];
 
 const help = {
-  usage: "hemlig secret <command> [options] | hemlig idempotency-key",
+  usage:
+    "hemlig secret <command> [options] | hemlig login [--console-url <url>] [--no-browser] | hemlig logout | hemlig idempotency-key",
   commands,
+  topLevelCommands: {
+    login:
+      "Authorize via the web console's SSO session and cache a short-lived admin token. Opens a browser; never prompts.",
+    logout: "Delete the cached login token.",
+    "idempotency-key": "Print a newly minted UUID operation key.",
+  },
   options: {
-    "--admin-url": "Administrator origin; defaults to HEMLIG_ADMIN_URL.",
+    "--console-url":
+      "Console HTTPS origin for login; defaults to HEMLIG_CONSOLE_URL.",
+    "--no-browser": "login only: print the URL instead of opening a browser.",
+    "--admin-url":
+      "Administrator origin; defaults to HEMLIG_ADMIN_URL, then the API recorded by hemlig login when the cached login is the token source.",
     "--environment": "Logical environment; defaults to HEMLIG_ENVIRONMENT.",
     "--token-file":
-      "OIDC bearer token file; defaults to HEMLIG_ADMIN_TOKEN_FILE, otherwise HEMLIG_ADMIN_TOKEN.",
+      "OIDC bearer token file; defaults to HEMLIG_ADMIN_TOKEN_FILE, then HEMLIG_ADMIN_TOKEN, then the token cached by hemlig login.",
     "--secret-id": "Reusable secret ID for active records.",
     "--secret-uid": "Immutable UID for archived records (read only).",
     "--input":
@@ -40,7 +65,7 @@ const help = {
       "Per-request timeout (1–300000 milliseconds); default 30000.",
   },
   output:
-    "One JSON receipt on stdout; one JSON error on stderr. No prompts or automatic retries.",
+    "One JSON receipt on stdout; one JSON error on stderr. No prompts or automatic retries. Exception: login also prints its sign-in URL and confirmation code on stderr on success.",
   exitCodes: {
     "0": "Success",
     "2": "Usage or invalid local input",
@@ -63,6 +88,16 @@ export interface CliDependencies {
   readonly stderr?: (text: string) => void | Promise<void>;
   /** Transport injection is for local tests; the executable always uses HTTPS fetch. */
   readonly transport?: HemligTransport;
+  /** Browser launcher for `hemlig login`; defaults to open / xdg-open / cmd start. */
+  readonly openBrowser?: (url: string) => void | Promise<void>;
+  /** Directory holding the cached login token; defaults to the XDG/APPDATA hemlig directory. */
+  readonly configDir?: string;
+  /** Clock in epoch milliseconds, for token expiry checks. */
+  readonly now?: () => number;
+  /** Fetch used to read the console's /config.json during login; defaults to global fetch. */
+  readonly fetch?: typeof fetch;
+  /** Login wait limit; defaults to five minutes. */
+  readonly loginTimeoutMs?: number;
 }
 
 class CliError extends Error {
@@ -90,6 +125,8 @@ export async function runCli(
     dependencies.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr =
     dependencies.stderr ?? ((text: string) => process.stderr.write(text));
+  const now = dependencies.now ?? Date.now;
+  const configDir = dependencies.configDir ?? defaultConfigDir(env);
   let idempotencyKey: string | undefined;
   let ifMatch: string | undefined;
   let mutationAttempted = false;
@@ -104,6 +141,8 @@ export async function runCli(
         options: {
           help: { type: "boolean" },
           "admin-url": { type: "string" },
+          "console-url": { type: "string" },
+          "no-browser": { type: "boolean" },
           environment: { type: "string" },
           "token-file": { type: "string" },
           "secret-id": { type: "string" },
@@ -137,6 +176,51 @@ export async function runCli(
       await stdout(`${JSON.stringify({ idempotencyKey: randomUUID() })}\n`);
       return 0;
     }
+    if (
+      parsed.positionals.length === 1 &&
+      parsed.positionals[0] === "logout"
+    ) {
+      if (seen.size !== 0) usage("logout does not accept options.");
+      await removeCachedToken(configDir);
+      await stdout(`${JSON.stringify({ loggedIn: false })}\n`);
+      return 0;
+    }
+    if (parsed.positionals.length === 1 && parsed.positionals[0] === "login") {
+      for (const name of seen) {
+        if (name !== "console-url" && name !== "no-browser")
+          usage("An option is not supported by login.");
+      }
+      const consoleOrigin = httpsOrigin(
+        parsed.values["console-url"] ?? env.HEMLIG_CONSOLE_URL,
+        "Supply --console-url or HEMLIG_CONSOLE_URL.",
+        "Console URL",
+        true,
+      );
+      const url = async (target: string, code: string): Promise<void> => {
+        await stderr(
+          `Open this URL to sign in to the Hemlig CLI:\n${target}\nConfirm the browser shows code ${code}\n`,
+        );
+      };
+      const result = await loginViaConsole({
+        consoleOrigin,
+        timeoutMs: dependencies.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
+        now,
+        fetch: dependencies.fetch ?? globalThis.fetch,
+        open: parsed.values["no-browser"]
+          ? undefined
+          : (dependencies.openBrowser ?? openInBrowser),
+        announce: url,
+      });
+      await writeCachedLogin(configDir, {
+        token: result.token,
+        consoleOrigin: consoleOrigin.origin,
+        adminOrigin: result.adminOrigin,
+      });
+      await stdout(
+        `${JSON.stringify({ loggedIn: true, adminUrl: result.adminOrigin, expiresAt: result.expiresAt.toISOString() })}\n`,
+      );
+      return 0;
+    }
     const candidate = parsed.positionals[1];
     if (
       parsed.positionals.length !== 2 ||
@@ -166,7 +250,29 @@ export async function runCli(
         usage("An option is not supported by this command.");
     }
     const values = parsed.values;
-    const origin = adminOrigin(values["admin-url"] ?? env.HEMLIG_ADMIN_URL);
+    // The cached login is only a candidate when no explicit token source exists.
+    const explicitToken =
+      values["token-file"] !== undefined ||
+      env.HEMLIG_ADMIN_TOKEN_FILE !== undefined ||
+      env.HEMLIG_ADMIN_TOKEN !== undefined;
+    let cachedLogin: CachedLogin | undefined;
+    let cacheError: unknown;
+    if (!explicitToken) {
+      try {
+        cachedLogin = await readCachedLogin(configDir);
+      } catch (error) {
+        cacheError =
+          error instanceof LoginError
+            ? error
+            : new CliError(9, "input_io_error", "Cannot read cached login.");
+      }
+    }
+    // The cache is the token source here, so an unusable one is reported first
+    // (exit 3), before a missing admin URL can turn it into a usage error.
+    if (cacheError !== undefined) throw cacheError;
+    const origin = adminOrigin(
+      values["admin-url"] ?? env.HEMLIG_ADMIN_URL ?? cachedLogin?.adminOrigin,
+    );
     const environment = values.environment ?? env.HEMLIG_ENVIRONMENT;
     if (!environment || !/^[a-z][a-z0-9-]{0,63}$/.test(environment)) {
       usage("Supply a valid logical --environment or HEMLIG_ENVIRONMENT.");
@@ -214,7 +320,7 @@ export async function runCli(
       payload = validatePayload(input);
     }
     const tokenFile = values["token-file"] ?? env.HEMLIG_ADMIN_TOKEN_FILE;
-    const tokenText =
+    let tokenText =
       tokenFile === undefined
         ? env.HEMLIG_ADMIN_TOKEN
         : await readText(
@@ -222,15 +328,37 @@ export async function runCli(
             16384,
             "Cannot read administrator token file.",
           );
+    let cached = false;
+    if (tokenText === undefined) {
+      if (cachedLogin !== undefined) {
+        if (origin.origin !== cachedLogin.adminOrigin) {
+          throw new CliError(
+            3,
+            "login_mismatch",
+            `Cached login is for ${cachedLogin.adminOrigin}; run \`hemlig login\` for this API.`,
+          );
+        }
+        tokenText = cachedLogin.token;
+        cached = true;
+      }
+    }
     const token = tokenText?.trim();
     // Syntax screening is not token verification: API Gateway validates issuer, audience, scope and expiry.
-    if (
-      !token ||
-      !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)
-    ) {
+    if (!token || !JWT_PATTERN.test(token)) {
       usage(
-        "Supply an OIDC bearer JWT via --token-file, HEMLIG_ADMIN_TOKEN_FILE, or HEMLIG_ADMIN_TOKEN.",
+        "Supply an OIDC bearer JWT via --token-file, HEMLIG_ADMIN_TOKEN_FILE, HEMLIG_ADMIN_TOKEN, or `hemlig login`.",
       );
+    }
+    if (cached) {
+      // Decoded without verification, only to fail fast with a useful message.
+      const exp = jwtExpiry(token);
+      if (exp !== undefined && exp * 1000 <= now()) {
+        throw new CliError(
+          3,
+          "login_expired",
+          "Login expired; run `hemlig login`.",
+        );
+      }
     }
     if (mutation) {
       const key = values["idempotency-key"] ?? randomUUID();
@@ -360,27 +488,29 @@ export async function runCli(
 }
 
 function adminOrigin(value: string | undefined): URL {
-  if (!value)
-    usage(
-      "Supply --admin-url or HEMLIG_ADMIN_URL; no production endpoint is assumed.",
-    );
-  let url: URL;
+  return httpsOrigin(
+    value,
+    "Supply --admin-url or HEMLIG_ADMIN_URL; no production endpoint is assumed.",
+    "Administrator URL",
+  );
+}
+
+function httpsOrigin(
+  value: string | undefined,
+  missing: string,
+  label: string,
+  strictHost = false,
+): URL {
+  if (!value) usage(missing);
   try {
-    url = new URL(value);
+    new URL(value);
   } catch {
-    return usage("Invalid administrator origin.");
+    return usage(`Invalid ${label.toLowerCase().replace(" url", "")} origin.`);
   }
-  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-  if (
-    (url.protocol !== "https:" && !(url.protocol === "http:" && local)) ||
-    url.username ||
-    url.password ||
-    url.pathname !== "/" ||
-    url.search ||
-    url.hash
-  )
-    usage(
-      "Administrator URL must be an HTTPS origin (HTTP is allowed only on loopback).",
+  const url = parseHttpsOrigin(value, strictHost);
+  if (url === undefined)
+    return usage(
+      `${label} must be an HTTPS origin (HTTP is allowed only on loopback)${strictHost ? ", with a plain hostname" : ""}.`,
     );
   return url;
 }
@@ -550,6 +680,21 @@ function classifyError(error: unknown): {
   message: string;
   status?: number;
 } {
+  if (error instanceof LoginError)
+    return {
+      exitCode:
+        error.code === "login_timeout"
+          ? 8
+          : error.code === "login_invalid"
+            ? 3
+            : error.code === "config_dir_unsafe"
+              ? 9
+              : error.code === "config_fetch_failed"
+                ? 8
+                : 7,
+      code: error.code,
+      message: error.message,
+    };
   if (error instanceof CliError)
     return {
       exitCode: error.exitCode,

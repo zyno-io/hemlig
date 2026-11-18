@@ -15,8 +15,21 @@ printf '%s\n' '{"metadata":{"description":"Payments API"},"acl":[]}' |
 hemlig secret read --secret-id payments/stripe/api-key
 ```
 
+Interactive sign-in reuses your web console SSO session and caches a short-lived
+token (no OAuth in the CLI, no prompts):
+
+```sh
+export HEMLIG_CONSOLE_URL=https://console.example.com
+hemlig login     # opens a browser; confirm the code shown matches your terminal
+hemlig logout
+```
+
+`--console-url` overrides `HEMLIG_CONSOLE_URL`; `--no-browser` only prints the URL.
+Token sources, in order: `--token-file`, `HEMLIG_ADMIN_TOKEN_FILE`,
+`HEMLIG_ADMIN_TOKEN`, then the cached login (bound to its admin API).
+
 Commands: `secret create | update | write-payload | read | read-payload | archive`
-and `idempotency-key`. `update`, `write-payload` and `archive` take `--if-match <etag>` (or `current`) and an
+`login`, `logout` and `idempotency-key`. `update`, `write-payload` and `archive` take `--if-match <etag>` (or `current`) and an
 optional `--idempotency-key`. Run `hemlig --help` for the JSON command reference.
 
 It uses the typed [`@zyno-io/hemlig-client`](https://github.com/zyno-io/hemlig/tree/main/packages/client),

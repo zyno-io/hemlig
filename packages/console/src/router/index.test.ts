@@ -14,4 +14,11 @@ describe("secret routes", () => {
       secretId: "payments/stripe/api-key",
     });
   });
+
+  it("registers /cli-login as an ordinary route that App.vue gates behind sign-in", () => {
+    const route = createAppRouter().resolve("/cli-login?port=40000&state=x");
+
+    expect(route.name).toBe("cli-login");
+    expect(route.query).toMatchObject({ port: "40000", state: "x" });
+  });
 });

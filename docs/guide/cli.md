@@ -34,7 +34,37 @@ yarn workspace @zyno-io/hemlig-cli exec hemlig --help
 
 ## Get an administrator token
 
-The CLI has no `login` command and does not open a browser, refresh a token or prompt. You supply a token that you already have.
+Two ways:
+
+| Use | How |
+| --- | --- |
+| Interactive, at a terminal | [`hemlig login`](#sign-in-with-hemlig-login), which borrows your web console sign-in |
+| Scripts and CI | Supply a token you already have, in a file or variable (below) |
+
+### Sign in with `hemlig login`
+
+```sh
+export HEMLIG_CONSOLE_URL=https://console.example.com
+hemlig login     # add --no-browser to only print the URL
+hemlig logout    # deletes the cached login
+```
+
+1. The CLI opens `<console>/cli-login` in your browser and prints a confirmation code, such as `1W07-71DP`, on stderr.
+2. Sign in to the console if asked. Check that the page shows the same code, then click **Authorize**.
+3. The console hands its access token to the CLI, which listens on `127.0.0.1` only. The CLI reads the admin API address from the console's published `/config.json`.
+4. stdout prints `{"loggedIn":true,"adminUrl":"…","expiresAt":"…"}`.
+
+| Detail | Behavior |
+| --- | --- |
+| Cache file | `~/.config/hemlig/admin-token` (`$XDG_CONFIG_HOME`, or `%APPDATA%` on Windows). Mode `0600` in a `0700` directory. |
+| Lifetime | The console's access token, usually about an hour. Run `hemlig login` again when it expires. |
+| Admin URL | Defaults to the cached login's API. A different `--admin-url` exits `3` rather than send the token elsewhere. |
+| Timeout | 5 minutes waiting for Authorize |
+| Identity provider | No change. The CLI does no OAuth itself. |
+
+How the hand-off is protected is in the [threat model](../security/threat-model.md#access-and-identity).
+
+### Supply a token
 
 A token is an OIDC **access token** for the API audience, issued by your identity provider. How you obtain one depends on that provider: use its own tooling or token endpoint, for example a service-account or client-credentials flow for automation. The token must satisfy the audience, scope and role rules in [Identity provider](identity-provider.md).
 
@@ -59,13 +89,14 @@ export HEMLIG_ADMIN_TOKEN_FILE=$HOME/.hemlig-token
 
 | Setting | Flag | Environment variable | Notes |
 | --- | --- | --- | --- |
-| Administrator origin | `--admin-url` | `HEMLIG_ADMIN_URL` | No default. HTTPS only, except HTTP to `localhost`, `127.0.0.1` or `[::1]`. No credentials, path, query or fragment. Redirects are never followed. |
+| Administrator origin | `--admin-url` | `HEMLIG_ADMIN_URL` | Defaults to the cached login's API; otherwise required. HTTPS only, except HTTP to `localhost`, `127.0.0.1` or `[::1]`. No credentials, path, query or fragment. Redirects are never followed. |
 | Environment | `--environment` | `HEMLIG_ENVIRONMENT` | The runtime environment. Not the deployment name; see [Configuration](../reference/configuration.md). |
 | Token file | `--token-file` | `HEMLIG_ADMIN_TOKEN_FILE` | Path to a file holding the raw JWT |
 | Token value | none | `HEMLIG_ADMIN_TOKEN` | Used only when no token file is set |
+| Console origin | `--console-url` | `HEMLIG_CONSOLE_URL` | `hemlig login` only. HTTPS origin with a plain hostname. |
 | Timeout | `--timeout-ms` | none | Per request, 1 to 300,000. Default 30,000. |
 
-A file source beats `HEMLIG_ADMIN_TOKEN`. There is no `--token` flag, so a token never appears in a process list.
+Token sources, first match wins: `--token-file`, `HEMLIG_ADMIN_TOKEN_FILE`, `HEMLIG_ADMIN_TOKEN`, then the cached login. There is no `--token` flag, so a token never appears in a process list.
 
 ## Commands
 
@@ -123,7 +154,7 @@ After a lost response, read the secret to see what happened. Do not mint a new k
 
 ## Output
 
-Success prints exactly one JSON object on stdout and nothing on stderr. There are no banners, prompts or tables. `--help` also prints JSON.
+Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr. There are no banners, prompts or tables. `--help` also prints JSON.
 
 | Field | Meaning |
 | --- | --- |
@@ -162,7 +193,7 @@ For a mutation, `outcome` says what happened:
 | --- | --- |
 | 0 | Success |
 | 2 | Usage, bad local JSON, header or configuration, or API 400 |
-| 3 | API 401 or 403 |
+| 3 | API 401 or 403, or a cached login that is expired, unreadable or for another API |
 | 4 | API 404 (secret or active payload missing) |
 | 5 | API 409, including a used idempotency key |
 | 6 | API 412, stale control revision |
