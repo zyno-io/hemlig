@@ -1,169 +1,198 @@
 ---
 title: Administrator consumer and grant routes
-description: Consumer enrollment, API identities, issuer, agent grants and bootstrap capabilities.
+description: Consumer enrollment, client certificates, the issuing root, AgentGrants and bootstrap tokens on the administrator API.
+pageType: reference
 ---
 
 # Administrator consumer and grant routes
 
-All routes require the administrator bearer JWT.
+These routes enroll workloads and manage their credentials on the administrator API. All need an OIDC bearer token, except [`POST /v1/bootstrap/redeem`](#post-v1-bootstrap-redeem).
 
-## Consumer enrollment and certificates
+For a walkthrough see [Connect a workload without Kubernetes](../../guide/direct-consumers.md). How certificates, the issuing root and the truststore work is owned by [Identity and trust](../../guide/identity-and-trust.md).
 
-All lifecycle routes require `Authorization` and `Idempotency-Key`. A CSR is a
-public input and the issued certificate is public output; neither is included in
-Hemlig audit events. Every successful result includes public SHA-256
-fingerprints and the issued leaf PEM where a new leaf was created.
+**Audit.** Every administrator route writes `attempted` and `authorized` events, then `succeeded` or `failed`. A CSR and a certificate are public and never appear in audit events. See [Audit](audit.md).
 
-### `GET /v1/admin/consumers?environment=<env>&cursor=<opaque>`
+**Idempotency.** Which routes need an `Idempotency-Key`, and what a reuse does, is in the [overview](index.md#idempotency).
 
-Returns an eventually consistent, forward-only page of consumer profiles for the
-required environment. Each profile has the consumer ID, environment, activation
-state, SPIFFE subject URI, and creation time. The cursor is actor- and
-environment-bound and expires after 15 minutes.
+## Consumers
+
+### `GET /v1/admin/consumers`
+
+Lists consumer profiles in one environment, forward-only and eventually consistent.
+
+| Query parameter | Required | Description |
+| --- | --- | --- |
+| `environment` | Yes | The environment; it must exist |
+| `cursor` | No | `nextCursor` from the previous page |
+
+Each profile has `consumerId`, `environment`, `status`, `subjectUri` and `createdAt`.
 
 ### `GET /v1/admin/consumers/{consumerId}`
 
-Returns one authoritative consumer profile, its creator, the current issuing
-root fingerprint when one exists, and the exact count of active API leaves.
-The count is calculated from identity records rather than a mutable counter.
-For an enrolled namespace agent, it also includes the attached AgentGrant and
-its exact secret ID, UID, and permission records. Agent read delivery ACL rows
-are derived automatically from this policy and are not a separate permission
-layer in the consumer UI.
+Returns one consumer's authoritative profile: its creator, the current issuing-root fingerprint when one exists, and the exact count of active client certificates. The count comes from identity records, not a counter.
 
-### `GET /v1/admin/consumers/{consumerId}/grants?cursor=<opaque>`
+For an [agent](../glossary.md#agent) it also returns the attached AgentGrant with each secret's ID, UID and permissions.
 
-Returns every current secret ACL grant held by the consumer, in strongly
-consistent pages of at most 100. Each entry contains its `secretId`, immutable
-`secretUid`, `read` permission, current control revision, and secret state.
-Historical revocation tombstones and archived secrets are omitted: this is the
-effective access view used by the consumer management UI. The cursor is bound
-to the administrator and consumer for 15 minutes.
+### `GET /v1/admin/consumers/{consumerId}/grants`
+
+Lists the secrets whose ACL names this consumer: the effective access view. Pages hold at most 100 entries and are strongly consistent.
+
+Each entry has `secretId`, `secretUid`, the `read` permission, the current control revision and the secret state. Archived secrets and old tombstones are omitted.
 
 ### `DELETE /v1/admin/consumers/{consumerId}/grants/{secretId}`
 
-Removes the consumer from that secret's source ACL and writes a new immutable
-control revision. The normal delivery change feed receives a durable
-revocation, so a materialized workload converges even if it was offline during
-the action. This route requires `Authorization` and `Idempotency-Key`; it does
-not accept an `If-Match` header because Hemlig reads the current revision and
-uses a conditional update to reject a concurrent ACL change.
+Removes the consumer from that secret's ACL and writes a new control revision. The consumer's change snapshot receives a `secret.revoked` entry, so a workload that was offline still converges.
 
-### `GET /v1/admin/consumers/{consumerId}/api-identities?cursor=<opaque>`
-
-Returns a newest-first page of public API leaf records, including validity,
-stored state, SHA-256 fingerprint, and public leaf PEM. Expiry is derived by a
-caller from `notAfter`; Hemlig does not rewrite identity rows merely because
-time passed. The endpoint intentionally excludes private-key material.
-
-### `GET /v1/admin/issuer`
-
-Returns the public deployment-wide issuer root and, after the first successful
-publication, the current truststore object key, exact S3 version, and anchor
-count. Before the first enrollment it returns `404`. It never returns the
-KMS-wrapped issuer private key.
-
-### `POST /v1/admin/issuer`
-
-Deliberately provisions the deployment-wide issuing root instead of waiting
-for the first enrollment to create it lazily. Use it to distribute the
-truststore anchor before any consumer enrolls. It shares its creation logic
-with that lazy path, so the two can never diverge, and creation is
-race-safe: calling this repeatedly or concurrently is safe without an
-additional lock. Returns the same body as `GET /v1/admin/issuer` and never
-the KMS-wrapped issuer private key. `201 Created` only when this call created
-the root; `200 OK` when one already existed.
-
-Required headers: `Authorization`, `Idempotency-Key`
+- Needs `Idempotency-Key`. It does not take `If-Match`: Hemlig reads the current revision and rejects a concurrent ACL change itself.
+- An agent cannot be removed this way. It returns `409 conflict`; edit the AgentGrant instead.
+- A consumer that is not on the ACL returns `404 not_found`.
 
 ### `POST /v1/admin/consumers`
 
-Creates a pending consumer profile and API identity in one DynamoDB transaction.
-Hemlig creates its one issuing root on the first enrollment if needed, verifies
-the signed RSA CSR (minimum 2048-bit public key), and signs a non-CA client
-leaf. It then serializes truststore publication, writes a unique PEM bundle to
-the versioned truststore bucket, updates the consumer custom domain to that exact
-version, verifies the observed configuration, and atomically activates the
-consumer/leaf records. A retry with the same idempotency key resumes a prepared
-enrollment. Once it is active, the same key returns the recorded certificate
-without another domain update. A bundle rejected with API Gateway warnings is
-terminally failed and returns `409 enrollment_failed` on the same idempotency
-key. Repair the issuer or truststore configuration before submitting a new
-enrollment; a different CSR cannot repair a rejected root bundle.
+Enrolls a [direct consumer](../glossary.md#direct-consumer) from a certificate signing request (CSR) and returns its first client certificate.
+
+Required headers: `Authorization`, `Idempotency-Key`.
 
 ```json
 {
-  "consumerId": "prod-east",
+  "consumerId": "payments-prod",
   "environment": "prod",
-  "apiCertificateSigningRequestPem": "-----BEGIN CERTIFICATE REQUEST-----\\n..."
+  "apiCertificateSigningRequestPem": "-----BEGIN CERTIFICATE REQUEST-----\n...\n-----END CERTIFICATE REQUEST-----\n"
 }
 ```
 
-The CSR must be exactly one valid signed RSA certificate request no larger than
-32 KiB and must contain a 2048-bit-or-larger public key. Hemlig sets the leaf's
-`clientAuth` EKU and `spiffe://hemlig/consumer/prod-east` URI SAN; caller-supplied
-CSR subjects/extensions do not control those identity fields. Success is `201`
-with `status: ACTIVE`, `apiCertificatePem`, and both fingerprints. Save the
-issued certificate with the local private key and send it for TLS mTLS.
+| Requirement | Value |
+| --- | --- |
+| CSR | One signed RSA request, at least 2048 bits, at most 32 KiB |
+| `consumerId` | Unused, matching the [ID pattern](data-types.md#identifiers) |
+| `environment` | Must exist |
 
-### `POST /v1/admin/consumers/{consumerId}/api-identities`
+Hemlig sets the `clientAuth` usage and the URI SAN `spiffe://hemlig/consumer/payments-prod`. Subject and extensions in the CSR do not control those fields.
 
-Signs an overlapping active API leaf using a new CSR under the same deployment
-root. Use it before retiring a leaf. The request contains only
-`apiCertificateSigningRequestPem`; the response contains the new public
-`apiCertificatePem`, its fingerprint, and the stable root fingerprint. Success
-is `201`. For a consumer with an active agent grant, the new leaf is also
-registered with AWS IoT before the response, so it can receive sync hints. A
-replay with the same idempotency key registers it again.
-
-### `DELETE /v1/admin/consumers/{consumerId}/api-identities/{apiFingerprint}`
-
-Immediately changes the API identity to `REVOKED`. The consumer Lambda performs
-a strongly consistent identity lookup on every request, so application-level
-access stops without waiting for a truststore change. Revoke only after a new
-active leaf has been distributed if continuity matters.
-
-The leaf's AWS IoT certificate is revoked too, so it can no longer connect for
-sync hints. A certificate that was never registered counts as revoked. If the
-IoT call fails, repeat the request: a `DELETE` for an identity that is already
-`REVOKED` re-applies the IoT revocation and returns `200`, with any
-idempotency key.
-
-## Agent grants and bootstrap capabilities
-
-`POST /v1/admin/agent-grants` creates the one remote policy that a namespace
-agent can ever use. It requires the ordinary administrator JWT, but does not
-enroll a consumer yet. `consumerId` must be unused; `environment` must exist.
+Success is `201`:
 
 ```json
 {
-  "consumerId": "prod-payments",
+  "consumerId": "payments-prod",
+  "environment": "prod",
+  "rootFingerprint": "9f2c...",
+  "apiFingerprint": "41ab...",
+  "apiCertificatePem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
+  "status": "ACTIVE"
+}
+```
+
+The consumer becomes `ACTIVE` only after the truststore is published. If API Gateway rejects the truststore with warnings, the same key returns `409 enrollment_failed`. Repair the issuer or truststore first, then enroll again with a new key. See [Errors](errors.md).
+
+## Client certificates
+
+### `GET /v1/admin/consumers/{consumerId}/api-identities`
+
+Lists a consumer's client certificates, newest first. Each entry has `apiFingerprint`, `status`, `kind`, `notBefore`, `notAfter` and the public `apiCertificatePem`. Expiry is derived from `notAfter`; Hemlig does not rewrite a row when time passes. Private keys are never returned.
+
+### `POST /v1/admin/consumers/{consumerId}/api-identities`
+
+Signs an additional, overlapping client certificate from a new CSR under the same issuing root. Issue the new one before revoking the old.
+
+Required headers: `Authorization`, `Idempotency-Key`. Body: `apiCertificateSigningRequestPem`.
+
+- Success is `201` with `consumerId`, `environment`, `rootFingerprint`, `apiFingerprint`, `apiCertificatePem` and `status`.
+- For an agent consumer (one with an `ACTIVE` AgentGrant) the new certificate is also registered with AWS IoT before the response, so it can receive change hints. A replay with the same key registers it again.
+- The limit of 3 active certificates applies to agent self-rotation, not to this route ([limits](../limits.md#identity)).
+
+### `DELETE /v1/admin/consumers/{consumerId}/api-identities/{apiFingerprint}`
+
+Marks the certificate `REVOKED`. The delivery API checks the record on every request, so application access stops at once without a truststore change.
+
+Required headers: `Authorization`, `Idempotency-Key`. Returns `200` with the identity.
+
+- The certificate's AWS IoT certificate is revoked too, so it can no longer connect for change hints. A certificate that was never registered counts as revoked.
+- If the IoT call fails, repeat the request. A `DELETE` on an identity that is already `REVOKED` re-applies the IoT revocation and returns `200`.
+
+::: warning Distribute the replacement first
+Revoke only after the new certificate is in place if the workload must keep running.
+:::
+
+## Issuing root
+
+### `GET /v1/admin/issuer`
+
+Returns the public issuing root and, after the first publication, the truststore object key, its exact S3 version and the anchor count. Before any enrollment it returns `404 not_found`. It never returns the wrapped private key.
+
+### `POST /v1/admin/issuer`
+
+Creates the issuing root now instead of at the first enrollment. It returns the same body as `GET /v1/admin/issuer`.
+
+Required headers: `Authorization`, `Idempotency-Key`.
+
+- `201` when this call created the root, `200` when it already existed. Repeating or racing the call is safe.
+- Run it before the first enrollment to avoid delay at the first enrollment. It also lets you distribute the trust anchor early.
+
+## Agent grants and bootstrap capabilities
+
+An [AgentGrant](../glossary.md#agentgrant) is the policy an agent can ever use. It does not enroll anyone by itself. The flow is create grant, issue bootstrap token, then the agent redeems it. See [Agent grants](../../guide/agent-grants.md) for the task.
+
+### `POST /v1/admin/agent-grants`
+
+Creates a `PENDING` grant for a new consumer ID. No `Idempotency-Key` is used.
+
+```json
+{
+  "consumerId": "payments-prod",
   "environment": "prod",
   "capabilities": ["read", "write"],
   "secretGrants": [
-    {
-      "secretId": "payments/production/stripe-api-key",
-      "permissions": ["read", "write"]
-    }
+    { "secretId": "payments/stripe/api-key", "permissions": ["read", "write"] }
   ],
   "displayName": "Payments namespace"
 }
 ```
 
-`secretGrants` has one to twenty unique canonical IDs. Each record carries the
-exact operations for that secret and may grant only an operation in
-`capabilities`. It is an authorization boundary; Hemlig resolves and persists
-the matching immutable secret UID beside each record. A grant is `PENDING`
-until bootstrap completes, then becomes `ACTIVE`; it cannot silently fall back to a broad
-consumer identity.
+| Field | Required | Description |
+| --- | --- | --- |
+| `consumerId` | Yes | Must be unused |
+| `environment` | Yes | Must exist |
+| `capabilities` | Yes | `read` and/or `write`, no duplicates |
+| `secretGrants` | Yes | 1 to 1,000 unique exact secret IDs on create (`PUT` also accepts an empty list), each with `permissions` that are a subset of `capabilities` |
+| `displayName` | No | Label |
 
-`POST /v1/admin/agent-grants/{grantId}/bootstrap-capabilities` returns the
-only plaintext bootstrap token. It may be issued only for a pending grant and
-is not stored by Hemlig in plaintext. Put that value in a Kubernetes Secret in
-the target namespace; it is not a bearer token for administration or normal
-secret delivery.
+Every `secretId` must already exist as an active secret in the environment. Hemlig resolves each one to its immutable [secret UID](../glossary.md#secret-uid) and stores it beside the record. Create the secrets first.
 
-`PUT /v1/admin/agent-grants/{grantId}` replaces the grant's `capabilities` and
-`secretGrants` (same shape as creation) and optionally `displayName`. The grant
-ID, consumer ID and environment never change. On an `ACTIVE` grant, derived read
-access is reconciled as part of the update.
+Returns `201` with `grantId`, the fields above, `status: PENDING`, `createdAt` and `createdBy`. The grant becomes `ACTIVE` when the agent redeems its token.
+
+### `PUT /v1/admin/agent-grants/{grantId}`
+
+Replaces the grant's `capabilities` and `secretGrants` (same shape as creation) and optionally `displayName`. The grant ID, consumer ID and environment never change. On an `ACTIVE` grant the derived read access is reconciled as part of the call. Returns `200` with the grant. No `Idempotency-Key` is used.
+
+### `POST /v1/admin/agent-grants/{grantId}/bootstrap-capabilities`
+
+Issues the only plaintext [bootstrap token](../glossary.md#bootstrap-token) for a `PENDING` grant. A grant that is not pending returns `409 conflict`. No `Idempotency-Key` is used.
+
+```json
+{
+  "grantId": "grant-example",
+  "token": "hmlb_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG",
+  "expiresAt": "2030-01-01T00:30:00.000Z"
+}
+```
+
+The token is one use and valid for 30 minutes ([limits](../limits.md#identity)). Hemlig stores only its SHA-256 hash, so this response is the only chance to copy it. It cannot call any other route.
+
+### `POST /v1/bootstrap/redeem`
+
+Redeems a bootstrap token and a CSR for the agent's first client certificate. No bearer token is used.
+
+```http
+POST /v1/bootstrap/redeem HTTP/1.1
+Authorization: Bootstrap hmlb_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG
+Content-Type: application/json
+
+{ "apiCertificateSigningRequestPem": "-----BEGIN CERTIFICATE REQUEST-----\n..." }
+```
+
+- The CSR field is at most 16,384 characters.
+- The consumer ID, environment and scope come only from the AgentGrant, never from the request.
+- Success is `201`: the enrollment result (`consumerId`, `environment`, `rootFingerprint`, `apiFingerprint`, `apiCertificatePem`, `status`) plus `grant` with its `grantId`, `capabilities` and `secretGrants`.
+- The certificate is registered with AWS IoT, and the grant becomes `ACTIVE`.
+- A retry with the same CSR after a lost response returns the same result. A different CSR returns `403 forbidden`, except for an `ACTIVE` grant, where it returns `409 conflict`.
+- An invalid, expired or consumed token returns `403 forbidden`. A malformed `Authorization` header returns `400 bad_request`.

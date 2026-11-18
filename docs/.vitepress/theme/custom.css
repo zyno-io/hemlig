@@ -1,0 +1,31 @@
+/* Brand palette derived from the site theme-color (#2f6f5e). */
+:root {
+  --vp-c-brand-1: #2f6f5e;
+  --vp-c-brand-2: #3a826f;
+  --vp-c-brand-3: #2f6f5e;
+  --vp-c-brand-soft: rgba(47, 111, 94, 0.14);
+}
+
+.dark {
+  --vp-c-brand-1: #6fbfa5;
+  --vp-c-brand-2: #5aae93;
+  --vp-c-brand-3: #2f6f5e;
+  --vp-c-brand-soft: rgba(111, 191, 165, 0.16);
+}
+
+/* Keep field, route and reason names on one line in tables. */
+.vp-doc td:first-child code {
+  white-space: nowrap;
+}
+
+/* Centre mermaid diagrams and keep them inside the content column. */
+.vp-doc .mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
+}
+
+.vp-doc .mermaid svg {
+  max-width: 100%;
+  height: auto;
+}

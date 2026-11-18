@@ -1,211 +1,148 @@
-# Hemlig administrator CLI
+---
+title: Administrator CLI
+description: Install and use the hemlig command to create, update, read and archive secrets, with every option, environment variable and exit code.
+pageType: reference
+---
 
-`@zyno-io/hemlig-cli` lives in `packages/cli` and exposes the `hemlig` executable. It
-uses [`@zyno-io/hemlig-client`](https://github.com/zyno-io/hemlig/blob/main/packages/client/src/index.ts) against the
-[administrator API](../reference/api/index.md) and [OpenAPI contract](../reference/openapi.md).
-It requires Node.js 24. It manages existing environments; it does not provision
-Hemlig infrastructure, enroll consumers, redeem bootstrap tokens, or manage
-Kubernetes `HemligSecretImport` / `HemligSecretExport` resources.
+# Administrator CLI
+
+The `hemlig` command manages secrets on the [administrator API](../reference/glossary.md#administrator-api). Every command prints one JSON object, so it is safe to script.
+
+It lives in `packages/cli` as `@zyno-io/hemlig-cli` and needs Node.js 24. It manages secrets in an existing [environment](../reference/glossary.md#environment). It does not deploy Hemlig, enroll consumers, redeem bootstrap tokens or manage Kubernetes resources.
+
+For a task-oriented walkthrough with the console, curl and Pulumi alongside, see [Manage secrets](managing-secrets.md).
 
 ## Build and run from the checkout
 
-```bash
+Install the published package from npm:
+
+```sh
+npm install --global @zyno-io/hemlig-cli
+hemlig --help
+```
+
+To build it from a checkout instead:
+
+```sh
 yarn install --immutable
 yarn workspace @zyno-io/hemlig-client build
 yarn workspace @zyno-io/hemlig-cli build
 yarn workspace @zyno-io/hemlig-cli exec hemlig --help
 ```
 
-`node packages/cli/dist/main.js --help` also works. The package declares the
-`hemlig` bin for installation after publication; adding this workspace does not
-publish it to a registry.
+`node packages/cli/dist/main.js --help` also works.
 
-## Authentication and environment
+## Get an administrator token
 
-Set the administrator origin and an existing logical secret environment
-explicitly. The delivery origin is for mTLS workloads, not this CLI. There is
-no default production endpoint.
+Two ways:
 
-```bash
-export HEMLIG_ADMIN_URL=https://admin.hemlig.example.com
-export HEMLIG_ENVIRONMENT=production
-export HEMLIG_ADMIN_TOKEN_FILE=/run/secrets/hemlig-admin-oidc-token
+| Use | How |
+| --- | --- |
+| Interactive, at a terminal | [`hemlig login`](#sign-in-with-hemlig-login), which borrows your web console sign-in |
+| Scripts and CI | Supply a token you already have, in a file or variable (below) |
+
+### Sign in with `hemlig login`
+
+```sh
+export HEMLIG_CONSOLE_URL=https://console.example.com
+hemlig login     # add --no-browser to only print the URL
+hemlig logout    # deletes the cached login
 ```
 
-The file contains only the raw OIDC bearer JWT, with optional surrounding
-whitespace. Obtain it from the configured identity provider, or use
-[`hemlig login`](#sign-in) for interactive use. The CLI never performs OAuth
-itself, refreshes a token, or prompts. Use a private mounted file
-for unattended callers. `HEMLIG_ADMIN_TOKEN` is also supported for callers that
-already inject the raw JWT through their process environment. API Gateway
-validates issuer, audience, expiry, scopes and configured role requirements.
-Bootstrap capabilities (`hmlb_…`) are rejected.
+1. The CLI opens `<console>/cli-login` in your browser and prints a confirmation code, such as `1W07-71DP`, on stderr.
+2. Sign in to the console if asked. Check that the page shows the same code, then click **Authorize**.
+3. The console hands its access token to the CLI, which listens on `127.0.0.1` only. The CLI reads the admin API address from the console's published `/config.json`.
+4. stdout prints `{"loggedIn":true,"adminUrl":"…","expiresAt":"…"}`.
 
-`--admin-url` and `--environment` override their environment variables.
-`--token-file` overrides `HEMLIG_ADMIN_TOKEN_FILE`; either file source takes
-precedence over `HEMLIG_ADMIN_TOKEN`, which takes precedence over the cached
-login token (see [Sign in](#sign-in)). There is no raw `--token` argument, so a
-token need not appear in a command line. Origins must use HTTPS, except HTTP on
-`localhost`, `127.0.0.1` or `[::1]` for local development. URL credentials,
-paths, queries and fragments are rejected; redirects are never followed.
+| Detail | Behavior |
+| --- | --- |
+| Cache file | `~/.config/hemlig/admin-token` (`$XDG_CONFIG_HOME`, or `%APPDATA%` on Windows). Mode `0600` in a `0700` directory. |
+| Lifetime | The console's access token, usually about an hour. Run `hemlig login` again when it expires. |
+| Admin URL | Defaults to the cached login's API. A different `--admin-url` exits `3` rather than send the token elsewhere. |
+| Timeout | 5 minutes waiting for Authorize |
+| Identity provider | No change. The CLI does no OAuth itself. |
 
-## Sign in
+How the hand-off is protected is in the [threat model](../security/threat-model.md#access-and-identity).
 
-`hemlig login` reuses your web console SSO session; the identity provider app
-registration is unchanged and the CLI does no OAuth.
+### Supply a token
 
-```bash
-export HEMLIG_CONSOLE_URL=https://console.hemlig.example.com
-hemlig login            # or: hemlig login --console-url https://console.hemlig.example.com
-hemlig logout
+A token is an OIDC **access token** for the API audience, issued by your identity provider. How you obtain one depends on that provider: use its own tooling or token endpoint, for example a service-account or client-credentials flow for automation. The token must satisfy the audience, scope and role rules in [Identity provider](identity-provider.md).
+
+Put the raw token in a file readable only by you. The file holds the JWT and nothing else.
+
+```sh
+umask 077
+printf '%s' "$ACCESS_TOKEN" > "$HOME/.hemlig-token"
 ```
 
-1. The CLI listens on `127.0.0.1` (random port) and opens
-   `<console>/cli-login?port=…&state=…`. The URL and a confirmation code
-   (`XXXX-XXXX`, derived from `state`) are printed on stderr; `--no-browser`
-   prints them without opening a browser. The console URL must be an HTTPS
-   origin with a plain hostname (`localhost` and `127.0.0.1` allowed over HTTP).
-2. The console page shows the same code. Authorize only if it matches the code
-   in your terminal; the button enables 1.5 s after the page is visible. The
-   console renews its token if it expires within 5 minutes and POSTs it to
-   `http://127.0.0.1:<port>/callback` as a form body, never in a URL.
-3. The CLI accepts one `POST /callback` whose `state` matches its random
-   256-bit nonce and whose `Origin` is absent, `null` or the console origin
-   (browsers send `null` for this cross-origin form POST); anything else is
-   rejected and it keeps waiting. `state` is the authenticator, and the first
-   valid POST wins (later ones get `409`). It then fetches
-   `<console>/config.json` itself and takes `adminApiUrl` from it as the API
-   for this login, never from the POST; if that fails (exit `8`/`7`) nothing is
-   cached. It answers with a `303` to a "signed in" page so a reload cannot
-   re-send the token, then closes. It gives up after 5 minutes.
-4. The login is cached as JSON (`version`, `token`, `consoleOrigin`,
-   `adminOrigin`: the console's published `adminApiUrl`) at `$XDG_CONFIG_HOME/hemlig/admin-token`
-   (`~/.config/hemlig/admin-token`; `%APPDATA%\hemlig\admin-token` on Windows).
-   The directory is forced to `0700` (a symlink or another user's directory is
-   refused) and the file is `0600`. stdout receives
-   `{"loggedIn":true,"adminUrl":"…","expiresAt":"…"}`.
-5. The token is short-lived and grants full admin access. When it expires,
-   commands exit `3` with ``Login expired; run `hemlig login`.``; log in again.
-6. The cached login works only for its own API. If `--admin-url` /
-   `HEMLIG_ADMIN_URL` is unset, the cached `adminUrl` is used; if it names a
-   different API, commands exit `3` with
-   ``Cached login is for <adminOrigin>; run `hemlig login` for this API.``
-   An unreadable cache also exits `3`.
-7. `hemlig logout` deletes the file and prints `{"loggedIn":false}`.
+Access tokens expire. Replace the file's contents when the token does. A bootstrap token (`hmlb_...`) is rejected here.
 
-| Order | Token source                                                  |
-| ----- | ------------------------------------------------------------- |
-| 1     | `--token-file`                                                |
-| 2     | `HEMLIG_ADMIN_TOKEN_FILE`                                     |
-| 3     | `HEMLIG_ADMIN_TOKEN`                                          |
-| 4     | Cached login (expiry and API checked locally; no other source) |
+## Configuration
 
-`login` accepts only `--console-url` and `--no-browser`. It opens a browser but
-never reads stdin.
+Set the administrator origin, an existing environment and a token source.
+
+```sh
+export HEMLIG_ADMIN_URL=https://admin.example.com
+export HEMLIG_ENVIRONMENT=prod
+export HEMLIG_ADMIN_TOKEN_FILE=$HOME/.hemlig-token
+```
+
+| Setting | Flag | Environment variable | Notes |
+| --- | --- | --- | --- |
+| Administrator origin | `--admin-url` | `HEMLIG_ADMIN_URL` | Defaults to the cached login's API; otherwise required. HTTPS only, except HTTP to `localhost`, `127.0.0.1` or `[::1]`. No credentials, path, query or fragment. Redirects are never followed. |
+| Environment | `--environment` | `HEMLIG_ENVIRONMENT` | The runtime environment. Not the deployment name; see [Configuration](../reference/configuration.md). |
+| Token file | `--token-file` | `HEMLIG_ADMIN_TOKEN_FILE` | Path to a file holding the raw JWT |
+| Token value | none | `HEMLIG_ADMIN_TOKEN` | Used only when no token file is set |
+| Console origin | `--console-url` | `HEMLIG_CONSOLE_URL` | `hemlig login` only. HTTPS origin with a plain hostname. |
+| Timeout | `--timeout-ms` | none | Per request, 1 to 300,000. Default 30,000. |
+
+Token sources, first match wins: `--token-file`, `HEMLIG_ADMIN_TOKEN_FILE`, `HEMLIG_ADMIN_TOKEN`, then the cached login. There is no `--token` flag, so a token never appears in a process list.
 
 ## Commands
 
-Every secret command requires `--secret-id`, except an archived metadata read,
-which requires `--secret-uid` instead. IDs can contain folder separators.
-All commands require an explicit administrator origin, token and environment.
+Every `secret` command needs `--secret-id`, except an archived read, which needs `--secret-uid`.
 
-| Command                    | JSON input              | Concurrency            | Typed client method      |
-| -------------------------- | ----------------------- | ---------------------- | ------------------------ |
-| `secret create`            | `metadata` and `acl`    | New operation key      | `createAdminSecret`      |
-| `secret update`            | `metadata` and/or `acl` | ETag and operation key | `updateAdminSecret`      |
-| `secret write-payload`     | Raw payload entry map   | ETag and operation key | `putAdminPayload`        |
-| `secret read`              | None                    | None                   | `getAdminSecret`         |
-| `secret read-payload`      | None                    | None                   | `getAdminSecretPayload`  |
-| `secret archive`           | None                    | ETag and operation key | `archiveAdminSecret`     |
-| `secret read --secret-uid` | None                    | None                   | `getArchivedAdminSecret` |
+| Command | Input | `--if-match` | Client method |
+| --- | --- | --- | --- |
+| `secret create` | JSON `metadata` and `acl` | No | `createAdminSecret` |
+| `secret update` | JSON `metadata` and/or `acl` | Required | `updateAdminSecret` |
+| `secret write-payload` | Raw payload entry map | Required | `putAdminPayload` |
+| `secret read` | None | No | `getAdminSecret` |
+| `secret read-payload` | None | No | `getAdminSecretPayload` |
+| `secret archive` | None | Required | `archiveAdminSecret` |
+| `secret read --secret-uid UID` | None | No | `getArchivedAdminSecret` |
+| `idempotency-key` | None | No | Prints a new key; needs no configuration |
 
-Use `--input path.json` or `--input -` for piped JSON. Stdin is not read unless
-requested, and a terminal attached to `--input -` is rejected without prompting.
-Input is bounded to 768,000 bytes. Payload files and stdin are never echoed in
-diagnostics. API error messages are summarized instead of being echoed because
-some validation messages include payload entry names.
+### Options
 
-Create a secret's metadata and ACL before writing its payload:
+| Option | Applies to | Description |
+| --- | --- | --- |
+| `--secret-id` | Secret commands | Active secret ID. Folder separators allowed. |
+| `--secret-uid` | `secret read` | Archived secret UID, from an archive receipt |
+| `--input` | create, update, write-payload | A file path, or `-` to read piped stdin. A terminal on `-` is rejected. Limited to 768,000 bytes. |
+| `--if-match` | update, write-payload, archive | A known ETag, or `current` (see below) |
+| `--idempotency-key` | Mutations | 8 to 128 printable, non-space ASCII characters. Default: a new UUID. |
 
-```bash
-printf '%s\n' '{"metadata":{"description":"Payments API","tags":{"owner":"payments"}},"acl":[]}' |
-  hemlig secret create --secret-id payments/stripe/api-key --input - > created.json
-```
+Input rules:
 
-The environment and secret ID come from flags/environment variables, not the
-input JSON. The new secret has state `PENDING_VALUE`. A payload write activates
-it. `acl` may contain enrolled same-environment consumers with `read` permission.
+- The environment and secret ID come from flags, not from the JSON.
+- A `metadata` value replaces all metadata, tags included. An `acl` array replaces the whole ACL. Empty values clear the field.
+- Unknown top-level fields are rejected. `metadata.path` is not supported.
+- A payload file is the bare entry map, with no `payload` wrapper.
 
-Read metadata without decrypting the payload:
-
-```bash
-hemlig secret read --secret-id payments/stripe/api-key > current.json
-```
-
-Use the returned version to update only the ACL:
-
-```bash
-etag=$(jq -r .etag current.json)
-printf '%s\n' '{"acl":[{"consumerId":"prod-east","permissions":["read"]}]}' |
-  hemlig secret update --secret-id payments/stripe/api-key --if-match "$etag" --input - > updated.json
-```
-
-Update accepts either field or both. Omitted fields are preserved by the API.
-A supplied `metadata` object replaces metadata, including tags; a supplied
-`acl` array replaces the whole ACL. Empty objects/arrays intentionally clear
-those fields. The CLI rejects unknown top-level fields rather than silently
-discarding misspelled configuration. `metadata.path` is unsupported; folders
-come from `secretId`.
-
-A payload file is the raw entry map, without a `payload` wrapper:
-
-```json
-{
-  "username": { "encoding": "utf8", "value": "service-account" },
-  "binary": { "encoding": "base64", "value": "AP8=" }
-}
-```
-
-```bash
-etag=$(jq -r .etag updated.json)
-hemlig secret write-payload --secret-id payments/stripe/api-key --if-match "$etag" --input payload.json > written.json
-```
-
-This replaces the entire payload. Entry names and explicit UTF-8/canonical
-base64 values follow the API contract. The serialized request must fit within
-768,000 bytes. Mutation receipts contain control metadata, never the written
-payload. To deliberately read a decrypted payload:
-
-```bash
-hemlig secret read-payload --secret-id payments/stripe/api-key > payload-receipt.json
-```
-
-That command returns the payload under `data.payload`. Treat its stdout and any
-redirected file as secret material; the CLI does not print it on stderr.
+Payloads and stdin are never echoed in diagnostics. A payload read prints the value under `data.payload`, so treat stdout as secret.
 
 ## ETags and idempotency
 
-`update`, `write-payload` and `archive` require `--if-match`. Pass `.etag` from a
-receipt or the API's `controlVersionId`; a quoted strong ETag is accepted too.
-The typed client supplies the quotes in `If-Match`. Weak ETags and `*` are
-rejected. The flag never silently defaults to the latest revision.
+Every update, payload write and archive needs `--if-match`. Pass the `etag` field of the last receipt, or a quoted strong ETag. Weak ETags and `*` are rejected.
 
-If the intent is explicitly to operate on the latest active record, use
-`--if-match current`. The CLI makes one metadata GET and one mutation with the
-GET's version. A concurrent change returns exit 6 / HTTP 412; the CLI never
-refetches or retries. This mode addresses the active record currently holding
-the public ID, which may be a replacement after archival. Use a previously
-read ETag when the operation must affect the record you inspected earlier.
+`--if-match current` makes one metadata read, then one mutation with that version. It is for deliberately acting on whatever record holds the ID now. A concurrent change returns exit 6 and the CLI does not retry.
 
-Every mutation accepts `--idempotency-key` (8–128 printable non-space ASCII
-characters). If omitted, the CLI mints a UUID once and returns it in the
-success or post-preflight error receipt. Keys identify an intended operation,
-not a secret. Nothing is retried automatically, including a timeout or 5xx.
+Every mutation carries an idempotency key. If you omit it, the CLI creates one and returns it in the receipt. A used key returns HTTP 409, and nothing is retried automatically, including timeouts. The rules are in the [API idempotency table](../reference/api/index.md#idempotency).
 
-For automation that must retain the key even if the process is killed, mint
-and persist it before calling the mutation:
+To keep a key across a crash, create and save it first:
 
-```bash
+```sh
 umask 077
 hemlig idempotency-key > archive-operation.json
 key=$(jq -r .idempotencyKey archive-operation.json)
@@ -213,51 +150,20 @@ etag=$(jq -r .etag written.json)
 hemlig secret archive --secret-id payments/stripe/api-key --if-match "$etag" --idempotency-key "$key" > archived.json
 ```
 
-`idempotency-key` needs no authentication or environment. Supply the same saved
-key and ETag if intentionally retrying the same operation. A used key produces
-HTTP 409; the API does not replay the initial success response. Retain the
-initial receipt. After a lost response, inspect authoritative state and decide
-how to reconcile; do not mint a new key just to bypass a conflict.
+After a lost response, read the secret to see what happened. Do not mint a new key just to get past a `409`.
 
-Archival releases `secretId` for reuse and revokes the old record's grants. Keep
-`data.secretUid` from the archive receipt and address the old record by UID:
+## Output
 
-```bash
-uid=$(jq -r .data.secretUid archived.json)
-hemlig secret read --secret-uid "$uid" > archived-metadata.json
-```
+Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr. There are no banners, prompts or tables. `--help` also prints JSON.
 
-There is no archived payload read or UID mutation command.
+| Field | Meaning |
+| --- | --- |
+| `data` | The API response |
+| `etag` | The raw `controlVersionId`, ready for the next `--if-match` |
+| `idempotencyKey` | The key used (mutations only) |
+| `ifMatch` | The version matched (guarded writes only) |
 
-## Output and exit codes
-
-Success emits exactly one JSON object plus newline on stdout, with no stderr
-output. The one exception is `hemlig login`, which prints its sign-in URL and
-confirmation code on stderr. There are no progress banners, prompts, tables, or automatic retries.
-Flags may precede the command. `--help` also returns JSON.
-
-```json
-{
-  "data": {
-    "secretUid": "sec-example",
-    "secretId": "payments/stripe/api-key",
-    "environment": "production",
-    "controlVersionId": "ctl-next",
-    "state": "ARCHIVED",
-    "metadata": {},
-    "acl": []
-  },
-  "etag": "ctl-next",
-  "idempotencyKey": "59fef72b-4e51-4a0d-9f3a-3929e030eb31",
-  "ifMatch": "ctl-prior"
-}
-```
-
-`data` is the API response. `etag` is its raw `controlVersionId` for the next
-mutation. Mutation receipts include the operation key; guarded writes include
-the raw version they matched. Reads omit those two mutation fields.
-
-Failure leaves stdout empty and emits one JSON object on stderr:
+A failure leaves stdout empty and prints one JSON object on stderr:
 
 ```json
 {
@@ -273,25 +179,26 @@ Failure leaves stdout empty and emits one JSON object on stderr:
 }
 ```
 
-Local validation errors may occur before an operation key is minted. Once a
-mutation key is chosen, errors include `outcome`: `not_sent` when a version
-lookup failed before the mutation, `rejected` for a known client/API rejection,
-or `unknown` for service/protocol/network errors after attempting the mutation.
-`unknown` requires reconciliation and never means the write definitely failed.
+For a mutation, `outcome` says what happened:
 
-| Exit | Meaning                                                                        |
-| ---- | ------------------------------------------------------------------------------ |
-| 0    | Success                                                                        |
-| 2    | Usage, invalid local JSON/header/configuration, or API 400                     |
-| 3    | API 401/403, or an expired, mismatched or unreadable cached login              |
-| 4    | API 404 secret or active payload missing                                       |
-| 5    | API 409 conflict, including a used operation key                               |
-| 6    | API 412 stale control revision                                                 |
-| 7    | Service failure, unexpected HTTP status, malformed response, or internal error |
-| 8    | Network, redirect, or timeout failure                                          |
-| 9    | Local input/token file, stdin, or output I/O failure                           |
+| `outcome` | Meaning |
+| --- | --- |
+| `not_sent` | A preparatory read failed before the mutation was attempted |
+| `rejected` | The API refused it |
+| `unknown` | The attempt may or may not have applied. Reconcile by reading the secret. |
 
-`--timeout-ms` bounds each HTTP request independently (default 30,000, maximum
-300,000). The explicit `current` mode can use two request deadlines. With a
-known ETag every operation uses one API call, avoiding unnecessary control
-reads and their immutable audit writes.
+## Exit codes
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Success |
+| 2 | Usage, bad local JSON, header or configuration, or API 400 |
+| 3 | API 401 or 403, or a cached login that is expired, unreadable or for another API |
+| 4 | API 404 (secret or active payload missing) |
+| 5 | API 409, including a used idempotency key |
+| 6 | API 412, stale control revision |
+| 7 | Service failure, unexpected status, malformed response or internal error |
+| 8 | Network, redirect or timeout failure |
+| 9 | Local input, token file, stdin or output I/O failure |
+
+Exit codes map to API statuses. The API's own code names are in [Errors](../reference/api/errors.md).
