@@ -61,6 +61,8 @@ async function execute(
   };
   const exitCode = await runCli(args, {
     env: options.env ?? env,
+    // Never read a developer's real cached login during tests.
+    configDir: join(tmpdir(), "hemlig-cli-test-no-config"),
     stdin: stream,
     stdout: (text) => {
       stdout += text;

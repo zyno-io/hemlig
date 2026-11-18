@@ -122,6 +122,13 @@ const routes: RouteRecordRaw[] = [
     name: "trust",
     component: () => import("../views/TrustStatus.vue"),
   },
+  // Authenticated like every other route: App.vue starts sign-in before this
+  // component mounts and restores the query string afterwards.
+  {
+    path: "/cli-login",
+    name: "cli-login",
+    component: () => import("../views/CliLogin.vue"),
+  },
   {
     path: "/about",
     name: "about",

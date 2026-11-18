@@ -23,7 +23,7 @@ const redirectToSignIn = (): void => {
     return;
   }
   redirectStarted = true;
-  void store.signIn().catch((error: unknown) => {
+  void store.signIn(route.fullPath).catch((error: unknown) => {
     store.bootError = error instanceof Error ? error.message : String(error);
   });
 };

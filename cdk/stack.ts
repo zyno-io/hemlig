@@ -1343,7 +1343,9 @@ const relativeRecordName = (
 // omitting 'self' here blocks every token renewal even though frame-ancestors
 // 'self' (below) separately permits the document to be framed. frameAncestors is
 // the one axis that differs between the default (`'none'`) and silent-renew
-// (`'self'`) response headers policies.
+// (`'self'`) response headers policies. form-action allows loopback HTTP only,
+// solely so /cli-login can POST an access token to `hemlig login`'s 127.0.0.1
+// listener; the CLI checks the Origin header and a one-time state value.
 const consoleContentSecurityPolicy = (
   frameAncestors: string,
   api: string,
@@ -1357,7 +1359,7 @@ const consoleContentSecurityPolicy = (
     "font-src 'self'",
     `connect-src 'self' ${api} ${idp}`,
     `frame-src 'self' ${idp}`,
-    "form-action 'none'",
+    "form-action http://127.0.0.1:*",
     "base-uri 'none'",
     "object-src 'none'",
     `frame-ancestors ${frameAncestors}`,

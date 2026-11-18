@@ -9,12 +9,26 @@ export interface Session {
   readonly displayName?: string;
 }
 
+export interface CompletedSession extends Session {
+  /** Same-origin path the operator was heading to before sign-in began. */
+  readonly returnTo?: string;
+}
+
 export interface AuthDriver extends TokenSource {
   initialize(): Promise<Session | undefined>;
-  signIn(): Promise<void>;
-  completeSignIn(): Promise<Session | undefined>;
+  /** `returnTo` survives the identity-provider round trip, query string included. */
+  signIn(returnTo?: string): Promise<void>;
+  completeSignIn(): Promise<CompletedSession | undefined>;
   signOut(): Promise<void>;
+  /** Returns a token valid for at least `minValidityMs`, renewing it first when needed. */
+  accessToken(minValidityMs?: number): Promise<string | undefined>;
 }
+
+/** Only a plain absolute path on this origin may be restored after sign-in. */
+export const safeReturnTo = (value: unknown): string | undefined =>
+  typeof value === "string" && /^\/(?![/\\])/.test(value) && !value.startsWith("/auth/callback")
+    ? value
+    : undefined;
 
 /**
  * The access token lives only in this closure. It is never written to
@@ -65,13 +79,16 @@ class OidcDriver implements AuthDriver {
     }
   }
 
-  public async signIn(): Promise<void> {
-    await this.manager.signinRedirect();
+  public async signIn(returnTo?: string): Promise<void> {
+    const target = safeReturnTo(returnTo);
+    await this.manager.signinRedirect(target === undefined ? {} : { state: { returnTo: target } });
   }
 
-  public async completeSignIn(): Promise<Session | undefined> {
+  public async completeSignIn(): Promise<CompletedSession | undefined> {
     const user = await this.manager.signinRedirectCallback();
-    return this.adopt(user);
+    const { token: _token, ...session } = this.adopt(user);
+    const returnTo = safeReturnTo((user.state as { returnTo?: unknown } | undefined)?.returnTo);
+    return returnTo === undefined ? session : { ...session, returnTo };
   }
 
 
@@ -81,8 +98,8 @@ class OidcDriver implements AuthDriver {
     await this.manager.signoutRedirect();
   }
 
-  public async accessToken(): Promise<string | undefined> {
-    if (this.token !== undefined && Date.now() < this.expiresAt - 30_000) {
+  public async accessToken(minValidityMs = 30_000): Promise<string | undefined> {
+    if (this.token !== undefined && Date.now() < this.expiresAt - minValidityMs) {
       return this.token;
     }
     try {
@@ -149,7 +166,7 @@ class DevBridgeDriver implements AuthDriver {
     return { subject: this.subject, displayName: `${this.subject} (dev bridge)` };
   }
   public async signIn(): Promise<void> {}
-  public async completeSignIn(): Promise<Session> {
+  public async completeSignIn(): Promise<CompletedSession> {
     return this.initialize();
   }
   public async signOut(): Promise<void> {}

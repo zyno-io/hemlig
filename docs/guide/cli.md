@@ -33,8 +33,9 @@ export HEMLIG_ADMIN_TOKEN_FILE=/run/secrets/hemlig-admin-oidc-token
 ```
 
 The file contains only the raw OIDC bearer JWT, with optional surrounding
-whitespace. Obtain it from the configured identity provider; the CLI does not
-perform a browser login, refresh a token, or prompt. Use a private mounted file
+whitespace. Obtain it from the configured identity provider, or use
+[`hemlig login`](#sign-in) for interactive use. The CLI never performs OAuth
+itself, refreshes a token, or prompts. Use a private mounted file
 for unattended callers. `HEMLIG_ADMIN_TOKEN` is also supported for callers that
 already inject the raw JWT through their process environment. API Gateway
 validates issuer, audience, expiry, scopes and configured role requirements.
@@ -42,10 +43,51 @@ Bootstrap capabilities (`hmlb_…`) are rejected.
 
 `--admin-url` and `--environment` override their environment variables.
 `--token-file` overrides `HEMLIG_ADMIN_TOKEN_FILE`; either file source takes
-precedence over `HEMLIG_ADMIN_TOKEN`. There is no raw `--token` argument, so a
+precedence over `HEMLIG_ADMIN_TOKEN`, which takes precedence over the cached
+login token (see [Sign in](#sign-in)). There is no raw `--token` argument, so a
 token need not appear in a command line. Origins must use HTTPS, except HTTP on
 `localhost`, `127.0.0.1` or `[::1]` for local development. URL credentials,
 paths, queries and fragments are rejected; redirects are never followed.
+
+## Sign in
+
+`hemlig login` reuses your web console SSO session; the identity provider app
+registration is unchanged and the CLI does no OAuth.
+
+```bash
+export HEMLIG_CONSOLE_URL=https://console.hemlig.example.com
+hemlig login            # or: hemlig login --console-url https://console.hemlig.example.com
+hemlig logout
+```
+
+1. The CLI listens on `127.0.0.1` (random port) and opens
+   `<console>/cli-login?port=…&state=…`. The URL is also printed on stderr;
+   `--no-browser` prints it only.
+2. Sign in to the console if needed, then choose **Authorize**. The console
+   renews its token if it expires within 5 minutes and POSTs it to
+   `http://127.0.0.1:<port>/callback` as a form body, never in a URL.
+3. The CLI accepts one `POST /callback` whose `state` matches its random
+   256-bit nonce and whose `Origin` is absent, `null` or the console origin
+   (browsers send `null` for this cross-origin form POST); anything else is
+   rejected and it keeps waiting. `state` is the authenticator. It gives up
+   after 5 minutes.
+4. The token is cached at `$XDG_CONFIG_HOME/hemlig/admin-token`
+   (`~/.config/hemlig/admin-token`; `%APPDATA%\hemlig\admin-token` on Windows),
+   directory mode `0700`, file mode `0600`. stdout receives
+   `{"loggedIn":true,"expiresAt":"…"}`.
+5. The token is short-lived and grants full admin access. When it expires,
+   commands exit `3` with `Login expired; run hemlig login.`; log in again.
+6. `hemlig logout` deletes the file and prints `{"loggedIn":false}`.
+
+| Order | Token source                                |
+| ----- | ------------------------------------------- |
+| 1     | `--token-file`                              |
+| 2     | `HEMLIG_ADMIN_TOKEN_FILE`                   |
+| 3     | `HEMLIG_ADMIN_TOKEN`                        |
+| 4     | Cached login token (expiry checked locally) |
+
+`login` accepts only `--console-url` and `--no-browser`. It opens a browser but
+never reads stdin.
 
 ## Commands
 

@@ -9,6 +9,18 @@ import {
   type HemligTransport,
   type SecretPayload,
 } from "@zyno-io/hemlig-client";
+import {
+  DEFAULT_LOGIN_TIMEOUT_MS,
+  JWT_PATTERN,
+  LoginError,
+  defaultConfigDir,
+  jwtExpiry,
+  loginViaConsole,
+  openInBrowser,
+  readCachedToken,
+  removeCachedToken,
+  writeCachedToken,
+} from "./login";
 
 const commands = [
   "create",
@@ -21,13 +33,23 @@ const commands = [
 type Command = (typeof commands)[number];
 
 const help = {
-  usage: "hemlig secret <command> [options] | hemlig idempotency-key",
+  usage:
+    "hemlig secret <command> [options] | hemlig login [--console-url <url>] [--no-browser] | hemlig logout | hemlig idempotency-key",
   commands,
+  topLevelCommands: {
+    login:
+      "Authorize via the web console's SSO session and cache a short-lived admin token. Opens a browser; never prompts.",
+    logout: "Delete the cached login token.",
+    "idempotency-key": "Print a newly minted UUID operation key.",
+  },
   options: {
+    "--console-url":
+      "Console HTTPS origin for login; defaults to HEMLIG_CONSOLE_URL.",
+    "--no-browser": "login only: print the URL instead of opening a browser.",
     "--admin-url": "Administrator origin; defaults to HEMLIG_ADMIN_URL.",
     "--environment": "Logical environment; defaults to HEMLIG_ENVIRONMENT.",
     "--token-file":
-      "OIDC bearer token file; defaults to HEMLIG_ADMIN_TOKEN_FILE, otherwise HEMLIG_ADMIN_TOKEN.",
+      "OIDC bearer token file; defaults to HEMLIG_ADMIN_TOKEN_FILE, then HEMLIG_ADMIN_TOKEN, then the token cached by hemlig login.",
     "--secret-id": "Reusable secret ID for active records.",
     "--secret-uid": "Immutable UID for archived records (read only).",
     "--input":
@@ -63,6 +85,14 @@ export interface CliDependencies {
   readonly stderr?: (text: string) => void | Promise<void>;
   /** Transport injection is for local tests; the executable always uses HTTPS fetch. */
   readonly transport?: HemligTransport;
+  /** Browser launcher for `hemlig login`; defaults to open / xdg-open / cmd start. */
+  readonly openBrowser?: (url: string) => void | Promise<void>;
+  /** Directory holding the cached login token; defaults to the XDG/APPDATA hemlig directory. */
+  readonly configDir?: string;
+  /** Clock in epoch milliseconds, for token expiry checks. */
+  readonly now?: () => number;
+  /** Login wait limit; defaults to five minutes. */
+  readonly loginTimeoutMs?: number;
 }
 
 class CliError extends Error {
@@ -90,6 +120,8 @@ export async function runCli(
     dependencies.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr =
     dependencies.stderr ?? ((text: string) => process.stderr.write(text));
+  const now = dependencies.now ?? Date.now;
+  const configDir = dependencies.configDir ?? defaultConfigDir(env);
   let idempotencyKey: string | undefined;
   let ifMatch: string | undefined;
   let mutationAttempted = false;
@@ -104,6 +136,8 @@ export async function runCli(
         options: {
           help: { type: "boolean" },
           "admin-url": { type: "string" },
+          "console-url": { type: "string" },
+          "no-browser": { type: "boolean" },
           environment: { type: "string" },
           "token-file": { type: "string" },
           "secret-id": { type: "string" },
@@ -135,6 +169,43 @@ export async function runCli(
     ) {
       if (seen.size !== 0) usage("idempotency-key does not accept options.");
       await stdout(`${JSON.stringify({ idempotencyKey: randomUUID() })}\n`);
+      return 0;
+    }
+    if (
+      parsed.positionals.length === 1 &&
+      parsed.positionals[0] === "logout"
+    ) {
+      if (seen.size !== 0) usage("logout does not accept options.");
+      await removeCachedToken(configDir);
+      await stdout(`${JSON.stringify({ loggedIn: false })}\n`);
+      return 0;
+    }
+    if (parsed.positionals.length === 1 && parsed.positionals[0] === "login") {
+      for (const name of seen) {
+        if (name !== "console-url" && name !== "no-browser")
+          usage("An option is not supported by login.");
+      }
+      const consoleOrigin = httpsOrigin(
+        parsed.values["console-url"] ?? env.HEMLIG_CONSOLE_URL,
+        "Supply --console-url or HEMLIG_CONSOLE_URL.",
+        "Console URL",
+      );
+      const url = async (target: string): Promise<void> => {
+        await stderr(`Open this URL to sign in to the Hemlig CLI:\n${target}\n`);
+      };
+      const result = await loginViaConsole({
+        consoleOrigin,
+        timeoutMs: dependencies.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
+        now,
+        open: parsed.values["no-browser"]
+          ? undefined
+          : (dependencies.openBrowser ?? openInBrowser),
+        announce: url,
+      });
+      await writeCachedToken(configDir, result.token);
+      await stdout(
+        `${JSON.stringify({ loggedIn: true, expiresAt: result.expiresAt.toISOString() })}\n`,
+      );
       return 0;
     }
     const candidate = parsed.positionals[1];
@@ -214,7 +285,7 @@ export async function runCli(
       payload = validatePayload(input);
     }
     const tokenFile = values["token-file"] ?? env.HEMLIG_ADMIN_TOKEN_FILE;
-    const tokenText =
+    let tokenText =
       tokenFile === undefined
         ? env.HEMLIG_ADMIN_TOKEN
         : await readText(
@@ -222,15 +293,32 @@ export async function runCli(
             16384,
             "Cannot read administrator token file.",
           );
+    let cached = false;
+    if (tokenText === undefined) {
+      try {
+        tokenText = await readCachedToken(configDir);
+        cached = tokenText !== undefined;
+      } catch {
+        throw new CliError(9, "input_io_error", "Cannot read cached login token.");
+      }
+    }
     const token = tokenText?.trim();
     // Syntax screening is not token verification: API Gateway validates issuer, audience, scope and expiry.
-    if (
-      !token ||
-      !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)
-    ) {
+    if (!token || !JWT_PATTERN.test(token)) {
       usage(
-        "Supply an OIDC bearer JWT via --token-file, HEMLIG_ADMIN_TOKEN_FILE, or HEMLIG_ADMIN_TOKEN.",
+        "Supply an OIDC bearer JWT via --token-file, HEMLIG_ADMIN_TOKEN_FILE, HEMLIG_ADMIN_TOKEN, or `hemlig login`.",
       );
+    }
+    if (cached) {
+      // Decoded without verification, only to fail fast with a useful message.
+      const exp = jwtExpiry(token);
+      if (exp !== undefined && exp * 1000 <= now()) {
+        throw new CliError(
+          3,
+          "login_expired",
+          "Login expired; run `hemlig login`.",
+        );
+      }
     }
     if (mutation) {
       const key = values["idempotency-key"] ?? randomUUID();
@@ -360,15 +448,24 @@ export async function runCli(
 }
 
 function adminOrigin(value: string | undefined): URL {
-  if (!value)
-    usage(
-      "Supply --admin-url or HEMLIG_ADMIN_URL; no production endpoint is assumed.",
-    );
+  return httpsOrigin(
+    value,
+    "Supply --admin-url or HEMLIG_ADMIN_URL; no production endpoint is assumed.",
+    "Administrator URL",
+  );
+}
+
+function httpsOrigin(
+  value: string | undefined,
+  missing: string,
+  label: string,
+): URL {
+  if (!value) usage(missing);
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    return usage("Invalid administrator origin.");
+    return usage(`Invalid ${label.toLowerCase().replace(" url", "")} origin.`);
   }
   const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
   if (
@@ -380,7 +477,7 @@ function adminOrigin(value: string | undefined): URL {
     url.hash
   )
     usage(
-      "Administrator URL must be an HTTPS origin (HTTP is allowed only on loopback).",
+      `${label} must be an HTTPS origin (HTTP is allowed only on loopback).`,
     );
   return url;
 }
@@ -550,6 +647,12 @@ function classifyError(error: unknown): {
   message: string;
   status?: number;
 } {
+  if (error instanceof LoginError)
+    return {
+      exitCode: error.code === "login_timeout" ? 8 : 7,
+      code: error.code,
+      message: error.message,
+    };
   if (error instanceof CliError)
     return {
       exitCode: error.exitCode,

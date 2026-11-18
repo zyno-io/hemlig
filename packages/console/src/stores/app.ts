@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { ref, shallowRef } from "vue";
 import { HemligApi } from "../api/client";
 import type { RuntimeConfig } from "../config";
-import { createAuthDriver, type AuthDriver, type Session } from "../auth/session";
+import { createAuthDriver, type AuthDriver, type CompletedSession, type Session } from "../auth/session";
 
 /**
  * Holds only session and environment context. Nothing derived from the API is
@@ -45,17 +45,27 @@ export const useAppStore = defineStore("app", () => {
     return config.value;
   };
 
-  const signIn = async (): Promise<void> => {
+  const signIn = async (returnTo?: string): Promise<void> => {
     const driver = requireAuth();
-    await driver.signIn();
+    await driver.signIn(returnTo);
   };
 
-  const completeSignIn = async (): Promise<Session | undefined> => {
+  /** Resolves to the session; `returnTo` is where the operator was going before sign-in. */
+  const completeSignIn = async (): Promise<CompletedSession | undefined> => {
     const driver = requireAuth();
     const completed = await driver.completeSignIn();
-    session.value = completed;
+    if (completed === undefined) {
+      session.value = undefined;
+      return undefined;
+    }
+    const { returnTo: _returnTo, ...rest } = completed;
+    session.value = rest;
     return completed;
   };
+
+  /** A token with at least `minValidityMs` left, renewed first if needed. */
+  const accessToken = (minValidityMs: number): Promise<string | undefined> =>
+    requireAuth().accessToken(minValidityMs);
 
   const signOut = async (): Promise<void> => {
     session.value = undefined;
@@ -77,6 +87,7 @@ export const useAppStore = defineStore("app", () => {
     requireConfig,
     signIn,
     completeSignIn,
+    accessToken,
     signOut,
     adoptSession,
   };

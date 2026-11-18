@@ -37,6 +37,10 @@ sends it to the admin API, which is deliberately cross-origin. A `401` comes fro
 API Gateway (re-authenticate); a `403` means the handler rejected an
 already-accepted token, which indicates a deployment configuration mismatch.
 
+## CLI authorization
+
+The `/cli-login` page lets a signed-in administrator hand a token to `hemlig login` on this computer; see [CLI sign in](cli.md#sign-in).
+
 ## Local development
 
 See [Quickstart](quickstart.md). Commands from `packages/console`:

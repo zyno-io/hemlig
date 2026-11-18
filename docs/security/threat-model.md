@@ -14,6 +14,15 @@ an otherwise correctly audienced browser token into an administrator token.
 The unauthenticated `OPTIONS /{proxy+}` route is restricted to CORS preflight:
 the handler returns before JWT processing or application audit emission.
 
+The console CSP allows `form-action http://127.0.0.1:*` solely so its `/cli-login`
+page can hand the in-memory access token to `hemlig login` by top-level form POST
+to a loopback listener. The CLI authenticates the POST by a random 256-bit per-login `state`
+(constant-time compare) and refuses any `Origin` other than the console's, `null`
+or absent, since browsers send `null` for this form POST. The token never appears
+in a URL. It carries full
+admin access until it expires, so the page asks for explicit confirmation, and
+the CLI caches it in a `0600` file that `hemlig logout` deletes.
+
 The first enrollment creates one deployment-wide, online self-signed Hemlig
 root. Its private key is AES-GCM envelope encrypted under the same application
 CMK used for payload envelopes, with the distinct KMS encryption context
