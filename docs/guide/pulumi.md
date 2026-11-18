@@ -8,7 +8,7 @@ pageType: how-to
 
 Declare a secret, an [AgentGrant](../reference/glossary.md#agentgrant) for it and the Kubernetes Secret that carries its bootstrap token, all in one Pulumi program.
 
-`@zyno-io/hemlig-pulumi-provider` is a dynamic Pulumi provider for the [administrator API](../reference/glossary.md#administrator-api). It does not create AWS infrastructure; the [CDK construct](deploying.md) owns that. It is MIT licensed and needs Node.js 24.
+`@zyno-io/hemlig-pulumi-provider` is a dynamic Pulumi provider for the [administrator API](../reference/glossary.md#administrator-api). It does not create AWS infrastructure; the [CDK construct](deploying.md) owns that. It is MIT licensed and needs Node.js 24 or later.
 
 **Before you start**
 

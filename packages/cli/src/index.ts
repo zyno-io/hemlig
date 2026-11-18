@@ -23,6 +23,14 @@ import {
   writeCachedLogin,
   type CachedLogin,
 } from "./login";
+import {
+  ConsumerInputError,
+  consumerCommands,
+  resolveFingerprint,
+  validConsumerId,
+  validFingerprint,
+  type ConsumerCommand,
+} from "./consumer";
 
 const commands = [
   "create",
@@ -36,8 +44,16 @@ type Command = (typeof commands)[number];
 
 const help = {
   usage:
-    "hemlig secret <command> [options] | hemlig login [--console-url <url>] [--no-browser] | hemlig logout | hemlig idempotency-key",
+    "hemlig secret <command> [options] | hemlig consumer <list|get|identities|revoke-identity> [options] | hemlig login [--console-url <url>] [--no-browser] | hemlig logout | hemlig idempotency-key",
   commands,
+  consumerCommands: {
+    list: "List consumers in --environment. Optional --cursor from the previous page's nextCursor.",
+    get: "Read one consumer. Needs --consumer-id; no environment.",
+    identities:
+      "List a consumer's API identities (client certificates). Needs --consumer-id; optional --cursor.",
+    "revoke-identity":
+      "Revoke one API identity. Needs --consumer-id and --fingerprint; mutation with an idempotency key.",
+  },
   topLevelCommands: {
     login:
       "Authorize via the web console's SSO session and cache a short-lived admin token. Opens a browser; never prompts.",
@@ -50,9 +66,16 @@ const help = {
     "--no-browser": "login only: print the URL instead of opening a browser.",
     "--admin-url":
       "Administrator origin; defaults to HEMLIG_ADMIN_URL, then the API recorded by hemlig login when the cached login is the token source.",
-    "--environment": "Logical environment; defaults to HEMLIG_ENVIRONMENT.",
+    "--environment":
+      "Logical environment; defaults to HEMLIG_ENVIRONMENT. Not used by consumer get, identities or revoke-identity.",
     "--token-file":
       "OIDC bearer token file; defaults to HEMLIG_ADMIN_TOKEN_FILE, then HEMLIG_ADMIN_TOKEN, then the token cached by hemlig login.",
+    "--consumer-id":
+      "Consumer ID, for hemlig consumer get|identities|revoke-identity.",
+    "--fingerprint":
+      "revoke-identity only: full 64-hex SHA-256 or a unique prefix of at least 12 hex characters, resolved against the consumer's identities.",
+    "--cursor":
+      "consumer list|identities: nextCursor from the previous page; one page is returned per call.",
     "--secret-id": "Reusable secret ID for active records.",
     "--secret-uid": "Immutable UID for archived records (read only).",
     "--input":
@@ -60,7 +83,7 @@ const help = {
     "--if-match":
       "Known controlVersionId/strong ETag, or current to fetch it once. Required for update, write-payload, archive.",
     "--idempotency-key":
-      "Durable operation key; defaults to a newly minted UUID for each mutation.",
+      "Durable operation key (secret mutations and consumer revoke-identity); defaults to a newly minted UUID for each mutation.",
     "--timeout-ms":
       "Per-request timeout (1–300000 milliseconds); default 30000.",
   },
@@ -130,6 +153,7 @@ export async function runCli(
   let idempotencyKey: string | undefined;
   let ifMatch: string | undefined;
   let mutationAttempted = false;
+  let group: string | undefined;
   try {
     let parsed;
     try {
@@ -147,6 +171,9 @@ export async function runCli(
           "token-file": { type: "string" },
           "secret-id": { type: "string" },
           "secret-uid": { type: "string" },
+          "consumer-id": { type: "string" },
+          fingerprint: { type: "string" },
+          cursor: { type: "string" },
           input: { type: "string" },
           "if-match": { type: "string" },
           "idempotency-key": { type: "string" },
@@ -176,10 +203,7 @@ export async function runCli(
       await stdout(`${JSON.stringify({ idempotencyKey: randomUUID() })}\n`);
       return 0;
     }
-    if (
-      parsed.positionals.length === 1 &&
-      parsed.positionals[0] === "logout"
-    ) {
+    if (parsed.positionals.length === 1 && parsed.positionals[0] === "logout") {
       if (seen.size !== 0) usage("logout does not accept options.");
       await removeCachedToken(configDir);
       await stdout(`${JSON.stringify({ loggedIn: false })}\n`);
@@ -222,26 +246,36 @@ export async function runCli(
       return 0;
     }
     const candidate = parsed.positionals[1];
+    group = parsed.positionals[0];
+    const isConsumer = group === "consumer";
     if (
       parsed.positionals.length !== 2 ||
-      parsed.positionals[0] !== "secret" ||
-      !commands.includes(candidate as Command)
+      (parsed.positionals[0] !== "secret" && !isConsumer) ||
+      !(isConsumer ? consumerCommands : commands).includes(
+        candidate as Command & ConsumerCommand,
+      )
     )
-      usage("Expected hemlig secret <command>. Run hemlig --help.");
-    const command = candidate as Command;
-    const mutation = ["create", "update", "write-payload", "archive"].includes(
-      command,
-    );
-    const needsInput = ["create", "update", "write-payload"].includes(command);
-    const needsMatch = mutation && command !== "create";
-    const allowed = new Set([
-      "admin-url",
-      "environment",
-      "token-file",
-      "timeout-ms",
-      "secret-id",
-    ]);
-    if (command === "read") allowed.add("secret-uid");
+      usage(
+        "Expected hemlig secret <command> or hemlig consumer <command>. Run hemlig --help.",
+      );
+    const command: string = candidate!;
+    const mutation = isConsumer
+      ? command === "revoke-identity"
+      : ["create", "update", "write-payload", "archive"].includes(command);
+    const needsInput =
+      !isConsumer && ["create", "update", "write-payload"].includes(command);
+    const needsMatch = !isConsumer && mutation && command !== "create";
+    const allowed = new Set(["admin-url", "token-file", "timeout-ms"]);
+    if (isConsumer) {
+      if (command === "list") allowed.add("environment");
+      else allowed.add("consumer-id");
+      if (command === "list" || command === "identities") allowed.add("cursor");
+      if (command === "revoke-identity") allowed.add("fingerprint");
+    } else {
+      allowed.add("environment");
+      allowed.add("secret-id");
+    }
+    if (command === "read" && !isConsumer) allowed.add("secret-uid");
     if (mutation) allowed.add("idempotency-key");
     if (needsInput) allowed.add("input");
     if (needsMatch) allowed.add("if-match");
@@ -273,13 +307,35 @@ export async function runCli(
     const origin = adminOrigin(
       values["admin-url"] ?? env.HEMLIG_ADMIN_URL ?? cachedLogin?.adminOrigin,
     );
-    const environment = values.environment ?? env.HEMLIG_ENVIRONMENT;
-    if (!environment || !/^[a-z][a-z0-9-]{0,63}$/.test(environment)) {
+    const requestedEnvironment = values.environment ?? env.HEMLIG_ENVIRONMENT;
+    const needsEnvironment = !isConsumer || command === "list";
+    if (
+      needsEnvironment &&
+      (!requestedEnvironment ||
+        !/^[a-z][a-z0-9-]{0,63}$/.test(requestedEnvironment))
+    ) {
       usage("Supply a valid logical --environment or HEMLIG_ENVIRONMENT.");
     }
+    // Undefined only for consumer commands that take no environment.
+    const environment = requestedEnvironment as string;
     const secretId = values["secret-id"];
     const secretUid = values["secret-uid"];
-    if (secretUid !== undefined) {
+    let consumerId: string | undefined;
+    let fingerprint: string | undefined;
+    if (isConsumer) {
+      try {
+        if (command !== "list")
+          consumerId = validConsumerId(values["consumer-id"]);
+        if (command === "revoke-identity")
+          fingerprint = validFingerprint(values.fingerprint);
+      } catch (error) {
+        if (error instanceof ConsumerInputError) usage(error.message);
+        throw error;
+      }
+      const cursor = values.cursor;
+      if (cursor !== undefined && (!cursor || cursor.length > 2048))
+        usage("--cursor must be a nextCursor value from the previous page.");
+    } else if (secretUid !== undefined) {
       if (secretId !== undefined)
         usage("Use exactly one of --secret-id or --secret-uid.");
       if (!/^sec-[A-Za-z0-9-]+$/.test(secretUid))
@@ -386,10 +442,55 @@ export async function runCli(
       );
       ifMatch = responseVersion(current);
     }
+    if (isConsumer) {
+      let result: unknown;
+      switch (command as ConsumerCommand) {
+        case "list":
+          result = await client.listConsumers(token, {
+            environment,
+            cursor: values.cursor,
+          });
+          break;
+        case "get":
+          result = await client.getConsumer(token, consumerId!);
+          break;
+        case "identities":
+          result = await client.listApiIdentities(
+            token,
+            consumerId!,
+            values.cursor,
+          );
+          break;
+        case "revoke-identity": {
+          let resolved: string;
+          try {
+            resolved = await resolveFingerprint(
+              client,
+              token,
+              consumerId!,
+              fingerprint!,
+            );
+          } catch (error) {
+            if (error instanceof ConsumerInputError) usage(error.message);
+            throw error;
+          }
+          mutationAttempted = true;
+          result = await client.revokeApiIdentity(
+            token,
+            consumerId!,
+            resolved,
+            idempotencyKey!,
+          );
+          break;
+        }
+      }
+      await stdout(`${JSON.stringify({ data: result, idempotencyKey })}\n`);
+      return 0;
+    }
     let data:
       | ControlRevision
       | Awaited<ReturnType<HemligClient["getAdminSecretPayload"]>>;
-    switch (command) {
+    switch (command as Command) {
       case "read":
         data =
           secretUid === undefined
@@ -459,7 +560,7 @@ export async function runCli(
     );
     return 0;
   } catch (error) {
-    const failure = classifyError(error);
+    const failure = classifyError(error, group);
     try {
       await stderr(
         `${JSON.stringify({
@@ -674,7 +775,10 @@ async function readText(
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function classifyError(error: unknown): {
+function classifyError(
+  error: unknown,
+  group: string | undefined,
+): {
   exitCode: number;
   code: string;
   message: string;
@@ -717,7 +821,13 @@ function classifyError(error: unknown): {
       400: [2, "bad_request", "Administrator API rejected the request."],
       401: [3, "unauthorized", "Administrator authentication failed."],
       403: [3, "forbidden", "Administrator authorization failed."],
-      404: [4, "not_found", "Secret or active payload was not found."],
+      404: [
+        4,
+        "not_found",
+        group === "consumer"
+          ? "Consumer or API identity was not found."
+          : "Secret or active payload was not found.",
+      ],
       409: [
         5,
         "conflict",
