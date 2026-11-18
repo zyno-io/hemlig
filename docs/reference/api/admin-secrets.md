@@ -85,6 +85,8 @@ Returns one bounded folder tree page instead of one request per folder.
 
 Returns the current [control revision](data-types.md#control-revision) with metadata and ACL, and never loads the payload. The `ETag` header is the value the next update needs.
 
+The response also carries a read-only `agentManagedConsumerIds` array: the consumer IDs in `acl` that have an AgentGrant. It is derived, never stored, and only this route returns it.
+
 Archived secrets are not addressable by their reusable name. Use [`GET /v1/admin/archived-secrets/{secretUid}`](#get-v1-admin-archived-secrets-secretuid).
 
 ### `GET /v1/admin/secrets/{secretId}/payload`
@@ -163,7 +165,9 @@ Content-Type: application/json
 
 - A supplied `metadata` replaces all metadata, including tags. A supplied `acl` replaces the whole ACL.
 - Success is `200` with the new revision and `ETag`. A stale `If-Match` is `412 precondition_failed`.
-- Changing an agent's ACL row is `409 conflict`; see [ACL](data-types.md#acl).
+- Adding, changing or omitting an agent's ACL row is `409 conflict`; see [ACL](data-types.md#acl).
+- Send `"preserveAgentAcl": true` to keep agent rows you leave out of `acl`. They are appended after your rows in their prior order. Adding or changing an agent row is still `409`. A non-boolean value is `400`. The Pulumi provider sets this for you.
+- The 40-grant limit applies to the submitted `acl`. A change whose previous and new ACLs together name more than 90 distinct consumers is `400`, because each needs an access write in one transaction.
 
 ### `PUT /v1/admin/secrets/{secretId}/payload`
 

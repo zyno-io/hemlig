@@ -59,7 +59,9 @@ Tags and descriptions are returned to administrators only. They never select a d
 Removing a consumer leaves a `REVOKED` [tombstone](../glossary.md#tombstone) in its change snapshot so an offline workload learns it lost access.
 
 ::: warning Agent rows are server-managed
-An [agent](../glossary.md#agent)'s access is managed by its AgentGrant. The server derives the matching read row from the grant and appends it to `acl`, so agent rows are visible there. A full ACL replacement must carry them through unchanged. A request that adds, changes or removes an agent's ACL row returns `409 conflict`. Change the grant instead; see [Administrator consumer and grant routes](admin-consumers.md#put-v1-admin-agent-grants-grantid).
+An [agent](../glossary.md#agent)'s access is managed by its AgentGrant. The server derives the matching read row from the grant and appends it to `acl`, so agent rows are visible there.
+
+A full ACL replacement must carry them through unchanged, or send `preserveAgentAcl: true` to keep omitted agent rows ([`PUT`](admin-secrets.md#put-v1-admin-secrets-secretid)). A request that adds, changes or removes an agent's ACL row returns `409 conflict`. Change the grant instead; see [Administrator consumer and grant routes](admin-consumers.md#put-v1-admin-agent-grants-grantid).
 :::
 
 ## Payload

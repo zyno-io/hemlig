@@ -9,6 +9,7 @@ import type {
   AgentGrantRecord,
   ConsumerRecord,
   EnvironmentRecord,
+  Grant,
   HeadRecord,
   IdentityRecord,
   IssuerRecord,
@@ -859,6 +860,9 @@ export const handler = async (
           environment,
           secretMatch[1] as string,
         );
+        // Resolve before the success audit so a lookup failure is a clean
+        // failure rather than a failed response after a recorded success.
+        const response = await withAgentManaged(app, control);
         await app.audit.write({
           correlationId,
           outcome: "succeeded",
@@ -871,7 +875,7 @@ export const handler = async (
           },
           sourceIp: event.requestContext.http.sourceIp,
         });
-        return json(200, control, { etag: control.controlVersionId });
+        return json(200, response, { etag: control.controlVersionId });
       }
       if (
         event.requestContext.http.method === "GET" &&
@@ -941,6 +945,10 @@ export const handler = async (
               ? undefined
               : parseMetadata(body.metadata),
           acl: body.acl === undefined ? undefined : parseGrants(body.acl),
+          preserveAgentAcl: parseOptionalBoolean(
+            body.preserveAgentAcl,
+            "preserveAgentAcl",
+          ),
           actor,
           idempotencyKey: key,
         });
@@ -1002,6 +1010,48 @@ export const handler = async (
       );
     },
   );
+};
+
+/**
+ * Adds the read-only `agentManagedConsumerIds` field: ACL consumers that have
+ * an AgentGrant. Their rows are server-managed, so admin clients (such as the
+ * Pulumi provider) must preserve them when writing an ACL.
+ */
+const withAgentManaged = async <T extends { readonly acl?: readonly Grant[] }>(
+  app: {
+    readonly repository: {
+      getAgentGrantForConsumer(
+        consumerId: string,
+      ): Promise<AgentGrantRecord | undefined>;
+    };
+  },
+  control: T,
+): Promise<T & { readonly agentManagedConsumerIds: string[] }> => {
+  const consumerIds = [
+    ...new Set((control.acl ?? []).map((grant) => grant.consumerId)),
+  ];
+  const grants = await Promise.all(
+    consumerIds.map((id) => app.repository.getAgentGrantForConsumer(id)),
+  );
+  return {
+    ...control,
+    agentManagedConsumerIds: consumerIds.filter(
+      (_id, index) => grants[index] !== undefined,
+    ),
+  };
+};
+
+const parseOptionalBoolean = (
+  value: unknown,
+  name: string,
+): boolean | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw badRequest(`${name} must be a boolean.`);
+  }
+  return value;
 };
 
 const parseObjectBody = (body: string | undefined): Record<string, unknown> => {

@@ -77,8 +77,10 @@ new k8s.core.v1.Secret("payments-bootstrap", {
 });
 ```
 
-::: warning Do not manage `acl` for an agent-granted secret
-The server adds a read row for each agent to the secret's `acl`. The provider sends the `acl` you declare, without that row. Once the agent enrolls, a Pulumi update that changes `acl` or `metadata` fails with `409 conflict`. This is a known limitation until the provider ignores agent rows. Keep `acl: []` only until the first grant, and change the ACL with the API.
+::: tip Agent rows in `acl` are server-managed
+The server adds a read row for each enrolled agent. Do not declare it. The provider ignores agent rows when comparing and sets `preserveAgentAcl` on updates, so the server keeps them.
+
+This needs a server that returns `agentManagedConsumerIds` (v0.3.3 or later). On an older server, a Pulumi update to an agent-granted secret fails with `409 conflict` unless `acl` lists the agent rows exactly as stored, in the same order.
 :::
 
 ## 4. Preview and apply

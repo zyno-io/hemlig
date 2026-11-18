@@ -1,6 +1,7 @@
 import type { AppConfig } from "../aws/config";
 import { EnvelopeCrypto } from "../crypto/envelope";
 import {
+  badRequest,
   conflict,
   forbidden,
   notFound,
@@ -53,6 +54,11 @@ export interface UpdateSecretInput {
   readonly idempotencyKey: string;
   /** Internal AgentGrant projection maintenance only. */
   readonly allowAgentAcl?: boolean;
+  /**
+   * Admin ACL replacements only: keep prior AgentGrant-managed rows that the
+   * submitted ACL omits. Off by default, so omitting one is a 409.
+   */
+  readonly preserveAgentAcl?: boolean;
 }
 
 export interface ArchiveSecretInput {
@@ -97,6 +103,10 @@ export interface SecretControlSnapshot {
   readonly head: HeadRecord;
   readonly control: ControlRevision;
 }
+
+// DynamoDB allows 100 actions per transaction; an ACL change needs up to 9
+// non-access writes, leaving one action of headroom (see assertAccessWriteBound).
+const maximumAccessWrites = 90;
 
 export class SecretService {
   public constructor(
@@ -194,7 +204,15 @@ export class SecretService {
     const { head, control: currentControl } = snapshot;
     this.assertExpectedVersion(head, input.expectedControlVersionId);
     const metadata = input.metadata ?? currentControl.metadata;
-    const acl = input.acl ?? currentControl.acl;
+    const acl =
+      input.acl !== undefined &&
+      input.allowAgentAcl !== true &&
+      input.preserveAgentAcl === true
+        ? await this.carryForwardAgentRows(input.acl, currentControl.acl)
+        : (input.acl ?? currentControl.acl);
+    if (input.acl !== undefined && input.allowAgentAcl !== true) {
+      this.assertAccessWriteBound(acl, currentControl.acl);
+    }
     await this.assertAclEnvironment(
       acl,
       head.environment,
@@ -694,6 +712,53 @@ export class SecretService {
           : (JSON.parse(page.nextCursor) as Record<string, string>);
     } while (cursor !== undefined);
     return grants;
+  }
+
+  /**
+   * Rejects before any lease is taken if the access projection could not fit
+   * in one DynamoDB transaction. Every consumer in the prior or next ACL may
+   * need an access write, and an ACL change also spends up to 9 other actions
+   * (head and control workflow rows, two retention rows, two notifications,
+   * and the sync counter, record and delete). ACL changes never carry a
+   * payload; the bound of 90 keeps one action of headroom.
+   */
+  private assertAccessWriteBound(
+    next: readonly Grant[],
+    prior: readonly Grant[],
+  ): void {
+    const consumerIds = new Set([
+      ...next.map((grant) => grant.consumerId),
+      ...prior.map((grant) => grant.consumerId),
+    ]);
+    if (consumerIds.size > maximumAccessWrites) {
+      throw badRequest(
+        `This ACL change touches ${consumerIds.size} consumers (previous plus new rows, including agent-managed rows); at most ${maximumAccessWrites} are allowed in one change.`,
+      );
+    }
+  }
+
+  /**
+   * An admin ACL replacement that omits an agent-managed row keeps it: agent
+   * rows are owned by the AgentGrant, so omission means "unchanged". The
+   * submitted order is kept, followed by carried rows in their prior order.
+   * Explicitly adding or changing an agent row is still rejected by
+   * assertAclEnvironment.
+   */
+  private async carryForwardAgentRows(
+    submitted: readonly Grant[],
+    prior: readonly Grant[],
+  ): Promise<readonly Grant[]> {
+    const present = new Set(submitted.map((grant) => grant.consumerId));
+    const omitted = prior.filter((grant) => !present.has(grant.consumerId));
+    const agentGrants = await Promise.all(
+      omitted.map(async (grant) =>
+        this.repository.getAgentGrantForConsumer(grant.consumerId),
+      ),
+    );
+    const carried = omitted.filter(
+      (_grant, index) => agentGrants[index] !== undefined,
+    );
+    return carried.length === 0 ? submitted : [...submitted, ...carried];
   }
 
   private async assertAclEnvironment(

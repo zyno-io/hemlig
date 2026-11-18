@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as pulumi from "@pulumi/pulumi";
+import { HemligError, type Grant } from "@zyno-io/hemlig-client";
 import {
   HemligAgentGrant,
   HemligAgentGrantProvider,
@@ -344,4 +345,217 @@ test("binds agent grant dynamic outputs onto the resource instance", async () =>
     assert.equal(pulumi.Output.isInstance(grant.bootstrapToken), true);
     assert.equal(pulumi.Output.isInstance(grant.bootstrapExpiresAt), true);
   });
+});
+
+function aclControl(acl: Grant[], agentManagedConsumerIds?: string[]) {
+  return {
+    secretUid: "sec-pulumi",
+    secretId: "platform-hemlig-pulumi-sentinel",
+    environment: "staging",
+    controlVersionId: "ctl-current",
+    payloadVersionId: "payload-current",
+    payloadKeyCount: 1,
+    state: "ACTIVE" as const,
+    metadata: { description: "Pulumi provider sentinel" },
+    acl,
+    ...(agentManagedConsumerIds === undefined
+      ? {}
+      : { agentManagedConsumerIds }),
+  };
+}
+
+function aclProvider(
+  server: ReturnType<typeof aclControl>,
+  updates: unknown[],
+): HemligSecretProvider {
+  return new HemligSecretProvider(
+    () => ({
+      createAdminSecret: async () => {
+        throw new Error("create must not be called during update");
+      },
+      getAdminSecret: async () => server,
+      updateAdminSecret: async (_t, _e, _s, _v, body) => {
+        updates.push(body);
+        return { ...server, controlVersionId: "ctl-acl", acl: body.acl ?? [] };
+      },
+      putAdminPayload: async () => ({
+        ...server,
+        controlVersionId: "ctl-payload",
+        payloadVersionId: "payload-next",
+      }),
+    }),
+    () => "token-for-test",
+  );
+}
+
+test("payload update does not touch an enrolled agent's server-managed ACL row", async () => {
+  const updates: unknown[] = [];
+  const provider = aclProvider(
+    aclControl(
+      [
+        { consumerId: "human", permissions: ["read"] },
+        { consumerId: "agent", permissions: ["read"] },
+      ],
+      ["agent"],
+    ),
+    updates,
+  );
+  const declared = [{ consumerId: "human", permissions: ["read" as const] }];
+  const result = await provider.update(
+    "platform-hemlig-pulumi-sentinel",
+    inputs({ acl: declared }),
+    inputs({
+      acl: declared,
+      payload: { SENTINEL: { encoding: "utf8", value: "two" } },
+    }),
+  );
+
+  assert.equal(updates.length, 0);
+  assert.equal(result.outs.payloadVersionId, "payload-next");
+});
+
+test("adding a human consumer sends only the declared rows", async () => {
+  const updates: Array<{ acl?: unknown }> = [];
+  const provider = aclProvider(
+    aclControl(
+      [
+        { consumerId: "human", permissions: ["read"] },
+        { consumerId: "agent", permissions: ["read"] },
+      ],
+      ["agent"],
+    ),
+    updates,
+  );
+  const declared = [
+    { consumerId: "human", permissions: ["read" as const] },
+    { consumerId: "human-two", permissions: ["read" as const] },
+  ];
+  await provider.update(
+    "platform-hemlig-pulumi-sentinel",
+    inputs({ acl: declared.slice(0, 1) }),
+    inputs({ acl: declared }),
+  );
+
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0]?.acl, declared);
+});
+
+test("ACL ordering differences alone do not trigger an update", async () => {
+  const updates: unknown[] = [];
+  const provider = aclProvider(
+    aclControl(
+      [
+        { consumerId: "b", permissions: ["read"] },
+        { consumerId: "a", permissions: ["read"] },
+      ],
+      [],
+    ),
+    updates,
+  );
+  const declared = [
+    { consumerId: "a", permissions: ["read" as const] },
+    { consumerId: "b", permissions: ["read" as const] },
+  ];
+  await provider.update(
+    "platform-hemlig-pulumi-sentinel",
+    inputs({ acl: declared }),
+    inputs({
+      acl: declared,
+      payload: { SENTINEL: { encoding: "utf8", value: "two" } },
+    }),
+  );
+
+  assert.equal(updates.length, 0);
+});
+
+test("create adoption preserves agent rows", async () => {
+  const updates: unknown[] = [];
+  const server = aclControl(
+    [{ consumerId: "agent", permissions: ["read"] }],
+    ["agent"],
+  );
+  const provider = new HemligSecretProvider(
+    () => ({
+      createAdminSecret: async () => {
+        throw new HemligError(409, "conflict");
+      },
+      getAdminSecret: async () => server,
+      updateAdminSecret: async (_t, _e, _s, _v, body) => {
+        updates.push(body);
+        return server;
+      },
+      putAdminPayload: async () => server,
+    }),
+    () => "token-for-test",
+  );
+  await provider.create(inputs({ acl: [] }));
+
+  assert.equal(updates.length, 0);
+});
+
+test("a new server gets preserveAgentAcl: true with the declared ACL only", async () => {
+  const updates: Array<{ acl?: unknown; preserveAgentAcl?: unknown }> = [];
+  const provider = aclProvider(
+    aclControl([{ consumerId: "agent", permissions: ["read"] }], ["agent"]),
+    updates,
+  );
+  const declared: Grant[] = [{ consumerId: "human", permissions: ["read"] }];
+  await provider.update(
+    "platform-hemlig-pulumi-sentinel",
+    inputs({ acl: [] }),
+    inputs({ acl: declared }),
+  );
+
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0]?.acl, declared);
+  assert.equal(updates[0]?.preserveAgentAcl, true);
+});
+
+test("an old server (no agentManagedConsumerIds) gets no flag and an exact comparison", async () => {
+  const updates: Array<Record<string, unknown>> = [];
+  const serverAcl: Grant[] = [
+    { consumerId: "b", permissions: ["read"] },
+    { consumerId: "a", permissions: ["read"] },
+  ];
+  const provider = aclProvider(aclControl(serverAcl), updates);
+  const reordered = [...serverAcl].reverse();
+  await provider.update(
+    "platform-hemlig-pulumi-sentinel",
+    inputs({ acl: reordered }),
+    inputs({ acl: reordered }),
+  );
+
+  assert.equal(updates.length, 1);
+  assert.equal("preserveAgentAcl" in (updates[0] ?? {}), false);
+  assert.deepEqual(updates[0]?.acl, reordered);
+});
+
+test("a declared agent row is compared and sent like any other row", async () => {
+  const updates: Array<{ acl?: unknown }> = [];
+  const agentRow: Grant = { consumerId: "agent", permissions: ["read"] };
+  const provider = aclProvider(
+    aclControl(
+      [agentRow, { consumerId: "human", permissions: ["read"] }],
+      ["agent"],
+    ),
+    updates,
+  );
+  const same = [
+    { consumerId: "human", permissions: ["read" as const] },
+    agentRow,
+  ];
+  await provider.update(
+    "platform-hemlig-pulumi-sentinel",
+    inputs({ acl: same }),
+    inputs({ acl: same }),
+  );
+  assert.equal(updates.length, 0);
+
+  await provider.update(
+    "platform-hemlig-pulumi-sentinel",
+    inputs({ acl: same }),
+    inputs({ acl: [agentRow] }),
+  );
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0]?.acl, [agentRow]);
 });

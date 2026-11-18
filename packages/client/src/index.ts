@@ -26,6 +26,8 @@ export interface ControlRevision {
   readonly state: "PENDING_VALUE" | "ACTIVE" | "REVOKED" | "ARCHIVED";
   readonly metadata: SecretMetadata;
   readonly acl?: readonly Grant[];
+  /** Returned only by the admin GET secret route: ACL consumers whose rows are managed by an AgentGrant. */
+  readonly agentManagedConsumerIds?: readonly string[];
 }
 
 export interface ConsumerSecretResponse {
@@ -606,7 +608,13 @@ export class HemligClient {
     environment: string,
     secretId: string,
     controlVersionId: string,
-    input: Partial<Pick<ControlRevision, "metadata" | "acl">>,
+    input: Partial<Pick<ControlRevision, "metadata" | "acl">> & {
+      /**
+       * Keep AgentGrant-managed ACL rows the submitted `acl` omits. Send only
+       * to servers that report `agentManagedConsumerIds`.
+       */
+      readonly preserveAgentAcl?: boolean;
+    },
     idempotencyKey: string,
   ): Promise<ControlRevision> {
     return this.request(

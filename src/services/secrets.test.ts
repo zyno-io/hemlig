@@ -448,14 +448,178 @@ describe("SecretService.update", () => {
     });
   });
 
-  it("refuses direct replacement or removal of an AgentGrant-derived ACL row", async () => {
+  const aclUpdateService = (
+    prior: readonly { consumerId: string; permissions: ["read"] }[],
+    agentIds: readonly string[],
+  ) => {
+    let prepared: ControlRevision | undefined;
     const repository = {
       requireHead: jest.fn().mockResolvedValue(head),
-      getAgentGrantForConsumer: jest.fn().mockResolvedValue({
-        grantId: "grant-prod-east",
-      }),
+      getConsumer: jest
+        .fn()
+        .mockResolvedValue({ status: "ACTIVE", environment: "prod" }),
+      getAgentGrantForConsumer: jest.fn(async (consumerId: string) =>
+        agentIds.includes(consumerId) ? { grantId: "grant" } : undefined,
+      ),
+      getAccess: jest.fn().mockResolvedValue(access),
+      getIdempotency: jest.fn().mockResolvedValue(undefined),
+      prepareMutation: jest.fn(
+        async (input: { readonly control: ControlRevision }) => {
+          prepared = input.control;
+        },
+      ),
+      completeMutation: jest.fn().mockResolvedValue(undefined),
     };
-    const objects = { getJson: jest.fn().mockResolvedValue(control) };
+    const objects = {
+      getJson: jest.fn().mockResolvedValue({ ...control, acl: prior }),
+      putImmutable: jest.fn().mockResolvedValue({
+        bucket: "revisions",
+        key: "control",
+        versionId: "new-version",
+        checksumSha256: "checksum",
+      }),
+      extendComplianceRetention: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new SecretService(
+      repository as never,
+      objects as never,
+      {} as never,
+      config,
+      {} as never,
+    );
+    return {
+      repository,
+      update: async (
+        acl: readonly { consumerId: string; permissions: ["read"] }[],
+        preserveAgentAcl = true,
+      ) => {
+        await service.update({
+          secretId: "database-credentials",
+          environment: "prod",
+          expectedControlVersionId: "ctl-current",
+          acl,
+          preserveAgentAcl,
+          actor: { type: "human", id: "admin" },
+          idempotencyKey: "acl-update",
+        });
+        return prepared;
+      },
+    };
+  };
+  const row = (consumerId: string) => ({
+    consumerId,
+    permissions: ["read" as const] as ["read"],
+  });
+
+  it("keeps an AgentGrant-derived ACL row that an admin ACL replacement omits", async () => {
+    const { update } = aclUpdateService(
+      [row("human-a"), row("agent-a"), row("agent-b")],
+      ["agent-a", "agent-b"],
+    );
+
+    const next = await update([row("human-b"), row("human-a")]);
+
+    expect(next?.acl).toEqual([
+      row("human-b"),
+      row("human-a"),
+      row("agent-a"),
+      row("agent-b"),
+    ]);
+  });
+
+  it("still refuses an admin write that changes or adds an AgentGrant-derived row", async () => {
+    const changed = aclUpdateService([row("agent-a")], ["agent-a"]);
+    await expect(
+      changed.update([
+        { consumerId: "agent-a", permissions: [] as unknown as ["read"] },
+      ]),
+    ).rejects.toMatchObject({ code: "conflict" });
+
+    const added = aclUpdateService([row("human-a")], ["agent-new"]);
+    await expect(
+      added.update([row("human-a"), row("agent-new")]),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("refuses an omitted AgentGrant-derived row unless preserveAgentAcl is set", async () => {
+    const { update } = aclUpdateService(
+      [row("human-a"), row("agent-a")],
+      ["agent-a"],
+    );
+
+    await expect(update([row("human-a")], false)).rejects.toMatchObject({
+      code: "conflict",
+    });
+  });
+
+  it("rejects an oversized ACL change before taking the mutation lease", async () => {
+    const agents = Array.from({ length: 13 }, (_, i) => `agent-${i}`);
+    const prior = [
+      ...Array.from({ length: 40 }, (_, i) => row(`old-${i}`)),
+      ...agents.map(row),
+    ];
+    const { update, repository } = aclUpdateService(prior, agents);
+
+    await expect(
+      update(Array.from({ length: 40 }, (_, i) => row(`new-${i}`))),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    expect(repository.prepareMutation).not.toHaveBeenCalled();
+    expect(repository.completeMutation).not.toHaveBeenCalled();
+  });
+
+  it("accepts a change at the access-write bound", async () => {
+    const agents = Array.from({ length: 10 }, (_, i) => `agent-${i}`);
+    const prior = [
+      ...Array.from({ length: 40 }, (_, i) => row(`old-${i}`)),
+      ...agents.map(row),
+    ];
+    const { update } = aclUpdateService(prior, agents);
+
+    const next = await update(
+      Array.from({ length: 40 }, (_, i) => row(`new-${i}`)),
+    );
+
+    expect(next?.acl).toHaveLength(50);
+  });
+});
+
+describe("SecretService.revokeConsumerSecretGrant", () => {
+  it("never carries an agent row forward on an internal agent revoke", async () => {
+    let preparedControl: ControlRevision | undefined;
+    const currentControl: ControlRevision = {
+      ...control,
+      acl: [
+        { consumerId: "prod-east", permissions: ["read"] },
+        { consumerId: "agent-a", permissions: ["read"] },
+      ],
+    };
+    const repository = {
+      getConsumer: jest.fn(async () => ({
+        consumerId: "agent-a",
+        environment: "prod",
+        status: "ACTIVE",
+      })),
+      getAgentGrantForConsumer: jest.fn(async () => ({ grantId: "grant" })),
+      requireHead: jest.fn(async () => head),
+      getAccess: jest.fn(async () => access),
+      getIdempotency: jest.fn(async () => undefined),
+      prepareMutation: jest.fn(
+        async (prepared: { readonly control: ControlRevision }) => {
+          preparedControl = prepared.control;
+        },
+      ),
+      completeMutation: jest.fn(async () => undefined),
+    };
+    const objects = {
+      getJson: jest.fn(async () => currentControl),
+      putImmutable: jest.fn(async () => ({
+        bucket: "revisions",
+        key: "control",
+        versionId: "new-version",
+        checksumSha256: "checksum",
+      })),
+      extendComplianceRetention: jest.fn(async () => undefined),
+    };
     const service = new SecretService(
       repository as never,
       objects as never,
@@ -464,20 +628,19 @@ describe("SecretService.update", () => {
       {} as never,
     );
 
-    await expect(
-      service.update({
-        secretId: "database-credentials",
-        environment: "prod",
-        expectedControlVersionId: "ctl-current",
-        acl: [],
-        actor: { type: "human", id: "admin" },
-        idempotencyKey: "remove-agent-projection",
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-  });
-});
+    await service.revokeConsumerSecretGrant({
+      consumerId: "agent-a",
+      secretId: "database-credentials",
+      actor: { type: "human", id: "admin" },
+      idempotencyKey: "internal-agent-revoke",
+      allowAgentAcl: true,
+    });
 
-describe("SecretService.revokeConsumerSecretGrant", () => {
+    expect(preparedControl?.acl).toEqual([
+      { consumerId: "prod-east", permissions: ["read"] },
+    ]);
+  });
+
   it("removes only the target consumer from the source ACL and emits a normal revision", async () => {
     let preparedControl: ControlRevision | undefined;
     const currentControl: ControlRevision = {
