@@ -1,6 +1,9 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
+import { IdentityRejectedError } from "../domain/errors";
 
 jest.mock("../auth/actors", () => ({ consumerActorFromEvent: jest.fn() }));
+jest.mock("../app", () => ({ createApplication: jest.fn() }));
+jest.mock("../aws/config", () => ({ loadConfig: jest.fn(() => ({})) }));
 jest.mock("./shared", () => ({ withErrorResponse: jest.fn() }));
 jest.mock("../services/operations", () => ({ humanOperation: jest.fn() }));
 
@@ -180,5 +183,62 @@ describe("identity rotation handler", () => {
     const response = await handler(event());
     expect(response.statusCode).toBe(201);
     expect(humanOperation).not.toHaveBeenCalled();
+  });
+
+  it("audits a rotation attempted with a revoked certificate", async () => {
+    const { createApplication } = jest.requireMock("../app") as {
+      readonly createApplication: jest.Mock;
+    };
+    const { withErrorResponse: realWrapper } = jest.requireActual(
+      "./shared",
+    ) as { readonly withErrorResponse: typeof withErrorResponse };
+    createApplication.mockReturnValue({
+      audit: { write: auditWrite },
+      repository: { claimIdentityRejectionAudit: jest.fn(async () => true) },
+    });
+    withErrorResponse.mockImplementation(realWrapper);
+    consumerActorFromEvent.mockRejectedValue(
+      new IdentityRejectedError(
+        { type: "consumer", id: "fp", consumerId: "agent-a", environment: "prod" },
+        "The client certificate is not an active consumer API identity.",
+      ),
+    );
+
+    const response = await handler(event());
+
+    expect(response.statusCode).toBe(403);
+    expect(auditWrite).toHaveBeenCalledTimes(1);
+    expect(auditWrite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failed",
+        actor: { type: "consumer", id: "fp", consumerId: "agent-a", environment: "prod" },
+        operation: "agent.identity.rotate",
+        sourceIp: "127.0.0.1",
+        reasonCode: "identity_not_active",
+      }),
+    );
+  });
+
+  it("records attempted then failed for a failure after the actor resolves", async () => {
+    const { createApplication } = jest.requireMock("../app") as {
+      readonly createApplication: jest.Mock;
+    };
+    const { withErrorResponse: realWrapper } = jest.requireActual(
+      "./shared",
+    ) as { readonly withErrorResponse: typeof withErrorResponse };
+    createApplication.mockReturnValue({
+      audit: { write: auditWrite },
+      repository: {},
+    });
+    withErrorResponse.mockImplementation(realWrapper);
+
+    const response = await handler(event({ headers: {} }));
+
+    expect(response.statusCode).toBe(400);
+    expect(
+      (auditWrite.mock.calls as unknown as [{ outcome: string }][]).map(
+        ([entry]) => entry.outcome,
+      ),
+    ).toEqual(["attempted", "failed"]);
   });
 });

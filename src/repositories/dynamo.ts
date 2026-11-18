@@ -657,6 +657,42 @@ export class DynamoRepository {
     }
   }
 
+  /**
+   * Returns true when this caller may record an identity_not_active audit
+   * event for the fingerprint, and false while an earlier one is inside the
+   * window. A revoked certificate can still reach the Lambda, so this bounds
+   * the permanent archive objects one fingerprint can create. The record
+   * expires through the table's TTL attribute (epoch seconds); the expression
+   * also checks it because TTL deletion is lazy.
+   */
+  public async claimIdentityRejectionAudit(
+    fingerprint: string,
+    windowSeconds: number,
+  ): Promise<boolean> {
+    const now = Math.floor(Date.now() / 1000);
+    try {
+      await this.dynamo.send(
+        new PutCommand({
+          TableName: this.config.controlTableName,
+          Item: {
+            pk: auditSuppressPk(fingerprint),
+            sk: "IDENTITY_NOT_ACTIVE",
+            ttl: now + windowSeconds,
+          },
+          ConditionExpression: "attribute_not_exists(pk) OR #ttl < :now",
+          ExpressionAttributeNames: { "#ttl": "ttl" },
+          ExpressionAttributeValues: { ":now": now },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (isConditionalCheckFailure(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   /** Marks an at-least-once MQTT hint terminal only after the broker accepts it. */
   public async markNotificationDelivered(eventId: string): Promise<boolean> {
     try {
@@ -2495,6 +2531,9 @@ export const secretIdentityFromPk = (
 };
 
 const agentGrantPk = (grantId: string): string => `AGENT_GRANT#${grantId}`;
+
+const auditSuppressPk = (fingerprint: string): string =>
+  `AUDIT_SUPPRESS#${fingerprint}`;
 
 const bootstrapPk = (tokenHash: string): string => `BOOTSTRAP#${tokenHash}`;
 

@@ -199,7 +199,7 @@ revocation. A conditional `304` secret read delivers nothing and writes no
 audit events; a failed read is still recorded as `failed`. A decrypted payload or a successful route
 response is never returned until its terminal audit write has succeeded. Routine
 metadata, configuration, change-feed, and audit-archive reads are not recorded.
-TLS or JWT failures rejected before an actor exists are outside this application
+A rejected Hemlig-issued client certificate is recorded as `failed` (`identity_not_active`). Other TLS or JWT failures rejected before an actor exists are outside this application
 event stream and belong in API Gateway access/control-plane logs. The idempotency
 record records terminal-audit status after the write, but the two writes are not
 one atomic cross-service transaction: an interruption between them can require

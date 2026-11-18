@@ -21,7 +21,9 @@ A direct consumer calling an `/v1/agent/...` route is rejected. An agent can nev
 
 An agent's read access also needs a read row on the secret's ACL. The server derives that row from the grant, so administrators never edit it. See [ACL](data-types.md#acl).
 
-**Audit.** After the caller is resolved, every route writes `attempted`, `authorized` and `succeeded`, or `failed` on error. Two exceptions are described under the secret reads and `GET /v1/agent/sync`. TLS failures before an actor exists are outside the audit stream. See [Audit](audit.md).
+**Audit.** After the caller is resolved, every route writes `attempted`, `authorized` and `succeeded`, or `attempted` and `failed` on error. A failure before the audit context exists writes `failed` only. Two exceptions are described under the secret reads and `GET /v1/agent/sync`.
+
+A rejected Hemlig-issued certificate is recorded as `failed` with `identity_not_active`. A missing or unparseable certificate, and TLS failures, are outside the audit stream. See [Audit](audit.md).
 
 ## Consumer routes
 

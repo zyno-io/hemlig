@@ -1,7 +1,7 @@
 import { X509Certificate, createHash } from 'node:crypto';
 import type { APIGatewayProxyEventV2, APIGatewayProxyEventV2WithJWTAuthorizer } from 'aws-lambda';
 import type { AppConfig } from '../aws/config';
-import { forbidden, identityNotActive } from '../domain/errors';
+import { IdentityRejectedError, forbidden, identityNotActive } from '../domain/errors';
 import type { Actor, IdentityRecord } from '../domain/types';
 
 export interface IdentityLookup {
@@ -92,7 +92,11 @@ export const consumerActorFromEvent = async (
         new Date(identity.notBefore).getTime() > now.getTime() ||
         new Date(identity.notAfter).getTime() <= now.getTime()
     ) {
-        throw identityNotActive('The client certificate is not an active consumer API identity.');
+        const known = identity === undefined ? {} : { consumerId: identity.consumerId, environment: identity.environment };
+        throw new IdentityRejectedError(
+            { type: 'consumer', id: fingerprint, ...known },
+            'The client certificate is not an active consumer API identity.',
+        );
     }
     return {
         type: 'consumer',

@@ -210,6 +210,11 @@ describe("consumerActorFromEvent", () => {
     status: "ACTIVE",
     notBefore: "2026-01-01T00:00:00.000Z",
     notAfter: "2027-01-01T00:00:00.000Z",
+    certificatePem: "-----BEGIN CERTIFICATE-----stored-----END CERTIFICATE-----",
+    rotatedTo: "successor-fingerprint",
+    rotatedAt: "2026-03-01T00:00:00.000Z",
+    identityConsumerPk: "CONSUMER#agent-a",
+    identityConsumerSk: "IDENTITY#x",
     ...overrides,
   });
   const lookup = (record?: IdentityRecord) => ({
@@ -237,5 +242,25 @@ describe("consumerActorFromEvent", () => {
     await expect(
       consumerActorFromEvent(request, lookup(record), now),
     ).rejects.toMatchObject({ statusCode: 403, code: "identity_not_active" });
+  });
+
+  it.each([
+    ["a revoked identity", identity({ status: "REVOKED" }), { consumerId: "agent-a", environment: "prod" }],
+    ["an unknown identity", undefined, {}],
+  ])("attaches the attributable actor for %s", async (_name, record, known) => {
+    const error = await consumerActorFromEvent(event(pem), lookup(record), now).catch(
+      (caught: unknown) => caught,
+    );
+    expect((error as { actor: unknown }).actor).toEqual({ type: "consumer", id: fingerprint, ...known });
+  });
+
+  it.each([
+    ["a missing certificate", event()],
+    ["a malformed certificate", event("not a certificate")],
+  ])("attaches no actor for %s", async (_name, request) => {
+    const error = await consumerActorFromEvent(request, lookup(identity()), now).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).not.toHaveProperty("actor");
   });
 });

@@ -58,7 +58,7 @@ export const withErrorResponse = async (
           target: auditContext.target,
           permission: auditContext.permission,
           sourceIp: auditContext.sourceIp,
-          reasonCode: "request_failed",
+          reasonCode: auditContext.reasonCode ?? "request_failed",
         });
       } catch {
         // The original request failure is more useful to the caller than an audit delivery failure.
@@ -68,12 +68,13 @@ export const withErrorResponse = async (
   }
 };
 
-interface RequestAuditContext {
+export interface RequestAuditContext {
   readonly actor: Actor;
   readonly operation: string;
   readonly target?: Readonly<Record<string, string>>;
   readonly permission?: "read";
   readonly sourceIp?: string;
+  readonly reasonCode?: string;
 }
 
 export const idempotencyKey = (
