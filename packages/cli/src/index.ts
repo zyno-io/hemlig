@@ -48,7 +48,8 @@ const help = {
     "--console-url":
       "Console HTTPS origin for login; defaults to HEMLIG_CONSOLE_URL.",
     "--no-browser": "login only: print the URL instead of opening a browser.",
-    "--admin-url": "Administrator origin; defaults to HEMLIG_ADMIN_URL.",
+    "--admin-url":
+      "Administrator origin; defaults to HEMLIG_ADMIN_URL, then the API recorded by hemlig login when the cached login is the token source.",
     "--environment": "Logical environment; defaults to HEMLIG_ENVIRONMENT.",
     "--token-file":
       "OIDC bearer token file; defaults to HEMLIG_ADMIN_TOKEN_FILE, then HEMLIG_ADMIN_TOKEN, then the token cached by hemlig login.",
@@ -93,6 +94,8 @@ export interface CliDependencies {
   readonly configDir?: string;
   /** Clock in epoch milliseconds, for token expiry checks. */
   readonly now?: () => number;
+  /** Fetch used to read the console's /config.json during login; defaults to global fetch. */
+  readonly fetch?: typeof fetch;
   /** Login wait limit; defaults to five minutes. */
   readonly loginTimeoutMs?: number;
 }
@@ -202,6 +205,7 @@ export async function runCli(
         consoleOrigin,
         timeoutMs: dependencies.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
         now,
+        fetch: dependencies.fetch ?? globalThis.fetch,
         open: parsed.values["no-browser"]
           ? undefined
           : (dependencies.openBrowser ?? openInBrowser),
@@ -263,6 +267,9 @@ export async function runCli(
             : new CliError(9, "input_io_error", "Cannot read cached login.");
       }
     }
+    // The cache is the token source here, so an unusable one is reported first
+    // (exit 3), before a missing admin URL can turn it into a usage error.
+    if (cacheError !== undefined) throw cacheError;
     const origin = adminOrigin(
       values["admin-url"] ?? env.HEMLIG_ADMIN_URL ?? cachedLogin?.adminOrigin,
     );
@@ -323,7 +330,6 @@ export async function runCli(
           );
     let cached = false;
     if (tokenText === undefined) {
-      if (cacheError !== undefined) throw cacheError;
       if (cachedLogin !== undefined) {
         if (origin.origin !== cachedLogin.adminOrigin) {
           throw new CliError(
@@ -683,7 +689,9 @@ function classifyError(error: unknown): {
             ? 3
             : error.code === "config_dir_unsafe"
               ? 9
-              : 7,
+              : error.code === "config_fetch_failed"
+                ? 8
+                : 7,
       code: error.code,
       message: error.message,
     };

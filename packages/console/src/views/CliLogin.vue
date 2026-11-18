@@ -59,13 +59,24 @@ const arm = (): void => {
     }, ARM_DELAY_MS);
   }
 };
+const disarm = (): void => {
+  armed.value = false;
+  clearTimeout(armTimer);
+};
+// Re-arm whenever the page regains visibility or focus, and disarm when it
+// loses focus, so a click delivered while another window had focus (or a
+// just-switched-to window) cannot hit Authorize.
 onMounted(() => {
   arm();
   document.addEventListener("visibilitychange", arm);
+  window.addEventListener("focus", arm);
+  window.addEventListener("blur", disarm);
 });
 onBeforeUnmount(() => {
   clearTimeout(armTimer);
   document.removeEventListener("visibilitychange", arm);
+  window.removeEventListener("focus", arm);
+  window.removeEventListener("blur", disarm);
 });
 
 const phase = ref<"idle" | "sending" | "cancelled">("idle");
@@ -80,8 +91,6 @@ const authorize = async (): Promise<void> => {
     if (token === undefined) {
       throw new Error("This console session has no access token to hand over.");
     }
-    // The API this token is for; the CLI binds the cached login to it.
-    const adminUrl = new URL(store.requireConfig().adminApiUrl).origin;
     const form = document.createElement("form");
     form.method = "POST";
     form.action = `http://127.0.0.1:${port.value}/callback`;
@@ -90,7 +99,6 @@ const authorize = async (): Promise<void> => {
     for (const [name, value] of [
       ["access_token", token],
       ["state", state.value!],
-      ["admin_url", adminUrl],
     ] as const) {
       const input = document.createElement("input");
       input.type = "hidden";

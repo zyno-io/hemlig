@@ -29,7 +29,8 @@ interface Post {
   origin?: string | null;
   state?: (state: string) => string;
   token?: string;
-  adminUrl?: string | null;
+  /** Extra form fields a forger might add; the CLI must ignore them. */
+  extra?: Record<string, string>;
   /** Do not follow the 303 to /done. */
   noFollow?: boolean;
 }
@@ -72,7 +73,7 @@ function sendOnce(url: string, post: Post): Promise<Reply> {
     access_token: post.token ?? validToken,
     state,
   };
-  if (post.adminUrl !== null) fields.admin_url = post.adminUrl ?? adminUrl;
+  Object.assign(fields, post.extra);
   const body = new URLSearchParams(fields).toString();
   return new Promise((resolve, reject) => {
     const req = request(
@@ -107,7 +108,12 @@ function sendOnce(url: string, post: Post): Promise<Reply> {
 
 async function login(
   posts: Post[],
-  options: { args?: string[]; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
+  options: {
+    args?: string[];
+    timeoutMs?: number;
+    env?: NodeJS.ProcessEnv;
+    config?: () => Promise<Response>;
+  } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "hemlig-cli-"));
   const configDir = join(dir, "hemlig");
@@ -115,11 +121,18 @@ async function login(
   let stderr = "";
   const results: Reply[] = [];
   const opened: string[] = [];
+  const fetched: string[] = [];
   const exitCode = await runCli(options.args ?? ["login"], {
     env: options.env ?? { HEMLIG_CONSOLE_URL: consoleUrl },
     configDir,
     now: () => NOW,
     loginTimeoutMs: options.timeoutMs ?? 5000,
+    fetch: (async (input: URL | string) => {
+      fetched.push(String(input));
+      return options.config
+        ? options.config()
+        : new Response(JSON.stringify({ deploymentName: "d", adminApiUrl: `${adminUrl}/` }));
+    }) as typeof fetch,
     openBrowser: async (url) => {
       opened.push(url);
       for (const post of posts) results.push(await send(url, post));
@@ -131,7 +144,7 @@ async function login(
       stderr += t;
     },
   });
-  return { exitCode, stdout, stderr, results, opened, configDir, dir };
+  return { exitCode, stdout, stderr, results, opened, fetched, configDir, dir };
 }
 
 test("login relays the token from the console page and caches it privately", async () => {
@@ -201,9 +214,6 @@ for (const [name, bad] of [
   ["a short state", { state: () => "x" }],
   ["a GET", { method: "GET" }],
   ["a wrong path", { path: "/other" }],
-  ["a missing admin_url", { adminUrl: null }],
-  ["a non-HTTPS admin_url", { adminUrl: "http://admin.example.test" }],
-  ["an admin_url with a path", { adminUrl: "https://admin.example.test/x" }],
   ["a malformed token", { token: "not-a-jwt" }],
   ["an expired token", { token: jwt(NOW / 1000 - 1) }],
 ] as [string, Post][]) {
@@ -256,6 +266,7 @@ test("after the 303 the token cannot be replayed and the listener closes after /
     configDir: join(dir, "h"),
     now: () => NOW,
     loginTimeoutMs: 5000,
+    fetch: (async () => new Response(JSON.stringify({ adminApiUrl: adminUrl }))) as typeof fetch,
     openBrowser: async (url) => {
       const port = Number(new URL(url).searchParams.get("port"));
       const first = await sendOnce(url, {});
@@ -270,8 +281,92 @@ test("after the 303 the token cannot be replayed and the listener closes after /
   });
   await rm(dir, { recursive: true, force: true });
   assert.equal(exitCode, 0);
-  assert.equal(replay!.status, 404);
+  assert.equal(replay!.status, 409);
   assert.ok(after instanceof Error, "listener is closed after /done is sent");
+});
+
+test("extra POST fields such as admin_url never choose the API; the console's config.json does", async () => {
+  const r = await login([{ extra: { admin_url: "https://attacker.example" } }]);
+  try {
+    assert.equal(r.exitCode, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).adminUrl, adminUrl);
+    assert.deepEqual(r.fetched, [`${consoleUrl}/config.json`]);
+    const cache = JSON.parse(await readFile(join(r.configDir, "admin-token"), "utf8"));
+    assert.equal(cache.adminOrigin, adminUrl);
+    assert.ok(!JSON.stringify(cache).includes("attacker"));
+  } finally {
+    await rm(r.dir, { recursive: true, force: true });
+  }
+});
+
+for (const [name, config, code] of [
+  ["a failed fetch", async () => { throw new TypeError("network"); }, 8],
+  ["a non-200 response", async () => new Response("no", { status: 500 }), 8],
+  ["an oversized config", async () => new Response("x".repeat(20_000)), 8],
+  ["invalid JSON", async () => new Response("{"), 7],
+  ["a missing adminApiUrl", async () => new Response("{}"), 7],
+  ["an http adminApiUrl for an https console", async () => new Response(JSON.stringify({ adminApiUrl: "http://admin.example.test" })), 7],
+  ["an adminApiUrl with a path", async () => new Response(JSON.stringify({ adminApiUrl: "https://admin.example.test/x" })), 7],
+] as [string, () => Promise<Response>, number][]) {
+  test(`login fails and caches nothing when config.json gives ${name}`, async () => {
+    const r = await login([{}], { config });
+    try {
+      assert.equal(r.exitCode, code, r.stderr);
+      assert.equal(r.stdout, "");
+      await assert.rejects(stat(join(r.configDir, "admin-token")));
+    } finally {
+      await rm(r.dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("the first valid POST wins when an earlier slow POST finishes later", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hemlig-cli-"));
+  const good = jwt(NOW / 1000 + 600);
+  const forged = jwt(NOW / 1000 + 300);
+  let outcome: { slow: number; fast: number } | undefined;
+  const exitCode = await runCli(["login"], {
+    env: { HEMLIG_CONSOLE_URL: consoleUrl },
+    configDir: join(dir, "h"),
+    now: () => NOW,
+    loginTimeoutMs: 5000,
+    fetch: (async () => new Response(JSON.stringify({ adminApiUrl: adminUrl }))) as typeof fetch,
+    openBrowser: async (url) => {
+      const target = new URL(url);
+      const state = target.searchParams.get("state")!;
+      const port = Number(target.searchParams.get("port"));
+      // Slow POST: headers and a partial body now, remainder after the fast POST completes.
+      const first = (token: string) =>
+        new URLSearchParams({ access_token: token, state }).toString();
+      const slowBody = first(forged);
+      const slow = await new Promise<number>((resolve, reject) => {
+        const req = request(
+          { host: "127.0.0.1", port, path: "/callback", method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded", "content-length": Buffer.byteLength(slowBody) } },
+          (res) => { res.resume(); resolve(res.statusCode!); },
+        );
+        req.on("error", reject);
+        req.write(slowBody.slice(0, 10));
+        void (async () => {
+          const fast = await sendOnce(url, { token: good });
+          outcome = { slow: 0, fast: fast.status };
+          req.end(slowBody.slice(10));
+        })();
+      });
+      outcome!.slow = slow;
+      await get(port, "/done").catch(() => undefined);
+    },
+    stdout: () => {},
+    stderr: () => {},
+  });
+  try {
+    assert.equal(exitCode, 0);
+    assert.deepEqual(outcome, { slow: 409, fast: 303 });
+    const cache = JSON.parse(await readFile(join(dir, "h", "admin-token"), "utf8"));
+    assert.equal(cache.token, good);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("an oversized body is rejected", async () => {
@@ -459,6 +554,12 @@ for (const [name, text] of [
   });
 }
 
+test("an unreadable cache is exit 3 even with no admin URL configured", async () => {
+  const r = await readWith({ HEMLIG_ADMIN_URL: undefined as unknown as string }, { cached: "{" });
+  assert.equal(r.exitCode, 3);
+  assert.equal(JSON.parse(r.stderr).error.code, "login_invalid");
+});
+
 test("no token source and no cache is a usage error mentioning login", async () => {
   const r = await readWith({});
   assert.equal(r.exitCode, 2);
@@ -554,6 +655,7 @@ test("a pre-existing world-writable config dir is tightened to 0700; a symlink i
         configDir,
         now: () => NOW,
         loginTimeoutMs: 5000,
+        fetch: (async () => new Response(JSON.stringify({ adminApiUrl: adminUrl }))) as typeof fetch,
         openBrowser: (url) => void send(url, {}),
         stdout: () => {},
         stderr: () => {},

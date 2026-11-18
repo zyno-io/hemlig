@@ -67,17 +67,19 @@ hemlig logout
    origin with a plain hostname (`localhost` and `127.0.0.1` allowed over HTTP).
 2. The console page shows the same code. Authorize only if it matches the code
    in your terminal; the button enables 1.5 s after the page is visible. The
-   console renews its token if it expires within 5 minutes and POSTs it, with
-   its admin API origin (`admin_url`), to `http://127.0.0.1:<port>/callback`
-   as a form body, never in a URL.
+   console renews its token if it expires within 5 minutes and POSTs it to
+   `http://127.0.0.1:<port>/callback` as a form body, never in a URL.
 3. The CLI accepts one `POST /callback` whose `state` matches its random
    256-bit nonce and whose `Origin` is absent, `null` or the console origin
    (browsers send `null` for this cross-origin form POST); anything else is
-   rejected and it keeps waiting. `state` is the authenticator. It answers with
-   a `303` to a "signed in" page so a reload cannot re-send the token, then
-   closes. It gives up after 5 minutes.
+   rejected and it keeps waiting. `state` is the authenticator, and the first
+   valid POST wins (later ones get `409`). It then fetches
+   `<console>/config.json` itself and takes `adminApiUrl` from it as the API
+   for this login, never from the POST; if that fails (exit `8`/`7`) nothing is
+   cached. It answers with a `303` to a "signed in" page so a reload cannot
+   re-send the token, then closes. It gives up after 5 minutes.
 4. The login is cached as JSON (`version`, `token`, `consoleOrigin`,
-   `adminOrigin`) at `$XDG_CONFIG_HOME/hemlig/admin-token`
+   `adminOrigin`: the console's published `adminApiUrl`) at `$XDG_CONFIG_HOME/hemlig/admin-token`
    (`~/.config/hemlig/admin-token`; `%APPDATA%\hemlig\admin-token` on Windows).
    The directory is forced to `0700` (a symlink or another user's directory is
    refused) and the file is `0600`. stdout receives

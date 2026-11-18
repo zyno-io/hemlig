@@ -219,12 +219,69 @@ export function openInBrowser(
   child.unref();
 }
 
+const MAX_CONFIG_BYTES = 16 * 1024;
+const CONFIG_TIMEOUT_MS = 10_000;
+
+/**
+ * Reads the admin API origin from the console's published runtime config
+ * (`<console>/config.json`, field `adminApiUrl`) over the console's own HTTPS
+ * origin. It is never taken from the POST: whoever can reach the loopback port
+ * must not be able to choose where later commands send the token.
+ */
+export async function fetchAdminOrigin(
+  consoleOrigin: URL,
+  fetchImpl: typeof fetch,
+): Promise<string> {
+  let text: string;
+  try {
+    const response = await fetchImpl(new URL("/config.json", consoleOrigin), {
+      redirect: "error",
+      signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS),
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) throw new Error(`status ${response.status}`);
+    const chunks: Buffer[] = [];
+    let length = 0;
+    for await (const chunk of response.body ?? []) {
+      length += chunk.byteLength;
+      if (length > MAX_CONFIG_BYTES) throw new Error("too large");
+      chunks.push(Buffer.from(chunk));
+    }
+    text = Buffer.concat(chunks).toString("utf8");
+  } catch {
+    throw new LoginError(
+      "config_fetch_failed",
+      "Could not read the console's /config.json; no login was saved.",
+    );
+  }
+  let adminApiUrl: unknown;
+  try {
+    adminApiUrl = (JSON.parse(text) as { adminApiUrl?: unknown }).adminApiUrl;
+  } catch {
+    adminApiUrl = undefined;
+  }
+  const admin =
+    typeof adminApiUrl === "string" ? parseHttpsOrigin(adminApiUrl) : undefined;
+  // HTTP is for local development only: the console itself must be on HTTP too.
+  if (
+    admin === undefined ||
+    (admin.protocol === "http:" && consoleOrigin.protocol !== "http:")
+  ) {
+    throw new LoginError(
+      "config_invalid",
+      "The console's /config.json has no valid adminApiUrl; no login was saved.",
+    );
+  }
+  return admin.origin;
+}
+
 export interface LoginOptions {
   /** Exact console origin, e.g. https://console.example.com. */
   readonly consoleOrigin: URL;
   readonly timeoutMs: number;
   readonly now: () => number;
   readonly open: ((url: string) => void | Promise<void>) | undefined;
+  readonly fetch: typeof fetch;
   readonly announce: (url: string, code: string) => void | Promise<void>;
   /** How long to keep serving /done after the POST before closing anyway. */
   readonly doneGraceMs?: number;
@@ -285,18 +342,20 @@ export async function loginViaConsole(
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    // Claimed synchronously by the first valid POST; later ones are refused.
+    let claimed = false;
     let accepted: LoginResult | undefined;
     let timer: NodeJS.Timeout | undefined;
     const server = createServer(async (request, response) => {
       try {
         const path = (request.url ?? "").split("?")[0];
-        if (accepted !== undefined) {
+        if (claimed) {
           // Token already received: serve only the post-redirect page, then close.
-          if (request.method === "GET" && path === "/done") {
+          if (accepted !== undefined && request.method === "GET" && path === "/done") {
             response.once("finish", () => finish(() => resolve(accepted!), false));
             return reply(response, 200, DONE_PAGE);
           }
-          return reply(response, 404, "Not found");
+          return reply(response, request.method === "POST" ? 409 : 404, "Not found");
         }
         if (request.method !== "POST" || path !== "/callback") {
           return reply(response, 404, "Not found");
@@ -331,14 +390,22 @@ export async function loginViaConsole(
         if (exp === undefined || exp * 1000 <= options.now()) {
           return reply(response, 400, "Token is expired or has no expiry");
         }
-        const admin = parseHttpsOrigin(form.get("admin_url") ?? "");
-        if (admin === undefined) {
-          return reply(response, 400, "Invalid admin_url");
+        // The first valid POST wins. A slower earlier POST re-checks here, after
+        // its body was read, and no await separates this check from the claim.
+        if (claimed) return reply(response, 409, "Already completed");
+        claimed = true;
+        let adminOrigin: string;
+        try {
+          adminOrigin = await fetchAdminOrigin(options.consoleOrigin, options.fetch);
+        } catch (error) {
+          reply(response, 502, "Could not read the console configuration");
+          return finish(() => reject(error));
         }
+        if (settled) return reply(response, 503, "Login timed out");
         accepted = {
           token,
           expiresAt: new Date(exp * 1000),
-          adminOrigin: admin.origin,
+          adminOrigin,
         };
         // 303 to a GET page so reloading the tab cannot re-send the token. The
         // listener stays up for that GET, with a grace timer in case the browser

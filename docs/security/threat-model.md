@@ -17,9 +17,12 @@ the handler returns before JWT processing or application audit emission.
 The console CSP allows `form-action http://127.0.0.1:*` solely so its `/cli-login`
 page can hand the in-memory access token to `hemlig login` by top-level form POST
 to a loopback listener. The CLI authenticates the POST by a random 256-bit per-login `state`
-(constant-time compare) and refuses any `Origin` other than the console's, `null`
-or absent, since browsers send `null` for this form POST. The token never appears
-in a URL. It carries full
+(constant-time compare), refuses any `Origin` other than the console's, `null`
+or absent (browsers send `null` for this form POST), and accepts only the first
+valid POST. The token never appears in a URL. The API a cached login is bound to
+is read by the CLI from the console's own HTTPS `/config.json`, not from the
+POST, so a party that learns the port and state can at worst submit a token, not
+redirect later commands to another host. It carries full
 admin access until it expires, so the page asks for explicit confirmation, and
 the CLI caches it in a `0600` file that `hemlig logout` deletes.
 

@@ -73,6 +73,23 @@ describe("CliLogin", () => {
     );
   });
 
+  it("disarms on window blur and re-arms 1.5 s after focus", async () => {
+    const { wrapper } = await mountAt(`port=40000&state=${goodState}`);
+    const button = wrapper.findAll("button").find((b) => b.text() === "Authorize")!;
+    await arm();
+    expect(button.attributes("disabled")).toBeUndefined();
+    window.dispatchEvent(new Event("blur"));
+    await flushPromises();
+    expect(button.attributes("disabled")).toBeDefined();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(button.attributes("disabled")).toBeDefined();
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(1400);
+    expect(button.attributes("disabled")).toBeDefined();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(button.attributes("disabled")).toBeUndefined();
+  });
+
   it("derives the same confirmation code as the CLI for a fixed state", async () => {
     // Vector shared with packages/cli/src/login.test.ts.
     expect(await confirmationCode("A".repeat(43))).toBe("1W07-71DP");
@@ -110,7 +127,6 @@ describe("CliLogin", () => {
     expect(fields).toEqual({
       access_token: "hdr.body.sig",
       state: goodState,
-      admin_url: "https://admin.example.test",
     });
   });
 
