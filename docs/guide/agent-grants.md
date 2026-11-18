@@ -45,6 +45,7 @@ const stripeKey = hemlig.secret("stripe-key", {
   secretId: "payments/stripe/api-key",
   environment: "prod",
   metadata: { description: "Stripe API key" },
+  acl: [],
   payload: pulumi.secret({ "api-key": { encoding: "utf8", value: "changeme" } }),
 });
 

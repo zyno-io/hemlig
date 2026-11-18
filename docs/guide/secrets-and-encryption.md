@@ -62,7 +62,7 @@ One customer-managed key (the application CMK) protects everything. Hemlig separ
 | Purpose | Context | Who may decrypt |
 | --- | --- | --- |
 | Payload | `service=hemlig`, `purpose=secret-payload`, environment, secret UID, payload version | Consumer and administrator roles |
-| Issuing root | `service=hemlig`, `purpose=issuer-ca` | Administrator role only |
+| Issuing root | `service=hemlig`, `purpose=issuer-ca` | Administrator, bootstrap and identity-rotation roles |
 
 The same values are bound into the GCM additional data. A ciphertext copied to another secret or version fails to decrypt. The per-role IAM conditions are in [AWS resources](../reference/aws-resources.md).
 

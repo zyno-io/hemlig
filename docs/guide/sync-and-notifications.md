@@ -33,7 +33,7 @@ Route contracts are in [the delivery API](../reference/api/delivery.md).
 3. Apply everything, then save the checkpoint.
 4. Next time, send `?syncCursor=` to receive only changes since.
 
-The checkpoint is bound to the consumer, environment, grant scope and epoch. If any of them change, or it expires, the next call returns a fresh snapshot.
+The checkpoint is bound to the consumer, environment, grant scope and epoch. If any of them change, or it expires, the call returns `410 sync_reset_required`. A cursor that belongs to another consumer returns `400`. After either, discard the cursor and call again with no parameters for a fresh snapshot.
 
 The index is current state plus short-lived tombstones, not history. A secret that is archived or loses read access appears as a revoked entry so the controller can remove its Kubernetes Secret. Cursor and checkpoint lifetimes are in [Limits](../reference/limits.md#pagination-and-sync).
 

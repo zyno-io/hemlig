@@ -14,13 +14,13 @@ For the components and boundaries, see [Architecture](../guide/architecture.md).
 
 | Threat | Control | Where enforced (file) | Residual risk |
 | --- | --- | --- | --- |
-| Stolen or forged administrator token | API Gateway checks the issuer and audience. The handler re-checks audience and, when a console is configured, the scope and app role. | `cdk/stack.ts`, `src/auth/actors.ts` | An administrator whose token is valid and in scope has full administrator rights. Protect the identity provider. |
+| Stolen or forged administrator token | API Gateway checks the issuer and audience. The handler re-checks audience and, when `oidcAdminScope` or `oidcAdminRole` is set, the scope and app role. | `cdk/stack.ts`, `src/auth/actors.ts` | An administrator whose token is valid and in scope has full administrator rights. Protect the identity provider. |
 | Token for another application accepted as an administrator token | Exact audience match, with the `client_id` fallback only when `aud` is absent. | `src/auth/actors.ts` | Depends on a correct audience in the deployment config. |
 | Consumer impersonates another consumer or environment | The consumer ID and environment come from the stored identity record. The caller supplies neither. | `src/auth/actors.ts`, `src/handlers/consumer.ts` | None known. |
 | Stolen client certificate and key | Revocation is a strongly consistent DynamoDB status change, effective on the next request. The IoT certificate is revoked too. | `src/repositories/dynamo.ts`, `src/handlers/admin.ts`, `src/services/agent-notifications.ts` | The thief can read until an administrator revokes. Certificates last 365 days. |
 | Compromised agent reads secrets outside its grant | Agents are forced through exact-UID AgentGrant checks, even on generic routes. | `src/handlers/consumer.ts`, `src/services/agent-grants.ts` | The agent can read everything in its own grant. |
 | Replay of a bootstrap token | Stored only as a hash, valid 30 minutes, one use. The same CSR may retry. | `src/services/agent-grants.ts`, `src/handlers/bootstrap.ts` | A leaked token can be used within its window. |
-| Rogue certificate issuance | Only a signed CSR is accepted, never a CA certificate. The root key is encrypted and decryptable only by the administrator role. | `src/services/issuer.ts`, `cdk/stack.ts` | A compromised administrator Lambda role can issue certificates. The root is online. |
+| Rogue certificate issuance | Only a signed CSR is accepted, never a CA certificate. The root key is encrypted and decryptable only by the administrator, bootstrap and identity-rotation roles. | `src/services/issuer.ts`, `cdk/stack.ts` | A compromise of the administrator, bootstrap or identity-rotation Lambda role could mint certificates. The bootstrap route is unauthenticated except for a one-use token. Rotation is reachable by any active mTLS client. The root is online. |
 | Truststore change locks out or admits wrong certificates | A leaf is activated only after API Gateway confirms the pinned bundle. A rejected bundle is rolled back. | `src/services/consumers.ts` | Issuing-root rotation is not supported. |
 
 ## Secrets and keys

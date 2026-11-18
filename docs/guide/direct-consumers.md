@@ -176,9 +176,9 @@ Revocation takes effect on the next request. Enrollment and revocation mechanics
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | TLS handshake error | Certificate not yet in the truststore, or the wrong key and certificate pair | Confirm enrollment returned `ACTIVE`; check `client.crt` matches `client.key` |
-| `403 identity_not_active` | Certificate revoked or expired | Issue a new certificate |
+| `403 identity_not_active` | Certificate revoked or unknown to Hemlig (an expired or untrusted one fails the TLS handshake) | Issue a new certificate |
 | `403 forbidden` | Consumer is not on the secret's ACL, or the environment differs | Add the ACL entry; see step 4 |
-| `404 not_found` | Secret is not `ACTIVE` or the ID is wrong | Write a payload; check the ID |
+| `403 forbidden` | The secret ID is wrong, or the secret is not `ACTIVE` (same status as a missing ACL entry) | Check the ID; write a payload |
 
 All codes are in [Errors](../reference/api/errors.md). For more, see [Troubleshooting](../operations/troubleshooting.md).
 

@@ -152,7 +152,7 @@ The provider has no read operation. Use the console, CLI or curl.
 
 ## 4. Share the secret with a consumer
 
-Replace the ACL to let a [direct consumer](../reference/glossary.md#direct-consumer) read the secret. A supplied `acl` replaces the whole list. An [agent](../reference/glossary.md#agent) cannot be added here; use an [AgentGrant](agent-grants.md).
+Replace the ACL to let a [direct consumer](../reference/glossary.md#direct-consumer) read the secret. A supplied `acl` replaces the whole list. Rows for [agents](../reference/glossary.md#agent) are server-managed: they appear in `acl`, and your replacement must carry them through unchanged or the request returns `409`. To give an agent access, use an [AgentGrant](agent-grants.md).
 
 ::: code-group
 

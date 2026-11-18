@@ -127,8 +127,8 @@ Obtain an access token with your provider's normal tooling, then check it in two
 
 | Status | Meaning | Fix |
 | --- | --- | --- |
-| `401` | API Gateway rejected the token before Lambda | Audience, issuer, signature, expiry or scope. Get a new token |
-| `403` | Gateway accepted it; the Lambda refused it | Gateway and Lambda disagree on issuer, audience, scope or role. Fix the config; a new token will not help |
+| `401` | API Gateway rejected the token before Lambda | Missing or invalid token, audience, issuer, signature or expiry. Get a new token |
+| `403` | Insufficient scope (API Gateway), or the Lambda refused the token | Request the required scope. If the scope is present, the gateway and Lambda disagree on issuer, audience, scope or role: fix the config |
 
 ## Next steps
 

@@ -181,8 +181,8 @@ Expected output on a fresh deployment:
 
 | Status | Meaning |
 | --- | --- |
-| `401` | API Gateway rejected the token: audience, issuer, signature, expiry or scope |
-| `403` | The gateway accepted the token but the Lambda refused it: configuration drift |
+| `401` | API Gateway rejected the token: missing, invalid, expired, or wrong audience or issuer |
+| `403` | A required scope is missing (API Gateway), or the Lambda refused the token: configuration drift |
 
 See [Troubleshooting](../operations/troubleshooting.md#administrator-api).
 

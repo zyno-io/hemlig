@@ -14,8 +14,8 @@ For a Kubernetes status `reason`, go straight to [Status reasons](../reference/c
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `401` before any Hemlig error body | API Gateway rejected the token: wrong audience, bad signature, expired, or missing scope | Get a fresh token and check it with [Verify your token](../guide/identity-provider.md#verify-your-token) |
-| `403` with a Hemlig error body | The gateway accepted the token and the handler refused it. The gateway and the Lambda disagree about issuer, audience or scope | Fix the deployment configuration. A new token will not help. See [Identity provider](../guide/identity-provider.md) |
+| `401` before any Hemlig error body | API Gateway rejected the token: missing, wrong audience, bad signature or expired | Get a fresh token and check it with [Verify your token](../guide/identity-provider.md#verify-your-token) |
+| `403` | Insufficient scope (API Gateway, no Hemlig body), or the handler refused an accepted token (Hemlig error body: the gateway and the Lambda disagree about issuer, audience, scope or role) | Request the required scope, or fix the deployment configuration. A new token without the scope will not help. See [Identity provider](../guide/identity-provider.md) |
 | `404` listing or writing in an environment | The environment does not exist. A new deployment has none | Create it with `POST /v1/admin/environments` |
 | `409` creating an AgentGrant | The consumer ID is already enrolled | Use a new consumer ID |
 | Creating an AgentGrant fails for a secret ID | Each secret in the grant must already exist | Create the secrets first, or add `dependsOn` in Pulumi |
@@ -33,8 +33,8 @@ Enrollment is how a client gets its first [client certificate](../reference/glos
 | `409` "pending consumer enrollment does not match this certificate request" | A retry used a different CSR than the first attempt | Retry with the original CSR, or wait for the operation lease to end ([Limits and timings](../reference/limits.md#identity)) |
 | `409` "issuing root is not available in the truststore" | An enrollment operation is stuck before the truststore update | Retry. The recovery worker may resume it after the operation lease ends ([Limits and timings](../reference/limits.md#identity)) |
 | First enrollment takes longer than later ones | The issuing root is created on first use | Create it ahead of time with `POST /v1/admin/issuer` |
-| `409 identity_limit_reached` | Three active certificates already exist for the consumer | [Revoke old certificates](identity-rotation.md#revoke-the-old-certificate) |
-| mTLS `403` with no Hemlig error body | The client certificate is expired, revoked or not trusted by the gateway | [Identity rotation](identity-rotation.md#if-the-certificate-already-expired) |
+| `409 identity_limit_reached` | Self-rotation refused: 3 or more certificates are active | [Revoke old certificates](identity-rotation.md#revoke-the-old-certificate) |
+| TLS handshake failure, no HTTP response | The client certificate is expired or not trusted by the gateway | [Identity rotation](identity-rotation.md#if-the-certificate-already-expired) |
 
 ## Controller
 

@@ -20,7 +20,8 @@ This page describes behaviour in v0.3.2. Terms: [audit event](../reference/gloss
 | Conditional secret read that returns `304` | No | None |
 | Secret read that fails before authorization | Partly | `failed` only |
 | Failure after an audited request began | Yes, best effort | `failed` |
-| Identity enrollment, rotation and bootstrap | Yes | Same three, plus `failed` on error |
+| Identity enrollment and rotation | Yes | Same three, plus `failed` on error |
+| Bootstrap redemption | Only after the token is redeemed | `attempted`, `authorized`, `succeeded`. A rejected redemption writes none |
 | Recovery and retention worker actions | Yes | Per action |
 | Audit-archive reads (`GET /v1/admin/audit`) | No | None |
 | `OPTIONS` preflight | No | None |
@@ -35,16 +36,19 @@ Reading the audit archive is not audited. Querying it creates no events, and thi
 
 ## Order of events
 
-Events are written in order, and the last one comes before the response.
+Events are written in order, and the last one comes before the response. The order of the first two depends on the route family.
 
-1. `attempted` after the handler identifies the actor.
-2. `authorized` after the access check passes.
-3. The operation runs.
-4. `succeeded`, stored before the response is returned.
+| Route family | Sequence | A failure writes |
+| --- | --- | --- |
+| Administrator routes | `attempted`, `authorized`, operation, `succeeded` | `failed` after the events already written |
+| Non-read consumer and agent routes, identity rotation | `attempted` first | `attempted`, `failed` |
+| Agent config, control, write and sync routes | `attempted`, operation, then `authorized`, `succeeded` | `attempted`, `failed` |
+| `GET /v1/changes` | `attempted`, `authorized` (before the capability check), operation, `succeeded` | `attempted`, `authorized`, `failed` |
+| Secret reads | Nothing until the read is known to deliver a value, then `attempted`, `authorized`, `succeeded` | `failed` only |
 
 For a secret read, the value is decrypted in memory and returned only after `succeeded` is stored. If the write fails, the caller gets an error and no plaintext.
 
-A request that fails before step 2 writes only `failed`, with the reason code `request_failed`. If that write also fails, the original error is still what the caller sees.
+Only a secret read fails with `failed` alone, with the reason code `request_failed`. If the `failed` write also fails, the original error is still what the caller sees.
 
 ## What an event contains
 

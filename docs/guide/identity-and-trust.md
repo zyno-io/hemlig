@@ -21,7 +21,7 @@ This page owns the mechanics of enrollment, the truststore, rotation and revocat
 
 Sizes and lifetimes are in [Limits](../reference/limits.md#identity).
 
-The root's private key is encrypted under the application key (CMK) with the encryption context `purpose=issuer-ca`. Only the administrator role can decrypt it. Consumer roles never can. See [Secrets and encryption](secrets-and-encryption.md#kms-contexts).
+The root's private key is encrypted under the application key (CMK) with the encryption context `purpose=issuer-ca`. Three Lambda roles can decrypt it: administrator, bootstrap and identity rotation. Consumer read roles never can. See [Secrets and encryption](secrets-and-encryption.md#kms-contexts).
 
 Hemlig accepts a CSR, never a private key or a CA certificate. The issued leaf carries the identity `spiffe://hemlig/consumer/` followed by the consumer ID.
 
@@ -63,7 +63,7 @@ An agent with an active certificate can replace it without an administrator. It 
 
 The predecessor stays ACTIVE. This is deliberate: it is the overlap during the switch and the rollback if the successor fails. It stays valid until it expires or an administrator revokes it.
 
-An agent may hold up to 3 active certificates. At the cap, rotation fails with `identity_limit_reached` until one is revoked.
+Self-rotation is refused with `identity_limit_reached` while 3 or more certificates are active, until one is revoked. Administrators can issue more.
 
 The procedure, controller settings and recovery steps are in [Identity rotation](../operations/identity-rotation.md). The route contract is in [the delivery API](../reference/api/delivery.md#post-v1-agent-identities-rotate).
 

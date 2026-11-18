@@ -144,7 +144,7 @@ How these protect your data is explained in [Safety](../operations/safety.md).
 | --- | --- | --- | --- |
 | `RemoteReady` | True | The source was written to Hemlig | None |
 | `ConsumerNotReady` | False | The referenced consumer is not ready | Fix the consumer first |
-| `RemoteSecretNotFound` | False | The remote secret does not exist or is not in the grant | An administrator must create it and add it to the AgentGrant |
+| `RemoteSecretNotFound` | False | The control fetch returned `404`: the remote secret does not exist or is not visible to the grant | An administrator must create it and add it to the AgentGrant. A missing write grant shows `ReconcileFailed` (`Hemlig returned 403.`) instead |
 | `SourceIsImportManaged` | False | The source Secret is an import target | Export a Secret your application owns |
 
 ### HemligConsumer, condition `IdentityRotation` <Badge type="tip" text="v0.3.0+" />

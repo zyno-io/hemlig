@@ -232,13 +232,13 @@ Issues an overlapping replacement client certificate for the calling agent. Serv
 
 - The new certificate is signed by the same issuing root, so no truststore change is needed. It is also registered with AWS IoT.
 - The caller's certificate stays valid until it expires or an administrator revokes it.
-- A consumer may hold at most 3 active certificates ([limits](../limits.md#identity)).
+- Self-rotation is refused while 3 or more certificates are active ([limits](../limits.md#identity)). Administrators are not capped.
 
 | Error | Meaning |
 | --- | --- |
 | `400 invalid_csr` | The CSR is malformed, too weak, too large or reuses the caller's key |
 | `409 identity_already_rotated` | This certificate already has an active successor |
-| `409 identity_limit_reached` | Rotating would exceed 3 active certificates |
+| `409 identity_limit_reached` | 3 or more certificates are already active |
 | `409 identity_rotation_conflict` | Another rotation for the consumer committed first. Retry with the same CSR and key. |
 | `409 rotation_replay_inactive` | A replay names a certificate that is no longer active. Submit a new rotation. |
 

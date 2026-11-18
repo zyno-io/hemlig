@@ -45,7 +45,7 @@ const stripeKey = config.requireSecret("stripeApiKey");
 
 const hemlig = new Provider("hemlig", { adminUrl: "https://admin.example.com" });
 
-// The secret. Agents are never listed in `acl`; their access comes from the grant.
+// The secret. Agent rows in `acl` are added by the server from the grant.
 const apiKey = hemlig.secret("stripe-api-key", {
   secretId: "payments/stripe/api-key",
   environment: "prod",
@@ -77,6 +77,10 @@ new k8s.core.v1.Secret("payments-bootstrap", {
 });
 ```
 
+::: warning Do not manage `acl` for an agent-granted secret
+The server adds a read row for each agent to the secret's `acl`. The provider sends the `acl` you declare, without that row. Once the agent enrolls, a Pulumi update that changes `acl` or `metadata` fails with `409 conflict`. This is a known limitation until the provider ignores agent rows. Keep `acl: []` only until the first grant, and change the ACL with the API.
+:::
+
 ## 4. Preview and apply
 
 ```sh
@@ -84,7 +88,7 @@ pulumi preview
 pulumi up
 ```
 
-Expected output: three resources to create (the secret, the grant and the Kubernetes Secret), in that order.
+Expected output: a preview that creates the secret, the grant and the Kubernetes Secret, in that order.
 
 ## Verify
 

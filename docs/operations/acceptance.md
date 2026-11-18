@@ -87,7 +87,7 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 | `aud` | Equals `oidcAudience` (on Entra, the bare client ID) | You requested an ID token or the wrong resource. Ask for a resource-scoped access token |
 | `iss` | Equals `oidcIssuer` exactly | A trailing slash or `/v2.0` suffix differs. The handler compares issuers exactly |
 | `scp` or `scope` | Contains `oidcAdminScope` | The scope was not requested or not granted |
-| Status | `200` | `401`: the gateway rejected the token (audience, signature, expiry, scope). `403`: gateway and Lambda disagree on issuer, audience, scope or role. Re-authenticating will not fix a `403` |
+| Status | `200` | `401`: the gateway rejected the token (missing, invalid, audience, signature, expiry). `403`: insufficient scope at the gateway, or gateway and Lambda disagree on issuer, audience, scope or role. Re-authenticating will not fix a configuration `403` |
 
 ## Gate 3: the console loads and reads
 

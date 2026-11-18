@@ -97,7 +97,7 @@ Follow this path end to end in [Tutorial: your first secret in Kubernetes](first
 - It has no delete route. Secrets are archived, not deleted.
 - It does not manage your identity provider, users or administrator groups.
 - It does not rotate the issuing root certificate.
-- Its console cannot create AgentGrants or bootstrap tokens. Use the API, CLI or Pulumi provider.
+- Its console and CLI cannot create AgentGrants or bootstrap tokens. Use the API or the Pulumi provider.
 - Local emulation proves nothing about IAM, API Gateway mTLS or Object Lock. See the [acceptance runbook](../operations/acceptance.md).
 
 ::: warning Pre-1.0

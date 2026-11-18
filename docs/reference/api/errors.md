@@ -50,9 +50,9 @@ API Gateway can reject a request before Hemlig runs, so the body is not this env
 
 | Status | Cause |
 | --- | --- |
-| 401 | Administrator API: the JWT is missing, expired, or has the wrong issuer or audience. Get a fresh token. |
-| 403 | Administrator API: a required scope is missing |
+| 401 | Administrator API: the JWT is missing, invalid, expired, or has the wrong issuer or audience. Get a fresh token. |
+| 403 | Administrator API: the token is valid but lacks a required scope (API Gateway). The Lambda also returns `403` for a failed role or configuration check |
 
-A TLS client certificate that API Gateway rejects fails the handshake, so no HTTP response arrives. A `403` that does use the envelope means Hemlig itself rejected an already-accepted request. See [Identity provider](../../guide/identity-provider.md) for token requirements.
+An untrusted or expired client certificate fails the TLS handshake at API Gateway, so no HTTP response arrives. A revoked or unknown fingerprint gets `403 identity_not_active` with a Hemlig error body from the Lambda. A `403` that uses the envelope means Hemlig itself rejected an already-accepted request. See [Identity provider](../../guide/identity-provider.md) for token requirements.
 
 For CLI exit codes see [CLI](../../guide/cli.md#exit-codes).

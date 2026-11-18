@@ -83,7 +83,7 @@ Four custom resources drive this: [`HemligProvider`](../reference/glossary.md#he
 
 ## Staying up to date
 
-Hemlig sends a [change hint](../reference/glossary.md#change-hint) over AWS IoT when a secret changes. The hint carries no data. It only tells the controller to sync now.
+Hemlig sends a [change hint](../reference/glossary.md#change-hint) over AWS IoT when a secret changes. The hint carries IDs but no secret values. It only tells the controller to sync now.
 
 The controller still verifies everything over mTLS and resyncs every 10 minutes, so a lost or forged hint cannot change access or inject data. Details are in [Sync and change hints](sync-and-notifications.md).
 

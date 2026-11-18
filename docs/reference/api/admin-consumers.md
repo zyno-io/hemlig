@@ -153,7 +153,7 @@ Creates a `PENDING` grant for a new consumer ID. No `Idempotency-Key` is used.
 | `consumerId` | Yes | Must be unused |
 | `environment` | Yes | Must exist |
 | `capabilities` | Yes | `read` and/or `write`, no duplicates |
-| `secretGrants` | Yes | 1 to 1,000 unique exact secret IDs, each with `permissions` that are a subset of `capabilities` |
+| `secretGrants` | Yes | 1 to 1,000 unique exact secret IDs on create (`PUT` also accepts an empty list), each with `permissions` that are a subset of `capabilities` |
 | `displayName` | No | Label |
 
 Every `secretId` must already exist as an active secret in the environment. Hemlig resolves each one to its immutable [secret UID](../glossary.md#secret-uid) and stores it beside the record. Create the secrets first.
@@ -194,5 +194,5 @@ Content-Type: application/json
 - The consumer ID, environment and scope come only from the AgentGrant, never from the request.
 - Success is `201`: the enrollment result (`consumerId`, `environment`, `rootFingerprint`, `apiFingerprint`, `apiCertificatePem`, `status`) plus `grant` with its `grantId`, `capabilities` and `secretGrants`.
 - The certificate is registered with AWS IoT, and the grant becomes `ACTIVE`.
-- A retry with the same CSR after a lost response returns the same result. A different CSR returns `403 forbidden`.
+- A retry with the same CSR after a lost response returns the same result. A different CSR returns `403 forbidden`, except for an `ACTIVE` grant, where it returns `409 conflict`.
 - An invalid, expired or consumed token returns `403 forbidden`. A malformed `Authorization` header returns `400 bad_request`.

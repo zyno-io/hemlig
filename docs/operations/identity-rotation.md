@@ -54,7 +54,7 @@ Rotation does **not** revoke the old certificate. It remains `ACTIVE` until it e
 - **Overlap.** Anything still using the old pair keeps working during the swap.
 - **Rollback.** If the new certificate misbehaves you can restore the old pair (see [Roll back](#roll-back-to-the-previous-certificate)).
 
-The cost is that every rotation leaves one more active certificate, and a consumer may hold at most three. Revoke the old one once the new one is confirmed. See [Revoke the old certificate](#revoke-the-old-certificate).
+The cost is that every rotation leaves one more active certificate. Self-rotation is refused once 3 are active (administrators can issue more). Revoke the old one once the new one is confirmed. See [Revoke the old certificate](#revoke-the-old-certificate).
 
 ## Set `rotateBefore`
 
@@ -145,6 +145,7 @@ curl -sS -H "Authorization: Bearer $HEMLIG_ADMIN_TOKEN" \
   "$HEMLIG_ADMIN_URL/v1/admin/consumers/$CONSUMER_ID/api-identities"
 
 curl -sS -X DELETE -H "Authorization: Bearer $HEMLIG_ADMIN_TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" \
   "$HEMLIG_ADMIN_URL/v1/admin/consumers/$CONSUMER_ID/api-identities/$OLD_FINGERPRINT"
 ```
 
@@ -163,10 +164,13 @@ Without `--apply` it only counts the affected identities. Run it twice: first to
 :::
 
 ```sh
-export CONTROL_TABLE_NAME=prod-control-table   # from your stack
+export AWS_REGION=<region>
+export CONTROL_TABLE_NAME=<control-table>   # from your stack
 yarn revoke:iot-for-revoked-identities
 yarn revoke:iot-for-revoked-identities --apply
 ```
+
+Both variables and the required credentials are described in [Upgrades](upgrades.md).
 
 Expected output:
 

@@ -19,7 +19,7 @@ An administrator must do two things first, because the controller cannot:
 1. Create the secret, for example `payments/stripe/webhook-source`.
 2. Add it to the namespace's [AgentGrant](agent-grants.md#change-the-grant-scope) with the `write` permission.
 
-Without both, the export reports `RemoteSecretNotFound`.
+Without the write grant, the export reports `ReconcileFailed` ("Hemlig returned 403."). `RemoteSecretNotFound` appears only when the control fetch returns `404`.
 
 ## Create the export
 
@@ -51,10 +51,11 @@ Without both, the export reports `RemoteSecretNotFound`.
 ## Verify
 
 ```sh
-kubectl -n payments get hmlexport webhook-source
+kubectl -n payments wait --for=condition=Ready hmlexport/webhook-source --timeout=120s
+kubectl -n payments get hmlexport webhook-source -o jsonpath='{.status}'
 ```
 
-Expected output: `READY True` and reason `RemoteReady`. The status also shows the new `payloadVersionId`.
+Expected output: the wait prints `condition met`. The status shows reason `RemoteReady` and the new `payloadVersionId`.
 
 ## What to know
 

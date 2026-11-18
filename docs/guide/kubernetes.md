@@ -67,7 +67,11 @@ spec:
 ```sh [Without Helm]
 # Apply the CRDs and manager manifest from packages/kubernetes-controller/config/
 kubectl apply -f packages/kubernetes-controller/config/crds.yaml
-kubectl apply -f packages/kubernetes-controller/config/manager.yaml
+# manager.yaml has no Namespace resource
+kubectl create namespace hemlig-system
+# The manifest image is a placeholder. Replace it with a release version
+sed 's#ghcr.io/hemlig/kubernetes-controller:REPLACE_WITH_VERSION#ghcr.io/zyno-io/hemlig-controller:<version>#' \
+  packages/kubernetes-controller/config/manager.yaml | kubectl apply -f -
 # To build the image yourself, from the repository root:
 docker build -f packages/kubernetes-controller/Dockerfile -t hemlig-controller:dev .
 ```

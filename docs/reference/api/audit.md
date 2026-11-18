@@ -55,12 +55,13 @@ Current behavior as of v0.3.2. `operation` is `admin<method>:<path>` for adminis
 | --- | --- |
 | Administrator route (not the audit route) | `attempted`, `authorized`, then `succeeded` or `failed` |
 | CORS preflight (`OPTIONS`) | None |
-| Consumer or agent route: changes, config, control, writes | `attempted`, `authorized`, then `succeeded` or `failed` |
+| Consumer or agent route: config, control, writes | `attempted`, then `authorized` and `succeeded` after the operation. A failure writes `attempted` and `failed` |
+| `GET /v1/changes` | `attempted`, `authorized` (before the capability check), then `succeeded` or `failed` |
 | Secret read that delivers a value | `attempted`, `authorized`, `succeeded` |
 | Conditional secret read answered `304` | None |
-| Secret read that fails before authorization | `failed` only |
+| Secret read that fails before authorization | `failed` only (secret reads are the only case) |
 | `GET /v1/agent/sync` | `attempted` first; `authorized` and `succeeded` after the sync returns. A failed sync writes `attempted` and `failed`. |
-| `POST /v1/agent/identities/rotate` | `attempted`, `authorized`, then `succeeded` or `failed` |
+| `POST /v1/agent/identities/rotate` | `attempted` first, then `authorized` once the caller passes the checks, then `succeeded`. A failure before that writes `attempted` and `failed` |
 | `POST /v1/bootstrap/redeem` | `attempted`, `authorized`, `succeeded` once the token is redeemed; a rejected token writes none |
 | `GET /v1/admin/audit` | None |
 | JWT or TLS rejection before an actor exists | None. Use the stack's API Gateway access logs. |

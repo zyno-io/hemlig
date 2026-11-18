@@ -14,7 +14,14 @@ For a task-oriented walkthrough with the console, curl and Pulumi alongside, see
 
 ## Build and run from the checkout
 
-The package is not published to a registry. Build it from a checkout:
+Install the published package from npm:
+
+```sh
+npm install --global @zyno-io/hemlig-cli
+hemlig --help
+```
+
+To build it from a checkout instead:
 
 ```sh
 yarn install --immutable

@@ -37,11 +37,12 @@ Create one `HemligSecretImport` and Hemlig keeps a Kubernetes Secret in your nam
 ## Verify
 
 ```sh
-kubectl -n payments get hmlimport stripe-api-key
+kubectl -n payments wait --for=condition=Ready hmlimport/stripe-api-key --timeout=120s
+kubectl -n payments get hmlimport stripe-api-key -o jsonpath='{.status.conditions}'
 kubectl -n payments get secret stripe-api-key -o jsonpath='{.data}'
 ```
 
-Expected output: `READY True`, and one key per payload entry. A secret with entry `api-key` produces a Secret with a key `api-key`.
+Expected output: `condition met`, and one key per payload entry. A secret with entry `api-key` produces a Secret with a key `api-key`.
 
 ## Use it in a Pod
 

@@ -16,7 +16,7 @@ It deletes only when a request that **itself authenticated successfully** shows 
 2. A remote `403` or `404` on the secret read is followed by a **fresh** `GET /v1/agent/config` that succeeds and no longer grants `read` for that secret ID.
 3. A cross-namespace reference is no longer allowed by the consumer's `allowCrossNamespaceReferences` setting. This is local policy, not a Hemlig decision.
 
-The import then shows `Ready=False` with reason `AccessRevoked`.
+The import then shows `Ready=False` with reason `AccessRevoked`. Case 3 differs: the controller deletes the owned target first, then the import reports `ConsumerNotReady`, because the consumer is no longer usable from that namespace.
 
 ## When it never deletes
 
@@ -28,14 +28,14 @@ In every row the existing target Secret is left exactly as last written. Reason 
 | Remote `403` or `404`, and the confirmation call fails for another reason (network, `5xx`) | `RevocationUnconfirmed` | Not advanced |
 | Remote `403` or `404`, but the confirmed grant **still** includes read | `RemoteAccessDenied` | Advances |
 | The secret exists but has no value yet | `AwaitingValue` (no remote read) | Advances |
-| The consumer itself is not ready | `ConsumerNotReady` on the import; the consumer shows its own reason | n/a |
+| The consumer itself is not ready | `ConsumerNotReady` on the import; the consumer shows its own reason. After a cross-namespace revocation (case 3) the same reason follows a deletion that already happened | n/a |
 | The controller is down or being upgraded | Unchanged | n/a |
 | The `HemligSecretImport` is deleted | The target Secret is kept; `deletionPolicy` is ignored | n/a |
 
 The controller makes one confirmation call per consumer per pass, however many imports fail.
 
 ::: warning Controllers before v0.3.0 <Badge type="tip" text="v0.3.0+" />
-Controllers older than v0.3.0 deleted the owned Secret on **any** `403` or `404`, including an API Gateway mTLS `403` caused by the controller's own expired certificate. If you run one, treat an expiring identity as a risk to your imported Secrets and upgrade, or [renew it early](identity-rotation.md#if-the-certificate-already-expired).
+Controllers older than v0.3.0 deleted the owned Secret on **any** `403` or `404`, including a failure caused by the controller's own expired certificate (API Gateway rejects it at the TLS handshake) or a revoked one (`403 identity_not_active`). If you run one, treat an expiring identity as a risk to your imported Secrets and upgrade, or [renew it early](identity-rotation.md#if-the-certificate-already-expired).
 :::
 
 ## Reading the signals
