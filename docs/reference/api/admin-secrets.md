@@ -187,11 +187,15 @@ Content-Type: application/json
 Either field may be omitted to retain its current value. Success is `200 OK`
 with the replacement control revision and new ETag. A stale ETag is `412`.
 
-Admin control responses (`GET`, create, and both `PUT` routes) include a
-read-only `agentManagedConsumerIds` array: the consumer IDs in `acl` that have
-an AgentGrant. Those ACL rows are managed by the grant, and an admin write that
-adds, removes, or changes one is rejected with `409`. Clients that replace the
-ACL must send these rows back unchanged. The field is derived and never stored.
+ACL rows for consumers that have an AgentGrant are server-managed. An ACL
+replacement that omits such a row keeps it (it is appended after the submitted
+rows, in its prior order); one that adds or changes it is rejected with `409`.
+The 40-grant limit applies to the submitted `acl` only.
+
+`GET /v1/admin/secrets/{secretId}` also returns a read-only
+`agentManagedConsumerIds` array: the consumer IDs in `acl` that have an
+AgentGrant. It is derived, never stored, and is not returned by create or `PUT`
+responses.
 
 ## `POST /v1/admin/secrets/{secretId}/archive`
 

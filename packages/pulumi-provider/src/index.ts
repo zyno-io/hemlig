@@ -123,24 +123,6 @@ type HemligAgentGrantClientFactory = (
 ) => HemligAgentGrantClient;
 type AdminTokenSource = () => string;
 
-/**
- * Agent-enrolled consumers' ACL rows are server-managed and cannot be changed
- * by admin writes. Keep the server's row for any such consumer the declared
- * ACL does not mention. Older servers omit the field, so nothing is preserved.
- */
-function desiredAclFor(
-  declared: readonly Grant[],
-  control: ControlRevision,
-): Grant[] {
-  const mentioned = new Set(declared.map((grant) => grant.consumerId));
-  const preserved = (control.acl ?? []).filter(
-    (grant) =>
-      (control.agentManagedConsumerIds ?? []).includes(grant.consumerId) &&
-      !mentioned.has(grant.consumerId),
-  );
-  return [...declared, ...preserved];
-}
-
 function normalizeAcl(acl: readonly Grant[]): string {
   return JSON.stringify(
     acl
@@ -154,16 +136,27 @@ function normalizeAcl(acl: readonly Grant[]): string {
   );
 }
 
-function sameAcl(
-  serverAcl: readonly Grant[],
-  desired: readonly Grant[],
+/**
+ * Agent-enrolled consumers' ACL rows are server-managed: an admin write that
+ * omits them keeps them. Compare the declared ACL with the server ACL minus
+ * the agent rows the declaration does not mention. Older servers omit
+ * `agentManagedConsumerIds`; they get the exact historical comparison.
+ */
+function aclMatches(
+  declared: readonly Grant[],
   control: ControlRevision,
 ): boolean {
-  // Without the field (older server) keep the exact historical comparison.
+  const serverAcl = control.acl ?? [];
   if (control.agentManagedConsumerIds === undefined) {
-    return JSON.stringify(serverAcl) === JSON.stringify(desired);
+    return JSON.stringify(serverAcl) === JSON.stringify(declared);
   }
-  return normalizeAcl(serverAcl) === normalizeAcl(desired);
+  const mentioned = new Set(declared.map((grant) => grant.consumerId));
+  const managed = new Set(control.agentManagedConsumerIds);
+  const visible = serverAcl.filter(
+    (grant) =>
+      !managed.has(grant.consumerId) || mentioned.has(grant.consumerId),
+  );
+  return normalizeAcl(visible) === normalizeAcl(declared);
 }
 
 export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
@@ -204,17 +197,16 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
         "The existing Hemlig secret belongs to a different environment.",
       );
     }
-    const desiredAcl = desiredAclFor(inputs.acl, control);
     if (
       JSON.stringify(control.metadata) !== JSON.stringify(inputs.metadata) ||
-      !sameAcl(control.acl ?? [], desiredAcl, control)
+      !aclMatches(inputs.acl, control)
     ) {
       control = await client.updateAdminSecret(
         adminToken,
         inputs.environment,
         inputs.secretId,
         control.controlVersionId,
-        { metadata: inputs.metadata, acl: desiredAcl },
+        { metadata: inputs.metadata, acl: inputs.acl },
         randomUUID(),
       );
     }
@@ -272,17 +264,16 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
       );
     }
     let control = current;
-    const desiredAcl = desiredAclFor(news.acl, current);
     if (
       JSON.stringify(current.metadata) !== JSON.stringify(news.metadata) ||
-      !sameAcl(current.acl ?? [], desiredAcl, current)
+      !aclMatches(news.acl, current)
     ) {
       control = await client.updateAdminSecret(
         adminToken,
         news.environment,
         news.secretId,
         current.controlVersionId,
-        { metadata: news.metadata, acl: desiredAcl },
+        { metadata: news.metadata, acl: news.acl },
         randomUUID(),
       );
     }

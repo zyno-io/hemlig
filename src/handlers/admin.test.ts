@@ -538,6 +538,62 @@ describe("slash-separated admin secret IDs", () => {
     });
   });
 
+  it("omits agentManagedConsumerIds from PUT and payload PUT responses", async () => {
+    const control = {
+      secretId: "payments-api",
+      controlVersionId: "ctl-2",
+      environment: "prod",
+      state: "ACTIVE",
+      metadata: {},
+      acl: [{ consumerId: "agent-consumer", permissions: ["read"] }],
+    };
+    const getAgentGrantForConsumer = jest.fn();
+    const app = {
+      config,
+      audit: { write: jest.fn(async () => ({ eventId: "evt-1" })) },
+      repository: {
+        markAuditSucceeded: jest.fn(async () => undefined),
+        getAgentGrantForConsumer,
+      },
+      secrets: { update: jest.fn(async () => control) },
+    } as unknown as Application;
+    withErrorResponse.mockImplementation(
+      async (
+        _event: APIGatewayProxyEventV2,
+        action: (
+          application: Application,
+          correlationId: string,
+          setAuditContext: (context: unknown) => void,
+        ) => Promise<APIGatewayProxyStructuredResultV2>,
+      ) => action(app, "corr-1", () => undefined),
+    );
+    const headers = { "idempotency-key": "key-12345678", "if-match": "ctl-1" };
+    const query = { environment: "prod" };
+    const withBody = (path: string, body: unknown) => ({
+      ...buildEvent("PUT", path, headers, query),
+      body: JSON.stringify(body),
+    });
+
+    const put = await handler(
+      withBody("/v1/admin/secrets/payments-api", { acl: [] }),
+    );
+    const payload = await handler(
+      withBody("/v1/admin/secrets/payments-api/payload", {
+        payload: { value: { encoding: "utf8", value: "x" } },
+      }),
+    );
+
+    expect(put.statusCode).toBe(200);
+    expect(payload.statusCode).toBe(200);
+    expect(JSON.parse(put.body as string)).not.toHaveProperty(
+      "agentManagedConsumerIds",
+    );
+    expect(JSON.parse(payload.body as string)).not.toHaveProperty(
+      "agentManagedConsumerIds",
+    );
+    expect(getAgentGrantForConsumer).not.toHaveBeenCalled();
+  });
+
   it("does not treat the payload route suffix as part of the secret ID", async () => {
     const readAdminPayload = jest.fn(async (environment, secretId) => ({
       controlVersionId: "ctl-1",

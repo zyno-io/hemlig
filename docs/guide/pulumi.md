@@ -57,10 +57,12 @@ new k8s.core.v1.Secret("payments-bootstrap", {
   from Pulumi state and leaves the remote secret intact.
 - A payload revision is written only when the declared payload changes; metadata
   or ACL-only changes create a control revision and keep the payload.
-- ACL rows for agent-enrolled consumers are server-managed. The provider
-  preserves them automatically, so you do not declare them in `acl`; this needs
-  a server that reports `agentManagedConsumerIds`. Against an older server, do
-  not manage `acl` for an agent-granted secret.
+- ACL rows for agent-enrolled consumers are server-managed. Leave them out of
+  `acl`: the server keeps them, and the provider ignores them when deciding
+  whether the ACL changed. Do not declare them. This needs a server that
+  reports `agentManagedConsumerIds`. On an older server, an agent row missing
+  from `acl` is rejected, so declare the agent rows exactly as stored, in the
+  same order.
 - An AgentGrant's `consumerId` and `environment` are immutable (changing either
   replaces the resource). Per-secret permissions update in place.
 - `bootstrapGeneration` may be bumped only while the grant is still `PENDING`, to

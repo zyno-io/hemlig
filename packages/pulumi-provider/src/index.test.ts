@@ -414,7 +414,7 @@ test("payload update does not touch an enrolled agent's server-managed ACL row",
   assert.equal(result.outs.payloadVersionId, "payload-next");
 });
 
-test("adding a human consumer preserves the agent row in the ACL update", async () => {
+test("adding a human consumer sends only the declared rows", async () => {
   const updates: Array<{ acl?: unknown }> = [];
   const provider = aclProvider(
     aclControl(
@@ -437,10 +437,7 @@ test("adding a human consumer preserves the agent row in the ACL update", async 
   );
 
   assert.equal(updates.length, 1);
-  assert.deepEqual(updates[0]?.acl, [
-    ...declared,
-    { consumerId: "agent", permissions: ["read"] },
-  ]);
+  assert.deepEqual(updates[0]?.acl, declared);
 });
 
 test("ACL ordering differences alone do not trigger an update", async () => {

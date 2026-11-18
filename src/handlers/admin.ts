@@ -199,7 +199,6 @@ export const handler = async (
           actor,
           idempotencyKey: key,
         });
-        const createdResponse = await withAgentManaged(app, control);
         return await humanOperation(
           app,
           actor,
@@ -212,7 +211,7 @@ export const handler = async (
             secretId: control.secretId,
             controlVersionId: control.controlVersionId,
           },
-          () => json(201, createdResponse, { etag: control.controlVersionId }),
+          () => json(201, control, { etag: control.controlVersionId }),
         );
       }
       // Every admin request writes three audit objects into a seven-year Object
@@ -861,6 +860,9 @@ export const handler = async (
           environment,
           secretMatch[1] as string,
         );
+        // Resolve before the success audit so a lookup failure is a clean
+        // failure rather than a failed response after a recorded success.
+        const response = await withAgentManaged(app, control);
         await app.audit.write({
           correlationId,
           outcome: "succeeded",
@@ -873,9 +875,7 @@ export const handler = async (
           },
           sourceIp: event.requestContext.http.sourceIp,
         });
-        return json(200, await withAgentManaged(app, control), {
-          etag: control.controlVersionId,
-        });
+        return json(200, response, { etag: control.controlVersionId });
       }
       if (
         event.requestContext.http.method === "GET" &&
@@ -948,7 +948,6 @@ export const handler = async (
           actor,
           idempotencyKey: key,
         });
-        const updatedResponse = await withAgentManaged(app, control);
         return await humanOperation(
           app,
           actor,
@@ -961,7 +960,7 @@ export const handler = async (
             secretId: control.secretId,
             controlVersionId: control.controlVersionId,
           },
-          () => json(200, updatedResponse, { etag: control.controlVersionId }),
+          () => json(200, control, { etag: control.controlVersionId }),
         );
       }
       if (
@@ -986,7 +985,6 @@ export const handler = async (
           actor,
           idempotencyKey: key,
         });
-        const payloadResponse = await withAgentManaged(app, control);
         return await humanOperation(
           app,
           actor,
@@ -1000,7 +998,7 @@ export const handler = async (
             controlVersionId: control.controlVersionId,
             payloadVersionId: control.payloadVersionId ?? "",
           },
-          () => json(200, payloadResponse, { etag: control.controlVersionId }),
+          () => json(200, control, { etag: control.controlVersionId }),
         );
       }
       throw badRequest(

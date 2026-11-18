@@ -26,7 +26,7 @@ export interface ControlRevision {
   readonly state: "PENDING_VALUE" | "ACTIVE" | "REVOKED" | "ARCHIVED";
   readonly metadata: SecretMetadata;
   readonly acl?: readonly Grant[];
-  /** Admin responses only: ACL consumers whose rows are managed by an AgentGrant. */
+  /** Returned only by the admin GET secret route: ACL consumers whose rows are managed by an AgentGrant. */
   readonly agentManagedConsumerIds?: readonly string[];
 }
 

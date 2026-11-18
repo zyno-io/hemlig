@@ -194,7 +194,12 @@ export class SecretService {
     const { head, control: currentControl } = snapshot;
     this.assertExpectedVersion(head, input.expectedControlVersionId);
     const metadata = input.metadata ?? currentControl.metadata;
-    const acl = input.acl ?? currentControl.acl;
+    const acl =
+      input.acl === undefined
+        ? currentControl.acl
+        : input.allowAgentAcl === true
+          ? input.acl
+          : await this.carryForwardAgentRows(input.acl, currentControl.acl);
     await this.assertAclEnvironment(
       acl,
       head.environment,
@@ -694,6 +699,30 @@ export class SecretService {
           : (JSON.parse(page.nextCursor) as Record<string, string>);
     } while (cursor !== undefined);
     return grants;
+  }
+
+  /**
+   * An admin ACL replacement that omits an agent-managed row keeps it: agent
+   * rows are owned by the AgentGrant, so omission means "unchanged". The
+   * submitted order is kept, followed by carried rows in their prior order.
+   * Explicitly adding or changing an agent row is still rejected by
+   * assertAclEnvironment.
+   */
+  private async carryForwardAgentRows(
+    submitted: readonly Grant[],
+    prior: readonly Grant[],
+  ): Promise<readonly Grant[]> {
+    const present = new Set(submitted.map((grant) => grant.consumerId));
+    const omitted = prior.filter((grant) => !present.has(grant.consumerId));
+    const agentGrants = await Promise.all(
+      omitted.map(async (grant) =>
+        this.repository.getAgentGrantForConsumer(grant.consumerId),
+      ),
+    );
+    const carried = omitted.filter(
+      (_grant, index) => agentGrants[index] !== undefined,
+    );
+    return carried.length === 0 ? submitted : [...submitted, ...carried];
   }
 
   private async assertAclEnvironment(
