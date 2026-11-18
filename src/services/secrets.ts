@@ -104,8 +104,8 @@ export interface SecretControlSnapshot {
   readonly control: ControlRevision;
 }
 
-// DynamoDB allows 100 actions per transaction; 10 are reserved for non-access
-// writes (see assertAccessWriteBound).
+// DynamoDB allows 100 actions per transaction; an ACL change needs up to 9
+// non-access writes, leaving one action of headroom (see assertAccessWriteBound).
 const maximumAccessWrites = 90;
 
 export class SecretService {
@@ -717,9 +717,10 @@ export class SecretService {
   /**
    * Rejects before any lease is taken if the access projection could not fit
    * in one DynamoDB transaction. Every consumer in the prior or next ACL may
-   * need an access write, and a mutation also spends up to 10 other actions
-   * (head, control and payload workflow rows, two retention rows, two
-   * notifications, and the sync counter, record and delete).
+   * need an access write, and an ACL change also spends up to 9 other actions
+   * (head and control workflow rows, two retention rows, two notifications,
+   * and the sync counter, record and delete). ACL changes never carry a
+   * payload; the bound of 90 keeps one action of headroom.
    */
   private assertAccessWriteBound(
     next: readonly Grant[],
