@@ -608,7 +608,13 @@ export class HemligClient {
     environment: string,
     secretId: string,
     controlVersionId: string,
-    input: Partial<Pick<ControlRevision, "metadata" | "acl">>,
+    input: Partial<Pick<ControlRevision, "metadata" | "acl">> & {
+      /**
+       * Keep AgentGrant-managed ACL rows the submitted `acl` omits. Send only
+       * to servers that report `agentManagedConsumerIds`.
+       */
+      readonly preserveAgentAcl?: boolean;
+    },
     idempotencyKey: string,
   ): Promise<ControlRevision> {
     return this.request(

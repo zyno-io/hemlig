@@ -945,6 +945,10 @@ export const handler = async (
               ? undefined
               : parseMetadata(body.metadata),
           acl: body.acl === undefined ? undefined : parseGrants(body.acl),
+          preserveAgentAcl: parseOptionalBoolean(
+            body.preserveAgentAcl,
+            "preserveAgentAcl",
+          ),
           actor,
           idempotencyKey: key,
         });
@@ -1035,6 +1039,19 @@ const withAgentManaged = async <T extends { readonly acl?: readonly Grant[] }>(
       (_id, index) => grants[index] !== undefined,
     ),
   };
+};
+
+const parseOptionalBoolean = (
+  value: unknown,
+  name: string,
+): boolean | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw badRequest(`${name} must be a boolean.`);
+  }
+  return value;
 };
 
 const parseObjectBody = (body: string | undefined): Record<string, unknown> => {

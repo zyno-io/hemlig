@@ -142,6 +142,15 @@ function normalizeAcl(acl: readonly Grant[]): string {
  * the agent rows the declaration does not mention. Older servers omit
  * `agentManagedConsumerIds`; they get the exact historical comparison.
  */
+/** Only a server that reports agentManagedConsumerIds understands the flag. */
+function preserveField(control: ControlRevision): {
+  preserveAgentAcl?: true;
+} {
+  return control.agentManagedConsumerIds === undefined
+    ? {}
+    : { preserveAgentAcl: true };
+}
+
 function aclMatches(
   declared: readonly Grant[],
   control: ControlRevision,
@@ -206,7 +215,11 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
         inputs.environment,
         inputs.secretId,
         control.controlVersionId,
-        { metadata: inputs.metadata, acl: inputs.acl },
+        {
+          metadata: inputs.metadata,
+          acl: inputs.acl,
+          ...preserveField(control),
+        },
         randomUUID(),
       );
     }
@@ -273,7 +286,11 @@ export class HemligSecretProvider implements pulumi.dynamic.ResourceProvider {
         news.environment,
         news.secretId,
         current.controlVersionId,
-        { metadata: news.metadata, acl: news.acl },
+        {
+          metadata: news.metadata,
+          acl: news.acl,
+          ...preserveField(current),
+        },
         randomUUID(),
       );
     }

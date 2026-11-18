@@ -61,8 +61,10 @@ confirmation call is made per consumer per pass, however many imports fail.
 
 - Alert on `Ready=False` for `HemligConsumer`, and on certificate `notAfter`
   approaching (see [inventory](identity-rotation.md#ops-runbook-renew-cluster-identities)).
-- To intentionally revoke access, remove the secret from the AgentGrant (or the ACL
-  read permission) in Hemlig. The controller will remove the owned Secret after
-  confirming through an authenticated call.
+- To intentionally revoke an agent's access, remove the secret from its AgentGrant;
+  the secret ACL row for an agent consumer is server-managed and cannot be edited
+  directly. (For non-agent consumers, remove the ACL read permission.) The
+  controller will remove the owned Secret after confirming through an
+  authenticated call.
 - Revoking a leaf (admin `DELETE api-identities`) stops that identity; it does
   **not** by itself delete imported Secrets.

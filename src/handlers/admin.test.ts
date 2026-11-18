@@ -594,6 +594,55 @@ describe("slash-separated admin secret IDs", () => {
     expect(getAgentGrantForConsumer).not.toHaveBeenCalled();
   });
 
+  it("validates preserveAgentAcl strictly and keeps the 40-grant cap on the submitted ACL", async () => {
+    const update = jest.fn();
+    const app = {
+      config,
+      audit: { write: jest.fn(async () => ({ eventId: "evt-1" })) },
+      repository: { markAuditSucceeded: jest.fn() },
+      secrets: { update },
+    } as unknown as Application;
+    withErrorResponse.mockImplementation(
+      async (
+        _event: APIGatewayProxyEventV2,
+        action: (
+          application: Application,
+          correlationId: string,
+          setAuditContext: (context: unknown) => void,
+        ) => Promise<APIGatewayProxyStructuredResultV2>,
+      ) => {
+        try {
+          return await action(app, "corr-1", () => undefined);
+        } catch (error) {
+          return errorResponse(error, "corr-1");
+        }
+      },
+    );
+    const put = (body: unknown) =>
+      handler({
+        ...buildEvent(
+          "PUT",
+          "/v1/admin/secrets/payments-api",
+          { "idempotency-key": "key-12345678", "if-match": "ctl-1" },
+          { environment: "prod" },
+        ),
+        body: JSON.stringify(body),
+      });
+    const rows = (count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        consumerId: `human-${i}`,
+        permissions: ["read"],
+      }));
+
+    expect((await put({ acl: [], preserveAgentAcl: "yes" })).statusCode).toBe(
+      400,
+    );
+    expect(
+      (await put({ acl: rows(41), preserveAgentAcl: true })).statusCode,
+    ).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("does not treat the payload route suffix as part of the secret ID", async () => {
     const readAdminPayload = jest.fn(async (environment, secretId) => ({
       controlVersionId: "ctl-1",

@@ -488,14 +488,17 @@ describe("SecretService.update", () => {
       {} as never,
     );
     return {
+      repository,
       update: async (
         acl: readonly { consumerId: string; permissions: ["read"] }[],
+        preserveAgentAcl = true,
       ) => {
         await service.update({
           secretId: "database-credentials",
           environment: "prod",
           expectedControlVersionId: "ctl-current",
           acl,
+          preserveAgentAcl,
           actor: { type: "human", id: "admin" },
           idempotencyKey: "acl-update",
         });
@@ -538,21 +541,106 @@ describe("SecretService.update", () => {
     ).rejects.toMatchObject({ code: "conflict" });
   });
 
-  it("accepts 38 submitted rows when 3 agent rows are carried forward", async () => {
-    const humans = Array.from({ length: 38 }, (_, i) => row(`human-${i}`));
-    const agents = ["agent-a", "agent-b", "agent-c"];
+  it("refuses an omitted AgentGrant-derived row unless preserveAgentAcl is set", async () => {
     const { update } = aclUpdateService(
-      [...humans, ...agents.map(row)],
-      agents,
+      [row("human-a"), row("agent-a")],
+      ["agent-a"],
     );
 
-    const next = await update(humans);
+    await expect(update([row("human-a")], false)).rejects.toMatchObject({
+      code: "conflict",
+    });
+  });
 
-    expect(next?.acl).toHaveLength(41);
+  it("rejects an oversized ACL change before taking the mutation lease", async () => {
+    const agents = Array.from({ length: 13 }, (_, i) => `agent-${i}`);
+    const prior = [
+      ...Array.from({ length: 40 }, (_, i) => row(`old-${i}`)),
+      ...agents.map(row),
+    ];
+    const { update, repository } = aclUpdateService(prior, agents);
+
+    await expect(
+      update(Array.from({ length: 40 }, (_, i) => row(`new-${i}`))),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    expect(repository.prepareMutation).not.toHaveBeenCalled();
+    expect(repository.completeMutation).not.toHaveBeenCalled();
+  });
+
+  it("accepts a change at the access-write bound", async () => {
+    const agents = Array.from({ length: 10 }, (_, i) => `agent-${i}`);
+    const prior = [
+      ...Array.from({ length: 40 }, (_, i) => row(`old-${i}`)),
+      ...agents.map(row),
+    ];
+    const { update } = aclUpdateService(prior, agents);
+
+    const next = await update(
+      Array.from({ length: 40 }, (_, i) => row(`new-${i}`)),
+    );
+
+    expect(next?.acl).toHaveLength(50);
   });
 });
 
 describe("SecretService.revokeConsumerSecretGrant", () => {
+  it("never carries an agent row forward on an internal agent revoke", async () => {
+    let preparedControl: ControlRevision | undefined;
+    const currentControl: ControlRevision = {
+      ...control,
+      acl: [
+        { consumerId: "prod-east", permissions: ["read"] },
+        { consumerId: "agent-a", permissions: ["read"] },
+      ],
+    };
+    const repository = {
+      getConsumer: jest.fn(async () => ({
+        consumerId: "agent-a",
+        environment: "prod",
+        status: "ACTIVE",
+      })),
+      getAgentGrantForConsumer: jest.fn(async () => ({ grantId: "grant" })),
+      requireHead: jest.fn(async () => head),
+      getAccess: jest.fn(async () => access),
+      getIdempotency: jest.fn(async () => undefined),
+      prepareMutation: jest.fn(
+        async (prepared: { readonly control: ControlRevision }) => {
+          preparedControl = prepared.control;
+        },
+      ),
+      completeMutation: jest.fn(async () => undefined),
+    };
+    const objects = {
+      getJson: jest.fn(async () => currentControl),
+      putImmutable: jest.fn(async () => ({
+        bucket: "revisions",
+        key: "control",
+        versionId: "new-version",
+        checksumSha256: "checksum",
+      })),
+      extendComplianceRetention: jest.fn(async () => undefined),
+    };
+    const service = new SecretService(
+      repository as never,
+      objects as never,
+      {} as never,
+      config,
+      {} as never,
+    );
+
+    await service.revokeConsumerSecretGrant({
+      consumerId: "agent-a",
+      secretId: "database-credentials",
+      actor: { type: "human", id: "admin" },
+      idempotencyKey: "internal-agent-revoke",
+      allowAgentAcl: true,
+    });
+
+    expect(preparedControl?.acl).toEqual([
+      { consumerId: "prod-east", permissions: ["read"] },
+    ]);
+  });
+
   it("removes only the target consumer from the source ACL and emits a normal revision", async () => {
     let preparedControl: ControlRevision | undefined;
     const currentControl: ControlRevision = {

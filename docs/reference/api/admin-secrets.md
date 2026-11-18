@@ -187,10 +187,16 @@ Content-Type: application/json
 Either field may be omitted to retain its current value. Success is `200 OK`
 with the replacement control revision and new ETag. A stale ETag is `412`.
 
-ACL rows for consumers that have an AgentGrant are server-managed. An ACL
-replacement that omits such a row keeps it (it is appended after the submitted
-rows, in its prior order); one that adds or changes it is rejected with `409`.
-The 40-grant limit applies to the submitted `acl` only.
+ACL rows for consumers that have an AgentGrant are server-managed. By default,
+a replacement that omits, adds, or changes such a row is rejected with `409`
+(revoke agent access through the AgentGrant). Send the optional boolean
+`"preserveAgentAcl": true` to keep omitted agent rows instead: they are
+appended after the submitted rows in their prior order. Adding or changing an
+agent row is still `409`, and a non-boolean value is `400`.
+
+The 40-grant limit applies to the submitted `acl` only. A change is also
+rejected with `400` when the previous and new ACLs together name more than 90
+distinct consumers, because every such row needs an access write.
 
 `GET /v1/admin/secrets/{secretId}` also returns a read-only
 `agentManagedConsumerIds` array: the consumer IDs in `acl` that have an

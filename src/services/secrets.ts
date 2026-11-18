@@ -1,6 +1,7 @@
 import type { AppConfig } from "../aws/config";
 import { EnvelopeCrypto } from "../crypto/envelope";
 import {
+  badRequest,
   conflict,
   forbidden,
   notFound,
@@ -53,6 +54,11 @@ export interface UpdateSecretInput {
   readonly idempotencyKey: string;
   /** Internal AgentGrant projection maintenance only. */
   readonly allowAgentAcl?: boolean;
+  /**
+   * Admin ACL replacements only: keep prior AgentGrant-managed rows that the
+   * submitted ACL omits. Off by default, so omitting one is a 409.
+   */
+  readonly preserveAgentAcl?: boolean;
 }
 
 export interface ArchiveSecretInput {
@@ -97,6 +103,10 @@ export interface SecretControlSnapshot {
   readonly head: HeadRecord;
   readonly control: ControlRevision;
 }
+
+// DynamoDB allows 100 actions per transaction; 10 are reserved for non-access
+// writes (see assertAccessWriteBound).
+const maximumAccessWrites = 90;
 
 export class SecretService {
   public constructor(
@@ -195,11 +205,14 @@ export class SecretService {
     this.assertExpectedVersion(head, input.expectedControlVersionId);
     const metadata = input.metadata ?? currentControl.metadata;
     const acl =
-      input.acl === undefined
-        ? currentControl.acl
-        : input.allowAgentAcl === true
-          ? input.acl
-          : await this.carryForwardAgentRows(input.acl, currentControl.acl);
+      input.acl !== undefined &&
+      input.allowAgentAcl !== true &&
+      input.preserveAgentAcl === true
+        ? await this.carryForwardAgentRows(input.acl, currentControl.acl)
+        : (input.acl ?? currentControl.acl);
+    if (input.acl !== undefined && input.allowAgentAcl !== true) {
+      this.assertAccessWriteBound(acl, currentControl.acl);
+    }
     await this.assertAclEnvironment(
       acl,
       head.environment,
@@ -699,6 +712,28 @@ export class SecretService {
           : (JSON.parse(page.nextCursor) as Record<string, string>);
     } while (cursor !== undefined);
     return grants;
+  }
+
+  /**
+   * Rejects before any lease is taken if the access projection could not fit
+   * in one DynamoDB transaction. Every consumer in the prior or next ACL may
+   * need an access write, and a mutation also spends up to 10 other actions
+   * (head, control and payload workflow rows, two retention rows, two
+   * notifications, and the sync counter, record and delete).
+   */
+  private assertAccessWriteBound(
+    next: readonly Grant[],
+    prior: readonly Grant[],
+  ): void {
+    const consumerIds = new Set([
+      ...next.map((grant) => grant.consumerId),
+      ...prior.map((grant) => grant.consumerId),
+    ]);
+    if (consumerIds.size > maximumAccessWrites) {
+      throw badRequest(
+        `This ACL change touches ${consumerIds.size} consumers (previous plus new rows, including agent-managed rows); at most ${maximumAccessWrites} are allowed in one change.`,
+      );
+    }
   }
 
   /**

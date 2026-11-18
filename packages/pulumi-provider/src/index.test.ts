@@ -492,3 +492,70 @@ test("create adoption preserves agent rows", async () => {
 
   assert.equal(updates.length, 0);
 });
+
+test("a new server gets preserveAgentAcl: true with the declared ACL only", async () => {
+  const updates: Array<{ acl?: unknown; preserveAgentAcl?: unknown }> = [];
+  const provider = aclProvider(
+    aclControl([{ consumerId: "agent", permissions: ["read"] }], ["agent"]),
+    updates,
+  );
+  const declared: Grant[] = [{ consumerId: "human", permissions: ["read"] }];
+  await provider.update(
+    "platform-hemlig-pulumi-sentinel",
+    inputs({ acl: [] }),
+    inputs({ acl: declared }),
+  );
+
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0]?.acl, declared);
+  assert.equal(updates[0]?.preserveAgentAcl, true);
+});
+
+test("an old server (no agentManagedConsumerIds) gets no flag and an exact comparison", async () => {
+  const updates: Array<Record<string, unknown>> = [];
+  const serverAcl: Grant[] = [
+    { consumerId: "b", permissions: ["read"] },
+    { consumerId: "a", permissions: ["read"] },
+  ];
+  const provider = aclProvider(aclControl(serverAcl), updates);
+  const reordered = [...serverAcl].reverse();
+  await provider.update(
+    "platform-hemlig-pulumi-sentinel",
+    inputs({ acl: reordered }),
+    inputs({ acl: reordered }),
+  );
+
+  assert.equal(updates.length, 1);
+  assert.equal("preserveAgentAcl" in (updates[0] ?? {}), false);
+  assert.deepEqual(updates[0]?.acl, reordered);
+});
+
+test("a declared agent row is compared and sent like any other row", async () => {
+  const updates: Array<{ acl?: unknown }> = [];
+  const agentRow: Grant = { consumerId: "agent", permissions: ["read"] };
+  const provider = aclProvider(
+    aclControl(
+      [agentRow, { consumerId: "human", permissions: ["read"] }],
+      ["agent"],
+    ),
+    updates,
+  );
+  const same = [
+    { consumerId: "human", permissions: ["read" as const] },
+    agentRow,
+  ];
+  await provider.update(
+    "platform-hemlig-pulumi-sentinel",
+    inputs({ acl: same }),
+    inputs({ acl: same }),
+  );
+  assert.equal(updates.length, 0);
+
+  await provider.update(
+    "platform-hemlig-pulumi-sentinel",
+    inputs({ acl: same }),
+    inputs({ acl: [agentRow] }),
+  );
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0]?.acl, [agentRow]);
+});
