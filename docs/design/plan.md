@@ -187,7 +187,8 @@ audit/<yyyy>/<mm>/<dd>/<event-id>.json
 ```
 
 An event records UTC time, correlation ID, `attempted`/`authorized`/
-`succeeded`/`failed` outcome, stable actor, operation, target IDs/revision,
+`succeeded`/`failed` outcome (a successful agent sync poll writes none; failures are
+recorded), stable actor, operation, target IDs/revision,
 permission result, source IP, and safe reason code. It never contains secret
 values, request bodies, authorization tokens, certificates/private keys, or
 KMS context values. The audit writer retries bounded transient failures.

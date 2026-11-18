@@ -164,7 +164,7 @@ Returns current configuration and the scoped changes since a completed checkpoin
 
 How sync, checkpoints and change hints fit together is owned by [Sync and notifications](../../guide/sync-and-notifications.md). Lifetimes are in [Pagination and sync](../limits.md#pagination-and-sync).
 
-**Audit.** `attempted` is written before the sync runs. `authorized` and `succeeded` are written after it returns. A sync that fails therefore records `attempted` and `failed`, with no `authorized`.
+**Audit.** A successful sync writes no audit events: it returns no secret values and controllers poll it continuously. A sync that fails writes `failed` only.
 
 ### `GET /v1/agent/secrets/{secretId}`
 

@@ -15,7 +15,9 @@ This page describes behaviour in v0.3.2. Terms: [audit event](../reference/gloss
 | Request | Audited | Events written |
 | --- | --- | --- |
 | Any administrator request, including reads and the plaintext payload read | Yes | `attempted`, `authorized`, `succeeded` |
-| Consumer and agent requests (`/v1/changes`, `/v1/agent/config`, `/v1/agent/sync`, writes) | Yes | `attempted`, `authorized`, `succeeded` |
+| Consumer and agent requests (`/v1/changes`, `/v1/agent/config`, writes) | Yes | `attempted`, `authorized`, `succeeded` |
+| Successful `GET /v1/agent/sync` | No | None |
+| Failed `GET /v1/agent/sync` | Yes | `failed` only |
 | Secret read that returns a value | Yes | `attempted`, `authorized`, `succeeded` |
 | Conditional secret read that returns `304` | No | None |
 | Secret read that fails before authorization | Partly | `failed` only |
@@ -29,8 +31,7 @@ This page describes behaviour in v0.3.2. Terms: [audit event](../reference/gloss
 
 Two points are easy to miss:
 
-- `GET /v1/agent/sync` is audited on every call, including polls with nothing new.
-- A `304` is skipped on purpose, so a controller polling unchanged secrets does not fill the archive.
+- A successful `GET /v1/agent/sync` and a `304` are skipped on purpose. Neither returns a secret value, and controllers poll both, so auditing them would fill the archive with noise. Failures are still recorded.
 
 Reading the audit archive is not audited. Querying it creates no events, and this is current behaviour, not a promise to change. The query Lambda has no code path that writes one.
 
@@ -42,7 +43,8 @@ Events are written in order, and the last one comes before the response. The ord
 | --- | --- | --- |
 | Administrator routes | `attempted`, `authorized`, operation, `succeeded` | `failed` after the events already written |
 | Non-read consumer and agent routes, identity rotation | `attempted` first | `attempted`, `failed` |
-| Agent config, control, write and sync routes | `attempted`, operation, then `authorized`, `succeeded` | `attempted`, `failed` |
+| Agent config, control and write routes | `attempted`, operation, then `authorized`, `succeeded` | `attempted`, `failed` |
+| `GET /v1/agent/sync` | Nothing on success | `failed` only |
 | `GET /v1/changes` | `attempted`, `authorized` (before the capability check), operation, `succeeded` | `attempted`, `authorized`, `failed` |
 | Secret reads | Nothing until the read is known to deliver a value, then `attempted`, `authorized`, `succeeded` | `failed` only |
 

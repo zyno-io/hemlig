@@ -6,6 +6,8 @@ jest.mock("../auth/actors", () => ({
 }));
 
 jest.mock("./shared", () => ({ withErrorResponse: jest.fn() }));
+jest.mock("../app", () => ({ createApplication: jest.fn() }));
+jest.mock("../aws/config", () => ({ loadConfig: jest.fn(() => ({})) }));
 
 const { consumerActorFromEvent } = jest.requireMock("../auth/actors") as {
   readonly consumerActorFromEvent: jest.Mock;
@@ -147,6 +149,64 @@ describe("consumer handler agent routes", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  const syncEvent = () =>
+    ({
+      rawPath: "/v1/agent/sync",
+      headers: {},
+      requestContext: {
+        requestId: "sync-request",
+        http: { method: "GET", sourceIp: "127.0.0.1" },
+      },
+    }) as unknown as APIGatewayProxyEventV2;
+
+  it("writes no audit events for a successful agent sync", async () => {
+    const response = await handler(syncEvent());
+
+    expect(response.statusCode).toBe(200);
+    expect(auditWrite).not.toHaveBeenCalled();
+  });
+
+  it("records a failed agent sync through the real error wrapper", async () => {
+    const { createApplication } = jest.requireMock("../app") as {
+      readonly createApplication: jest.Mock;
+    };
+    const { withErrorResponse: realWrapper } = jest.requireActual(
+      "./shared",
+    ) as { readonly withErrorResponse: typeof withErrorResponse };
+    createApplication.mockReturnValue({
+      audit: { write: auditWrite },
+      agentSync: {
+        sync: jest.fn(async () => {
+          throw new Error("repository failure");
+        }),
+      },
+      repository: { getAgentGrantForConsumer: jest.fn(async () => ({})) },
+    });
+    withErrorResponse.mockImplementation(realWrapper);
+    jest.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await handler(syncEvent());
+
+    expect(response.statusCode).toBe(500);
+    expect(outcomes()).toEqual(["failed"]);
+    expect(auditWrite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "agentget:/v1/agent/sync",
+        reasonCode: "request_failed",
+      }),
+    );
+  });
+
+  it("still writes attempted for a non-read route", async () => {
+    await expect(
+      handler({
+        ...syncEvent(),
+        rawPath: "/v1/agent/unknown-route",
+      } as APIGatewayProxyEventV2),
+    ).rejects.toBeDefined();
+    expect(outcomes()[0]).toBe("attempted");
+  });
+
   const readEvent = (headers: Record<string, string> = {}) =>
     ({
       rawPath:
@@ -179,20 +239,20 @@ describe("consumer handler agent routes", () => {
   it("writes no audit events for a conditional 304 read", async () => {
     nextReadIsNotModified = true;
 
-    const response = await handler(readEvent({ "if-none-match": '"ctl-next"' }));
+    const response = await handler(
+      readEvent({ "if-none-match": '"ctl-next"' }),
+    );
 
     expect(response.statusCode).toBe(304);
     expect(auditWrite).not.toHaveBeenCalled();
   });
 
   it("still audits the agent control route from its first event", async () => {
-    const response = await handler(
-      {
-        ...readEvent(),
-        rawPath:
-          "/v1/agent/secrets/platform%2Faccess%2Fwarpgate%2Ftarget-sync%2Fedge/control",
-      } as APIGatewayProxyEventV2,
-    );
+    const response = await handler({
+      ...readEvent(),
+      rawPath:
+        "/v1/agent/secrets/platform%2Faccess%2Fwarpgate%2Ftarget-sync%2Fedge/control",
+    } as APIGatewayProxyEventV2);
 
     expect(response.statusCode).toBe(200);
     expect(outcomes()).toEqual(["attempted", "authorized", "succeeded"]);

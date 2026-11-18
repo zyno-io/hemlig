@@ -60,7 +60,7 @@ Current behavior as of v0.3.2. `operation` is `admin<method>:<path>` for adminis
 | Secret read that delivers a value | `attempted`, `authorized`, `succeeded` |
 | Conditional secret read answered `304` | None |
 | Secret read that fails before authorization | `failed` only (secret reads are the only case) |
-| `GET /v1/agent/sync` | `attempted` first; `authorized` and `succeeded` after the sync returns. A failed sync writes `attempted` and `failed`. |
+| `GET /v1/agent/sync` | None on success. A failed sync writes `failed` only. |
 | `POST /v1/agent/identities/rotate` | `attempted` first, then `authorized` once the caller passes the checks, then `succeeded`. A failure before that writes `attempted` and `failed` |
 | `POST /v1/bootstrap/redeem` | `attempted`, `authorized`, `succeeded` once the token is redeemed; a rejected token writes none |
 | `GET /v1/admin/audit` | None |

@@ -39,12 +39,16 @@ export const handler = async (
       event.requestContext.http.method,
       event.rawPath,
     );
+    const isAgentSync = isAgentSyncRequest(
+      event.requestContext.http.method,
+      event.rawPath,
+    );
     // A secret read is audited only when it delivers a value: its attempted
     // and authorized events are written once the read knows it is not a
-    // conditional 304, so polling controllers do not create immutable records
-    // for unchanged secrets. Failures are still recorded through the audit
-    // context set on the read branch.
-    if (!isSecretRead) {
+    // conditional 304. A successful agent sync never delivers a secret value
+    // and is polled continuously, so it writes no events at all. For both,
+    // failures are still recorded through the audit context set above.
+    if (!isSecretRead && !isAgentSync) {
       await app.audit.write({
         correlationId,
         outcome: "attempted",
@@ -53,10 +57,7 @@ export const handler = async (
         sourceIp: event.requestContext.http.sourceIp,
       });
     }
-    if (
-      event.requestContext.http.method === "GET" &&
-      event.rawPath === "/v1/agent/sync"
-    ) {
+    if (isAgentSync) {
       const page = await app.agentSync.sync(
         consumerId,
         environment,
@@ -66,20 +67,6 @@ export const handler = async (
         },
         resolvedGrant,
       );
-      await app.audit.write({
-        correlationId,
-        outcome: "authorized",
-        actor,
-        operation,
-        sourceIp: event.requestContext.http.sourceIp,
-      });
-      await app.audit.write({
-        correlationId,
-        outcome: "succeeded",
-        actor,
-        operation,
-        sourceIp: event.requestContext.http.sourceIp,
-      });
       return json(200, page);
     }
     const decodedPath = decodeRequestPath(event.rawPath);
@@ -385,6 +372,9 @@ const secretUidsForPermission = (
   permission: AgentCapability,
 ): readonly string[] =>
   agentScopesForPermission(grant, permission).map((scope) => scope.secretUid);
+
+const isAgentSyncRequest = (method: string, rawPath: string): boolean =>
+  method === "GET" && rawPath === "/v1/agent/sync";
 
 /**
  * True only for requests the secret-read branch handles. It never throws, so

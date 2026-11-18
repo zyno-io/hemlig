@@ -108,8 +108,8 @@ Incomplete/backfilled indexes produce `503 sync_index_not_ready`.
 
 Keep the contract in OpenAPI, backend-owned domain types, and `@zyno-io/hemlig-client`.
 The consumer API already routes through its default Lambda integration.
-Sync remains audited under the existing handler policy; do not change audit
-retention or tracing as part of this work.
+Successful sync writes no audit events (failures are still recorded); do not
+change audit retention or tracing as part of this work.
 
 ## Controller
 
