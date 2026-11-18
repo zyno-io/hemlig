@@ -37,7 +37,7 @@ CLI and Pulumi archives. The archive manifests are verified before publication.
 On pull requests and branch builds, this packaging path runs with `0.0.0-ci`
 and performs npm dry runs without publishing.
 
-The packages are public and require Node.js 24. For example, after `v0.3.2`
+The packages are public and require Node.js 24 or later. For example, after `v0.3.2`
 has been published:
 
 ```bash

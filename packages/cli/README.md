@@ -1,7 +1,7 @@
 # Hemlig administrator CLI
 
 `@zyno-io/hemlig-cli` is a small, machine-friendly CLI for the Hemlig
-**administrator API**. It installs the `hemlig` executable (Node.js 24), emits
+**administrator API**. It installs the `hemlig` executable (Node.js 24 or later), emits
 exactly one JSON object per invocation, and never prompts or retries.
 
 ```sh
@@ -28,13 +28,26 @@ hemlig logout
 Token sources, in order: `--token-file`, `HEMLIG_ADMIN_TOKEN_FILE`,
 `HEMLIG_ADMIN_TOKEN`, then the cached login (bound to its admin API).
 
-Commands: `secret create | update | write-payload | read | read-payload | archive`
-`login`, `logout` and `idempotency-key`. `update`, `write-payload` and `archive` take `--if-match <etag>` (or `current`) and an
-optional `--idempotency-key`. Run `hemlig --help` for the JSON command reference.
+Commands: `secret create | update | write-payload | read | read-payload | archive`,
+`consumer list | get | identities | revoke-identity`, `login`, `logout` and
+`idempotency-key`. `update`, `write-payload` and `archive` take `--if-match <etag>`
+(or `current`) and an optional `--idempotency-key`. `consumer revoke-identity` takes
+`--idempotency-key` only, not `--if-match`. Run `hemlig --help` for the JSON command reference.
 
 It uses the typed [`@zyno-io/hemlig-client`](https://github.com/zyno-io/hemlig/tree/main/packages/client),
 does not provision Hemlig infrastructure, enroll consumers, redeem bootstrap tokens,
 or manage Kubernetes resources.
+
+Consumers and identities (`consumer list` needs `--environment`; the others take
+`--consumer-id`):
+
+```sh
+hemlig consumer identities --consumer-id payments-prod
+hemlig consumer revoke-identity --consumer-id payments-prod --fingerprint 41ab9c0d7e12
+```
+
+`--fingerprint` is the full 64-hex SHA-256 or a unique prefix of at least 12 hex
+characters; an unknown or ambiguous prefix exits 2 without revoking anything.
 
 ## Documentation
 

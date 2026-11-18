@@ -69,7 +69,7 @@ The procedure, controller settings and recovery steps are in [Identity rotation]
 
 ## Revocation
 
-An administrator revokes one certificate with `DELETE /v1/admin/consumers/{consumerId}/api-identities/{apiFingerprint}`.
+An administrator revokes one certificate with `DELETE /v1/admin/consumers/{consumerId}/api-identities/{apiFingerprint}`. The CLI equivalent is [`hemlig consumer revoke-identity`](cli.md#consumers-and-identities), which also accepts a fingerprint prefix.
 
 1. Hemlig marks the identity `REVOKED` in DynamoDB. The next request with that certificate is rejected.
 2. Hemlig revokes the certificate in AWS IoT so it can no longer connect for change hints.

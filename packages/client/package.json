@@ -28,7 +28,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": "24.x"
+    "node": ">=24"
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",

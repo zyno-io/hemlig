@@ -762,3 +762,384 @@ test("real process bounds a stalled request and reports unknown mutation outcome
     await server.close();
   }
 });
+
+const fpA = "41ab9c0d7e12" + "a".repeat(52);
+const fpB = "41ab9c0d7e13" + "b".repeat(52);
+const fpC = "9f2c11223344" + "c".repeat(52);
+const identityPage = {
+  consumerId: "payments-prod",
+  environment: "production",
+  generatedAt: "2026-01-01T00:00:00Z",
+  apiIdentities: [fpA, fpB, fpC].map((apiFingerprint) => ({
+    apiFingerprint,
+    status: "ACTIVE",
+    kind: "api",
+    notBefore: "2026-01-01T00:00:00Z",
+    notAfter: "2027-01-01T00:00:00Z",
+  })),
+};
+const consumerEnv = {
+  HEMLIG_ADMIN_URL: env.HEMLIG_ADMIN_URL,
+  HEMLIG_ADMIN_TOKEN: token,
+};
+const consumerTarget = ["--consumer-id", "payments-prod"];
+
+/** Serves the identity list on GET and a revoked identity on DELETE. */
+function identityTransport(requests: TransportRequest[]): HemligTransport {
+  return {
+    async request(request: TransportRequest) {
+      requests.push(request);
+      return {
+        status: 200,
+        headers: {},
+        body:
+          request.method === "DELETE"
+            ? { consumerId: "payments-prod", status: "REVOKED" }
+            : identityPage,
+      };
+    },
+  };
+}
+
+test("consumer list sends the environment and cursor; get and identities need no environment", async () => {
+  const list = await execute(["consumer", "list", "--cursor", "next-1"], {
+    body: { consumers: [], generatedAt: "now" },
+  });
+  assert.equal(list.exitCode, 0);
+  assert.equal(list.requests[0]!.method, "GET");
+  assert.equal(list.requests[0]!.url.pathname, "/v1/admin/consumers");
+  assert.equal(
+    list.requests[0]!.url.searchParams.get("environment"),
+    "production",
+  );
+  assert.equal(list.requests[0]!.url.searchParams.get("cursor"), "next-1");
+  assert.equal(JSON.parse(list.stdout).data.consumers.length, 0);
+
+  const noEnv = await execute(["consumer", "list"], { env: consumerEnv });
+  assert.equal(noEnv.exitCode, 2);
+  assert.equal(noEnv.requests.length, 0);
+
+  const get = await execute(["consumer", "get", ...consumerTarget], {
+    env: consumerEnv,
+    body: { consumerId: "payments-prod" },
+  });
+  assert.equal(get.exitCode, 0);
+  assert.equal(get.requests[0]!.method, "GET");
+  assert.equal(
+    get.requests[0]!.url.pathname,
+    "/v1/admin/consumers/payments-prod",
+  );
+  assert.equal(get.requests[0]!.url.search, "");
+  assert.equal(JSON.parse(get.stdout).idempotencyKey, undefined);
+
+  const identities = await execute(
+    ["consumer", "identities", ...consumerTarget, "--cursor", "c2"],
+    { env: consumerEnv, body: identityPage },
+  );
+  assert.equal(identities.exitCode, 0);
+  assert.equal(
+    identities.requests[0]!.url.pathname,
+    "/v1/admin/consumers/payments-prod/api-identities",
+  );
+  assert.equal(identities.requests[0]!.url.searchParams.get("cursor"), "c2");
+});
+
+test("revoke-identity with a full fingerprint deletes directly, with a minted idempotency key", async () => {
+  const requests: TransportRequest[] = [];
+  const result = await execute(
+    [
+      "consumer",
+      "revoke-identity",
+      ...consumerTarget,
+      "--fingerprint",
+      fpA.toUpperCase(),
+    ],
+    { env: consumerEnv, transport: identityTransport(requests) },
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(requests.length, 1);
+  const request = requests[0]!;
+  assert.equal(request.method, "DELETE");
+  assert.equal(
+    request.url.pathname,
+    `/v1/admin/consumers/payments-prod/api-identities/${fpA}`,
+  );
+  const receipt = JSON.parse(result.stdout);
+  assert.match(receipt.idempotencyKey, /^[a-f0-9-]{36}$/);
+  assert.equal(request.headers?.["idempotency-key"], receipt.idempotencyKey);
+  assert.equal(receipt.data.status, "REVOKED");
+});
+
+test("revoke-identity resolves a unique prefix, honouring an explicit idempotency key", async () => {
+  const requests: TransportRequest[] = [];
+  const result = await execute(
+    [
+      "consumer",
+      "revoke-identity",
+      ...consumerTarget,
+      "--fingerprint",
+      "9f2c11223344",
+      "--idempotency-key",
+      "operation-stable",
+    ],
+    { env: consumerEnv, transport: identityTransport(requests) },
+  );
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(
+    requests.map((r) => r.method),
+    ["GET", "DELETE"],
+  );
+  assert.ok(requests[1]!.url.pathname.endsWith(`/api-identities/${fpC}`));
+  assert.equal(requests[1]!.headers?.["idempotency-key"], "operation-stable");
+  assert.equal(JSON.parse(result.stdout).idempotencyKey, "operation-stable");
+});
+
+test("revoke-identity with an ambiguous prefix exits 2, lists shortened candidates and sends no DELETE", async () => {
+  const requests: TransportRequest[] = [];
+  const shared = "5555aaaabbbb";
+  const page = {
+    ...identityPage,
+    apiIdentities: [shared + "1".repeat(52), shared + "2".repeat(52)].map(
+      (apiFingerprint) => ({
+        apiFingerprint,
+        status: "ACTIVE",
+        kind: "api",
+        notBefore: "x",
+        notAfter: "y",
+      }),
+    ),
+  };
+  const result = await execute(
+    ["consumer", "revoke-identity", ...consumerTarget, "--fingerprint", shared],
+    {
+      env: consumerEnv,
+      transport: {
+        async request(request: TransportRequest) {
+          requests.push(request);
+          return { status: 200, headers: {}, body: page };
+        },
+      },
+    },
+  );
+  assert.equal(result.exitCode, 2);
+  assert.equal(result.stdout, "");
+  assert.deepEqual(
+    requests.map((r) => r.method),
+    ["GET"],
+  );
+  const error = JSON.parse(result.stderr);
+  assert.equal(error.error.outcome, "not_sent");
+  assert.match(error.error.message, /matches 2 identities/);
+  assert.ok(error.error.message.includes(`${shared}1111`.slice(0, 16)));
+  assert.ok(!error.error.message.includes("1".repeat(52)));
+});
+
+test("unknown prefix exits 2 with no DELETE", async () => {
+  const requests: TransportRequest[] = [];
+  const result = await execute(
+    [
+      "consumer",
+      "revoke-identity",
+      ...consumerTarget,
+      "--fingerprint",
+      "deadbeefdead",
+    ],
+    { env: consumerEnv, transport: identityTransport(requests) },
+  );
+  assert.equal(result.exitCode, 2);
+  assert.deepEqual(
+    requests.map((r) => r.method),
+    ["GET"],
+  );
+  assert.match(JSON.parse(result.stderr).error.message, /No API identity/);
+});
+
+for (const fingerprint of [
+  "41ab9c0d7e1",
+  "xyz",
+  "41ab9c0d7e12g",
+  "a".repeat(65),
+]) {
+  test(`fingerprint ${fingerprint.length} chars is rejected before any request`, async () => {
+    const result = await execute(
+      [
+        "consumer",
+        "revoke-identity",
+        ...consumerTarget,
+        "--fingerprint",
+        fingerprint,
+      ],
+      { env: consumerEnv },
+    );
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.requests.length, 0);
+  });
+}
+
+test("consumer commands reject unsupported options and a missing consumer id", async () => {
+  for (const args of [
+    ["consumer", "get"],
+    ["consumer", "get", ...consumerTarget, "--environment", "production"],
+    ["consumer", "list", "--consumer-id", "payments-prod"],
+    [
+      "consumer",
+      "get",
+      ...consumerTarget,
+      "--idempotency-key",
+      "operation-stable",
+    ],
+    ["consumer", "revoke-identity", ...consumerTarget],
+    ["consumer", "bogus"],
+  ]) {
+    const result = await execute(args, { env: consumerEnv });
+    assert.equal(result.exitCode, 2, JSON.stringify(args));
+    assert.equal(result.requests.length, 0);
+  }
+});
+
+test("consumer 404 maps to exit 4 without leaking the remote message", async () => {
+  const result = await execute(["consumer", "get", ...consumerTarget], {
+    env: consumerEnv,
+    status: 404,
+    body: { error: { code: "not_found", message: "REMOTE_SENTINEL" } },
+  });
+  assert.equal(result.exitCode, 4);
+  assert.equal(result.stdout, "");
+  const error = JSON.parse(result.stderr).error;
+  assert.equal(error.code, "not_found");
+  assert.match(error.message, /Consumer/);
+  assert.ok(!result.stderr.includes("REMOTE_SENTINEL"));
+});
+
+test("revoke-identity 404 maps to exit 4 and reports the rejected mutation", async () => {
+  const result = await execute(
+    ["consumer", "revoke-identity", ...consumerTarget, "--fingerprint", fpA],
+    { env: consumerEnv, status: 404, body: {} },
+  );
+  assert.equal(result.exitCode, 4);
+  assert.equal(JSON.parse(result.stderr).error.outcome, "rejected");
+});
+
+function pagedTransport(
+  requests: TransportRequest[],
+  pages: (cursor: string | null) => unknown,
+): HemligTransport {
+  return {
+    async request(request: TransportRequest) {
+      requests.push(request);
+      return {
+        status: 200,
+        headers: {},
+        body:
+          request.method === "DELETE"
+            ? { consumerId: "payments-prod", status: "REVOKED" }
+            : pages(request.url.searchParams.get("cursor")),
+      };
+    },
+  };
+}
+
+const revokeByPrefix = (prefix: string) => [
+  "consumer",
+  "revoke-identity",
+  ...consumerTarget,
+  "--fingerprint",
+  prefix,
+];
+
+test("prefix resolution follows pages and finds a match on page 2", async () => {
+  const requests: TransportRequest[] = [];
+  const result = await execute(revokeByPrefix("9f2c11223344"), {
+    env: consumerEnv,
+    transport: pagedTransport(requests, (cursor) =>
+      cursor === null
+        ? {
+            ...identityPage,
+            apiIdentities: identityPage.apiIdentities.slice(0, 1),
+            nextCursor: "page-2",
+          }
+        : {
+            ...identityPage,
+            apiIdentities: identityPage.apiIdentities.slice(2),
+          },
+    ),
+  });
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(
+    requests.map((r) => r.method),
+    ["GET", "GET", "DELETE"],
+  );
+  assert.equal(requests[1]!.url.searchParams.get("cursor"), "page-2");
+  assert.ok(requests[2]!.url.pathname.endsWith(fpC));
+});
+
+test("a repeated cursor fails closed with exit 7 and no DELETE", async () => {
+  const requests: TransportRequest[] = [];
+  const result = await execute(revokeByPrefix("9f2c11223344"), {
+    env: consumerEnv,
+    transport: pagedTransport(requests, () => ({
+      ...identityPage,
+      nextCursor: "same",
+    })),
+  });
+  assert.equal(result.exitCode, 7);
+  assert.equal(JSON.parse(result.stderr).error.code, "invalid_response");
+  assert.match(result.stderr, /full 64-hex/);
+  assert.ok(requests.every((r) => r.method === "GET"));
+});
+
+test("exceeding the page cap fails closed with exit 7 and no DELETE", async () => {
+  const requests: TransportRequest[] = [];
+  let n = 0;
+  const result = await execute(revokeByPrefix("9f2c11223344"), {
+    env: consumerEnv,
+    transport: pagedTransport(requests, () => ({
+      ...identityPage,
+      apiIdentities: [],
+      nextCursor: `cursor-${(n += 1)}`,
+    })),
+  });
+  assert.equal(result.exitCode, 7);
+  assert.equal(JSON.parse(result.stderr).error.outcome, "not_sent");
+  assert.ok(requests.length >= 100);
+  assert.ok(requests.every((r) => r.method === "GET"));
+});
+
+test("a malformed identity list is a protocol error (exit 7), not a network error", async () => {
+  for (const body of [
+    { consumerId: "x" },
+    { apiIdentities: [{ status: "ACTIVE" }] },
+  ]) {
+    const requests: TransportRequest[] = [];
+    const result = await execute(revokeByPrefix("9f2c11223344"), {
+      env: consumerEnv,
+      transport: pagedTransport(requests, () => body),
+    });
+    assert.equal(result.exitCode, 7);
+    assert.equal(JSON.parse(result.stderr).error.code, "invalid_response");
+    assert.ok(requests.every((r) => r.method === "GET"));
+  }
+});
+
+test("a matched fingerprint that is not 64 hex is never sent to DELETE", async () => {
+  const requests: TransportRequest[] = [];
+  const result = await execute(revokeByPrefix("9f2c11223344"), {
+    env: consumerEnv,
+    transport: pagedTransport(requests, () => ({
+      ...identityPage,
+      apiIdentities: [
+        { apiFingerprint: "9f2c11223344/../x", status: "ACTIVE" },
+      ],
+    })),
+  });
+  assert.equal(result.exitCode, 7);
+  assert.ok(requests.every((r) => r.method === "GET"));
+});
+
+test("a too-short consumer id is rejected before any request", async () => {
+  const result = await execute(["consumer", "get", "--consumer-id", "a"], {
+    env: consumerEnv,
+  });
+  assert.equal(result.exitCode, 2);
+  assert.equal(result.requests.length, 0);
+});
