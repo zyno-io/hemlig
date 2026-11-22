@@ -159,7 +159,7 @@ The receipt holds the identity with status `REVOKED`. Revoke only after the repl
 
 ## PKI
 
-`hemlig pki` manages external intermediate CAs and their CRLs. It uses the same administrator token, endpoint and receipt format as the other commands. Every command takes `--admin-url`, `--token-file` and `--timeout-ms`. Roles and CA states are in the PKI guide (`guide/pki.md`).
+`hemlig pki` manages external intermediate CAs and their CRLs. It uses the same administrator token, endpoint and receipt format as the other commands. Every command takes `--admin-url`, `--token-file` and `--timeout-ms`. Roles and CA states are in the [PKI guide](pki.md).
 
 | Command                                         | Options                                                                           | Client method                      |
 | ----------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- |
@@ -183,7 +183,7 @@ The receipt holds the identity with status `REVOKED`. Revoke only after the repl
 - Repeatable constraint flags: `--permit-dns`, `--exclude-dns`, `--permit-ip`, `--exclude-ip`, `--permit-uri`, `--exclude-uri`, and `--eku serverAuth|clientAuth`.
 - Policy flags: `--max-leaf-lifetime 90d`, repeatable `--leaf-key-algorithm`, `--capacity`, `--issuance-per-hour`, `--crl-validity 7d`, and `--display-name`. A duration is an integer of seconds, or an integer with an `s`, `m`, `h` or `d` suffix. The server enforces the ranges.
 - `--csr-out FILE` writes the CSR to the file and keeps it out of the receipt. The command exits 9 without creating the CA if the file already exists. Without the flag, the CSR is in `data.csrPem`.
-- `--rollover-from <ca>` copies the old CA's environment, key algorithm, constraints, policy and CRL validity, and increments the trailing integer of the name and the CN. If either has none, supply `--name` or `--subject`. Explicit flags override the copied values. See the CA rollover runbook (`operations/pki-ca-rollover.md`).
+- `--rollover-from <ca>` copies the old CA's environment, key algorithm, constraints, policy and CRL validity, and increments the trailing integer of the name and the CN. If either has none, supply `--name` or `--subject`. Explicit flags override the copied values. See the [CA rollover runbook](../operations/pki-ca-rollover.md).
 
 An Ed25519 key writes a `warning:` line to stderr, and the `warnings` array is in the receipt.
 
