@@ -1004,7 +1004,7 @@ spec:
 ```
 
 - Short names are `hmlissuer` and `hmlclusterissuer`. Printer columns are Ready, Reason, CA, Grant and Age. `spec` is immutable except `issuanceGrant`.
-- HemligConsumer (`hemlig.io/v1beta1`) gains an additive `spec.allowClusterIssuers` (default false). A cluster issuer is usable from any namespace, so it is a separate opt-in from `allowCrossNamespaceReferences` (`v1beta.ts:121,235`).
+- HemligConsumer (`hemlig.zyno.io/v1beta1`) gains an additive `spec.allowClusterIssuers` (default false). A cluster issuer is usable from any namespace, so it is a separate opt-in from `allowCrossNamespaceReferences` (`v1beta.ts:121,235`).
 - The provider namespace selector applies to the issuer's namespace (HemligIssuer) or the consumer's namespace (cluster issuer). `assertNamespaceAllowed` runs today while the **consumer** is reconciled (`v1beta.ts:478,1648`). The issuer reconciler and the CertificateRequest path therefore re-check at use time.
 - Hemlig can't see namespaces. Give mutually untrusted namespaces their own HemligConsumer and grant. A cluster issuer's grant is the union.
 

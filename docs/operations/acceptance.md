@@ -396,6 +396,67 @@ issue api2 0002 >/dev/null; issue api3 0003 >/dev/null; issue api4 0004; grep -i
 | CloudTrail | `Decrypt` with `purpose=pki-ca` and this `caId` from the `pki-issuer` role (issuance) and the `pki-admin` role (inline CRL) | |
 | Audit | Succeeded: `pki.grant.create`, four `pki.certificate.issue` (one `replayed: "true"`), `pki.certificate.revoke` (`crlEntry: "true"`). Failed: `pki.certificate.issue` with `certificate_revoked` and with `grant_hour`. No event for `GET /v1/pki/issuance-grants`. No object contains `-----BEGIN` | |
 
+## Gate PKI-5: cert-manager renews unattended
+
+Run after PKI-4, on Kind or EKS, with `acc-root` from PKI-2. This gate is manual: no Kind job exists in CI. Install cert-manager with Helm and its CRDs, then the controller chart from this release with default approval (`certManager.approval.grantDefaultApprover=true`). Use a consumer with a PKI-only AgentGrant, in namespace `pki5`. The run has no `HemligTrustBundle` CRD, which is inherent in this release.
+
+```sh
+cat > grant5.json <<'EOF2'
+{ "names": { "dns": { "allow": ["*.pki5.acc.example.com"] }, "maxSans": 10 },
+  "keyUsages": ["digitalSignature"],
+  "extendedKeyUsages": { "allow": ["serverAuth", "clientAuth"], "default": ["serverAuth"] },
+  "lifetime": { "defaultSeconds": 3600, "maxSeconds": 3600, "minSeconds": 600 },
+  "quotas": { "perHour": 10, "perDay": 100 } }
+EOF2
+hemlig pki grant create "$CONSUMER_ID" acc-k8s --ca acc-issuing-1 --file grant5.json
+kubectl apply -f - <<'EOF2'
+apiVersion: hemlig.zyno.io/v1alpha1
+kind: HemligIssuer
+metadata: { name: acc, namespace: pki5 }
+spec: { consumerRef: acc-consumer, issuanceGrant: acc-k8s }
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: { name: web, namespace: pki5 }
+spec:
+  secretName: web-tls
+  commonName: web.pki5.acc.example.com
+  dnsNames: [web.pki5.acc.example.com]
+  duration: 1h
+  renewBefore: 40m
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  issuerRef: { group: hemlig.zyno.io, kind: HemligIssuer, name: acc }
+EOF2
+kubectl -n pki5 wait certificate/web --for=condition=Ready --timeout=120s
+# Wait at least 45 minutes, then compare the revisions
+kubectl -n pki5 get certificaterequest -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.certificate}{"\n"}{end}'
+kubectl -n pki5 get secret web-tls -o jsonpath='{.data.tls\.crt}' | base64 -d > tls.crt
+kubectl -n pki5 get secret web-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
+openssl verify -CAfile acc-root/root.pem -untrusted tls.crt tls.crt
+openssl x509 -in ca.crt -noout -fingerprint -sha256
+kubectl apply -f - <<'EOF2'
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: { name: denied, namespace: pki5 }
+spec:
+  secretName: denied-tls
+  dnsNames: [api.not-granted.example.com]
+  issuerRef: { group: hemlig.zyno.io, kind: HemligIssuer, name: acc }
+EOF2
+kubectl -n pki5 get certificaterequest -o json | jq '.items[] | select(.metadata.annotations["cert-manager.io/certificate-name"] == "denied") | .status.conditions'
+```
+
+| Check | Pass | Fail means |
+| --- | --- | --- |
+| Renewal | At least 3 distinct serials across the CertificateRequests, and each `tls.crt` chain passes `openssl verify -CAfile acc-root/root.pem -untrusted tls.crt tls.crt` | The unattended renewal loop is broken |
+| Anchor | The SHA-256 fingerprint of `ca.crt` equals the recorded `acc-root/root.pem` fingerprint | `status.ca` is not the anchor |
+| Encoding | `tls.crt` equals the decoded `status.certificate` of the latest-revision CertificateRequest, and `ca.crt` equals the decoded `status.ca` | The base64 encoding is wrong |
+| Server copy | The leaf block equals `hemlig pki cert get acc-issuing-1 $SERIAL --out`, and the intermediate block equals the CA certificate | The returned chain differs from what Hemlig stored |
+| Denied name | A Certificate for `api.not-granted.example.com` ends `Ready=False` with reason `Failed` and `name_not_permitted` in the message | A denial was retried or hidden |
+| Restart | After `kubectl rollout restart` of the controller during a pending issuance, the request still becomes `Ready`, and `hemlig pki cert list --consumer` shows one certificate for it | The idempotency key was not reused |
+| Approval off (optional) | With `grantDefaultApprover=false`, a request stays `Waiting for approval` until approved | The controller approved by itself |
+| CRDs | The API server accepts both new CRDs, including their CEL immutability rules, and rejects a change of `spec.consumerRef` | A CEL rule failed validation. This is the only gate that proves them |
+
 ## Teardown
 
 ::: danger Compliance retention cannot be shortened by anyone

@@ -20,8 +20,10 @@ The [controller](../reference/glossary.md#kubernetes-controller) copies Hemlig s
 | `HemligConsumer` | Namespaced | `hmlconsumer` | Holds the bootstrap token and owns the identity Secret |
 | `HemligSecretImport` | Namespaced | `hmlimport` | Copies a granted Hemlig secret into a Kubernetes Secret |
 | `HemligSecretExport` | Namespaced | `hmlexport` | Pushes a Kubernetes Secret into Hemlig |
+| `HemligIssuer` | Namespaced | `hmlissuer` | Lets cert-manager request certificates through a PKI issuance grant |
+| `HemligClusterIssuer` | Cluster | `hmlclusterissuer` | The same, usable from any namespace the issuer selects |
 
-Every field is in the [CRD reference](../reference/crds.md).
+Every field is in the [CRD reference](../reference/crds.md). The two issuer kinds are covered in [Issue certificates with cert-manager](cert-manager.md).
 
 ## Install the controller
 
@@ -67,6 +69,8 @@ spec:
 ```sh [Without Helm]
 # Apply the CRDs and manager manifest from packages/kubernetes-controller/config/
 kubectl apply -f packages/kubernetes-controller/config/crds.yaml
+# Optional: lets cert-manager's built-in approver approve Hemlig requests (see the cert-manager guide)
+kubectl apply -f packages/kubernetes-controller/config/cert-manager-approval.yaml
 # manager.yaml has no Namespace resource
 kubectl create namespace hemlig-system
 # The manifest image is a placeholder. Replace it with a release version
@@ -78,7 +82,7 @@ docker build -f packages/kubernetes-controller/Dockerfile -t hemlig-controller:d
 
 :::
 
-The chart installs the CRDs. Helm never upgrades CRDs from a chart, so on chart upgrades apply CRD changes yourself, or use Flux with `CreateReplace` as above. Values are in [Configuration](../reference/configuration.md). The controller runs as one replica (there is no leader election) with a zero-surge rollout. For upgrades see [Controller rollout via Flux](../operations/flux-rollout.md).
+The chart installs the CRDs (`hemlig.zyno.io.yaml` and `hemlig.zyno.io-pki.yaml`). Helm never upgrades CRDs from a chart, so on chart upgrades apply both CRD files yourself, or use Flux with `CreateReplace` as above. Values are in [Configuration](../reference/configuration.md). The controller runs as one replica (there is no leader election) with a zero-surge rollout. For upgrades see [Controller rollout via Flux](../operations/flux-rollout.md).
 
 Verify:
 
@@ -161,6 +165,7 @@ The controller stores its private key and certificate in `hemlig-payments-client
 | Retries | Capped exponential backoff with jitter; see [Limits and timings](../reference/limits.md#controller) |
 | Imports | Written to a Secret the import owns. It never overwrites a Secret owned by something else. See [Import a secret](import-secret.md) |
 | Exports | Reject an import target as their source. See [Export a Secret](export-secret.md) |
+| cert-manager requests | Processed as they change, with a 5-minute resync. See [Issue certificates with cert-manager](cert-manager.md) |
 | Deletion | An import target is removed only when Hemlig confirms access was revoked. See [Safety](../operations/safety.md) |
 
 ### Share one consumer across namespaces

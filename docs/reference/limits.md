@@ -125,4 +125,9 @@ Object Lock Compliance retention cannot be shortened by anyone. Revisions and au
 | Failed pass retry | Exponential from 1 s up to 5 minutes, with jitter; honours `Retry-After` | `packages/kubernetes-controller/src/v1beta.ts:1897-1903` |
 | Failed identity rotation retry | Exponential from 60 s up to 6 hours | `packages/kubernetes-controller/src/v1beta.ts:738-739` |
 | `rotateBefore` default | 720 hours (30 days) before expiry, capped at half the certificate lifetime; units `s`, `m`, `h`, `d`; `0s` disables | `packages/kubernetes-controller/src/v1beta.ts:51,2223-2262`, `packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io.yaml:82` |
+| cert-manager issuer concurrency | 4 Hemlig PKI calls at once (`HEMLIG_PKI_CONCURRENCY`, `certManager.maxConcurrentRequests`, 1 to 64) and at most 2 per consumer | `packages/kubernetes-controller/src/pki/types.ts`, `packages/kubernetes-controller/src/pki/queue.ts` |
+| cert-manager issuer retries | Slow backoff 30 s to 5 minutes for conditions that need a person or a Hemlig change; fast backoff 1 s to 5 minutes for network, 5xx and gateway 429, both with jitter. A Hemlig `429` waits `Retry-After` plus up to 10% (at most 30 s) of jitter | `packages/kubernetes-controller/src/pki/types.ts`, `packages/kubernetes-controller/src/pki/queue.ts` |
+| cert-manager issuer resync | Every 5 minutes (jittered), over requests already known to be pending | `packages/kubernetes-controller/src/pki/module.ts` |
+| cert-manager issuer remote timeout | 60 seconds per Hemlig call | `packages/kubernetes-controller/src/pki/types.ts` |
+| cert-manager issuer relist page | 500 objects, at startup, after `410 Gone` and when a CRD appears | `packages/kubernetes-controller/src/pki/module.ts` |
 | Default replicas | 1 | `packages/kubernetes-controller/chart/hemlig-controller/values.yaml:6` |
