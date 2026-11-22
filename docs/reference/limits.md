@@ -89,5 +89,5 @@ Object Lock Compliance retention cannot be shortened by anyone. Revisions and au
 | Source Secret debounce | 250 ms; `HEMLIG_SOURCE_DEBOUNCE_MS`, `controller.sourceDebounceMilliseconds` | `packages/kubernetes-controller/src/v1beta.ts:2013-2016`, `packages/kubernetes-controller/chart/hemlig-controller/values.yaml:47` |
 | Failed pass retry | Exponential from 1 s up to 5 minutes, with jitter; honours `Retry-After` | `packages/kubernetes-controller/src/v1beta.ts:1897-1903` |
 | Failed identity rotation retry | Exponential from 60 s up to 6 hours | `packages/kubernetes-controller/src/v1beta.ts:738-739` |
-| `rotateBefore` default | 720 hours (30 days) before expiry, capped at half the certificate lifetime; units `s`, `m`, `h`, `d`; `0s` disables | `packages/kubernetes-controller/src/v1beta.ts:51,2223-2262`, `packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.io.yaml:82` |
+| `rotateBefore` default | 720 hours (30 days) before expiry, capped at half the certificate lifetime; units `s`, `m`, `h`, `d`; `0s` disables | `packages/kubernetes-controller/src/v1beta.ts:51,2223-2262`, `packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io.yaml:82` |
 | Default replicas | 1 | `packages/kubernetes-controller/chart/hemlig-controller/values.yaml:6` |

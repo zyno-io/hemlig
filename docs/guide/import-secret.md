@@ -15,7 +15,7 @@ Create one `HemligSecretImport` and Hemlig keeps a Kubernetes Secret in your nam
 1. Declare the import. Replace the names with the ones your platform team gave you.
 
    ```yaml
-   apiVersion: hemlig.io/v1beta1
+   apiVersion: hemlig.zyno.io/v1beta1
    kind: HemligSecretImport
    metadata:
      name: stripe-api-key

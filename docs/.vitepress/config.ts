@@ -163,6 +163,10 @@ export default withMermaid(
                     text: "Upgrade: immutable secret UIDs",
                     link: "/operations/upgrade-secret-uids",
                   },
+                  {
+                    text: "Upgrade: API group hemlig.zyno.io",
+                    link: "/operations/crd-group-migration",
+                  },
                 ],
               },
               {

@@ -21,7 +21,7 @@ flowchart LR
 
 1. Deploy the new release with the [same procedure as a first deploy](../guide/deploying.md#_4-deploy).
 2. Run the scripts below that apply to the version you came from.
-3. Upgrade the controller. It needs a server that supports `GET /v1/agent/sync`, so [`backfill:agent-sync`](#backfill-agent-sync) must have run first.
+3. Upgrade the controller. It needs a server that supports `GET /v1/agent/sync`, so [`backfill:agent-sync`](#backfill-agent-sync) must have run first. Moving from a chart whose CRDs use the `hemlig.io` API group needs the offline [API group migration](crd-group-migration.md).
 4. Verify a secret can still be read and an import still syncs.
 
 New deployments need none of the scripts: new records are written in the current shape.

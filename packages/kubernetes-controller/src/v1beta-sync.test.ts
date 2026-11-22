@@ -148,8 +148,8 @@ const fixture = (
       {
         metadata: {
           resourceVersion: "1",
-          labels: { "hemlig.io/managed-by": "consumer" },
-          annotations: { "hemlig.io/consumer-owner": "ns/consumer" },
+          labels: { "hemlig.zyno.io/managed-by": "consumer" },
+          annotations: { "hemlig.zyno.io/consumer-owner": "ns/consumer" },
         },
         data: {
           "tls.crt": b64(options.identity?.crtPem ?? "fixture"),
@@ -739,7 +739,7 @@ const annotation = (f: Fixture, key: string): string | undefined =>
 const condition = (resource: Resource, type: string) =>
   (resource.status?.conditions as { type: string; status: string; reason: string }[])
     ?.find((entry) => entry.type === type);
-const pendingKeys = ["hemlig.io.next-tls.key", "hemlig.io.next-csr", "hemlig.io.next-tls.crt"];
+const pendingKeys = ["hemlig.zyno.io.next-tls.key", "hemlig.zyno.io.next-csr", "hemlig.zyno.io.next-tls.crt"];
 const withVerification = (f: Fixture) =>
   f.onConfig((certificate) => {
     if (certificate === f.original) throw new Error("unexpected old-cert config read");
@@ -773,8 +773,8 @@ test("R2: a due identity is rotated through persisted pending state and swapped 
   let seenPending: { key?: string; csr?: string } = {};
   f.onRotate(async (csrPem) => {
     seenPending = {
-      key: data(f, "hemlig.io.next-tls.key"),
-      csr: data(f, "hemlig.io.next-csr"),
+      key: data(f, "hemlig.zyno.io.next-tls.key"),
+      csr: data(f, "hemlig.zyno.io.next-csr"),
     };
     assert.equal(seenPending.csr, csrPem);
     return (await rotateDefault(f, csrPem)) as never;
@@ -785,15 +785,15 @@ test("R2: a due identity is rotated through persisted pending state and swapped 
   const newCrt = data(f, "tls.crt")!;
   assert.notEqual(newCrt, f.original);
   assert.equal(data(f, "tls.key"), seenPending.key);
-  assert.equal(data(f, "hemlig.io.previous-tls.crt"), f.original);
+  assert.equal(data(f, "hemlig.zyno.io.previous-tls.crt"), f.original);
   assert.equal(
-    data(f, "hemlig.io.previous-tls.key"),
+    data(f, "hemlig.zyno.io.previous-tls.key"),
     sharedIdentityKey.privateKeyPem,
   );
   for (const key of pendingKeys) assert.equal(data(f, key), undefined);
-  assert.ok(annotation(f, "hemlig.io/rotated-at"));
+  assert.ok(annotation(f, "hemlig.zyno.io/rotated-at"));
   assert.equal(
-    annotation(f, "hemlig.io/api-fingerprint"),
+    annotation(f, "hemlig.zyno.io/api-fingerprint"),
     f.consumer.status?.identity.apiFingerprint,
   );
   assert.equal(f.ensured.at(-1)?.certificate.toString(), newCrt);
@@ -821,8 +821,8 @@ test("R3: a failed rotation request keeps the old identity Ready and retries wit
   assert.equal(data(f, "tls.crt"), f.original);
   assert.equal(condition(f.consumer, "Ready")?.status, "True");
   assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "RotationFailed");
-  const pendingCsr = data(f, "hemlig.io.next-csr");
-  const pendingKey = data(f, "hemlig.io.next-tls.key");
+  const pendingCsr = data(f, "hemlig.zyno.io.next-csr");
+  const pendingKey = data(f, "hemlig.zyno.io.next-tls.key");
   assert.ok(pendingCsr && pendingKey);
   fail = false;
   await f.pass();
@@ -842,7 +842,7 @@ test("R3b: an issued but unverified certificate is persisted and swapped later w
   });
   await f.pass();
   assert.equal(data(f, "tls.crt"), f.original);
-  assert.ok(data(f, "hemlig.io.next-tls.crt"));
+  assert.ok(data(f, "hemlig.zyno.io.next-tls.crt"));
   assert.equal(condition(f.consumer, "Ready")?.status, "True");
   assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "VerificationFailed");
   verified = true;
@@ -877,13 +877,13 @@ test("R5: an old server's bad_request is RotationUnsupported and keeps the pendi
     throw new HemligError(400, "bad_request", "bad_request");
   });
   await f.pass();
-  const pendingKey = data(f, "hemlig.io.next-tls.key");
-  const pendingCsr = data(f, "hemlig.io.next-csr");
+  const pendingKey = data(f, "hemlig.zyno.io.next-tls.key");
+  const pendingCsr = data(f, "hemlig.zyno.io.next-csr");
   assert.ok(pendingKey);
   assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "RotationUnsupported");
   assert.equal(condition(f.consumer, "Ready")?.status, "True");
   await f.pass();
-  assert.equal(data(f, "hemlig.io.next-tls.key"), pendingKey);
+  assert.equal(data(f, "hemlig.zyno.io.next-tls.key"), pendingKey);
   assert.equal(f.rotate.mock.calls[1]?.arguments[0], pendingCsr);
 });
 
@@ -938,10 +938,10 @@ test("R9: a manual token rotates once even when not due and is consumed durably"
   const identity = makeIdentity(300);
   const f = fixture(t, { identity });
   withVerification(f);
-  f.consumer.metadata.annotations = { "hemlig.io/rotate-identity": "t1" };
+  f.consumer.metadata.annotations = { "hemlig.zyno.io/rotate-identity": "t1" };
   await f.pass();
   assert.equal(f.rotate.mock.callCount(), 1);
-  assert.equal(annotation(f, "hemlig.io/rotation-request"), "t1");
+  assert.equal(annotation(f, "hemlig.zyno.io/rotation-request"), "t1");
   assert.equal(f.consumer.status?.identity.rotationRequest, "t1");
   f.sync.mock.mockImplementationOnce(async () => {
     throw new HemligError(503, "unavailable");
@@ -964,7 +964,7 @@ test("R10: rotateBefore 0h disables automatic rotation but not manual rotation",
     condition(f.consumer, "IdentityRotation")?.reason,
     "AutomaticRotationDisabled",
   );
-  f.consumer.metadata.annotations = { "hemlig.io/rotate-identity": "now" };
+  f.consumer.metadata.annotations = { "hemlig.zyno.io/rotate-identity": "now" };
   await f.pass();
   assert.equal(f.rotate.mock.callCount(), 1);
 });
@@ -988,7 +988,7 @@ test("R12: a failed synchronization attempts no rotation", async (t) => {
   });
   await f.pass();
   assert.equal(f.rotate.mock.callCount(), 0);
-  assert.equal(data(f, "hemlig.io.next-tls.key"), undefined);
+  assert.equal(data(f, "hemlig.zyno.io.next-tls.key"), undefined);
 });
 
 const watchedFixture = async (t: TestContext) => {
@@ -1012,7 +1012,7 @@ const watchedFixture = async (t: TestContext) => {
   const consumerWatch = watches.find((entry) => entry.path.endsWith("/hemligconsumers"));
   assert.ok(consumerWatch);
   const event = (annotations: Record<string, string>, rotationRequest?: string) => ({
-    apiVersion: "hemlig.io/v1beta1",
+    apiVersion: "hemlig.zyno.io/v1beta1",
     kind: "HemligConsumer",
     metadata: { generation: 1, resourceVersion: "5", annotations },
     status: { observedGeneration: 1, identity: { rotationRequest } },
@@ -1037,7 +1037,7 @@ test("R13: a new manual rotation annotation schedules a reconcile; own status up
   const before = f.counts();
   await send({});
   assert.deepEqual(f.counts(), before);
-  await send({ "hemlig.io/rotate-identity": "t2" }, "t1");
+  await send({ "hemlig.zyno.io/rotate-identity": "t2" }, "t1");
   assert.equal(f.counts().sync, before.sync + 1);
   await stop();
 });
@@ -1045,7 +1045,7 @@ test("R13: a new manual rotation annotation schedules a reconcile; own status up
 test("R13b: a watch event whose rotation annotation equals the consumed request schedules no reconcile", async (t) => {
   const { f, send, stop } = await watchedFixture(t);
   const before = f.counts();
-  await send({ "hemlig.io/rotate-identity": "t1" }, "t1");
+  await send({ "hemlig.zyno.io/rotate-identity": "t1" }, "t1");
   assert.deepEqual(f.counts(), before);
   await stop();
 });
@@ -1204,8 +1204,8 @@ const pendingNext = (f: Fixture) => {
     new Date(now + 365 * day),
   );
   Object.assign(f.secrets.get("identity").data, {
-    "hemlig.io.next-tls.key": b64(pair.privateKeyPem),
-    "hemlig.io.next-tls.crt": b64(crt),
+    "hemlig.zyno.io.next-tls.key": b64(pair.privateKeyPem),
+    "hemlig.zyno.io.next-tls.crt": b64(crt),
   });
   return crt;
 };
@@ -1234,7 +1234,7 @@ test("L2: a rejected old certificate with a valid persisted successor swaps and 
   rejectOldSync(f);
   await f.pass();
   assert.equal(data(f, "tls.crt"), nextCrt);
-  assert.equal(data(f, "hemlig.io.previous-tls.crt"), f.original);
+  assert.equal(data(f, "hemlig.zyno.io.previous-tls.crt"), f.original);
   for (const key of pendingKeys) assert.equal(data(f, key), undefined);
   assert.equal(condition(f.consumer, "Ready")?.status, "True");
   assert.equal(f.ensured.at(-1)?.certificate.toString(), nextCrt);
@@ -1254,8 +1254,8 @@ test("L2: a successor that fails verification leaves AuthenticationFailed with p
   await f.pass();
   assert.equal(condition(f.consumer, "Ready")?.reason, "AuthenticationFailed");
   assert.equal(data(f, "tls.crt"), f.original);
-  assert.equal(data(f, "hemlig.io.next-tls.crt"), nextCrt);
-  assert.ok(data(f, "hemlig.io.next-tls.key"));
+  assert.equal(data(f, "hemlig.zyno.io.next-tls.crt"), nextCrt);
+  assert.ok(data(f, "hemlig.zyno.io.next-tls.key"));
   assert.equal(f.secrets.has("import-a"), true);
   assert.equal(f.secrets.has("import-b"), true);
 });
@@ -1272,7 +1272,7 @@ test("L3: an operator changing tls.crt before the swap prevents the swap and is 
   await f.pass();
   assert.equal(data(f, "tls.crt"), operator.crtPem);
   assert.equal(data(f, "tls.key"), operator.keyPem);
-  assert.equal(data(f, "hemlig.io.previous-tls.crt"), undefined);
+  assert.equal(data(f, "hemlig.zyno.io.previous-tls.crt"), undefined);
   assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "RotationFailed");
 });
 
@@ -1296,7 +1296,7 @@ test("L2: a successor is not promoted when the current certificate names another
   await f.pass();
   assert.equal(condition(f.consumer, "Ready")?.reason, "AuthenticationFailed");
   assert.equal(data(f, "tls.crt"), f.original);
-  assert.equal(data(f, "hemlig.io.next-tls.crt"), nextCrt);
+  assert.equal(data(f, "hemlig.zyno.io.next-tls.crt"), nextCrt);
 });
 
 test("L2: a transient verification failure is retried instead of reported as AuthenticationFailed", async (t) => {
@@ -1310,7 +1310,7 @@ test("L2: a transient verification failure is retried instead of reported as Aut
   await f.pass();
   assert.notEqual(condition(f.consumer, "Ready")?.reason, "AuthenticationFailed");
   assert.equal(data(f, "tls.crt"), f.original);
-  assert.equal(data(f, "hemlig.io.next-tls.crt"), nextCrt);
+  assert.equal(data(f, "hemlig.zyno.io.next-tls.crt"), nextCrt);
   assert.equal(f.secrets.has("import-a"), true);
 });
 
@@ -1322,7 +1322,7 @@ test("L3: an operator rollback between passes discards pending material staged f
     return f.config;
   });
   await f.pass();
-  assert.ok(data(f, "hemlig.io.next-tls.crt"), "successor issued and persisted");
+  assert.ok(data(f, "hemlig.zyno.io.next-tls.crt"), "successor issued and persisted");
   const operator = makeIdentity(200);
   const secret = f.secrets.get("identity");
   secret.data["tls.crt"] = b64(operator.crtPem);
@@ -1343,8 +1343,8 @@ test("C1: identity_already_rotated reports and keeps the pending key", async (t)
   });
   await f.pass();
   assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "IdentityAlreadyRotated");
-  assert.ok(data(f, "hemlig.io.next-tls.key"));
-  assert.ok(data(f, "hemlig.io.next-csr"));
+  assert.ok(data(f, "hemlig.zyno.io.next-tls.key"));
+  assert.ok(data(f, "hemlig.zyno.io.next-csr"));
 });
 
 test("C1b: identity_rotation_conflict is transient and keeps the staged key", async (t) => {
@@ -1354,8 +1354,8 @@ test("C1b: identity_rotation_conflict is transient and keeps the staged key", as
   });
   await f.pass();
   assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "RotationConflict");
-  assert.ok(data(f, "hemlig.io.next-tls.key"));
-  assert.ok(data(f, "hemlig.io.next-csr"));
+  assert.ok(data(f, "hemlig.zyno.io.next-tls.key"));
+  assert.ok(data(f, "hemlig.zyno.io.next-csr"));
 });
 
 test("C2: rotation_replay_inactive discards the pending key", async (t) => {
@@ -1386,8 +1386,8 @@ test("C4: a code-less 403 at rotate time is AuthenticationFailed and keeps the p
   });
   await f.pass();
   assert.equal(condition(f.consumer, "IdentityRotation")?.reason, "AuthenticationFailed");
-  assert.ok(data(f, "hemlig.io.next-tls.key"));
-  assert.ok(data(f, "hemlig.io.next-csr"));
+  assert.ok(data(f, "hemlig.zyno.io.next-tls.key"));
+  assert.ok(data(f, "hemlig.zyno.io.next-csr"));
 });
 
 test("L4: a resourceVersion conflict on the pending-key write is resumable with a single issuance", async (t) => {
@@ -1395,7 +1395,7 @@ test("L4: a resourceVersion conflict on the pending-key write is resumable with 
   const replace = f.core.replaceNamespacedSecret.bind(f.core);
   let conflicted = false;
   f.core.replaceNamespacedSecret = async (input: { name: string; body: any }) => {
-    if (!conflicted && input.body.data["hemlig.io.next-tls.key"] !== undefined) {
+    if (!conflicted && input.body.data["hemlig.zyno.io.next-tls.key"] !== undefined) {
       conflicted = true;
       // A concurrent writer bumps the Secret between our read and write.
       const stored = f.secrets.get(input.name);
@@ -1407,7 +1407,7 @@ test("L4: a resourceVersion conflict on the pending-key write is resumable with 
   assert.ok(conflicted);
   assert.equal(f.rotate.mock.callCount(), 0);
   assert.equal(data(f, "tls.crt"), f.original);
-  assert.equal(data(f, "hemlig.io.next-tls.key"), undefined);
+  assert.equal(data(f, "hemlig.zyno.io.next-tls.key"), undefined);
   await f.pass();
   assert.equal(f.rotate.mock.callCount(), 1);
   assert.notEqual(data(f, "tls.crt"), f.original);

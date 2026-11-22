@@ -28,26 +28,26 @@ import {
   payloadToKubernetesData,
 } from "./index";
 
-const group = "hemlig.io";
+const group = "hemlig.zyno.io";
 const version = "v1beta1";
 const providerPlural = "hemligproviders";
 const consumerPlural = "hemligconsumers";
 const importPlural = "hemligsecretimports";
 const exportPlural = "hemligsecretexports";
-const controllerLabel = "hemlig.io/managed-by";
-const consumerOwnerAnnotation = "hemlig.io/consumer-owner";
-const identityCsrDataKey = "hemlig.io.csr";
-const rotateIdentityAnnotation = "hemlig.io/rotate-identity";
-const rotationRequestAnnotation = "hemlig.io/rotation-request";
-const rotatedAtAnnotation = "hemlig.io/rotated-at";
-const apiFingerprintAnnotation = "hemlig.io/api-fingerprint";
-const nextKeyDataKey = "hemlig.io.next-tls.key";
-const nextCsrDataKey = "hemlig.io.next-csr";
-const nextCertificateDataKey = "hemlig.io.next-tls.crt";
-const previousCertificateDataKey = "hemlig.io.previous-tls.crt";
-const previousKeyDataKey = "hemlig.io.previous-tls.key";
+const controllerLabel = "hemlig.zyno.io/managed-by";
+const consumerOwnerAnnotation = "hemlig.zyno.io/consumer-owner";
+const identityCsrDataKey = "hemlig.zyno.io.csr";
+const rotateIdentityAnnotation = "hemlig.zyno.io/rotate-identity";
+const rotationRequestAnnotation = "hemlig.zyno.io/rotation-request";
+const rotatedAtAnnotation = "hemlig.zyno.io/rotated-at";
+const apiFingerprintAnnotation = "hemlig.zyno.io/api-fingerprint";
+const nextKeyDataKey = "hemlig.zyno.io.next-tls.key";
+const nextCsrDataKey = "hemlig.zyno.io.next-csr";
+const nextCertificateDataKey = "hemlig.zyno.io.next-tls.crt";
+const previousCertificateDataKey = "hemlig.zyno.io.previous-tls.crt";
+const previousKeyDataKey = "hemlig.zyno.io.previous-tls.key";
 /** Binds staged next-* material to the certificate that requested it. */
-const nextPredecessorAnnotation = "hemlig.io/next-predecessor-sha256";
+const nextPredecessorAnnotation = "hemlig.zyno.io/next-predecessor-sha256";
 const defaultRotateBeforeMilliseconds = 720 * 3_600_000;
 
 export interface ObjectMeta {
@@ -94,7 +94,7 @@ interface ReconciliationStatus {
 }
 
 export interface HemligProvider {
-  readonly apiVersion: "hemlig.io/v1beta1";
+  readonly apiVersion: "hemlig.zyno.io/v1beta1";
   readonly kind: "HemligProvider";
   readonly metadata: ObjectMeta;
   readonly spec: {
@@ -107,7 +107,7 @@ export interface HemligProvider {
 }
 
 export interface HemligConsumer {
-  readonly apiVersion: "hemlig.io/v1beta1";
+  readonly apiVersion: "hemlig.zyno.io/v1beta1";
   readonly kind: "HemligConsumer";
   readonly metadata: ObjectMeta;
   readonly spec: {
@@ -124,7 +124,7 @@ export interface HemligConsumer {
 }
 
 export interface HemligSecretImport {
-  readonly apiVersion: "hemlig.io/v1beta1";
+  readonly apiVersion: "hemlig.zyno.io/v1beta1";
   readonly kind: "HemligSecretImport";
   readonly metadata: ObjectMeta;
   readonly spec: {
@@ -139,7 +139,7 @@ export interface HemligSecretImport {
 }
 
 export interface HemligSecretExport {
-  readonly apiVersion: "hemlig.io/v1beta1";
+  readonly apiVersion: "hemlig.zyno.io/v1beta1";
   readonly kind: "HemligSecretExport";
   readonly metadata: ObjectMeta;
   readonly spec: {
@@ -682,7 +682,7 @@ export class HemligV1BetaController {
               "IdentityRotation",
               "True",
               "AutomaticRotationDisabled",
-              "Automatic rotation is disabled; annotate the HemligConsumer with hemlig.io/rotate-identity to rotate manually.",
+              "Automatic rotation is disabled; annotate the HemligConsumer with hemlig.zyno.io/rotate-identity to rotate manually.",
             )
           : condition(
               "IdentityRotation",
@@ -1184,9 +1184,9 @@ export class HemligV1BetaController {
         labels: { [controllerLabel]: "consumer" },
         annotations: {
           [consumerOwnerAnnotation]: owner,
-          "hemlig.io/provider": provider.metadata.name,
-          "hemlig.io/grant-id": enrolled.grant.grantId,
-          "hemlig.io/api-fingerprint": enrolled.apiFingerprint,
+          "hemlig.zyno.io/provider": provider.metadata.name,
+          "hemlig.zyno.io/grant-id": enrolled.grant.grantId,
+          "hemlig.zyno.io/api-fingerprint": enrolled.apiFingerprint,
         },
       },
       // Kubernetes treats Secret.type as immutable. The pending identity is
@@ -1230,8 +1230,8 @@ export class HemligV1BetaController {
         labels: { [controllerLabel]: "consumer" },
         annotations: {
           [consumerOwnerAnnotation]: owner,
-          "hemlig.io/provider": provider.metadata.name,
-          "hemlig.io/identity-state": "pending-bootstrap",
+          "hemlig.zyno.io/provider": provider.metadata.name,
+          "hemlig.zyno.io/identity-state": "pending-bootstrap",
         },
       },
       type: "Opaque",
@@ -1395,12 +1395,12 @@ export class HemligV1BetaController {
           namespace,
           labels: { [controllerLabel]: "import" },
           annotations: {
-            "hemlig.io/import-owner": owner,
-            "hemlig.io/secret-id": remote.secretId,
-            "hemlig.io/secret-uid": selected.secretUid,
-            "hemlig.io/control-version-id": remote.controlVersionId,
-            "hemlig.io/payload-version-id": remote.payloadVersionId,
-            "hemlig.io/data-checksum": stringMapChecksum(data),
+            "hemlig.zyno.io/import-owner": owner,
+            "hemlig.zyno.io/secret-id": remote.secretId,
+            "hemlig.zyno.io/secret-uid": selected.secretUid,
+            "hemlig.zyno.io/control-version-id": remote.controlVersionId,
+            "hemlig.zyno.io/payload-version-id": remote.payloadVersionId,
+            "hemlig.zyno.io/data-checksum": stringMapChecksum(data),
           },
         },
         type: resource.spec.target?.type ?? "Opaque",
@@ -1752,12 +1752,12 @@ export class HemligV1BetaController {
       if (
         !isOwnedByImport(current.metadata, owner) ||
         current.type !== type ||
-        annotations?.["hemlig.io/secret-uid"] !== secretUid ||
-        annotations?.["hemlig.io/control-version-id"] !==
+        annotations?.["hemlig.zyno.io/secret-uid"] !== secretUid ||
+        annotations?.["hemlig.zyno.io/control-version-id"] !==
           status.controlVersionId ||
-        annotations?.["hemlig.io/payload-version-id"] !==
+        annotations?.["hemlig.zyno.io/payload-version-id"] !==
           status.payloadVersionId ||
-        annotations?.["hemlig.io/data-checksum"] !==
+        annotations?.["hemlig.zyno.io/data-checksum"] !==
           stringMapChecksum(current.data ?? {})
       ) {
         return undefined;

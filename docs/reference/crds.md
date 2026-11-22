@@ -8,9 +8,9 @@ pageType: reference
 
 Field-by-field reference for the four Hemlig custom resources, plus every status reason the controller reports.
 
-Group `hemlig.io`, version `v1beta1` (the CRDs also serve `v1alpha1` for imports
+Group `hemlig.zyno.io`, version `v1beta1` (the CRDs also serve `v1alpha1` for imports
 and exports during migration; it is not extended). The schemas live in
-[`chart/hemlig-controller/crds/hemlig.io.yaml`](https://github.com/zyno-io/hemlig/blob/main/packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.io.yaml).
+[`chart/hemlig-controller/crds/hemlig.zyno.io.yaml`](https://github.com/zyno-io/hemlig/blob/main/packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io.yaml).
 For usage see the [controller guide](../guide/kubernetes.md).
 
 ## HemligProvider (cluster-scoped)
@@ -48,7 +48,7 @@ Short name `hmlconsumer`. Has a `status` subresource.
 | `identity.notBefore`, `identity.notAfter` | Validity of that certificate                                                                      |
 | `identity.rotateAfter`                 | When automatic rotation becomes due                                                                  |
 | `identity.lastRotationTime`            | When the last rotation completed                                                                     |
-| `identity.rotationRequest`             | Last honored `hemlig.io/rotate-identity` token                                                       |
+| `identity.rotationRequest`             | Last honored `hemlig.zyno.io/rotate-identity` token                                                       |
 | `identity.lastRotationError`           | Most recent rotation failure, cleared on success                                                     |
 
 The `identity` fields arrived in v0.3.0. How to read them is in [Identity rotation](../operations/identity-rotation.md#observe-rotation).
@@ -96,13 +96,13 @@ Status adds `sourceChecksum`.
 
 | Key                              | On               | Meaning                                                              |
 | -------------------------------- | ---------------- | -------------------------------------------------------------------- |
-| `hemlig.io/managed-by`           | Secrets          | `consumer` for identity Secrets, `import` for import targets         |
-| `hemlig.io/consumer-owner`       | identity Secret  | Owning `namespace/name` of the `HemligConsumer`                      |
-| `hemlig.io/import-owner`         | import target    | Owning import                                                        |
-| `hemlig.io/secret-id`, `secret-uid`, `control-version-id`, `payload-version-id`, `data-checksum` | import target | Provenance of the materialized data |
-| `hemlig.io/provider`, `grant-id`, `api-fingerprint` | identity Secret | Provider name, grant, and fingerprint of the current leaf |
-| `hemlig.io/rotate-identity`      | HemligConsumer   | Forces one rotation (see [Identity rotation](../operations/identity-rotation.md#force-a-rotation)) |
-| `hemlig.io/rotated-at`           | identity Secret  | When the current certificate was swapped in                           |
+| `hemlig.zyno.io/managed-by`           | Secrets          | `consumer` for identity Secrets, `import` for import targets         |
+| `hemlig.zyno.io/consumer-owner`       | identity Secret  | Owning `namespace/name` of the `HemligConsumer`                      |
+| `hemlig.zyno.io/import-owner`         | import target    | Owning import                                                        |
+| `hemlig.zyno.io/secret-id`, `secret-uid`, `control-version-id`, `payload-version-id`, `data-checksum` | import target | Provenance of the materialized data |
+| `hemlig.zyno.io/provider`, `grant-id`, `api-fingerprint` | identity Secret | Provider name, grant, and fingerprint of the current leaf |
+| `hemlig.zyno.io/rotate-identity`      | HemligConsumer   | Forces one rotation (see [Identity rotation](../operations/identity-rotation.md#force-a-rotation)) |
+| `hemlig.zyno.io/rotated-at`           | identity Secret  | When the current certificate was swapped in                           |
 
 ## Status reasons
 
@@ -117,7 +117,7 @@ The reasons below come from [`v1beta.ts`](https://github.com/zyno-io/hemlig/blob
 | --- | --- | --- | --- |
 | `IdentityReady` | True | Enrolled and syncing | None |
 | `ProviderNotFound` | False | `providerRef` names no `HemligProvider` | Fix `providerRef` or create the provider |
-| `ProviderNotPermitted` | False | The namespace labels do not match the provider's `allowedNamespaces` | Label the namespace, for example `kubectl label namespace payments hemlig.io/provider-production=true` |
+| `ProviderNotPermitted` | False | The namespace labels do not match the provider's `allowedNamespaces` | Label the namespace, for example `kubectl label namespace payments hemlig.zyno.io/provider-production=true` |
 | `BootstrapTokenUnavailable` | False | The bootstrap Secret or its key is missing and no identity exists yet | Create the Secret. If the token expired, ask an administrator for a new one ([Give a cluster access](../guide/agent-grants.md#replace-an-expired-token)) |
 | `IdentityOwnershipConflict` | False | The identity Secret exists but this consumer does not own it, or the owned Secret is missing a key | Pick another `identity.secretName`, or delete the foreign Secret |
 | `AuthenticationFailed` | False | Hemlig rejected the client certificate (expired, revoked or untrusted) <Badge type="tip" text="v0.3.0+" /> | The controller cannot repair this. See [expired certificate](../operations/identity-rotation.md#if-the-certificate-already-expired) |

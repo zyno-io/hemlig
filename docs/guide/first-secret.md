@@ -180,7 +180,7 @@ A [HemligProvider](../reference/glossary.md#hemligprovider) holds the two Hemlig
 ```sh
 kubectl create namespace payments
 kubectl apply -f - <<EOF
-apiVersion: hemlig.io/v1beta1
+apiVersion: hemlig.zyno.io/v1beta1
 kind: HemligProvider
 metadata:
   name: production
@@ -189,12 +189,12 @@ spec:
   apiUrl: $HEMLIG_API_URL
   allowedNamespaces:
     matchLabels:
-      hemlig.io/provider-production: "true"
+      hemlig.zyno.io/provider-production: "true"
 EOF
-kubectl label namespace payments hemlig.io/provider-production=true
+kubectl label namespace payments hemlig.zyno.io/provider-production=true
 ```
 
-Expected output: `hemligprovider.hemlig.io/production created` and `namespace/payments labeled`.
+Expected output: `hemligprovider.hemlig.zyno.io/production created` and `namespace/payments labeled`.
 
 ### 9. Store the bootstrap token
 
@@ -211,7 +211,7 @@ A [HemligConsumer](../reference/glossary.md#hemligconsumer) makes the controller
 
 ```sh
 kubectl apply -f - <<'EOF'
-apiVersion: hemlig.io/v1beta1
+apiVersion: hemlig.zyno.io/v1beta1
 kind: HemligConsumer
 metadata:
   name: payments
@@ -243,7 +243,7 @@ The Secret `hemlig-payments-client` holds the controller's private key. If you d
 
 ```sh
 kubectl apply -f - <<'EOF'
-apiVersion: hemlig.io/v1beta1
+apiVersion: hemlig.zyno.io/v1beta1
 kind: HemligSecretImport
 metadata:
   name: stripe-api-key
@@ -256,7 +256,7 @@ EOF
 kubectl -n payments wait --for=condition=Ready hmlimport/stripe-api-key --timeout=2m
 ```
 
-Imports have no printer columns, so `wait` is the check. Expected output: `hemligsecretimport.hemlig.io/stripe-api-key condition met`.
+Imports have no printer columns, so `wait` is the check. Expected output: `hemligsecretimport.hemlig.zyno.io/stripe-api-key condition met`.
 
 ### 12. Read the Kubernetes Secret
 
@@ -272,7 +272,7 @@ The controller also records where the value came from:
 kubectl -n payments get secret stripe-api-key -o jsonpath='{.metadata.annotations}' | jq
 ```
 
-Expected output includes `hemlig.io/secret-id`, `hemlig.io/control-version-id` and `hemlig.io/payload-version-id`.
+Expected output includes `hemlig.zyno.io/secret-id`, `hemlig.zyno.io/control-version-id` and `hemlig.zyno.io/payload-version-id`.
 
 ### 13. Use it from a Pod
 
@@ -324,7 +324,7 @@ Expected output: `"ACTIVE"`.
 kubectl -n payments get secret stripe-api-key -o jsonpath='{.data.api-key}' | base64 -d
 ```
 
-Expected output: `sk_test_example_456`. A change hint delivers it promptly. If hints are not working, the controller's [10-minute resync](../reference/limits.md#controller) picks it up. The `hemlig.io/control-version-id` annotation changes too.
+Expected output: `sk_test_example_456`. A change hint delivers it promptly. If hints are not working, the controller's [10-minute resync](../reference/limits.md#controller) picks it up. The `hemlig.zyno.io/control-version-id` annotation changes too.
 
 ## Clean up
 

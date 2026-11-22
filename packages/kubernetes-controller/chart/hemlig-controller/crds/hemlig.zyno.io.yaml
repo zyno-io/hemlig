@@ -1,9 +1,9 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: hemligproviders.hemlig.io
+  name: hemligproviders.hemlig.zyno.io
 spec:
-  group: hemlig.io
+  group: hemlig.zyno.io
   scope: Cluster
   names:
     plural: hemligproviders
@@ -37,9 +37,9 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: hemligconsumers.hemlig.io
+  name: hemligconsumers.hemlig.zyno.io
 spec:
-  group: hemlig.io
+  group: hemlig.zyno.io
   scope: Namespaced
   names:
     plural: hemligconsumers
@@ -87,9 +87,9 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: hemligsecretimports.hemlig.io
+  name: hemligsecretimports.hemlig.zyno.io
 spec:
-  group: hemlig.io
+  group: hemlig.zyno.io
   scope: Namespaced
   names:
     plural: hemligsecretimports
@@ -135,9 +135,9 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: hemligsecretexports.hemlig.io
+  name: hemligsecretexports.hemlig.zyno.io
 spec:
-  group: hemlig.io
+  group: hemlig.zyno.io
   scope: Namespaced
   names:
     plural: hemligsecretexports
