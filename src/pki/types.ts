@@ -1,4 +1,5 @@
 import type { Actor } from "../domain/types";
+import type { GrantPolicy } from "./policy-types";
 
 export type CaKind = "EXTERNAL_INTERMEDIATE" | "ROOT" | "INTERMEDIATE"; // v1 creates EXTERNAL_INTERMEDIATE only
 export type CaStatus =
@@ -206,6 +207,7 @@ export interface IssuedCertificateRecord {
   keyUsages: string[];
   extendedKeyUsages: string[];
   isCa: boolean;
+  lifetimeClamped?: boolean;
   childCaId?: string; // CA certificates, Phase 7
   notBefore: string;
   notAfter: string;
@@ -230,6 +232,7 @@ export interface IssuedCertificateRecord {
     reason: RevocationReason;
     invalidityDate?: string;
     by: Actor;
+    upgradedAt?: string;
   };
 }
 
@@ -240,4 +243,38 @@ export interface ReplayRecord {
   serial: string;
   notAfter: string;
   grantUid: string;
+}
+
+export type GrantStatus = "ACTIVE" | "DISABLED" | "DELETED";
+
+export interface IssuanceGrantRecord {
+  // PKI_GRANT#consumerId / NAME#name
+  uid: string; // "pkg-" + randomUUID()
+  consumerId: string;
+  environment: string;
+  name: string;
+  caId: string;
+  status: GrantStatus;
+  displayName?: string;
+  policy: GrantPolicy;
+  policyDigest: string;
+  version: string; // pkv-<uuid>
+  expiresAt?: string;
+  createdAt: string;
+  createdBy: Actor;
+  updatedAt: string;
+  updatedBy: Actor;
+  deletedAt?: string;
+  deletedBy?: Actor;
+}
+
+/** PKI_CONSUMER#id / CERT#issuedAt#caId#serial; the shape `buildIssuanceCommit` writes. */
+export interface ConsumerCertificatePointer {
+  caId: string;
+  serial: string;
+  environment: string;
+  notAfter: string;
+  issuedAt: string;
+  issuanceGrant: string;
+  issuanceGrantUid: string;
 }

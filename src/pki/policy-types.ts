@@ -80,9 +80,16 @@ export type DenialReason =
   | "lifetime_too_short"
   | "name_constraint_violation";
 
+/** The name a denial is about, for the audit target and the controller. */
+export interface DeniedName {
+  type: "dns" | "ip" | "uri" | "commonName" | "subject";
+  value: string;
+}
+
 export interface Denial {
   reason: DenialReason;
   detail: string;
+  denied?: DeniedName;
 }
 
 export interface SanSet {

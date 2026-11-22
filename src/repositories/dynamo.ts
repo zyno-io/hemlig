@@ -422,6 +422,24 @@ export class DynamoRepository {
       : undefined;
   }
 
+  /**
+   * The AgentGrant id of an agent consumer, or undefined for a direct consumer. Unlike `getAgentGrantForConsumer` a
+   * mapping whose grant is missing is still reported, so the PKI path can fail closed.
+   */
+  public async getAgentGrantIdForConsumer(
+    consumerId: string,
+  ): Promise<string | undefined> {
+    const mapping = await this.dynamo.send(
+      new GetCommand({
+        TableName: this.config.controlTableName,
+        Key: { pk: `CONSUMER#${consumerId}`, sk: "AGENT_GRANT" },
+        ConsistentRead: true,
+      }),
+    );
+    const grantId = mapping.Item?.grantId;
+    return typeof grantId === "string" ? grantId : undefined;
+  }
+
   /** Maintenance-only full-table scan for reconciling derived AgentGrant ACLs. */
   public async listAgentGrants(
     exclusiveStartKey?: Record<string, unknown>,
@@ -617,6 +635,23 @@ export class DynamoRepository {
     fingerprint: string,
     windowSeconds: number,
   ): Promise<boolean> {
+    return this.claimAuditSuppression(
+      fingerprint,
+      "IDENTITY_NOT_ACTIVE",
+      windowSeconds,
+    );
+  }
+
+  /**
+   * Generalizes the identity-rejection limiter: true when the caller may record the event for `(fingerprint,
+   * scopeSk)`, false while an earlier claim is inside the window. Expiry is the table TTL (epoch seconds), checked
+   * in the expression because TTL deletion is lazy.
+   */
+  public async claimAuditSuppression(
+    fingerprint: string,
+    scopeSk: string,
+    windowSeconds: number,
+  ): Promise<boolean> {
     const now = Math.floor(Date.now() / 1000);
     try {
       await this.dynamo.send(
@@ -624,7 +659,7 @@ export class DynamoRepository {
           TableName: this.config.controlTableName,
           Item: {
             pk: auditSuppressPk(fingerprint),
-            sk: "IDENTITY_NOT_ACTIVE",
+            sk: scopeSk,
             ttl: now + windowSeconds,
           },
           ConditionExpression: "attribute_not_exists(pk) OR #ttl < :now",

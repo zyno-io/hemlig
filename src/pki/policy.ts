@@ -28,6 +28,7 @@ import {
 } from "./names";
 import {
   type Denial,
+  type DeniedName,
   type DenialReason,
   EXTENDED_KEY_USAGES,
   type ExtendedKeyUsageName,
@@ -269,9 +270,14 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
     name: string,
     reason: DenialReason,
     detail: string,
+    denied?: DeniedName,
   ): PolicyOutcome => {
     trace.push({ step, name, outcome: "deny", detail: `${reason}: ${detail}` });
-    return { ok: false, denial: { reason, detail }, trace };
+    return {
+      ok: false,
+      denial: { reason, detail, ...(denied === undefined ? {} : { denied }) },
+      trace,
+    };
   };
 
   // Step 1: isCA is never permitted in v1.
@@ -295,6 +301,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "normalize",
         "name_not_permitted",
         `dns name "${raw}": ${name.reason}`,
+        { type: "dns", value: raw },
       );
     }
     pushUnique(sans.dns, name.value);
@@ -307,6 +314,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "normalize",
         "name_not_permitted",
         `ip "${raw}": ${ip.reason}`,
+        { type: "ip", value: raw },
       );
     }
     pushUnique(sans.ip, ip.value.text);
@@ -320,6 +328,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "normalize",
         "name_not_permitted",
         `uri "${raw}": ${uri.reason}`,
+        { type: "uri", value: raw },
       );
     }
     uris.set(uri.value.value, uri.value);
@@ -336,6 +345,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "normalize",
         "common_name_not_permitted",
         "the grant forbids a common name",
+        { type: "commonName", value: request.commonName },
       );
     }
     const cnProblem = validSubjectValue("commonName", request.commonName);
@@ -345,6 +355,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "normalize",
         "common_name_not_permitted",
         `common name ${cnProblem}`,
+        { type: "commonName", value: request.commonName },
       );
     }
     const asIp = normalizeIp(request.commonName);
@@ -361,6 +372,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "normalize",
         "common_name_not_permitted",
         "the common name must be a DNS name or IP address",
+        { type: "commonName", value: request.commonName },
       );
     }
     if (cnAddToSans) {
@@ -472,7 +484,10 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
     for (const name of sans.dns) {
       const decision = evaluateDnsName(name, compiled.dns);
       if (!decision.allowed) {
-        return deny(7, "entitlement", decision.reason, decision.detail);
+        return deny(7, "entitlement", decision.reason, decision.detail, {
+          type: "dns",
+          value: name,
+        });
       }
     }
     for (const text of sans.ip) {
@@ -483,11 +498,15 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
           "entitlement",
           "name_not_permitted",
           `ip "${text}": ${ip.reason}`,
+          { type: "ip", value: text },
         );
       }
       const decision = evaluateIp(ip.value, compiled.ip);
       if (!decision.allowed) {
-        return deny(7, "entitlement", decision.reason, decision.detail);
+        return deny(7, "entitlement", decision.reason, decision.detail, {
+          type: "ip",
+          value: text,
+        });
       }
     }
   }
@@ -499,6 +518,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "entitlement",
         "name_not_permitted",
         `uri "${text}" was not normalized`,
+        { type: "uri", value: text },
       );
     }
     if (isReservedUri(uri)) {
@@ -507,12 +527,16 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "entitlement",
         "reserved_name",
         `${uri.value} is in the reserved spiffe://hemlig/ namespace`,
+        { type: "uri", value: uri.value },
       );
     }
     if (compiled) {
       const decision = evaluateUri(uri, compiled.uri);
       if (!decision.allowed) {
-        return deny(7, "entitlement", decision.reason, decision.detail);
+        return deny(7, "entitlement", decision.reason, decision.detail, {
+          type: "uri",
+          value: uri.value,
+        });
       }
     }
   }
@@ -527,6 +551,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "entitlement",
         "common_name_not_permitted",
         "the common name must equal a DNS or IP SAN",
+        { type: "commonName", value: cnCanonical.value },
       );
     }
   }
@@ -538,6 +563,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "entitlement",
         "subject_not_permitted",
         "pass the common name as commonName, not as a subject attribute",
+        { type: "subject", value: `commonName=${entry.value}` },
       );
     }
     if (!(SUBJECT_ATTRIBUTES as readonly string[]).includes(entry.type)) {
@@ -546,6 +572,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "entitlement",
         "subject_not_permitted",
         `unsupported subject attribute "${entry.type}"`,
+        { type: "subject", value: `${entry.type}=${entry.value}` },
       );
     }
     const problem = validSubjectValue(entry.type, entry.value);
@@ -555,6 +582,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "entitlement",
         "subject_not_permitted",
         `${entry.type} ${problem}`,
+        { type: "subject", value: `${entry.type}=${entry.value}` },
       );
     }
     if (compiled) {
@@ -571,6 +599,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
           "entitlement",
           "subject_not_permitted",
           `${entry.type} "${entry.value}" is not permitted`,
+          { type: "subject", value: `${entry.type}=${entry.value}` },
         );
       }
     }
@@ -603,7 +632,13 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
   }
   const violation = firstConstraintViolation(sans, ca.nameConstraints);
   if (violation) {
-    return deny(8, "ca-constraints", "name_constraint_violation", violation);
+    return deny(
+      8,
+      "ca-constraints",
+      "name_constraint_violation",
+      violation.detail,
+      { type: violation.type, value: violation.value },
+    );
   }
   const desiredSeconds =
     request.durationSeconds ??
@@ -666,6 +701,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
           "forced-attributes",
           "subject_not_permitted",
           `requested ${attribute} "${conflict.value}" conflicts with the forced value`,
+          { type: "subject", value: `${attribute}=${conflict.value}` },
         );
       }
       if (!subjectEntries.some((e) => e.type === attribute)) {
@@ -682,6 +718,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
               "forced-attributes",
               "name_not_permitted",
               `forced uri "${value}": ${forcedUri.reason}`,
+              { type: "uri", value },
             );
           }
           uris.set(forcedUri.value.value, forcedUri.value);
@@ -710,6 +747,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "final-name-check",
         "name_not_permitted",
         `uri "${text}" was not normalized`,
+        { type: "uri", value: text },
       );
     }
     if (isReservedUri(uri)) {
@@ -718,6 +756,7 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
         "final-name-check",
         "reserved_name",
         `${text} is in the reserved spiffe://hemlig/ namespace`,
+        { type: "uri", value: text },
       );
     }
   }
@@ -727,7 +766,8 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
       10,
       "final-name-check",
       "name_constraint_violation",
-      finalViolation,
+      finalViolation.detail,
+      { type: finalViolation.type, value: finalViolation.value },
     );
   }
   const total = sans.dns.length + sans.ip.length + sans.uri.length;
@@ -773,12 +813,12 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
 const firstConstraintViolation = (
   sans: SanSet,
   constraints: PolicyInput["ca"]["nameConstraints"],
-): string | undefined => {
+): { detail: string; type: "dns" | "ip" | "uri"; value: string } | undefined => {
   for (const type of ["dns", "ip", "uri"] as const) {
     for (const value of sans[type]) {
       const check = checkNameConstraints(type, value, constraints);
       if (!check.ok) {
-        return check.detail;
+        return { detail: check.detail, type, value };
       }
     }
   }

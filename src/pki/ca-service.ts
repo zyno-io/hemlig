@@ -10,6 +10,7 @@ import { sha256Hex, stableJson } from "../util/encoding";
 import {
   assertHumanReplay,
   caDetail,
+  caStatusReason,
   caSummary,
   parseActivateRequest,
   parseCreateCaRequest,
@@ -70,13 +71,7 @@ const ed25519Warning = {
     "Ed25519 CA keys are not accepted by every TLS client and verifier. Prefer ECDSA_P256 unless you have verified compatibility.",
 };
 
-const statusReason: Record<CaStatus, string> = {
-  PENDING_CERTIFICATE: "pending_certificate",
-  ACTIVE: "active",
-  RETIRED: "retired",
-  REVOKED: "revoked",
-  FAILED: "failed",
-};
+const statusReason = caStatusReason;
 
 const hex = (value: Uint8Array): string => Buffer.from(value).toString("hex");
 
@@ -1012,6 +1007,7 @@ export class CaService {
       });
       switch (result.kind) {
         case "busy":
+        case "deadline":
           throw crlPublicationBusy();
         case "superseded":
           if (attempt === 0) {

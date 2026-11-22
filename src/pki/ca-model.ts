@@ -16,7 +16,9 @@ import {
   DEFAULT_LEAF_KEY_ALGORITHMS,
   LEAF_KEY_ALGORITHMS,
 } from "./policy-types";
-import { MAX_LEAF_LIFETIME_SECONDS } from "./grant-policy";
+import { MAX_LEAF_LIFETIME_SECONDS, type GrantCaContext } from "./grant-policy";
+import type { ParsedCertificate } from "./asn1/certificate";
+import type { CaPolicyInput as EngineCaPolicyInput } from "./policy-types";
 import { buildCaSubject } from "./subject";
 import type {
   CaCrlState,
@@ -377,6 +379,44 @@ export const ekuNamesToOids = (names: readonly string[]): string[] =>
 
 export const ekuOidsToNames = (oids: readonly string[]): string[] =>
   oids.map((oid) => ekuNameByOid[oid] ?? oid);
+
+export const caStatusReason: Record<CaRecord["status"], string> = {
+  PENDING_CERTIFICATE: "pending_certificate",
+  ACTIVE: "active",
+  RETIRED: "retired",
+  REVOKED: "revoked",
+  FAILED: "failed",
+};
+
+/**
+ * The CA's grant-validation context. It uses the effective constraints, not the requested ones; absent stays absent
+ * so the engine reads it as "no constraint".
+ */
+export const caGrantContext = (ca: CaRecord): GrantCaContext => ({
+  leafKeyAlgorithms: ca.policy.leafKeyAlgorithms,
+  maxLeafLifetimeSeconds: ca.policy.maxLeafLifetimeSeconds,
+  ...(ca.effective?.nameConstraints === undefined
+    ? {}
+    : { nameConstraints: toSubtreeMap(ca.effective.nameConstraints) }),
+  ...(ca.effective?.extendedKeyUsages === undefined
+    ? {}
+    : { extendedKeyUsages: ekuOidsToNames(ca.effective.extendedKeyUsages) }),
+});
+
+export const caPolicyInputOf = (
+  ca: CaRecord,
+  caCert: ParsedCertificate,
+  chain: readonly ParsedCertificate[],
+): EngineCaPolicyInput => ({
+  ...caGrantContext(ca),
+  notBefore: caCert.notBefore,
+  earliestChainNotAfter: new Date(
+    Math.min(
+      caCert.notAfter.getTime(),
+      ...chain.map((certificate) => certificate.notAfter.getTime()),
+    ),
+  ),
+});
 
 const parseRequestedConstraints = (value: unknown): CaRecord["requested"] => {
   const input = record(value, "requestedConstraints");
@@ -798,6 +838,18 @@ export const crlView = (crl: CaCrlState, now: Date): Json | undefined => {
   };
 };
 
+export const capacityView = (ca: CaRecord, crl?: CaCrlState): Json => ({
+  capacity: ca.policy.capacity,
+  issuancePerHour: ca.policy.issuancePerHour,
+  ...(crl?.capacity === undefined
+    ? {}
+    : {
+        count: crl.capacity.count,
+        countFrom: crl.capacity.countFrom,
+        countedAt: crl.capacity.countedAt,
+      }),
+});
+
 export const caDetail = (
   ca: CaRecord,
   options: {
@@ -821,6 +873,7 @@ export const caDetail = (
     isDrained(ca, { ...crl, published: crl.published });
   const view: Json = {
     ...caSummary(ca),
+    capacity: capacityView(ca, crl),
     key: {
       custody: ca.key.custody,
       algorithm: ca.key.algorithm,
