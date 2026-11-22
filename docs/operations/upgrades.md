@@ -26,6 +26,14 @@ flowchart LR
 
 New deployments need none of the scripts: new records are written in the current shape.
 
+### One new index per table update
+
+DynamoDB allows one global secondary index to be created per table update, and CloudFormation fails the stack update if one update adds two. The release that adds the PKI adds exactly one, `pki-directory`. If you upgrade from a release that lacks another recently added index, deploy through each index-adding release in turn rather than jumping straight to the newest tag.
+
+Creating the index backfills it by scanning the whole table, even though no existing item is indexed, so the update can take a while on a large table. The table stays available throughout. The new PKI Lambdas depend on the table, so CloudFormation creates them only after the index is `ACTIVE`. The deny statements added to the existing Lambdas' roles are policy-only updates.
+
+The new `pki-maintenance-missed` alarm shows `ALARM` from creation until the first scheduled invocation, up to 15 minutes. That is expected: see [Gate PKI-0](acceptance.md#gate-pki-0-pki-resources-deploy-and-stay-inert).
+
 ## Common setup
 
 Run every script from a clone of the release tag. Each `yarn` script rebuilds the project first.

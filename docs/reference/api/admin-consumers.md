@@ -152,8 +152,8 @@ Creates a `PENDING` grant for a new consumer ID. No `Idempotency-Key` is used.
 | --- | --- | --- |
 | `consumerId` | Yes | Must be unused |
 | `environment` | Yes | Must exist |
-| `capabilities` | Yes | `read` and/or `write`, no duplicates |
-| `secretGrants` | Yes | 1 to 1,000 unique exact secret IDs on create (`PUT` also accepts an empty list), each with `permissions` that are a subset of `capabilities` |
+| `capabilities` | Yes | `read` and/or `write`, no duplicates. May be empty only together with an empty `secretGrants` |
+| `secretGrants` | Yes | 0 to 1,000 unique exact secret IDs on create (0 only with empty `capabilities`; `PUT` also accepts an empty list), each with `permissions` that are a subset of `capabilities` |
 | `displayName` | No | Label |
 
 Every `secretId` must already exist as an active secret in the environment. Hemlig resolves each one to its immutable [secret UID](../glossary.md#secret-uid) and stores it beside the record. Create the secrets first.

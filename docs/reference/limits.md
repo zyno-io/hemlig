@@ -44,7 +44,7 @@ Source paths are relative to the [repository root](https://github.com/zyno-io/he
 | Required query-string parameter length | 128 characters (such as `environment`) | `src/handlers/admin.ts:1076` |
 | ACL entries per secret | 40 direct consumers, permission `read` only | `src/domain/validation.ts:19,161,182` |
 | Capabilities per AgentGrant | `read` and/or `write`, no duplicates | `src/domain/validation.ts:101,111` |
-| Secret grants per AgentGrant | 1 to 1,000 exact secrets on create. `PUT` accepts 0 to 1,000 | `src/services/agent-grants.ts:326,336` |
+| Secret grants per AgentGrant | 0 to 1,000 on create (0 only with empty `capabilities`). `PUT` accepts 0 to 1,000 | `src/services/agent-grants.ts:326,336` |
 | Control revisions returned in history | 500, with `truncated` set when there are more | `src/repositories/dynamo.ts:163,1415,1431` |
 
 ## Pagination and sync

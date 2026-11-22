@@ -28,6 +28,10 @@ Imported from `hemlig/cdk`. The reference app (`cdk/app.ts`) reads the same name
 | `oidcConsoleAccessScope` | with `consoleFqdn` | none | Resource-qualified scope the browser requests |
 | `oidcClientId` | with `consoleFqdn` | none | The console single-page app's OAuth client ID |
 | `oidcAdminRole` | no | none | Role required from `roles` or `role` after JWT validation. One role token |
+| `oidcPkiCaAdminRole` | no | none | Role additionally required for PKI CA lifecycle and root CRL upload. One role token. Passed to the PKI admin Lambda as `ADMIN_PKI_CA_ROLE`; not enforced yet |
+| `oidcPkiOperatorRole` | no | none | Role additionally required for PKI grants, admin issuance, revocation and CRL force-publish. One role token. Passed as `ADMIN_PKI_OPERATOR_ROLE`; not enforced yet |
+| `pkiIssuanceRateLimit` | no | `20` | API Gateway stage throttle (requests per second) on `POST /v1/pki/{proxy+}`. Integer from 1 to 5000 |
+| `pkiIssuanceBurstLimit` | no | `40` | Stage burst on the same route. Integer from 1 to 5000, at least `pkiIssuanceRateLimit` |
 | `consoleCertificateArn` | no | sibling stack | ACM certificate in `us-east-1`. Needs `consoleFqdn`. Without it the stack creates a certificate stack, which needs a concrete `env` and `existingHostedZoneId` |
 | `bootstrapQualifier` | no | none | CDK bootstrap qualifier, 1 to 10 lowercase letters or digits. Set it whenever you use a non-default synthesizer |
 | `tracing` | no | `false` | `true` turns on AWS X-Ray active tracing for every Lambda function. Off by default: traces add cost and little beyond CloudWatch Logs and Lambda metrics |
@@ -101,17 +105,19 @@ when run locally). It needs no AWS credentials and no administrator token.
 
 ### Lambda environment variables
 
-The stack sets these on every Lambda; you do not configure them directly. They are listed for debugging.
+The stack sets these on the Lambdas; you do not configure them directly. The PKI variables are present only on the PKI Lambdas. They are listed for debugging.
 
 | Variable | Source |
 | --- | --- |
 | `HEMLIG_ENVIRONMENT` | `environmentName` (the deployment name) |
-| `CONTROL_TABLE_NAME`, `WORKFLOW_DUE_INDEX`, `RETENTION_DUE_INDEX`, `CATALOG_PATH_INDEX`, `CONSUMER_DIRECTORY_INDEX`, `CONSUMER_IDENTITY_INDEX`, `SECRET_REVISION_INDEX` | The control table and its six indexes |
+| `CONTROL_TABLE_NAME`, `WORKFLOW_DUE_INDEX`, `RETENTION_DUE_INDEX`, `CATALOG_PATH_INDEX`, `CONSUMER_DIRECTORY_INDEX`, `CONSUMER_IDENTITY_INDEX`, `SECRET_REVISION_INDEX` | The control table and its six indexes (the seventh, `pki-directory`, goes only to the PKI Lambdas) |
 | `REVISION_BUCKET_NAME`, `AUDIT_BUCKET_NAME`, `AUDIT_PREFIX`, `TRUSTSTORE_BUCKET_NAME`, `TRUSTSTORE_KEY_PREFIX` | The buckets and key prefixes |
 | `PAYLOAD_KMS_KEY_ARN` | The application CMK |
 | `DELIVERY_API_CUSTOM_DOMAIN_NAME`, `DELIVERY_API_HOSTNAME` | `apiFqdn` |
 | `IOT_ENDPOINT`, `IOT_NOTIFICATION_POLICY_NAME`, `IOT_NOTIFICATION_TOPIC_PREFIX` | AWS IoT endpoint, policy name and topic prefix `hemlig/NAME/consumers` |
 | `ADMIN_JWT_ISSUER`, `ADMIN_JWT_AUDIENCE`, `ADMIN_ACTOR_SUBJECT_CLAIM` | `oidcIssuer`, `oidcAudience`, `oidcSubjectClaim` |
 | `ADMIN_JWT_SCOPE`, `ADMIN_JWT_ROLE` | `oidcAdminScope`, `oidcAdminRole`, when set |
+| `PKI_DIRECTORY_INDEX`, `PKI_BUCKET_NAME` | The `pki-directory` index and the PKI bucket. Set on the three PKI Lambdas only |
+| `ADMIN_PKI_CA_ROLE`, `ADMIN_PKI_OPERATOR_ROLE` | `oidcPkiCaAdminRole`, `oidcPkiOperatorRole`, when set. The `pki-admin` Lambda only |
 | `MAX_PAYLOAD_BYTES` | `768000`. The code accepts 1 to 768000; the stack sets the maximum |
 

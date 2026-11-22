@@ -18,6 +18,8 @@ Every failure from a Hemlig handler uses one envelope with a stable `code`. Matc
 }
 ```
 
+An error may also carry an optional `error.details` object of safe, non-secret string, number or boolean fields (for example a stable `reason`). Treat unknown fields as additive; match on `code` first.
+
 Quote the `correlationId` when you report a problem. It finds the request's [audit events](audit.md) and Lambda logs. For `500` responses the message is deliberately generic.
 
 ## Error codes
