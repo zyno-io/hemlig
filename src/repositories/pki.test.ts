@@ -6,6 +6,7 @@ import {
   PKI_DIRECTORY_ATTRIBUTES,
   pkiDirectory,
   pkiKeys,
+  PkiIndexNotReadyError,
   PkiRepository,
   pkiTtl,
   quotaWindows,
@@ -810,10 +811,28 @@ describe("PkiRepository", () => {
       KeyConditionExpression: "#pk = :pk",
       ExpressionAttributeNames: { "#pk": "pkiDirectoryPk" },
       ExpressionAttributeValues: { ":pk": "PKI_CAS" },
+      Limit: 1,
     });
     expect(inputOf(send.mock.calls[1] as unknown[])).toMatchObject({
       ExclusiveStartKey: { pk: "a" },
+      Limit: 1,
     });
+  });
+
+  it("reports a backfilling index as not ready", async () => {
+    const send = jest.fn().mockRejectedValue(
+      named("ValidationException", {
+        message: "Cannot read from backfilling global secondary index: pki-directory",
+      }),
+    );
+    const { repository } = setup(send);
+    await expect(repository.hasAnyCa()).rejects.toBeInstanceOf(
+      PkiIndexNotReadyError,
+    );
+    send.mockRejectedValue(named("ValidationException", { message: "other" }));
+    await expect(repository.hasAnyCa()).rejects.not.toBeInstanceOf(
+      PkiIndexNotReadyError,
+    );
   });
 
   it("reads the replay record strongly and rejects malformed data", async () => {

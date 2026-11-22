@@ -17,6 +17,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import type { PkiConfig } from "../aws/config";
 import { ApiError } from "../domain/errors";
+import { stableJson } from "../util/encoding";
 import { generateCaKeyPair, wrapCaKey } from "../pki/wrapped-keys";
 import { WrappedCaSigner } from "../pki/signer";
 import type { IssuedCertificateRecord } from "../pki/types";
@@ -419,14 +420,15 @@ export const verifyPkiOnMiniStack = async (
     commit: ConsumerIssuanceCommit,
     before: number[],
     label: string,
-    certificateSeeded = false,
+    seededCertificate?: Record<string, unknown>,
   ): Promise<void> => {
     const { serial, caId } = commit.certificate;
     const storedCertificate = await getItem(pkiKeys.certificate(caId, serial));
     check(
-      certificateSeeded
-        ? storedCertificate?.subject === undefined
-        : storedCertificate === undefined,
+      seededCertificate === undefined
+        ? storedCertificate === undefined
+        : storedCertificate !== undefined &&
+            stableJson(storedCertificate) === stableJson(seededCertificate),
       `${label}: certificate item was written`,
     );
     check(
@@ -452,7 +454,7 @@ export const verifyPkiOnMiniStack = async (
     o: IssueOptions,
     kind: IssuanceCommitOutcome["kind"],
     slots?: readonly string[],
-    certificateSeeded = false,
+    seededCertificate?: Record<string, unknown>,
   ): Promise<void> => {
     const before = await counters(fx);
     const commit = commitFor(fx, o);
@@ -461,7 +463,7 @@ export const verifyPkiOnMiniStack = async (
     if (slots !== undefined) {
       expectSlots(outcome, slots, label);
     }
-    await expectNothingCommitted(fx, commit, before, label, certificateSeeded);
+    await expectNothingCommitted(fx, commit, before, label, seededCertificate);
     if (kind !== "replayExists") {
       check(
         (await repository.getReplayRecord(
@@ -483,7 +485,7 @@ export const verifyPkiOnMiniStack = async (
       ...pkiDirectory.certificate(fx.caId, notAfter, "aa01"),
       ttl: pkiTtl.certificate(notAfter),
     });
-    await eventually(async () => {
+    const indexed = await eventually(async () => {
       const found = await doc.send(
         new QueryCommand({
           TableName: table,
@@ -493,8 +495,12 @@ export const verifyPkiOnMiniStack = async (
           ExpressionAttributeValues: { ":pk": `PKI_CERTS#${fx.caId}` },
         }),
       );
-      return found.Items?.length === 1 ? true : undefined;
+      return found.Items?.length === 1 ? found.Items[0] : undefined;
     }, "the pki-directory index did not return the certificate");
+    check(
+      indexed.ttl === Math.floor(Date.parse(notAfter) / 1000) + 90 * 86_400,
+      "the indexed certificate row has the wrong ttl",
+    );
     done("GSI and TTL only");
     process.stdout.write(
       `PKI MiniStack verification passed (${cases} checks, limited).\n`,
@@ -648,14 +654,18 @@ export const verifyPkiOnMiniStack = async (
   {
     const fx = await seed();
     const serial = randomBytes(20).toString("hex");
-    await put({ ...pkiKeys.certificate(fx.caId, serial), status: "ISSUED" });
+    const seededCertificate = {
+      ...pkiKeys.certificate(fx.caId, serial),
+      status: "ISSUED",
+    };
+    await put(seededCertificate);
     await rejected(
       "serial collision",
       fx,
       { serial },
       "serialCollision",
       undefined,
-      true,
+      seededCertificate,
     );
   }
 

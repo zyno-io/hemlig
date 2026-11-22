@@ -94,6 +94,12 @@ export const existingIndexKeyAttributes = [
   "retentionDuePk",
   "retentionDueSk",
 ];
+// BatchWriteItem can put a row carrying index attributes too, so it is denied alongside Put and Update.
+const attributeWriteActions = [
+  "dynamodb:PutItem",
+  "dynamodb:UpdateItem",
+  "dynamodb:BatchWriteItem",
+];
 const pkiDirectoryAttributes = ["pkiDirectoryPk", "pkiDirectorySk"];
 const itemWriteActions = [
   "dynamodb:PutItem",
@@ -1620,7 +1626,7 @@ const grantPkiTableAccess = (
   function_.addToRolePolicy(
     new iam.PolicyStatement({
       effect: iam.Effect.DENY,
-      actions: ["dynamodb:PutItem", "dynamodb:UpdateItem"],
+      actions: attributeWriteActions,
       resources: [table.tableArn],
       conditions: {
         "ForAnyValue:StringEquals": {
@@ -1647,7 +1653,7 @@ const denyPkiWrites = (
   function_.addToRolePolicy(
     new iam.PolicyStatement({
       effect: iam.Effect.DENY,
-      actions: ["dynamodb:PutItem", "dynamodb:UpdateItem"],
+      actions: attributeWriteActions,
       resources: [table.tableArn],
       conditions: {
         "ForAnyValue:StringEquals": {

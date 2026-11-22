@@ -741,6 +741,14 @@ const maxAmbiguousRetries = 1;
 const errorName = (error: unknown): string =>
   error instanceof Error ? error.name : typeof error;
 
+/** The `pki-directory` index exists but cannot be queried yet (still backfilling after an upgrade). */
+export class PkiIndexNotReadyError extends Error {
+  public constructor() {
+    super("The PKI directory index is not ready.");
+    this.name = "PkiIndexNotReadyError";
+  }
+}
+
 export class PkiRepository {
   private readonly tableName: string;
   private readonly directoryIndex: string;
@@ -772,7 +780,10 @@ export class PkiRepository {
     const found: Record<string, unknown>[] = [];
     let start: Record<string, unknown> | undefined;
     do {
-      const response = await this.dynamo.send(
+      const remaining = limit - found.length;
+      let response;
+      try {
+        response = await this.dynamo.send(
         new QueryCommand({
           TableName: this.tableName,
           IndexName: this.directoryIndex,
@@ -792,9 +803,20 @@ export class PkiRepository {
               ? {}
               : { ":prefix": options.sortPrefix }),
           },
+          ...(Number.isFinite(remaining) ? { Limit: remaining } : {}),
           ...(start === undefined ? {} : { ExclusiveStartKey: start }),
         }),
       );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.name === "ValidationException" &&
+          /backfill|specified index/i.test(error.message)
+        ) {
+          throw new PkiIndexNotReadyError();
+        }
+        throw error;
+      }
       for (const item of response.Items ?? []) {
         if (typeof item.pk === "string" && item.pk.startsWith("PKI_")) {
           found.push(item);

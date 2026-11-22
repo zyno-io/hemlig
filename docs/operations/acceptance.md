@@ -180,7 +180,7 @@ aws s3api get-object-lock-configuration --bucket REVISION_BUCKET
 
 ## Gate PKI-0: PKI resources deploy and stay inert
 
-Run after gate 8. You need the gate 2 `$TOKEN` and the gate 6 consumer certificate (`consumer.crt`, `consumer.key`).
+Run after gate 8. You need the gate 2 `$TOKEN` and a consumer certificate that is still active (`consumer.crt`, `consumer.key`). Gate 6 revokes its certificate, so either run the consumer probe before that revocation or enroll a second consumer and use its certificate.
 
 ```sh
 export DEP=hml-acc

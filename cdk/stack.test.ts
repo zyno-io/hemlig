@@ -883,7 +883,11 @@ describe("HemligStack", () => {
       Resource: tableArn,
     });
     const attributeDeny = (attributes: string[]): Statement => ({
-      Action: ["dynamodb:PutItem", "dynamodb:UpdateItem"],
+      Action: [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:BatchWriteItem",
+      ],
       Condition: {
         "ForAnyValue:StringEquals": { "dynamodb:Attributes": attributes },
       },
