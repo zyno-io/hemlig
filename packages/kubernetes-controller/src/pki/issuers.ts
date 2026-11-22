@@ -283,6 +283,12 @@ export class IssuerReconciler {
     if (release === undefined) {
       return { kind: "defer", group: resolved.consumerKey };
     }
+    if (this.deps.registry.get(resolved.consumerKey) !== resolved.registered) {
+      // The identity changed while this run was waiting: resolve again once.
+      release();
+      this.queue.add(key);
+      return { kind: "done" };
+    }
     let grant;
     try {
       grant = await withTimeout(

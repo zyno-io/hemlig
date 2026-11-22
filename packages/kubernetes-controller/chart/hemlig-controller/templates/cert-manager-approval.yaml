@@ -26,6 +26,6 @@ roleRef:
   name: {{ include "hemlig-controller.fullname" . }}-cert-manager-approver
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.certManager.approval.serviceAccount }}
-    namespace: {{ .Values.certManager.approval.namespace }}
+    name: {{ .Values.certManager.approval.serviceAccount | quote }}
+    namespace: {{ .Values.certManager.approval.namespace | quote }}
 {{- end }}

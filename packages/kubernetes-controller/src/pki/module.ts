@@ -55,7 +55,9 @@ interface StreamResource {
   readonly plural: string;
   readonly scope: "all" | "cluster";
   readonly onEvent: (phase: string, object: unknown) => void;
-  readonly onRelist: (items: readonly unknown[]) => void;
+  /** Maps a listed item to the key worth keeping; pages are filtered as they arrive. */
+  readonly keyOf: (item: unknown) => string | undefined;
+  readonly onRelist: (keys: readonly string[]) => void;
 }
 
 interface Feature {
@@ -80,6 +82,8 @@ class Stream {
   private active = false;
   private generation = 0;
   private relisting: Promise<void> | undefined;
+  /** A 410 arrived while a relist was in flight: relist once more afterwards. */
+  private relistAgain = false;
   private timer: unknown;
 
   public constructor(
@@ -114,21 +118,31 @@ class Stream {
 
   /** Single-flight. */
   public relist(): Promise<void> {
-    this.relisting ??= this.doRelist().finally(() => {
-      this.relisting = undefined;
-    });
+    if (this.relisting !== undefined) {
+      this.relistAgain = true;
+      return this.relisting;
+    }
+    this.relisting = this.doRelist()
+      .finally(() => {
+        this.relisting = undefined;
+      })
+      .then(() => {
+        if (!this.relistAgain) return undefined;
+        this.relistAgain = false;
+        return this.active ? this.relist() : undefined;
+      });
     return this.relisting;
   }
 
   private async doRelist(): Promise<void> {
     this.abortWatch();
     const generation = this.generation;
-    let items: unknown[] = [];
+    let keys: string[] = [];
     let resourceVersion: string | undefined;
     try {
       for (;;) {
         try {
-          items = [];
+          keys = [];
           let token: string | undefined;
           do {
             const page = unwrap(
@@ -151,7 +165,10 @@ class Stream {
               items?: unknown[];
               metadata?: { continue?: string; resourceVersion?: string };
             };
-            items.push(...(page.items ?? []));
+            for (const item of page.items ?? []) {
+              const key = this.resource.keyOf(item);
+              if (key !== undefined) keys.push(key);
+            }
             resourceVersion = page.metadata?.resourceVersion;
             token = page.metadata?.continue || undefined;
           } while (token !== undefined);
@@ -167,7 +184,7 @@ class Stream {
     }
     if (!this.active || generation !== this.generation) return;
     this.rv = resourceVersion;
-    this.resource.onRelist(items);
+    this.resource.onRelist(keys);
     await this.watchNow();
   }
 
@@ -288,7 +305,8 @@ export class PkiModule {
         plural: CR_PLURAL,
         scope: "all",
         onEvent: (phase, object) => this.onRequestEvent(phase, object),
-        onRelist: (items) => this.onRequestRelist(items),
+        keyOf: (item) => this.relistRequestKey(item),
+        onRelist: (keys) => this.onRequestRelist(keys),
       },
       {
         name: ISSUER_PLURAL,
@@ -297,7 +315,8 @@ export class PkiModule {
         plural: ISSUER_PLURAL,
         scope: "all",
         onEvent: (phase, object) => this.onIssuerEvent(phase, object, false),
-        onRelist: (items) => this.onIssuerRelist(items, false),
+        keyOf: (item) => this.issuerKeyOf(item, false),
+        onRelist: (keys) => this.onIssuerRelist(keys, false),
       },
       {
         name: CLUSTER_ISSUER_PLURAL,
@@ -306,7 +325,8 @@ export class PkiModule {
         plural: CLUSTER_ISSUER_PLURAL,
         scope: "cluster",
         onEvent: (phase, object) => this.onIssuerEvent(phase, object, true),
-        onRelist: (items) => this.onIssuerRelist(items, true),
+        keyOf: (item) => this.issuerKeyOf(item, true),
+        onRelist: (keys) => this.onIssuerRelist(keys, true),
       },
     ];
     // Phase 6 appends a trust-bundle feature; each feature is enabled on its own.
@@ -500,15 +520,17 @@ export class PkiModule {
     }
   }
 
-  private onRequestRelist(items: readonly unknown[]): void {
-    const next = new Set<string>();
-    for (const item of items) {
-      const key = this.requestKeyOf(item);
-      const cr = item as CertificateRequest;
-      if (key !== undefined && isHemligRequest(cr) && !isTerminal(cr)) {
-        next.add(key);
-      }
-    }
+  /** Only Hemlig, non-terminal requests are kept from a relist. */
+  private relistRequestKey(item: unknown): string | undefined {
+    const key = this.requestKeyOf(item);
+    const cr = item as CertificateRequest;
+    return key !== undefined && isHemligRequest(cr) && !isTerminal(cr)
+      ? key
+      : undefined;
+  }
+
+  private onRequestRelist(keys: readonly string[]): void {
+    const next = new Set(keys);
     for (const key of this.pending) {
       if (!next.has(key)) {
         this.queue.forget(key);
@@ -559,13 +581,9 @@ export class PkiModule {
     this.queue.add(key, { resetBackoff: true });
   }
 
-  private onIssuerRelist(items: readonly unknown[], cluster: boolean): void {
+  private onIssuerRelist(keys: readonly string[], cluster: boolean): void {
     const prefix = cluster ? "clusterissuer/" : "issuer/";
-    const next = new Set<string>();
-    for (const item of items) {
-      const key = this.issuerKeyOf(item, cluster);
-      if (key !== undefined) next.add(key);
-    }
+    const next = new Set(keys);
     for (const key of [...this.issuerKeys]) {
       if (key.startsWith(prefix) && !next.has(key)) {
         this.issuerKeys.delete(key);

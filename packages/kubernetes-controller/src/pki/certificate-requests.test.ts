@@ -15,6 +15,7 @@ import {
   registered,
   rig,
   rootPem,
+  FakeTransport,
 } from "./test-fakes";
 
 const KEY = "cr/app/cr-1";
@@ -641,4 +642,83 @@ test("an issuer turning Ready during a run still wakes the waiting request", asy
   assert.equal(hooked, true);
   assert.equal(r.ready().reason, "Issued");
   assert.equal(r.scheduler.pendingTimers, 0);
+});
+
+const onNamespaceRead = (
+  r: ReturnType<typeof setup>,
+  fn: () => void | Promise<void>,
+) => {
+  const original = r.core.readNamespace.bind(r.core);
+  let fired = false;
+  r.core.readNamespace = async (input: { name: string }) => {
+    if (!fired) {
+      fired = true;
+      await fn();
+    }
+    return original(input);
+  };
+};
+
+test("an InvalidRequest or Denied added mid-run stops the call before Hemlig", async () => {
+  for (const [type, reason] of [
+    ["InvalidRequest", "Failed"],
+    ["Denied", "Denied"],
+  ] as const) {
+    const r = setup();
+    onNamespaceRead(r, () =>
+      r.custom.update("certificaterequests", "app", "cr-1", (o) => {
+        o.status.conditions.push({ type, status: "True" });
+      }),
+    );
+    await r.run(KEY);
+    assert.equal(r.transport.posts().length, 0, type);
+    assert.equal(r.ready().reason, reason, type);
+    assert.equal(r.cr().status.certificate, undefined);
+  }
+});
+
+test("a request denied after the call is never written as Issued", async () => {
+  for (const type of ["InvalidRequest", "Denied"]) {
+    const r = setup();
+    const base = r.transport.handler;
+    r.transport.handler = (request) => {
+      if (request.method === "POST") {
+        r.custom.update("certificaterequests", "app", "cr-1", (o) => {
+          o.status.conditions.push({ type, status: "True" });
+        });
+      }
+      return base(request);
+    };
+    await r.run(KEY);
+    assert.equal(r.transport.posts().length, 1);
+    assert.equal(r.ready(), undefined, type);
+    assert.equal(r.cr().status.certificate, undefined);
+  }
+});
+
+test("a registry entry replaced mid-run blocks the call and retries", async () => {
+  const r = setup();
+  const other = new FakeTransport();
+  r.scheduler.randomValue = 0;
+  onNamespaceRead(r, () => {
+    r.registry.entries.set("app/consumer", registered(other));
+  });
+  await r.run(KEY);
+  assert.equal(r.transport.posts().length, 0);
+  assert.equal(r.transport.requests.length, 0);
+  assert.equal(other.posts().length, 1);
+  assert.equal(r.ready().reason, "Issued");
+});
+
+test("a replaced registry entry leaves the pending message when it cannot recover", async () => {
+  const r = setup();
+  const other = new FakeTransport();
+  other.handler = () => errorResponse(503);
+  onNamespaceRead(r, () => {
+    r.registry.entries.set("app/consumer", registered(other));
+  });
+  await r.run(KEY);
+  assert.equal(r.transport.posts().length, 0);
+  assert.ok(r.queue.scheduledDelay(KEY) !== undefined);
+  r.queue.stop();
 });

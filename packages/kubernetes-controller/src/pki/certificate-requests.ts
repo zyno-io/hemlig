@@ -3,6 +3,7 @@ import { namespaceMatches } from "../references";
 import {
   buildIssueRequest,
   classifyIssueError,
+  conditionOf,
   idempotencyKeyFor,
   isHemligRequest,
   isTerminal,
@@ -20,6 +21,7 @@ import {
   readNamespaceLabels,
   resolveIssuerConsumer,
   type PkiDeps,
+  type ResolveResult,
 } from "./issuers";
 import type { KeyedWorkQueue, Outcome, WorkContext } from "./queue";
 import {
@@ -69,6 +71,13 @@ export const writeRequestStatus = async (
     if (current.metadata.uid !== uid) return "uidChanged";
     if (isTerminal(current)) return "terminal";
     const next = mutate(current.status ?? {});
+    // Never sign off a request that was denied or marked invalid meanwhile.
+    if (
+      conditionOf({ status: next }, "Ready")?.reason === "Issued" &&
+      (isTrue(current, "Denied") || isTrue(current, "InvalidRequest"))
+    ) {
+      return "terminal";
+    }
     if (readyUnchanged(current.status, next)) return "unchanged";
     try {
       await custom.replaceNamespacedCustomObjectStatus({
@@ -309,17 +318,23 @@ export class CertificateRequestReconciler {
     }
     let issued: PkiIssuedCertificate;
     try {
-      issued = await withTimeout(
-        resolved.registered.client.issueCertificate(
-          issuer.spec.issuanceGrant,
-          built.body,
-          idempotencyKeyFor(cr.metadata.uid as string),
-        ),
-        REMOTE_TIMEOUT_MS,
-        this.deps.scheduler,
-      );
-    } catch (error) {
-      return this.issueFailed(key, cr, waitKey, error);
+      // Everything awaited so far may be stale: re-check immediately before
+      // the remote call.
+      const blocked = await this.guard(key, cr, resolved, waitKey, state);
+      if (blocked !== undefined) return blocked;
+      try {
+        issued = await withTimeout(
+          resolved.registered.client.issueCertificate(
+            issuer.spec.issuanceGrant,
+            built.body,
+            idempotencyKeyFor(cr.metadata.uid as string),
+          ),
+          REMOTE_TIMEOUT_MS,
+          this.deps.scheduler,
+        );
+      } catch (error) {
+        return await this.issueFailed(key, cr, waitKey, error);
+      }
     } finally {
       release();
     }
@@ -350,6 +365,61 @@ export class CertificateRequestReconciler {
       `issued ${namespace}/${name} caId=${caId ?? "unknown"} serial=${serial ?? "unknown"}`,
     );
     return this.settle(key, result, { kind: "done" }, true);
+  }
+
+  /** Returns an outcome when the request must not be sent to Hemlig. */
+  private async guard(
+    key: string,
+    cr: CertificateRequest,
+    resolved: Extract<ResolveResult, { ok: true }>,
+    waitKey: string,
+    state: { waited: boolean },
+  ): Promise<Outcome | undefined> {
+    let fresh: CertificateRequest;
+    try {
+      fresh = unwrap(
+        await this.deps.custom.getNamespacedCustomObject({
+          group: CM_GROUP,
+          version: CM_VERSION,
+          namespace: cr.metadata.namespace as string,
+          plural: CR_PLURAL,
+          name: cr.metadata.name as string,
+        }),
+      ) as CertificateRequest;
+    } catch (error) {
+      if (isNotFound(error)) return this.finished(key);
+      throw error;
+    }
+    if (fresh.metadata.uid !== cr.metadata.uid) {
+      // The new object has its own key event; re-run this key from scratch.
+      this.queue.add(key);
+      return { kind: "done" };
+    }
+    if (isTerminal(fresh)) return this.finished(key);
+    if (
+      !isTrue(fresh, "Approved") ||
+      isTrue(fresh, "Denied") ||
+      isTrue(fresh, "InvalidRequest")
+    ) {
+      // Re-run so the gate steps write the right status.
+      this.queue.add(key);
+      return { kind: "done" };
+    }
+    if (this.deps.registry.get(resolved.consumerKey) !== resolved.registered) {
+      state.waited = true;
+      this.issuers.waitFor(waitKey, key);
+      this.issuers.requestRefresh(waitKey);
+      return this.settle(
+        key,
+        await this.write(cr, {
+          status: "False",
+          reason: "Pending",
+          message: `ConsumerNotReady: HemligConsumer ${resolved.consumerKey} changed`,
+        }),
+        { kind: "retry", policy: "slow" },
+      );
+    }
+    return undefined;
   }
 
   private async issueFailed(

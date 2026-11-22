@@ -7,6 +7,7 @@ import {
   flush,
   grantBody,
   registered,
+  FakeTransport,
   rig,
 } from "./test-fakes";
 
@@ -324,4 +325,22 @@ test("a slow grant call does not leak an unhandled rejection after the timeout",
       .reason,
     "RemoteError",
   );
+});
+
+test("a registry entry replaced mid-run is not used for the grant call", async () => {
+  const r = setup();
+  const other = new FakeTransport();
+  const original = r.core.readNamespace.bind(r.core);
+  let swapped = false;
+  r.core.readNamespace = async (input: { name: string }) => {
+    if (!swapped) {
+      swapped = true;
+      r.registry.entries.set("app/consumer", registered(other));
+    }
+    return original(input);
+  };
+  await r.run(KEY);
+  assert.equal(r.transport.requests.length, 0);
+  assert.equal(other.requests.length, 1);
+  assert.equal(r.ready().reason, "Ready");
 });

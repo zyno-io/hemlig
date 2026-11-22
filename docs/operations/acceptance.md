@@ -41,11 +41,11 @@ yarn cdk:synth $CTX --quiet
 yarn cdk:deploy $CTX
 ```
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| `cdk:synth` | Exits `0` without AWS credentials | A config rule failed, and the message names it. `consoleFqdn` requires `oidcAdminScope`, `oidcConsoleAccessScope` and `oidcClientId` |
-| `cdk:deploy` | Completes and prints `AdminUrl`, `ApiUrl`, `ConsoleUrl` and `ConsoleDistributionId` | A CloudFormation error. Read the failing resource |
-| No `ConsoleAssetsPending` output | Absent | The console build was missing at synth time and every request returns `403`. Run `yarn console:build` and redeploy |
+| Check                            | Pass                                                                                | Fail means                                                                                                                           |
+| -------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `cdk:synth`                      | Exits `0` without AWS credentials                                                   | A config rule failed, and the message names it. `consoleFqdn` requires `oidcAdminScope`, `oidcConsoleAccessScope` and `oidcClientId` |
+| `cdk:deploy`                     | Completes and prints `AdminUrl`, `ApiUrl`, `ConsoleUrl` and `ConsoleDistributionId` | A CloudFormation error. Read the failing resource                                                                                    |
+| No `ConsoleAssetsPending` output | Absent                                                                              | The console build was missing at synth time and every request returns `403`. Run `yarn console:build` and redeploy                   |
 
 ## Gate 1: CORS preflight
 
@@ -66,12 +66,12 @@ Also count audit objects before and after the request:
 aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
 ```
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| Status | `204` | `401`: the explicit `OPTIONS` route is not outranking `$default`. Confirm it exists with `AuthorizationType: NONE` |
-| Headers | `access-control-allow-origin: https://acc.example.com`, four methods, four allowed headers, `access-control-expose-headers: etag` | `204` without `allow-origin`: API Gateway ignores integration CORS headers when CORS is configured on the API. The fix is to drop the catch-all for explicit per-route definitions so API Gateway answers preflight itself, then review every route |
-| Audit count | Unchanged | A preflight wrote audit evidence. It must not, because it is a browser capability check |
-| PKI preflight | Repeat the request against `/v1/admin/pki/cas`: same `204` and headers, still no audit object | The PKI admin routes use `ANY`, which catches `OPTIONS`. They must list `GET`, `POST`, `PUT` and `DELETE` |
+| Check         | Pass                                                                                                                              | Fail means                                                                                                                                                                                                                                          |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status        | `204`                                                                                                                             | `401`: the explicit `OPTIONS` route is not outranking `$default`. Confirm it exists with `AuthorizationType: NONE`                                                                                                                                  |
+| Headers       | `access-control-allow-origin: https://acc.example.com`, four methods, four allowed headers, `access-control-expose-headers: etag` | `204` without `allow-origin`: API Gateway ignores integration CORS headers when CORS is configured on the API. The fix is to drop the catch-all for explicit per-route definitions so API Gateway answers preflight itself, then review every route |
+| Audit count   | Unchanged                                                                                                                         | A preflight wrote audit evidence. It must not, because it is a browser capability check                                                                                                                                                             |
+| PKI preflight | Repeat the request against `/v1/admin/pki/cas`: same `204` and headers, still no audit object                                     | The PKI admin routes use `ANY`, which catches `OPTIONS`. They must list `GET`, `POST`, `PUT` and `DELETE`                                                                                                                                           |
 
 ## Gate 2: the access token is the right shape
 
@@ -83,12 +83,12 @@ curl -s -o /dev/null -w '%{http_code}\n' \
   -H "authorization: Bearer $TOKEN"
 ```
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| `aud` | Equals `oidcAudience` (on Entra, the bare client ID) | You requested an ID token or the wrong resource. Ask for a resource-scoped access token |
-| `iss` | Equals `oidcIssuer` exactly | A trailing slash or `/v2.0` suffix differs. The handler compares issuers exactly |
-| `scp` or `scope` | Contains `oidcAdminScope` | The scope was not requested or not granted |
-| Status | `200` | `401`: the gateway rejected the token (missing, invalid, audience, signature, expiry). `403`: insufficient scope at the gateway, or gateway and Lambda disagree on issuer, audience, scope or role. Re-authenticating will not fix a configuration `403` |
+| Check            | Pass                                                 | Fail means                                                                                                                                                                                                                                               |
+| ---------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aud`            | Equals `oidcAudience` (on Entra, the bare client ID) | You requested an ID token or the wrong resource. Ask for a resource-scoped access token                                                                                                                                                                  |
+| `iss`            | Equals `oidcIssuer` exactly                          | A trailing slash or `/v2.0` suffix differs. The handler compares issuers exactly                                                                                                                                                                         |
+| `scp` or `scope` | Contains `oidcAdminScope`                            | The scope was not requested or not granted                                                                                                                                                                                                               |
+| Status           | `200`                                                | `401`: the gateway rejected the token (missing, invalid, audience, signature, expiry). `403`: insufficient scope at the gateway, or gateway and Lambda disagree on issuer, audience, scope or role. Re-authenticating will not fix a configuration `403` |
 
 ## Gate 3: the console loads and reads
 
@@ -99,11 +99,11 @@ curl -s https://acc.example.com/config.json
 curl -sI https://acc.example.com/ | grep -i 'cache-control\|x-cache'
 ```
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| Sign-in | Redirects to the provider and back, catalog loads | See [Console](../guide/console.md) and gate 2 |
+| Check         | Pass                                                   | Fail means                                                                                                                       |
+| ------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| Sign-in       | Redirects to the provider and back, catalog loads      | See [Console](../guide/console.md) and gate 2                                                                                    |
 | `config.json` | `auth.mode` is `oidc`, `adminApiUrl` is the admin FQDN | `adminApiUrl` is `http://127.0.0.1:5274`: the local development config reached the bucket. It boots cleanly and talks to nothing |
-| Shell caching | `cache-control: no-store` | The default behavior is cached, so a console deploy will not reach browsers |
+| Shell caching | `cache-control: no-store`                              | The default behavior is cached, so a console deploy will not reach browsers                                                      |
 
 ## Gate 4: silent renew survives the provider redirect
 
@@ -116,32 +116,32 @@ curl -sI https://acc.example.com/ | grep -i content-security-policy
 
 Then leave the console open past the access token's lifetime with the browser console visible.
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| `/` policy | `frame-src 'self'` plus the issuer origin, and `frame-ancestors 'none'` | The parent cannot navigate the iframe back |
-| `/silent.html` policy | `frame-src 'self'` plus the issuer origin, and `frame-ancestors 'self'` | The callback document cannot be embedded |
-| Session | Continues past token expiry with no CSP violation | A `frame-src` violation means renewal never completes, so requests go out with no bearer token and get `401`. If the provider refuses to be framed, the redirect fallback still works but interrupts the session |
+| Check                 | Pass                                                                    | Fail means                                                                                                                                                                                                       |
+| --------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/` policy            | `frame-src 'self'` plus the issuer origin, and `frame-ancestors 'none'` | The parent cannot navigate the iframe back                                                                                                                                                                       |
+| `/silent.html` policy | `frame-src 'self'` plus the issuer origin, and `frame-ancestors 'self'` | The callback document cannot be embedded                                                                                                                                                                         |
+| Session               | Continues past token expiry with no CSP violation                       | A `frame-src` violation means renewal never completes, so requests go out with no bearer token and get `401`. If the provider refuses to be framed, the redirect fallback still works but interrupts the session |
 
 ## Gate 5: mutation semantics
 
 In the console, create a secret, set a payload, then edit metadata.
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| Metadata-only edit | `payloadKeyCount` is unchanged | Inheritance in `SecretService.update` regressed and the destructive-edit warning goes blind |
-| Stale `If-Match` | `412`, and the console keeps your draft in the concurrency panel | The console silently reloaded and lost the draft |
-| Idempotency key reused on a secret route | `409`, no replay | The route replayed the original response. The console must reconcile by re-reading |
-| Idempotency key reused on a consumer route | Replays the recorded result | The route returned an error instead. See [Idempotency](../reference/api/index.md#idempotency) |
+| Check                                      | Pass                                                             | Fail means                                                                                    |
+| ------------------------------------------ | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Metadata-only edit                         | `payloadKeyCount` is unchanged                                   | Inheritance in `SecretService.update` regressed and the destructive-edit warning goes blind   |
+| Stale `If-Match`                           | `412`, and the console keeps your draft in the concurrency panel | The console silently reloaded and lost the draft                                              |
+| Idempotency key reused on a secret route   | `409`, no replay                                                 | The route replayed the original response. The console must reconcile by re-reading            |
+| Idempotency key reused on a consumer route | Replays the recorded result                                      | The route returned an error instead. See [Idempotency](../reference/api/index.md#idempotency) |
 
 ## Gate 6: mutual TLS
 
 Enroll a [direct consumer](../reference/glossary.md#direct-consumer) through the console with a CSR you generated locally, then call the delivery API with three certificates.
 
-| Certificate | Pass | Fail means |
-| --- | --- | --- |
-| The issued, active client certificate | `200` with the payload | Truststore or enrollment is broken |
+| Certificate                            | Pass                              | Fail means                                                                                |
+| -------------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------- |
+| The issued, active client certificate  | `200` with the payload            | Truststore or enrollment is broken                                                        |
 | The same certificate after revoking it | Rejected on the very next request | Revocation is a strongly consistent DynamoDB read, so there should be no propagation wait |
-| A certificate from an unrelated CA | Rejected at TLS | The truststore admits foreign CAs |
+| A certificate from an unrelated CA     | Rejected at TLS                   | The truststore admits foreign CAs                                                         |
 
 Also confirm the default `execute-api` endpoints are disabled on both APIs: a request to either API's raw `execute-api` URL must fail.
 
@@ -157,13 +157,13 @@ aws iam simulate-principal-policy \
   --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text
 ```
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| Audit writers | The admin, consumer, bootstrap, identity-rotation, recovery and retention roles can `PutObject` under `audit/` and cannot read or list it | A serving role can read audit evidence |
-| Audit reader | Only the audit-query role can list and read `audit/` | Another role has read access |
-| Payload decryption | The consumer role can decrypt only with `purpose=secret-payload` | It can open the issuer envelope |
-| Admin decryption | The admin role can decrypt with `purpose=issuer-ca` and `purpose=secret-payload`, and nothing else | A context is missing or too broad |
-| Retention | Only the retention role has `s3:DeleteObjectVersion` on the revision bucket | A serving role can delete revisions |
+| Check              | Pass                                                                                                                                      | Fail means                             |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| Audit writers      | The admin, consumer, bootstrap, identity-rotation, recovery and retention roles can `PutObject` under `audit/` and cannot read or list it | A serving role can read audit evidence |
+| Audit reader       | Only the audit-query role can list and read `audit/`                                                                                      | Another role has read access           |
+| Payload decryption | The consumer role can decrypt only with `purpose=secret-payload`                                                                          | It can open the issuer envelope        |
+| Admin decryption   | The admin role can decrypt with `purpose=issuer-ca` and `purpose=secret-payload`, and nothing else                                        | A context is missing or too broad      |
+| Retention          | Only the retention role has `s3:DeleteObjectVersion` on the revision bucket                                                               | A serving role can delete revisions    |
 
 ## Gate 8: Object Lock retention
 
@@ -172,11 +172,11 @@ aws s3api get-object-lock-configuration --bucket AUDIT_BUCKET
 aws s3api get-object-lock-configuration --bucket REVISION_BUCKET
 ```
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| Revision bucket | Default retention is 90 days, mode `COMPLIANCE` | Retention is not applied |
-| Audit bucket | Default retention is 7 years, mode `COMPLIANCE` | Retention is not applied |
-| Delete an audit object version | Fails | Object Lock is not enforcing |
+| Check                          | Pass                                            | Fail means                   |
+| ------------------------------ | ----------------------------------------------- | ---------------------------- |
+| Revision bucket                | Default retention is 90 days, mode `COMPLIANCE` | Retention is not applied     |
+| Audit bucket                   | Default retention is 7 years, mode `COMPLIANCE` | Retention is not applied     |
+| Delete an audit object version | Fails                                           | Object Lock is not enforcing |
 
 ## Gate PKI-0: PKI resources deploy and stay inert
 
@@ -203,18 +203,18 @@ aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
 aws cloudwatch describe-alarms --alarm-name-prefix "$DEP-pki-" --query 'MetricAlarms[].[AlarmName,StateValue]' --output text
 ```
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| Admin routes | Exactly `GET`, `POST`, `PUT`, `DELETE /v1/admin/pki/{proxy+}`, each `JWT` | An `ANY` route catches `OPTIONS` and breaks gate 1 |
-| Consumer routes | `GET` and `POST /v1/pki/{proxy+}`, `NONE` | |
-| Throttle | `POST /v1/pki/{proxy+}` with your `pkiIssuanceRateLimit` and `pkiIssuanceBurstLimit` (default 20 and 40) | Issuance is bounded only by the account limit |
-| GSI | `ACTIVE`, `pkiDirectoryPk` and `pkiDirectorySk`, `ALL` | |
-| PKI bucket | All four public-access blocks `true`, versioning `Enabled` | |
-| Maintenance | `{"status":"idle"}` | `AccessDeniedException` on `Query`: the role's GSI allowlist is wrong. Read `/aws/lambda/hml-acc-pki-maintenance` |
-| Admin probe | `404`, message `This PKI route is not available.` `/v1/admin/pki/_probe` is never routed, unlike `/v1/admin/pki/cas`, which answers `400` or `200` | Another message: the request reached the admin Lambda, not `pki-admin` |
-| Consumer probe | `404` with the same message | `403 identity_not_active` with an active certificate: `pki-issuer` cannot read `IDENTITY#` |
-| Audit count | Unchanged across both probes | A PKI 404 wrote evidence |
-| Alarms | Ten `hml-acc-pki-*` alarms, all `OK` or `INSUFFICIENT_DATA`. `pki-maintenance-missed` is `ALARM` until the first scheduled pass and must be `OK` within 15 minutes of deploy | The schedule or its invoke permission is missing |
+| Check           | Pass                                                                                                                                                                         | Fail means                                                                                                        |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Admin routes    | Exactly `GET`, `POST`, `PUT`, `DELETE /v1/admin/pki/{proxy+}`, each `JWT`                                                                                                    | An `ANY` route catches `OPTIONS` and breaks gate 1                                                                |
+| Consumer routes | `GET` and `POST /v1/pki/{proxy+}`, `NONE`                                                                                                                                    |                                                                                                                   |
+| Throttle        | `POST /v1/pki/{proxy+}` with your `pkiIssuanceRateLimit` and `pkiIssuanceBurstLimit` (default 20 and 40)                                                                     | Issuance is bounded only by the account limit                                                                     |
+| GSI             | `ACTIVE`, `pkiDirectoryPk` and `pkiDirectorySk`, `ALL`                                                                                                                       |                                                                                                                   |
+| PKI bucket      | All four public-access blocks `true`, versioning `Enabled`                                                                                                                   |                                                                                                                   |
+| Maintenance     | `{"status":"idle"}`                                                                                                                                                          | `AccessDeniedException` on `Query`: the role's GSI allowlist is wrong. Read `/aws/lambda/hml-acc-pki-maintenance` |
+| Admin probe     | `404`, message `This PKI route is not available.` `/v1/admin/pki/_probe` is never routed, unlike `/v1/admin/pki/cas`, which answers `400` or `200`                           | Another message: the request reached the admin Lambda, not `pki-admin`                                            |
+| Consumer probe  | `404` with the same message                                                                                                                                                  | `403 identity_not_active` with an active certificate: `pki-issuer` cannot read `IDENTITY#`                        |
+| Audit count     | Unchanged across both probes                                                                                                                                                 | A PKI 404 wrote evidence                                                                                          |
+| Alarms          | Ten `hml-acc-pki-*` alarms, all `OK` or `INSUFFICIENT_DATA`. `pki-maintenance-missed` is `ALARM` until the first scheduled pass and must be `OK` within 15 minutes of deploy | The schedule or its invoke permission is missing                                                                  |
 
 ## Gate PKI-1: PKI IAM boundaries
 
@@ -236,21 +236,21 @@ kmsd() { aws iam simulate-principal-policy --policy-source-arn "$(role "$1")" --
 
 DynamoDB authorizes each `TransactWriteItems` item as its own `PutItem`, `UpdateItem` or `ConditionCheckItem`, so one denied item denies the whole transaction.
 
-| Command | Pass |
-| --- | --- |
-| `ddb pki-issuer dynamodb:PutItem 'IDENTITY#x'` | `explicitDeny` |
-| `ddb pki-issuer dynamodb:PutItem 'PKI_CERT#ca-x#01'` | `allowed` |
-| `ddb pki-issuer dynamodb:ConditionCheckItem 'IDENTITY#x'` | `allowed`. `pki-admin` and `pki-maintenance`: `implicitDeny` |
-| For `pki-admin`, `pki-issuer`, `pki-maintenance` and each of `CONSUMER#y`, `IDENTITY#y`, `AGENT_GRANT#y`: `ddb ROLE dynamodb:PutItem KEY` | `explicitDeny` |
-| `ddb ROLE dynamodb:BatchWriteItem 'PKI_CA#x,CONSUMER#y'` (each PKI role) | `explicitDeny`. With `'PKI_CA#x'` alone: `implicitDeny` |
-| `aws iam simulate-principal-policy --policy-source-arn "$(role pki-admin)" --action-names dynamodb:Scan --resource-arns "$TABLE"` | `implicitDeny` |
-| `ddb ROLE dynamodb:PutItem 'PKI_CA#x'` for `admin`, `audit-query`, `consumer`, `bootstrap`, `identity-rotation`, `notification-publisher`, `recovery`, `retention` | `explicitDeny` |
-| `kmsd pki-admin kms:Decrypt pki-ca` and `kmsd pki-admin kms:GenerateDataKey pki-ca` | `allowed` |
-| `kmsd pki-admin kms:Decrypt issuer-ca`, `… secret-payload`, `kmsd pki-admin kms:Decrypt pki-ca extra` | `implicitDeny` |
-| `kmsd pki-issuer kms:GenerateDataKey pki-ca` | `implicitDeny` |
-| `aws iam simulate-principal-policy --policy-source-arn "$(role ROLE)" --action-names dynamodb:PutItem --resource-arns "$TABLE" --context-entries "ContextKeyName=dynamodb:LeadingKeys,ContextKeyValues=PKI_CA#x,ContextKeyType=stringList" "ContextKeyName=dynamodb:Attributes,ContextKeyValues=pk,sk,workflowDuePk,ContextKeyType=stringList" --query 'EvaluationResults[0].EvalDecision' --output text` for each PKI role | `explicitDeny`. A PKI role must not write another index's key attributes |
-| The same simulation for `admin`, `consumer`, `recovery` and the other existing roles, with `LeadingKeys=SECRET#x` and `dynamodb:Attributes=pk,sk,pkiDirectoryPk` | `explicitDeny`. An existing role must not write the PKI directory attributes |
-| `kmsd ROLE kms:Decrypt pki-ca` for `admin`, `consumer`, `bootstrap`, `identity-rotation` | `implicitDeny` |
+| Command                                                                                                                                                                                                                                                                                                                                                                                                                     | Pass                                                                         |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `ddb pki-issuer dynamodb:PutItem 'IDENTITY#x'`                                                                                                                                                                                                                                                                                                                                                                              | `explicitDeny`                                                               |
+| `ddb pki-issuer dynamodb:PutItem 'PKI_CERT#ca-x#01'`                                                                                                                                                                                                                                                                                                                                                                        | `allowed`                                                                    |
+| `ddb pki-issuer dynamodb:ConditionCheckItem 'IDENTITY#x'`                                                                                                                                                                                                                                                                                                                                                                   | `allowed`. `pki-admin` and `pki-maintenance`: `implicitDeny`                 |
+| For `pki-admin`, `pki-issuer`, `pki-maintenance` and each of `CONSUMER#y`, `IDENTITY#y`, `AGENT_GRANT#y`: `ddb ROLE dynamodb:PutItem KEY`                                                                                                                                                                                                                                                                                   | `explicitDeny`                                                               |
+| `ddb ROLE dynamodb:BatchWriteItem 'PKI_CA#x,CONSUMER#y'` (each PKI role)                                                                                                                                                                                                                                                                                                                                                    | `explicitDeny`. With `'PKI_CA#x'` alone: `implicitDeny`                      |
+| `aws iam simulate-principal-policy --policy-source-arn "$(role pki-admin)" --action-names dynamodb:Scan --resource-arns "$TABLE"`                                                                                                                                                                                                                                                                                           | `implicitDeny`                                                               |
+| `ddb ROLE dynamodb:PutItem 'PKI_CA#x'` for `admin`, `audit-query`, `consumer`, `bootstrap`, `identity-rotation`, `notification-publisher`, `recovery`, `retention`                                                                                                                                                                                                                                                          | `explicitDeny`                                                               |
+| `kmsd pki-admin kms:Decrypt pki-ca` and `kmsd pki-admin kms:GenerateDataKey pki-ca`                                                                                                                                                                                                                                                                                                                                         | `allowed`                                                                    |
+| `kmsd pki-admin kms:Decrypt issuer-ca`, `… secret-payload`, `kmsd pki-admin kms:Decrypt pki-ca extra`                                                                                                                                                                                                                                                                                                                       | `implicitDeny`                                                               |
+| `kmsd pki-issuer kms:GenerateDataKey pki-ca`                                                                                                                                                                                                                                                                                                                                                                                | `implicitDeny`                                                               |
+| `aws iam simulate-principal-policy --policy-source-arn "$(role ROLE)" --action-names dynamodb:PutItem --resource-arns "$TABLE" --context-entries "ContextKeyName=dynamodb:LeadingKeys,ContextKeyValues=PKI_CA#x,ContextKeyType=stringList" "ContextKeyName=dynamodb:Attributes,ContextKeyValues=pk,sk,workflowDuePk,ContextKeyType=stringList" --query 'EvaluationResults[0].EvalDecision' --output text` for each PKI role | `explicitDeny`. A PKI role must not write another index's key attributes     |
+| The same simulation for `admin`, `consumer`, `recovery` and the other existing roles, with `LeadingKeys=SECRET#x` and `dynamodb:Attributes=pk,sk,pkiDirectoryPk`                                                                                                                                                                                                                                                            | `explicitDeny`. An existing role must not write the PKI directory attributes |
+| `kmsd ROLE kms:Decrypt pki-ca` for `admin`, `consumer`, `bootstrap`, `identity-rotation`                                                                                                                                                                                                                                                                                                                                    | `implicitDeny`                                                               |
 
 The simulator evaluates identity policies only. With `existingApplicationKeyArn`, also confirm that the key policy grants these roles nothing directly. Gate PKI-4 proves the `ConditionCheckItem` grants with a real commit.
 
@@ -304,16 +304,16 @@ hemlig pki external-ca upload-crl "$EXT_ID" --crl ../other-root/other.crl.pem
 aws lambda invoke --function-name "$DEP-pki-maintenance" /tmp/pki-maintenance.json > /dev/null && cat /tmp/pki-maintenance.json
 ```
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| Create | Receipt `status: PENDING_CERTIFICATE`; the CSR verifies and shows `CA:TRUE, pathlen:0`, critical `keyCertSign, cRLSign` and the permitted DNS subtree | Hemlig built the wrong CSR profile |
-| Activate | Receipt `status: ACTIVE`, `parent.type: external`, `rootCrl.state: CURRENT`, `crl.number: 1` | `chain_invalid` or `crl_invalid`: read `error.apiDetails.reason` |
-| Envelope | `key.state ACTIVE`, `wrapped.algorithm AES-256-GCM` | |
-| CloudTrail | One `GenerateDataKey` (create) and at least one `Decrypt` (activation) with context exactly `{service: hemlig, purpose: pki-ca, caId: $CA_ID, environment: prod}`, both from the `pki-admin` role | Another role, or a context without `caId` or `environment` |
-| OpenSSL | All three commands print `OK` or `verify OK` | |
-| Upload | First `changed: true`, `revokedCaIds: []`. Identical retry `changed: false` (exit 0). Lower number: exit 5, `apiCode crl_not_newer`. Forged: exit 2, `crl_invalid`, reason `bad_signature`. Other key with the same DN: exit 2, `crl_invalid`, reason `bad_signature` | A forged or rolled-back CRL was accepted |
-| Maintenance | `{"status":"ok",…,"failures":0}`. Within 15 minutes `hml-acc-pki-generated-crl-stale`, `-external-crl-stale` and `-external-crl-missing` show `OK` | `AccessDenied` on S3 or KMS: the role's grants are wrong |
-| Audit | Succeeded events for `pki.ca.create`, `pki.ca.activate`, three `pki.external-ca.upload-crl`, and `pki.crl.get`. Failed events with reason codes `crl_not_newer` and `bad_signature`. No object contains `-----BEGIN` | |
+| Check       | Pass                                                                                                                                                                                                                                                                  | Fail means                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Create      | Receipt `status: PENDING_CERTIFICATE`; the CSR verifies and shows `CA:TRUE, pathlen:0`, critical `keyCertSign, cRLSign` and the permitted DNS subtree                                                                                                                 | Hemlig built the wrong CSR profile                               |
+| Activate    | Receipt `status: ACTIVE`, `parent.type: external`, `rootCrl.state: CURRENT`, `crl.number: 1`                                                                                                                                                                          | `chain_invalid` or `crl_invalid`: read `error.apiDetails.reason` |
+| Envelope    | `key.state ACTIVE`, `wrapped.algorithm AES-256-GCM`                                                                                                                                                                                                                   |                                                                  |
+| CloudTrail  | One `GenerateDataKey` (create) and at least one `Decrypt` (activation) with context exactly `{service: hemlig, purpose: pki-ca, caId: $CA_ID, environment: prod}`, both from the `pki-admin` role                                                                     | Another role, or a context without `caId` or `environment`       |
+| OpenSSL     | All three commands print `OK` or `verify OK`                                                                                                                                                                                                                          |                                                                  |
+| Upload      | First `changed: true`, `revokedCaIds: []`. Identical retry `changed: false` (exit 0). Lower number: exit 5, `apiCode crl_not_newer`. Forged: exit 2, `crl_invalid`, reason `bad_signature`. Other key with the same DN: exit 2, `crl_invalid`, reason `bad_signature` | A forged or rolled-back CRL was accepted                         |
+| Maintenance | `{"status":"ok",…,"failures":0}`. Within 15 minutes `hml-acc-pki-generated-crl-stale`, `-external-crl-stale` and `-external-crl-missing` show `OK`                                                                                                                    | `AccessDenied` on S3 or KMS: the role's grants are wrong         |
+| Audit       | Succeeded events for `pki.ca.create`, `pki.ca.activate`, three `pki.external-ca.upload-crl`, and `pki.crl.get`. Failed events with reason codes `crl_not_newer` and `bad_signature`. No object contains `-----BEGIN`                                                  |                                                                  |
 
 Keep `acc-root` for PKI-4 to PKI-6.
 
@@ -341,12 +341,12 @@ aws apigatewayv2 get-domain-name --domain-name "$DOMAIN" --query 'MutualTlsAuthe
 aws s3api get-object --bucket "$TS_BUCKET" --key "$TS_KEY" ts-after.pem >/dev/null && grep -c 'BEGIN CERTIFICATE' ts-after.pem
 ```
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| Issue | Receipt `status: ISSUED` with EKU `clientAuth` | Admin issuance or the operator role is broken |
+| Check         | Pass                                                                                                                                            | Fail means                                                                                |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Issue         | Receipt `status: ISSUED` with EKU `clientAuth`                                                                                                  | Admin issuance or the operator role is broken                                             |
 | Both requests | Rejected by API Gateway: a TLS failure (`curl` exit 35 or 56) or `403` with body `{"message":"Forbidden"}`, **never** a Hemlig `error` envelope | A Hemlig envelope means the request reached a Lambda: the truststore admits the PKI chain |
-| Audit count | Unchanged | Any new object (including `identity_not_active`) means the certificate reached a handler |
-| Truststore | Same `TruststoreVersion`, same anchor count, and no PKI anchor (`openssl x509 -fingerprint` of each block differs from `acc-root/root.pem`) | PKI code wrote the truststore |
+| Audit count   | Unchanged                                                                                                                                       | Any new object (including `identity_not_active`) means the certificate reached a handler  |
+| Truststore    | Same `TruststoreVersion`, same anchor count, and no PKI anchor (`openssl x509 -fingerprint` of each block differs from `acc-root/root.pem`)     | PKI code wrote the truststore                                                             |
 
 ## Gate PKI-4: deployed issuance, revocation and quota
 
@@ -385,16 +385,16 @@ curl -sS --cert consumer.crt --key consumer.key -H 'content-type: application/js
 issue api2 0002 >/dev/null; issue api3 0003 >/dev/null; issue api4 0004; grep -i retry-after api4.headers
 ```
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| Issue | `201` through the deployed `pki-issuer` role. This proves its `ConditionCheckItem` on `IDENTITY#*` and `AGENT_GRANT#*`, and its `PKI_*` writes | `503` with `AccessDeniedException` in `/aws/lambda/hml-acc-pki-issuer`: the IAM allowlist is wrong |
-| Chain | `anchor-ok`, and `leaf.pem: OK` under `-x509_strict -purpose sslserver` | Wrong chain or profile |
-| Replay | The same serial | Replay records are broken |
-| Revocation | `elapsed` ≤ 60, and `verify` reports `certificate revoked` | Inline publication failed: read the `pki_inline_crl_failed` log |
-| Revoked replay | `409 issuance_revoked` | A revoked certificate was re-delivered |
-| Quota | `api2` and `api3` give `201`; `api4` gives `429 issuance_rate_limited`, `details.reason: grant_hour`, and a `Retry-After` of 1 to 3600 | Quota is not enforced |
-| CloudTrail | `Decrypt` with `purpose=pki-ca` and this `caId` from the `pki-issuer` role (issuance) and the `pki-admin` role (inline CRL) | |
-| Audit | Succeeded: `pki.grant.create`, four `pki.certificate.issue` (one `replayed: "true"`), `pki.certificate.revoke` (`crlEntry: "true"`). Failed: `pki.certificate.issue` with `certificate_revoked` and with `grant_hour`. No event for `GET /v1/pki/issuance-grants`. No object contains `-----BEGIN` | |
+| Check          | Pass                                                                                                                                                                                                                                                                                               | Fail means                                                                                         |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Issue          | `201` through the deployed `pki-issuer` role. This proves its `ConditionCheckItem` on `IDENTITY#*` and `AGENT_GRANT#*`, and its `PKI_*` writes                                                                                                                                                     | `503` with `AccessDeniedException` in `/aws/lambda/hml-acc-pki-issuer`: the IAM allowlist is wrong |
+| Chain          | `anchor-ok`, and `leaf.pem: OK` under `-x509_strict -purpose sslserver`                                                                                                                                                                                                                            | Wrong chain or profile                                                                             |
+| Replay         | The same serial                                                                                                                                                                                                                                                                                    | Replay records are broken                                                                          |
+| Revocation     | `elapsed` ≤ 60, and `verify` reports `certificate revoked`                                                                                                                                                                                                                                         | Inline publication failed: read the `pki_inline_crl_failed` log                                    |
+| Revoked replay | `409 issuance_revoked`                                                                                                                                                                                                                                                                             | A revoked certificate was re-delivered                                                             |
+| Quota          | `api2` and `api3` give `201`; `api4` gives `429 issuance_rate_limited`, `details.reason: grant_hour`, and a `Retry-After` of 1 to 3600                                                                                                                                                             | Quota is not enforced                                                                              |
+| CloudTrail     | `Decrypt` with `purpose=pki-ca` and this `caId` from the `pki-issuer` role (issuance) and the `pki-admin` role (inline CRL)                                                                                                                                                                        |                                                                                                    |
+| Audit          | Succeeded: `pki.grant.create`, four `pki.certificate.issue` (one `replayed: "true"`), `pki.certificate.revoke` (`crlEntry: "true"`). Failed: `pki.certificate.issue` with `certificate_revoked` and with `grant_hour`. No event for `GET /v1/pki/issuance-grants`. No object contains `-----BEGIN` |                                                                                                    |
 
 ## Gate PKI-5: cert-manager renews unattended
 
@@ -424,6 +424,8 @@ spec:
   dnsNames: [web.pki5.acc.example.com]
   duration: 1h
   renewBefore: 40m
+  # The default of 1 would delete the old requests that carry the serials.
+  revisionHistoryLimit: 3
   privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
   issuerRef: { group: hemlig.zyno.io, kind: HemligIssuer, name: acc }
 EOF2
@@ -441,21 +443,24 @@ metadata: { name: denied, namespace: pki5 }
 spec:
   secretName: denied-tls
   dnsNames: [api.not-granted.example.com]
+  # Same key settings and usages as `web`, so the name check is what denies it.
+  usages: [digital signature]
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
   issuerRef: { group: hemlig.zyno.io, kind: HemligIssuer, name: acc }
 EOF2
 kubectl -n pki5 get certificaterequest -o json | jq '.items[] | select(.metadata.annotations["cert-manager.io/certificate-name"] == "denied") | .status.conditions'
 ```
 
-| Check | Pass | Fail means |
-| --- | --- | --- |
-| Renewal | At least 3 distinct serials across the CertificateRequests, and each `tls.crt` chain passes `openssl verify -CAfile acc-root/root.pem -untrusted tls.crt tls.crt` | The unattended renewal loop is broken |
-| Anchor | The SHA-256 fingerprint of `ca.crt` equals the recorded `acc-root/root.pem` fingerprint | `status.ca` is not the anchor |
-| Encoding | `tls.crt` equals the decoded `status.certificate` of the latest-revision CertificateRequest, and `ca.crt` equals the decoded `status.ca` | The base64 encoding is wrong |
-| Server copy | The leaf block equals `hemlig pki cert get acc-issuing-1 $SERIAL --out`, and the intermediate block equals the CA certificate | The returned chain differs from what Hemlig stored |
-| Denied name | A Certificate for `api.not-granted.example.com` ends `Ready=False` with reason `Failed` and `name_not_permitted` in the message | A denial was retried or hidden |
-| Restart | After `kubectl rollout restart` of the controller during a pending issuance, the request still becomes `Ready`, and `hemlig pki cert list --consumer` shows one certificate for it | The idempotency key was not reused |
-| Approval off (optional) | With `grantDefaultApprover=false`, a request stays `Waiting for approval` until approved | The controller approved by itself |
-| CRDs | The API server accepts both new CRDs, including their CEL immutability rules, and rejects a change of `spec.consumerRef` | A CEL rule failed validation. This is the only gate that proves them |
+| Check                   | Pass                                                                                                                                                                               | Fail means                                                           |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Renewal                 | At least 3 distinct serials across the CertificateRequests, and each `tls.crt` chain passes `openssl verify -CAfile acc-root/root.pem -untrusted tls.crt tls.crt`                  | The unattended renewal loop is broken                                |
+| Anchor                  | The SHA-256 fingerprint of `ca.crt` equals the recorded `acc-root/root.pem` fingerprint                                                                                            | `status.ca` is not the anchor                                        |
+| Encoding                | `tls.crt` equals the decoded `status.certificate` of the latest-revision CertificateRequest, and `ca.crt` equals the decoded `status.ca`                                           | The base64 encoding is wrong                                         |
+| Server copy             | The leaf block equals `hemlig pki cert get acc-issuing-1 $SERIAL --out`, and the intermediate block equals the CA certificate                                                      | The returned chain differs from what Hemlig stored                   |
+| Denied name             | A Certificate for `api.not-granted.example.com` ends `Ready=False` with reason `Failed` and `name_not_permitted` in the message                                                    | A denial was retried or hidden                                       |
+| Restart                 | After `kubectl rollout restart` of the controller during a pending issuance, the request still becomes `Ready`, and `hemlig pki cert list --consumer` shows one certificate for it | The idempotency key was not reused                                   |
+| Approval off (optional) | With `grantDefaultApprover=false`, a request stays `Waiting for approval` until approved                                                                                           | The controller approved by itself                                    |
+| CRDs                    | The API server accepts both new CRDs, including their CEL immutability rules, and rejects a change of `spec.consumerRef`                                                           | A CEL rule failed validation. This is the only gate that proves them |
 
 ## Teardown
 

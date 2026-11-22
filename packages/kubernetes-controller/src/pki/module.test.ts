@@ -22,7 +22,10 @@ const ISSUER_PATH = "/apis/hemlig.zyno.io/v1alpha1/hemligissuers";
 const CLUSTER_PATH = "/apis/hemlig.zyno.io/v1alpha1/hemligclusterissuers";
 const GONE = { code: 410 };
 
-const world = (t: TestContext, options: { issuer?: boolean } = {}) => {
+const world = (
+  t: TestContext,
+  options: { issuer?: boolean; watch?: FakeWatch } = {},
+) => {
   const scheduler = new FakeScheduler();
   const custom = new FakeCustom();
   const core = new FakeCore();
@@ -32,7 +35,7 @@ const world = (t: TestContext, options: { issuer?: boolean } = {}) => {
   registry.entries.set("app/consumer", registered(transport));
   custom.put("hemligconsumers", consumerObject());
   if (options.issuer !== false) custom.put("hemligissuers", issuerObject());
-  const watch = new FakeWatch();
+  const watch = options.watch ?? new FakeWatch();
   const module = new PkiModule({
     core: core as never,
     custom: custom as never,
@@ -285,4 +288,35 @@ test("PKI code never couples to the full reconcile pass", () => {
     assert.ok(!source.includes("scheduleReconcile"), file);
     assert.ok(!/require\(["']\.\.\/v1beta["']\)/.test(source), file);
   }
+});
+
+test("a 410 delivered while the first watch opens triggers another relist", async (t) => {
+  class SyncGone extends FakeWatch {
+    private first = true;
+    public override async watch(
+      path: string,
+      query: Record<string, unknown>,
+      onEvent: (phase: string, object: unknown) => void,
+      done: (error: unknown) => void,
+    ) {
+      if (path === CR_PATH && this.first) {
+        this.first = false;
+        done(GONE);
+      }
+      return super.watch(path, query, onEvent, done);
+    }
+  }
+  const w = world(t, { watch: new SyncGone() });
+  w.custom.put("certificaterequests", crObject({ approved: false }));
+  await w.start();
+  w.custom.update("certificaterequests", "app", "cr-1", (o) => {
+    o.status.conditions.push({ type: "Approved", status: "True" });
+  });
+  // probe + first relist + the relist forced by the 410
+  assert.ok(w.custom.count("list", "certificaterequests") >= 3);
+  assert.ok(w.watch.active(CR_PATH));
+  assert.equal(
+    w.watch.watches.filter((x) => x.path === CR_PATH).length >= 2,
+    true,
+  );
 });
