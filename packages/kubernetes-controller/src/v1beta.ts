@@ -22,6 +22,13 @@ import {
 } from "@zyno-io/hemlig-client";
 import { NodeHttpsTransport } from "@zyno-io/hemlig-client/node";
 import {
+  allowsConsumerReference,
+  consumerReferenceKey,
+  namespaceMatches,
+} from "./references";
+import { PkiModule } from "./pki/module";
+import { pkiConfigFromEnvironment } from "./pki/types";
+import {
   isOwnedByImport,
   kubernetesDataToPayload,
   payloadChecksum,
@@ -119,6 +126,8 @@ export interface HemligConsumer {
     };
     /** Explicitly permits another namespace to reference this cluster consumer. */
     readonly allowCrossNamespaceReferences?: boolean;
+    /** Lets HemligClusterIssuers use this consumer from any namespace; separate from allowCrossNamespaceReferences. */
+    readonly allowClusterIssuers?: boolean;
   };
   readonly status?: ReconciliationStatus;
 }
@@ -153,7 +162,7 @@ export interface HemligSecretExport {
   readonly status?: ReconciliationStatus;
 }
 
-interface CoreApi {
+export interface CoreApi {
   readNamespacedSecret(input: {
     readonly name: string;
     readonly namespace: string;
@@ -174,16 +183,48 @@ interface CoreApi {
   readNamespace(input: { readonly name: string }): Promise<unknown>;
 }
 
-interface CustomApi {
+export interface CustomApi {
   listClusterCustomObject(input: {
     readonly group: string;
     readonly version: string;
     readonly plural: string;
+    readonly limit?: number;
+    readonly _continue?: string;
   }): Promise<unknown>;
   listCustomObjectForAllNamespaces(input: {
     readonly group: string;
     readonly version: string;
     readonly plural: string;
+    readonly limit?: number;
+    readonly _continue?: string;
+  }): Promise<unknown>;
+  getNamespacedCustomObject(input: {
+    readonly group: string;
+    readonly version: string;
+    readonly namespace: string;
+    readonly plural: string;
+    readonly name: string;
+  }): Promise<unknown>;
+  getClusterCustomObject(input: {
+    readonly group: string;
+    readonly version: string;
+    readonly plural: string;
+    readonly name: string;
+  }): Promise<unknown>;
+  replaceNamespacedCustomObjectStatus(input: {
+    readonly group: string;
+    readonly version: string;
+    readonly namespace: string;
+    readonly plural: string;
+    readonly name: string;
+    readonly body: unknown;
+  }): Promise<unknown>;
+  patchClusterCustomObjectStatus(input: {
+    readonly group: string;
+    readonly version: string;
+    readonly plural: string;
+    readonly name: string;
+    readonly body: unknown;
   }): Promise<unknown>;
   patchNamespacedCustomObjectStatus(input: {
     readonly group: string;
@@ -193,6 +234,87 @@ interface CustomApi {
     readonly name: string;
     readonly body: unknown;
   }): Promise<unknown>;
+}
+
+export interface RegisteredConsumer {
+  readonly key: string;
+  readonly uid: string | undefined;
+  readonly generation: number | undefined;
+  readonly resource: HemligConsumer;
+  readonly provider: HemligProvider;
+  readonly client: HemligClient;
+  readonly consumerId: string;
+  readonly environment: string;
+  /** sha256 hex of the current identity certificate. */
+  readonly identityFingerprint: string;
+}
+
+/** Read-only view of the Ready consumers published by the last full pass. */
+export interface ConsumerRegistry {
+  get(key: string): RegisteredConsumer | undefined;
+  onChange(listener: (changed: ReadonlySet<string>) => void): () => void;
+}
+
+const registrySignature = (entry: RegisteredConsumer): string =>
+  [
+    entry.uid,
+    entry.generation,
+    entry.consumerId,
+    entry.environment,
+    entry.identityFingerprint,
+    entry.provider.metadata.generation,
+    entry.provider.spec.apiUrl,
+    JSON.stringify(
+      Object.entries(entry.provider.spec.allowedNamespaces.matchLabels).sort(
+        ([left], [right]) => (left < right ? -1 : left > right ? 1 : 0),
+      ),
+    ),
+  ].join("|");
+
+class MutableConsumerRegistry implements ConsumerRegistry {
+  private entries: ReadonlyMap<string, RegisteredConsumer> = new Map();
+  private readonly listeners = new Set<
+    (changed: ReadonlySet<string>) => void
+  >();
+
+  public get(key: string): RegisteredConsumer | undefined {
+    return this.entries.get(key);
+  }
+
+  public onChange(listener: (changed: ReadonlySet<string>) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** Replaces the whole map atomically, then reports the keys that changed. */
+  public publish(next: ReadonlyMap<string, RegisteredConsumer>): void {
+    const previous = this.entries;
+    this.entries = new Map(next);
+    const changed = new Set<string>();
+    for (const [key, entry] of next) {
+      const before = previous.get(key);
+      // resourceVersion is excluded on purpose: consumer status changes every pass.
+      if (
+        before === undefined ||
+        registrySignature(before) !== registrySignature(entry)
+      ) {
+        changed.add(key);
+      }
+    }
+    for (const key of previous.keys()) {
+      if (!next.has(key)) changed.add(key);
+    }
+    if (changed.size === 0) return;
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(changed);
+      } catch {
+        // A listener must not break the reconcile pass.
+      }
+    }
+  }
 }
 
 interface ReadyConsumer {
@@ -219,20 +341,7 @@ interface IdentitySecret {
   readonly type?: string;
 }
 
-export const consumerReferenceKey = (
-  resourceNamespace: string,
-  consumerRef: string,
-  consumerNamespace?: string,
-): string => `${consumerNamespace ?? resourceNamespace}/${consumerRef}`;
-
-export const allowsConsumerReference = (
-  resourceNamespace: string,
-  consumerNamespace: string | undefined,
-  consumer: HemligConsumer | undefined,
-): boolean =>
-  consumerNamespace === undefined ||
-  consumerNamespace === resourceNamespace ||
-  consumer?.spec.allowCrossNamespaceReferences === true;
+export { consumerReferenceKey, allowsConsumerReference } from "./references";
 
 export interface V1BetaControllerConfig {
   readonly intervalMilliseconds: number;
@@ -266,6 +375,8 @@ export class HemligV1BetaController {
   /** Consecutive failed passes, used for exponential backoff. */
   private retryAttempt = 0;
   private watch: k8s.Watch | undefined;
+  public readonly consumerRegistry = new MutableConsumerRegistry();
+  private pki: PkiModule | undefined;
   private readonly watchResourceVersions = new Map<string, string>();
   private secretDependencies = new Set<string>();
   private namespaceDependencies = new Set<string>();
@@ -297,12 +408,21 @@ export class HemligV1BetaController {
   ): HemligV1BetaController {
     const kubeConfig = new k8s.KubeConfig();
     kubeConfig.loadFromDefault();
-    const controller = new HemligV1BetaController(
-      kubeConfig.makeApiClient(k8s.CoreV1Api) as unknown as CoreApi,
-      kubeConfig.makeApiClient(k8s.CustomObjectsApi) as unknown as CustomApi,
-      config,
-    );
+    const core = kubeConfig.makeApiClient(
+      k8s.CoreV1Api,
+    ) as unknown as CoreApi;
+    const custom = kubeConfig.makeApiClient(
+      k8s.CustomObjectsApi,
+    ) as unknown as CustomApi;
+    const controller = new HemligV1BetaController(core, custom, config);
     controller.watch = new k8s.Watch(kubeConfig);
+    controller.pki = new PkiModule({
+      core,
+      custom,
+      watch: controller.watch,
+      registry: controller.consumerRegistry,
+      config: pkiConfigFromEnvironment(),
+    });
     return controller;
   }
 
@@ -321,6 +441,7 @@ export class HemligV1BetaController {
         await wait(this.nextRetryDelay(error), signal);
       }
     }
+    this.pki?.stop();
     this.mqtt.stop();
   }
 
@@ -378,6 +499,26 @@ export class HemligV1BetaController {
           readyConsumers.set(resourceKey(consumer.metadata), ready);
         }
       }
+      this.consumerRegistry.publish(
+        new Map(
+          [...readyConsumers].map(([key, ready]) => [
+            key,
+            {
+              key,
+              uid: ready.resource.metadata.uid,
+              generation: ready.resource.metadata.generation,
+              resource: ready.resource,
+              provider: ready.provider,
+              client: ready.client,
+              consumerId: ready.config.consumerId,
+              environment: ready.config.environment,
+              identityFingerprint: createHash("sha256")
+                .update(ready.certificate)
+                .digest("hex"),
+            } satisfies RegisteredConsumer,
+          ]),
+        ),
+      );
       for (const resource of imports) {
         const namespace = required(
           resource.metadata.namespace,
@@ -1653,8 +1794,9 @@ export class HemligV1BetaController {
       await this.core.readNamespace({ name: namespace }),
     ) as { metadata?: ObjectMeta };
     const requiredLabels = provider.spec.allowedNamespaces.matchLabels;
-    const allowed = Object.entries(requiredLabels).every(
-      ([key, value]) => namespaceRecord.metadata?.labels?.[key] === value,
+    const allowed = namespaceMatches(
+      namespaceRecord.metadata?.labels,
+      requiredLabels,
     );
     if (!allowed) {
       throw new ReconcileError(
@@ -1924,6 +2066,7 @@ export class HemligV1BetaController {
     ]) {
       void this.watchPath(path, signal);
     }
+    this.pki?.start(signal);
   }
 
   private async watchPath(path: string, signal: AbortSignal): Promise<void> {

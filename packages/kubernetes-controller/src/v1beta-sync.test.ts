@@ -1413,3 +1413,59 @@ test("L4: a resourceVersion conflict on the pending-key write is resumable with 
   assert.notEqual(data(f, "tls.crt"), f.original);
   for (const key of pendingKeys) assert.equal(data(f, key), undefined);
 });
+
+test("registry: a pass publishes the Ready consumer with its current client", async (t) => {
+  const f = fixture(t);
+  await f.pass();
+  const entry = f.controller.consumerRegistry.get("ns/consumer");
+  assert.ok(entry);
+  assert.equal(entry.consumerId, "agent");
+  assert.equal(entry.environment, "prod");
+  assert.equal(entry.uid, "resource-consumer");
+  assert.equal(entry.generation, 1);
+  assert.ok(entry.client instanceof HemligClient);
+  assert.equal(
+    entry.identityFingerprint,
+    createHash("sha256").update(Buffer.from("fixture")).digest("hex"),
+  );
+});
+
+test("registry: an unchanged second pass fires no listener", async (t) => {
+  const f = fixture(t);
+  const changes: string[][] = [];
+  f.controller.consumerRegistry.onChange((keys) => changes.push([...keys]));
+  await f.pass();
+  assert.deepEqual(changes, [["ns/consumer"]]);
+  await f.pass();
+  assert.equal(changes.length, 1);
+});
+
+test("registry: a rotation changes the identity fingerprint and fires", async (t) => {
+  const f = dueFixture(t);
+  const changes: string[][] = [];
+  f.controller.consumerRegistry.onChange((keys) => changes.push([...keys]));
+  f.onRotate(async (csrPem) => (await rotateDefault(f, csrPem)) as never);
+  const first = f.controller.consumerRegistry.get("ns/consumer");
+  assert.equal(first, undefined);
+  await f.pass();
+  const rotated = f.controller.consumerRegistry.get("ns/consumer");
+  assert.ok(rotated);
+  assert.equal(
+    rotated.identityFingerprint,
+    createHash("sha256").update(Buffer.from(data(f, "tls.crt")!)).digest("hex"),
+  );
+  assert.deepEqual(changes, [["ns/consumer"]]);
+});
+
+test("registry: a failing consumer is removed", async (t) => {
+  const f = fixture(t);
+  const changes: string[][] = [];
+  await f.pass();
+  assert.ok(f.controller.consumerRegistry.get("ns/consumer"));
+  f.controller.consumerRegistry.onChange((keys) => changes.push([...keys]));
+  f.secrets.delete("identity");
+  f.custom.listClusterCustomObject = async () => ({ items: [] });
+  await f.pass();
+  assert.equal(f.controller.consumerRegistry.get("ns/consumer"), undefined);
+  assert.deepEqual(changes, [["ns/consumer"]]);
+});
