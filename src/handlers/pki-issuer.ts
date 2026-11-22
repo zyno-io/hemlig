@@ -6,6 +6,7 @@ import { forbidden } from "../domain/errors";
 import type { Actor } from "../domain/types";
 import type { PkiApplication } from "../pki/app";
 import { resolveConsumerActor } from "./consumer-actor";
+import { pkiIssuerRoutes } from "./pki-issuer-routes";
 import { withPkiErrorResponse } from "./pki-shared";
 import {
   matchPkiRoute,
@@ -21,7 +22,7 @@ export interface PkiIssuerContext {
   readonly consumerId: string;
   readonly environment: string;
   readonly correlationId: string;
-  readonly setAuditContext: (context: RequestAuditContext) => void;
+  readonly setAuditContext: (context: RequestAuditContext | undefined) => void;
 }
 
 export type PkiIssuerRoute = PkiRoute<PkiIssuerContext>;
@@ -74,4 +75,4 @@ export const createPkiIssuerHandler =
       );
     });
 
-export const handler = createPkiIssuerHandler([]);
+export const handler = createPkiIssuerHandler(pkiIssuerRoutes);

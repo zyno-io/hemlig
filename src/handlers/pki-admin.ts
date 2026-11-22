@@ -22,7 +22,7 @@ export interface PkiAdminContext {
   readonly actor: Actor;
   readonly operation: string;
   readonly correlationId: string;
-  readonly setAuditContext: (context: RequestAuditContext) => void;
+  readonly setAuditContext: (context: RequestAuditContext | undefined) => void;
 }
 
 export type PkiAdminRoute = PkiRoute<PkiAdminContext>;
@@ -54,17 +54,18 @@ export const createPkiAdminHandler =
         throw pkiRouteNotAvailable();
       }
       const subject = matched.params[0];
+      const target =
+        matched.route.auditTarget?.(matched.params) ??
+        (subject === undefined
+          ? undefined
+          : subject.startsWith("ext-")
+            ? { extId: subject }
+            : { caId: subject });
       setAuditContext({
         actor,
         operation: matched.route.operation,
         sourceIp: event.requestContext.http.sourceIp,
-        ...(subject === undefined
-          ? {}
-          : {
-              target: subject.startsWith("ext-")
-                ? { extId: subject }
-                : { caId: subject },
-            }),
+        ...(target === undefined ? {} : { target }),
       });
       // After the audit context is set, so a missing role is an audited failure with reason `pki_role_required`.
       assertPkiRole(
