@@ -1,6 +1,7 @@
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
+import { PKI_METRICS } from "../src/pki/metrics";
 import { HemligStack } from "./stack";
 
 const defaultCsp =
@@ -12,6 +13,63 @@ const silentRenewCsp = defaultCsp.replace(
   "frame-ancestors 'none'",
   "frame-ancestors 'self'",
 );
+
+type Statement = Record<string, unknown>;
+
+const templateHelpers = (template: Template) => {
+  const functions = template.findResources("AWS::Lambda::Function");
+  const roleOf = (name: string): string => {
+    const entry = Object.values(functions).find(
+      (resource) => resource.Properties.FunctionName === name,
+    );
+    expect(entry).toBeDefined();
+    return entry?.Properties.Role["Fn::GetAtt"][0] as string;
+  };
+  const statementsFor = (roleLogicalId: string): Statement[] =>
+    Object.values(template.findResources("AWS::IAM::Policy"))
+      .filter((policy) =>
+        (policy.Properties.Roles as { Ref: string }[]).some(
+          (role) => role.Ref === roleLogicalId,
+        ),
+      )
+      .flatMap(
+        (policy) => policy.Properties.PolicyDocument.Statement as Statement[],
+      );
+  const actionsOf = (statements: Statement[]): string[] =>
+    statements.flatMap((statement) =>
+      [statement.Action]
+        .flat()
+        .filter((a): a is string => typeof a === "string"),
+    );
+  const logicalIdOf = (
+    type: string,
+    match: Record<string, unknown>,
+  ): string => {
+    const found = Object.entries(
+      template.findResources(type, { Properties: match }),
+    );
+    expect(found).toHaveLength(1);
+    return (found[0] as [string, unknown])[0];
+  };
+  /** The Lambda logical ID an HTTP API route key invokes. */
+  const targetFunctionOf = (routeKey: string): string => {
+    const routes = Object.values(
+      template.findResources("AWS::ApiGatewayV2::Route", {
+        Properties: { RouteKey: routeKey },
+      }),
+    );
+    expect(routes).toHaveLength(1);
+    const target = JSON.stringify(
+      (routes[0] as { Properties: { Target: unknown } }).Properties.Target,
+    );
+    const integrationId = /"Ref":"([^"]+)"/.exec(target)?.[1] as string;
+    const integration = template.toJSON().Resources[integrationId] as {
+      Properties: { IntegrationUri: { "Fn::GetAtt": string[] } };
+    };
+    return integration.Properties.IntegrationUri["Fn::GetAtt"][0] as string;
+  };
+  return { roleOf, statementsFor, actionsOf, logicalIdOf, targetFunctionOf };
+};
 
 describe("HemligStack", () => {
   it("creates hml-prefixed durable state and custom-domain APIs", () => {
@@ -62,7 +120,7 @@ describe("HemligStack", () => {
         ]),
       });
     }
-    template.resourceCountIs("AWS::S3::Bucket", 4);
+    template.resourceCountIs("AWS::S3::Bucket", 5);
     template.resourceCountIs("AWS::KMS::Key", 1);
     const resources = template.toJSON().Resources as Record<
       string,
@@ -539,34 +597,7 @@ describe("HemligStack", () => {
       }),
     });
 
-    const functions = template.findResources("AWS::Lambda::Function");
-    const roleOf = (name: string): string => {
-      const entry = Object.values(functions).find(
-        (resource) => resource.Properties.FunctionName === name,
-      );
-      expect(entry).toBeDefined();
-      return entry?.Properties.Role["Fn::GetAtt"][0] as string;
-    };
-    const statementsFor = (roleLogicalId: string): Record<string, unknown>[] =>
-      Object.values(template.findResources("AWS::IAM::Policy"))
-        .filter((policy) =>
-          (policy.Properties.Roles as { Ref: string }[]).some(
-            (role) => role.Ref === roleLogicalId,
-          ),
-        )
-        .flatMap(
-          (policy) =>
-            policy.Properties.PolicyDocument.Statement as Record<
-              string,
-              unknown
-            >[],
-        );
-    const actionsOf = (statements: Record<string, unknown>[]): string[] =>
-      statements.flatMap((statement) =>
-        [statement.Action]
-          .flat()
-          .filter((a): a is string => typeof a === "string"),
-      );
+    const { roleOf, statementsFor, actionsOf } = templateHelpers(template);
 
     const rotation = statementsFor(roleOf("hml-test-identity-rotation"));
     const rotationActions = actionsOf(rotation);
@@ -680,7 +711,7 @@ describe("HemligStack", () => {
     ).filter((fn) =>
       JSON.stringify(fn.Properties.Description ?? "").includes("Hemlig "),
     );
-    expect(onFunctions).toHaveLength(8);
+    expect(onFunctions).toHaveLength(11);
     for (const fn of onFunctions) {
       expect(fn.Properties.TracingConfig).toEqual({ Mode: "Active" });
     }
@@ -700,7 +731,7 @@ describe("HemligStack", () => {
     const template = Template.fromStack(stack);
     template.resourceCountIs("AWS::CloudFront::Distribution", 0);
     template.resourceCountIs("AWS::CloudFront::ResponseHeadersPolicy", 0);
-    template.resourceCountIs("AWS::S3::Bucket", 3);
+    template.resourceCountIs("AWS::S3::Bucket", 4);
   });
 
   describe("console certificate resolution", () => {
@@ -750,6 +781,614 @@ describe("HemligStack", () => {
       );
       expect(certificateStack).toBeDefined();
       expect(certificateStack?.environment.region).toBe("us-east-1");
+    });
+  });
+  describe("PKI", () => {
+    const pkiProps = {
+      environmentName: "test",
+      adminFqdn: "admin.test.example.com",
+      apiFqdn: "api.test.example.com",
+      consoleFqdn: "console.test.example.com",
+      consoleCertificateArn:
+        "arn:aws:acm:us-east-1:123456789012:certificate/12345678-1234-1234-1234-123456789012",
+      zoneDomain: "test.example.com",
+      oidcIssuer: "https://login.example.com/tenant/v2.0",
+      oidcAudience: "hemlig-api",
+      oidcSubjectClaim: "sub",
+      oidcAdminScope: "hemlig.admin",
+      oidcConsoleAccessScope: "api://hemlig-api/hemlig.admin",
+      oidcClientId: "console-client",
+    };
+    const plainProps = {
+      environmentName: "test",
+      adminFqdn: "admin.test.example.com",
+      apiFqdn: "api.test.example.com",
+      zoneDomain: "test.example.com",
+      oidcIssuer: "https://login.example.com/tenant/v2.0",
+      oidcAudience: "hemlig-api",
+      oidcSubjectClaim: "sub",
+    };
+    let template: Template;
+    let helpers: ReturnType<typeof templateHelpers>;
+    let tableId: string;
+    let keyId: string;
+    let pkiBucketId: string;
+    let tableArn: unknown;
+    let indexArn: unknown;
+    let keyArn: unknown;
+
+    beforeAll(() => {
+      template = Template.fromStack(
+        new HemligStack(new App(), "hml-test", {
+          ...pkiProps,
+          oidcPkiCaAdminRole: "hemlig-pki-ca-admin",
+          oidcPkiOperatorRole: "hemlig-pki-operator",
+        }),
+      );
+      helpers = templateHelpers(template);
+      tableId = helpers.logicalIdOf("AWS::DynamoDB::Table", {
+        TableName: "hml-test-control",
+      });
+      keyId = Object.keys(template.findResources("AWS::KMS::Key"))[0] as string;
+      pkiBucketId = helpers.logicalIdOf("AWS::S3::Bucket", {
+        BucketNamePrefix: "hml-test-pki",
+      });
+      tableArn = { "Fn::GetAtt": [tableId, "Arn"] };
+      indexArn = {
+        "Fn::Join": ["", [tableArn, "/index/pki-directory"]],
+      };
+      keyArn = { "Fn::GetAtt": [keyId, "Arn"] };
+    }, 120_000);
+
+    const lambdaProps = (name: string): Record<string, any> => {
+      const entry = Object.values(
+        template.findResources("AWS::Lambda::Function"),
+      ).find((resource) => resource.Properties.FunctionName === name);
+      expect(entry).toBeDefined();
+      return (entry as { Properties: Record<string, any> }).Properties;
+    };
+    const roleStatements = (name: string): Statement[] =>
+      helpers.statementsFor(helpers.roleOf(name));
+    const leading = (
+      operator: "ForAllValues:StringLike" | "ForAnyValue:StringLike",
+      keys: string[],
+    ) => ({ [operator]: { "dynamodb:LeadingKeys": keys } });
+    const allow = (
+      actions: string[],
+      resources: unknown[],
+      keys: string[],
+    ): Statement => ({
+      Action: actions.length === 1 ? actions[0] : actions,
+      Condition: leading("ForAllValues:StringLike", keys),
+      Effect: "Allow",
+      Resource: resources.length === 1 ? resources[0] : resources,
+    });
+    const identityDeny = (): Statement => ({
+      Action: [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+      ],
+      Condition: leading("ForAnyValue:StringLike", [
+        "IDENTITY#*",
+        "CONSUMER#*",
+        "AGENT_GRANT#*",
+        "TRUSTSTORE#*",
+        "SYSTEM#*",
+        "ENROLLMENT#*",
+        "BOOTSTRAP#*",
+      ]),
+      Effect: "Deny",
+      Resource: tableArn,
+    });
+    const kmsStatement = (actions: string[]): Statement => ({
+      Action: actions.length === 1 ? actions[0] : actions,
+      Condition: {
+        StringEquals: {
+          "kms:EncryptionContext:service": "hemlig",
+          "kms:EncryptionContext:purpose": "pki-ca",
+        },
+        "ForAllValues:StringEquals": {
+          "kms:EncryptionContextKeys": [
+            "service",
+            "purpose",
+            "caId",
+            "environment",
+          ],
+        },
+        Null: {
+          "kms:EncryptionContext:caId": "false",
+          "kms:EncryptionContext:environment": "false",
+        },
+      },
+      Effect: "Allow",
+      Resource: keyArn,
+    });
+    const crlObjects = () => ({
+      "Fn::Join": ["", [{ "Fn::GetAtt": [pkiBucketId, "Arn"] }, "/crl/*"]],
+    });
+    const tableStatements = (
+      reads: string[],
+      pointReads: string[],
+      writes: string[],
+      checks: string[],
+    ): Statement[] => [
+      allow(
+        ["dynamodb:GetItem", "dynamodb:Query"],
+        [tableArn, indexArn],
+        reads,
+      ),
+      ...(pointReads.length === 0
+        ? []
+        : [allow(["dynamodb:GetItem"], [tableArn], pointReads)]),
+      allow(["dynamodb:PutItem", "dynamodb:UpdateItem"], [tableArn], writes),
+      allow(["dynamodb:ConditionCheckItem"], [tableArn], checks),
+      identityDeny(),
+    ];
+    const sorted = (statements: Statement[]): string[] =>
+      statements.map((statement) => JSON.stringify(statement)).sort();
+
+    it("adds the sparse pki-directory index", () => {
+      template.hasResourceProperties("AWS::DynamoDB::Table", {
+        TableName: "hml-test-control",
+        GlobalSecondaryIndexes: Match.arrayWith([
+          {
+            IndexName: "pki-directory",
+            KeySchema: [
+              { AttributeName: "pkiDirectoryPk", KeyType: "HASH" },
+              { AttributeName: "pkiDirectorySk", KeyType: "RANGE" },
+            ],
+            Projection: { ProjectionType: "ALL" },
+          },
+        ]),
+        AttributeDefinitions: Match.arrayWith([
+          { AttributeName: "pkiDirectoryPk", AttributeType: "S" },
+          { AttributeName: "pkiDirectorySk", AttributeType: "S" },
+        ]),
+      });
+    });
+
+    it("creates the three PKI Lambdas with PKI-only environment", () => {
+      for (const kind of ["admin", "issuer", "maintenance"]) {
+        const props = lambdaProps(`hml-test-pki-${kind}`);
+        expect(props.Runtime).toBe("nodejs24.x");
+        expect(props.MemorySize).toBe(512);
+        expect(props.Timeout).toBe(29);
+        const variables = props.Environment.Variables;
+        expect(variables.PKI_DIRECTORY_INDEX).toBe("pki-directory");
+        expect(variables.PKI_BUCKET_NAME).toEqual({ Ref: pkiBucketId });
+        if (kind === "admin") {
+          expect(variables.ADMIN_PKI_CA_ROLE).toBe("hemlig-pki-ca-admin");
+          expect(variables.ADMIN_PKI_OPERATOR_ROLE).toBe("hemlig-pki-operator");
+        } else {
+          expect(variables).not.toHaveProperty("ADMIN_PKI_CA_ROLE");
+          expect(variables).not.toHaveProperty("ADMIN_PKI_OPERATOR_ROLE");
+        }
+      }
+      for (const resource of Object.values(
+        template.findResources("AWS::Lambda::Function"),
+      )) {
+        const name = resource.Properties.FunctionName as string | undefined;
+        if (
+          name !== undefined &&
+          !/-pki-(admin|issuer|maintenance)$/.test(name)
+        ) {
+          expect(
+            resource.Properties.Environment?.Variables ?? {},
+          ).not.toHaveProperty("PKI_BUCKET_NAME");
+          expect(
+            resource.Properties.Environment?.Variables ?? {},
+          ).not.toHaveProperty("PKI_DIRECTORY_INDEX");
+        }
+      }
+    });
+
+    it("omits the PKI role variables unless configured", () => {
+      const plain = Template.fromStack(
+        new HemligStack(new App(), "hml-test-plain", plainProps),
+      );
+      const admin = Object.values(
+        plain.findResources("AWS::Lambda::Function"),
+      ).find(
+        (resource) => resource.Properties.FunctionName === "hml-test-pki-admin",
+      );
+      expect(admin?.Properties.Environment.Variables).not.toHaveProperty(
+        "ADMIN_PKI_CA_ROLE",
+      );
+    }, 120_000);
+
+    it("routes PKI paths with explicit methods and never ANY", () => {
+      const routes = Object.values(
+        template.findResources("AWS::ApiGatewayV2::Route"),
+      ).map(
+        (route) =>
+          route.Properties as {
+            RouteKey: string;
+            AuthorizationType: string;
+            AuthorizationScopes?: string[];
+          },
+      );
+      const adminKeys = ["GET", "POST", "PUT", "DELETE"].map(
+        (method) => `${method} /v1/admin/pki/{proxy+}`,
+      );
+      for (const key of adminKeys) {
+        const route = routes.find((candidate) => candidate.RouteKey === key);
+        expect(route?.AuthorizationType).toBe("JWT");
+        expect(route?.AuthorizationScopes).toEqual(["hemlig.admin"]);
+        expect(helpers.targetFunctionOf(key)).toBe(
+          helpers.logicalIdOf("AWS::Lambda::Function", {
+            FunctionName: "hml-test-pki-admin",
+          }),
+        );
+      }
+      for (const key of ["GET /v1/pki/{proxy+}", "POST /v1/pki/{proxy+}"]) {
+        const route = routes.find((candidate) => candidate.RouteKey === key);
+        expect(route?.AuthorizationType).toBe("NONE");
+        expect(helpers.targetFunctionOf(key)).toBe(
+          helpers.logicalIdOf("AWS::Lambda::Function", {
+            FunctionName: "hml-test-pki-issuer",
+          }),
+        );
+      }
+      expect(
+        routes.filter((route) => route.RouteKey.includes("/pki/")),
+      ).toHaveLength(6);
+      expect(
+        routes.find((route) => route.RouteKey === "OPTIONS /{proxy+}"),
+      ).toBeDefined();
+      expect(
+        routes.filter((route) => route.RouteKey.startsWith("ANY ")),
+      ).toEqual([]);
+    });
+
+    it("throttles issuance on the consumer stage", () => {
+      const stages = Object.values(
+        template.findResources("AWS::ApiGatewayV2::Stage"),
+      ) as { Properties: Record<string, unknown>; DependsOn?: string[] }[];
+      const withSettings = stages.filter(
+        (stage) => stage.Properties.RouteSettings !== undefined,
+      );
+      expect(withSettings).toHaveLength(1);
+      const [stage] = withSettings as [(typeof withSettings)[0]];
+      expect(stage.Properties.RouteSettings).toEqual({
+        "POST /v1/pki/{proxy+}": {
+          ThrottlingRateLimit: 20,
+          ThrottlingBurstLimit: 40,
+        },
+      });
+      expect(stage.DependsOn ?? []).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^ConsumerApiPOSTv1pki/),
+        ]),
+      );
+    });
+
+    it("propagates a custom throttle and rejects invalid ones", () => {
+      const custom = Template.fromStack(
+        new HemligStack(new App(), "hml-test-throttle", {
+          ...plainProps,
+          pkiIssuanceRateLimit: 5,
+          pkiIssuanceBurstLimit: 10,
+        }),
+      );
+      const stage = Object.values(
+        custom.findResources("AWS::ApiGatewayV2::Stage"),
+      ).find((candidate) => candidate.Properties.RouteSettings !== undefined);
+      expect(stage?.Properties.RouteSettings).toEqual({
+        "POST /v1/pki/{proxy+}": {
+          ThrottlingRateLimit: 5,
+          ThrottlingBurstLimit: 10,
+        },
+      });
+      expect(
+        () =>
+          new HemligStack(new App(), "hml-test-bad-rate", {
+            ...plainProps,
+            pkiIssuanceRateLimit: 0,
+          }),
+      ).toThrow("pkiIssuanceRateLimit must be an integer from 1 to 5000.");
+      expect(
+        () =>
+          new HemligStack(new App(), "hml-test-bad-burst", {
+            ...plainProps,
+            pkiIssuanceRateLimit: 50,
+            pkiIssuanceBurstLimit: 10,
+          }),
+      ).toThrow("pkiIssuanceBurstLimit must be at least pkiIssuanceRateLimit.");
+    }, 120_000);
+
+    it("creates a private, versioned PKI bucket", () => {
+      template.hasResourceProperties("AWS::S3::Bucket", {
+        BucketNamePrefix: "hml-test-pki",
+        BucketNamespace: "account-regional",
+        PublicAccessBlockConfiguration: {
+          BlockPublicAcls: true,
+          BlockPublicPolicy: true,
+          IgnorePublicAcls: true,
+          RestrictPublicBuckets: true,
+        },
+        BucketEncryption: {
+          ServerSideEncryptionConfiguration: [
+            { ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } },
+          ],
+        },
+        VersioningConfiguration: { Status: "Enabled" },
+      });
+      const bucket = template.toJSON().Resources[pkiBucketId] as {
+        DeletionPolicy?: string;
+        UpdateReplacePolicy?: string;
+      };
+      expect(bucket.DeletionPolicy).toBe("Delete");
+      const policy = Object.values(
+        template.findResources("AWS::S3::BucketPolicy", {
+          Properties: { Bucket: { Ref: pkiBucketId } },
+        }),
+      )[0] as { Properties: { PolicyDocument: { Statement: Statement[] } } };
+      expect(policy.Properties.PolicyDocument.Statement).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            Effect: "Deny",
+            Condition: { Bool: { "aws:SecureTransport": "false" } },
+          }),
+        ]),
+      );
+      template.hasOutput("PkiBucketName", { Value: { Ref: pkiBucketId } });
+    });
+
+    it("runs maintenance every 15 minutes", () => {
+      template.hasResourceProperties("AWS::Events::Rule", {
+        Name: "hml-test-pki-maintenance",
+        ScheduleExpression: "rate(15 minutes)",
+        Targets: [
+          Match.objectLike({
+            Arn: {
+              "Fn::GetAtt": [
+                helpers.logicalIdOf("AWS::Lambda::Function", {
+                  FunctionName: "hml-test-pki-maintenance",
+                }),
+                "Arn",
+              ],
+            },
+          }),
+        ],
+      });
+    });
+
+    it("defines the PKI alarms", () => {
+      const alarms = Object.values(
+        template.findResources("AWS::CloudWatch::Alarm"),
+      ).map((alarm) => alarm.Properties as Record<string, any>);
+      expect(alarms).toHaveLength(11);
+      const pki = alarms.filter((alarm) =>
+        String(alarm.AlarmName).startsWith("hml-test-pki-"),
+      );
+      expect(pki).toHaveLength(10);
+      const missed = pki.find(
+        (alarm) => alarm.AlarmName === "hml-test-pki-maintenance-missed",
+      );
+      expect(missed).toMatchObject({
+        MetricName: "Invocations",
+        Namespace: "AWS/Lambda",
+        Period: 900,
+        EvaluationPeriods: 3,
+        DatapointsToAlarm: 3,
+        ComparisonOperator: "LessThanThreshold",
+        TreatMissingData: "breaching",
+        Threshold: 1,
+      });
+      for (const alarm of pki.filter((candidate) => candidate !== missed)) {
+        expect(alarm).toMatchObject({
+          Threshold: 1,
+          ComparisonOperator: "GreaterThanOrEqualToThreshold",
+          EvaluationPeriods: 1,
+          TreatMissingData: "notBreaching",
+        });
+        expect(alarm.AlarmActions).toBeUndefined();
+      }
+      expect(
+        pki.find((a) => a.AlarmName === "hml-test-pki-maintenance-errors"),
+      ).toMatchObject({ MetricName: "Errors", Period: 900, Statistic: "Sum" });
+      const custom = pki.filter((alarm) => alarm.Namespace === "Hemlig/PKI");
+      expect(custom.map((alarm) => alarm.MetricName).sort()).toEqual(
+        Object.values(PKI_METRICS).sort(),
+      );
+      for (const alarm of custom) {
+        expect(alarm.Dimensions).toEqual([
+          { Name: "Deployment", Value: "test" },
+        ]);
+      }
+    });
+
+    it("grants each PKI role exactly the explicit statements", () => {
+      const auditPut = (statements: Statement[]): Statement[] =>
+        statements.filter((statement) =>
+          JSON.stringify(statement).includes("audit/*"),
+        );
+      const admin = roleStatements("hml-test-pki-admin");
+      const issuer = roleStatements("hml-test-pki-issuer");
+      const maintenance = roleStatements("hml-test-pki-maintenance");
+      const withoutAudit = (statements: Statement[]): Statement[] =>
+        statements.filter(
+          (statement) =>
+            !JSON.stringify(statement).includes("audit/*") &&
+            !JSON.stringify(statement).includes("xray") &&
+            !JSON.stringify(statement).includes("logs:"),
+        );
+      const objects = (write: boolean): Statement => ({
+        Action: write
+          ? ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
+          : ["s3:GetObject", "s3:GetObjectVersion"],
+        Effect: "Allow",
+        Resource: crlObjects(),
+      });
+      expect(sorted(withoutAudit(admin))).toEqual(
+        sorted([
+          ...tableStatements(
+            ["PKI_*", "IDEMPOTENCY#human#*"],
+            [
+              "CONSUMER#*",
+              "AGENT_GRANT#*",
+              "SYSTEM#ISSUER",
+              "SYSTEM#ENVIRONMENTS",
+            ],
+            ["PKI_*", "IDEMPOTENCY#human#*"],
+            ["PKI_*"],
+          ),
+          kmsStatement(["kms:GenerateDataKey", "kms:Decrypt"]),
+          objects(true),
+        ]),
+      );
+      expect(sorted(withoutAudit(issuer))).toEqual(
+        sorted([
+          ...tableStatements(
+            ["PKI_*"],
+            ["CONSUMER#*", "IDENTITY#*", "AGENT_GRANT#*"],
+            ["PKI_*", "AUDIT_SUPPRESS#*"],
+            ["PKI_*", "IDENTITY#*", "AGENT_GRANT#*"],
+          ),
+          kmsStatement(["kms:Decrypt"]),
+          objects(false),
+        ]),
+      );
+      expect(sorted(withoutAudit(maintenance))).toEqual(
+        sorted([
+          ...tableStatements(["PKI_*"], [], ["PKI_*"], ["PKI_*"]),
+          kmsStatement(["kms:Decrypt"]),
+          objects(true),
+        ]),
+      );
+      for (const statements of [admin, issuer, maintenance]) {
+        expect(auditPut(statements).length).toBeGreaterThan(0);
+      }
+    });
+
+    it("keeps PKI roles inside their guardrails", () => {
+      const forbidden = [
+        "dynamodb:Scan",
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:DescribeTable",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:*",
+      ];
+      for (const name of [
+        "hml-test-pki-admin",
+        "hml-test-pki-issuer",
+        "hml-test-pki-maintenance",
+      ]) {
+        const statements = roleStatements(name);
+        const allowed = statements.filter(
+          (statement) => statement.Effect === "Allow",
+        );
+        const actions = helpers.actionsOf(allowed);
+        for (const action of actions) {
+          expect(forbidden).not.toContain(action);
+          expect(action).not.toMatch(/^(iot|apigateway):/);
+          expect(action).not.toMatch(/^dynamodb:PartiQL/);
+        }
+        for (const statement of allowed) {
+          const dynamoActions = helpers
+            .actionsOf([statement])
+            .filter((action) => action.startsWith("dynamodb:"));
+          if (dynamoActions.length > 0) {
+            expect(statement.Condition).toHaveProperty([
+              "ForAllValues:StringLike",
+              "dynamodb:LeadingKeys",
+            ]);
+            for (const action of dynamoActions) {
+              expect([
+                "dynamodb:GetItem",
+                "dynamodb:Query",
+                "dynamodb:PutItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:ConditionCheckItem",
+              ]).toContain(action);
+            }
+          }
+        }
+        const json = JSON.stringify(statements);
+        expect(json).not.toContain("issuer-ca");
+        expect(json).not.toContain("secret-payload");
+        for (const bucket of ["TruststoreBucket", "RevisionBucket"]) {
+          expect(json).not.toContain(bucket);
+        }
+      }
+      const kmsActions = (name: string): string[] =>
+        helpers.actionsOf(
+          roleStatements(name).filter((statement) =>
+            helpers.actionsOf([statement]).some((a) => a.startsWith("kms:")),
+          ),
+        );
+      expect(kmsActions("hml-test-pki-issuer")).toEqual(["kms:Decrypt"]);
+      expect(kmsActions("hml-test-pki-maintenance")).toEqual(["kms:Decrypt"]);
+      expect(
+        JSON.stringify(roleStatements("hml-test-pki-issuer")).includes(
+          "pki-ca",
+        ),
+      ).toBe(true);
+      // The issuer holds no PKI bucket write: its only s3:PutObject is the audit put.
+      expect(
+        roleStatements("hml-test-pki-issuer").filter(
+          (statement) =>
+            JSON.stringify(statement).includes("/crl/*") &&
+            helpers.actionsOf([statement]).includes("s3:PutObject"),
+        ),
+      ).toEqual([]);
+    });
+
+    it("denies every existing role PKI_* writes and never grants pki-ca", () => {
+      for (const name of [
+        "admin",
+        "audit-query",
+        "consumer",
+        "bootstrap",
+        "identity-rotation",
+        "notification-publisher",
+        "recovery",
+        "retention",
+      ]) {
+        const statements = roleStatements(`hml-test-${name}`);
+        expect(statements).toEqual(
+          expect.arrayContaining([
+            {
+              Action: [
+                "dynamodb:PutItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:BatchWriteItem",
+              ],
+              Condition: leading("ForAnyValue:StringLike", ["PKI_*"]),
+              Effect: "Deny",
+              Resource: tableArn,
+            },
+          ]),
+        );
+        const json = JSON.stringify(statements);
+        expect(json).not.toContain("pki-ca");
+        expect(json).not.toContain(pkiBucketId);
+        for (const statement of statements) {
+          if (
+            statement.Effect !== "Deny" &&
+            helpers.actionsOf([statement]).some((a) => a.startsWith("kms:"))
+          ) {
+            expect(statement.Condition).toHaveProperty([
+              "StringEquals",
+              "kms:EncryptionContext:purpose",
+            ]);
+          }
+        }
+      }
+      const everything = JSON.stringify(template.toJSON());
+      const policies = Object.values(
+        template.findResources("AWS::IAM::Policy"),
+      );
+      const carrying = policies.filter((policy) =>
+        JSON.stringify(policy).includes("pki-ca"),
+      );
+      expect(carrying).toHaveLength(3);
+      expect(everything).toContain("pki-ca");
     });
   });
 });

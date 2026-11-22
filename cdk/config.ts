@@ -22,6 +22,14 @@ export interface DeploymentConfig {
   readonly oidcConsoleAccessScope?: string;
   /** Optional external IdP role required by the Lambda after JWT validation. */
   readonly oidcAdminRole?: string;
+  /** Optional IdP role additionally required for PKI CA lifecycle and root CRL upload. */
+  readonly oidcPkiCaAdminRole?: string;
+  /** Optional IdP role additionally required for grants, admin issuance, revocation and CRL force-publish. */
+  readonly oidcPkiOperatorRole?: string;
+  /** Stage throttle on POST /v1/pki/{proxy+} (requests/s). Default 20. */
+  readonly pkiIssuanceRateLimit?: number;
+  /** Stage burst on POST /v1/pki/{proxy+}. Default 40. */
+  readonly pkiIssuanceBurstLimit?: number;
   /** OAuth client id the console SPA authenticates as; required when consoleFqdn is configured. */
   readonly oidcClientId?: string;
   readonly existingHostedZoneId?: string;
@@ -40,6 +48,27 @@ export interface DeploymentConfig {
    */
   readonly tracing?: boolean;
 }
+
+export const DEFAULT_PKI_ISSUANCE_RATE_LIMIT = 20;
+export const DEFAULT_PKI_ISSUANCE_BURST_LIMIT = 40;
+
+export const assertPkiIssuanceThrottle = (
+  rate: number,
+  burst: number,
+): void => {
+  for (const value of [rate, burst]) {
+    if (!Number.isInteger(value) || value < 1 || value > 5000) {
+      throw new Error(
+        "pkiIssuanceRateLimit must be an integer from 1 to 5000.",
+      );
+    }
+  }
+  if (burst < rate) {
+    throw new Error(
+      "pkiIssuanceBurstLimit must be at least pkiIssuanceRateLimit.",
+    );
+  }
+};
 
 export const deploymentConfigFromContext = (context: {
   tryGetContext(name: string): unknown;
@@ -65,6 +94,16 @@ export const deploymentConfigFromContext = (context: {
     "oidcConsoleAccessScope",
   );
   const oidcAdminRole = optionalContext(context, "oidcAdminRole");
+  const oidcPkiCaAdminRole = optionalContext(context, "oidcPkiCaAdminRole");
+  const oidcPkiOperatorRole = optionalContext(context, "oidcPkiOperatorRole");
+  const pkiIssuanceRateLimit = optionalIntegerContext(
+    context,
+    "pkiIssuanceRateLimit",
+  );
+  const pkiIssuanceBurstLimit = optionalIntegerContext(
+    context,
+    "pkiIssuanceBurstLimit",
+  );
   const oidcClientId = optionalContext(context, "oidcClientId");
   const existingHostedZoneId = optionalContext(context, "existingHostedZoneId");
   const existingApplicationKeyArn = optionalContext(
@@ -154,6 +193,18 @@ export const deploymentConfigFromContext = (context: {
   ) {
     throw new Error("context oidcAdminRole must be one role token.");
   }
+  for (const [name, value] of Object.entries({
+    oidcPkiCaAdminRole,
+    oidcPkiOperatorRole,
+  })) {
+    if (value !== undefined && !/^[A-Za-z0-9._:/-]{1,256}$/.test(value)) {
+      throw new Error(`context ${name} must be one role token.`);
+    }
+  }
+  assertPkiIssuanceThrottle(
+    pkiIssuanceRateLimit ?? DEFAULT_PKI_ISSUANCE_RATE_LIMIT,
+    pkiIssuanceBurstLimit ?? DEFAULT_PKI_ISSUANCE_BURST_LIMIT,
+  );
   if (consoleFqdn !== undefined && oidcClientId === undefined) {
     throw new Error(
       "context oidcClientId is required when consoleFqdn is configured.",
@@ -205,6 +256,10 @@ export const deploymentConfigFromContext = (context: {
     ...(oidcAdminScope === undefined ? {} : { oidcAdminScope }),
     ...(oidcConsoleAccessScope === undefined ? {} : { oidcConsoleAccessScope }),
     ...(oidcAdminRole === undefined ? {} : { oidcAdminRole }),
+    ...(oidcPkiCaAdminRole === undefined ? {} : { oidcPkiCaAdminRole }),
+    ...(oidcPkiOperatorRole === undefined ? {} : { oidcPkiOperatorRole }),
+    ...(pkiIssuanceRateLimit === undefined ? {} : { pkiIssuanceRateLimit }),
+    ...(pkiIssuanceBurstLimit === undefined ? {} : { pkiIssuanceBurstLimit }),
     ...(oidcClientId === undefined ? {} : { oidcClientId }),
     ...(existingHostedZoneId === undefined ? {} : { existingHostedZoneId }),
     ...(existingApplicationKeyArn === undefined
@@ -245,6 +300,26 @@ const optionalContext = (
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : undefined;
+};
+
+const optionalIntegerContext = (
+  context: { tryGetContext(name: string): unknown },
+  name: string,
+): number | undefined => {
+  const value = context.tryGetContext(name);
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && /^[0-9]{1,6}$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    if (parsed > 0) {
+      return parsed;
+    }
+  }
+  throw new Error(`context ${name} must be a positive integer.`);
 };
 
 const isFqdn = (value: string): boolean =>

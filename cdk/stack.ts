@@ -40,7 +40,13 @@ import {
   PhysicalResourceId,
 } from "aws-cdk-lib/custom-resources";
 import type { Construct } from "constructs";
-import { isUsEast1CertificateArn, type DeploymentConfig } from "./config";
+import {
+  assertPkiIssuanceThrottle,
+  DEFAULT_PKI_ISSUANCE_BURST_LIMIT,
+  DEFAULT_PKI_ISSUANCE_RATE_LIMIT,
+  isUsEast1CertificateArn,
+  type DeploymentConfig,
+} from "./config";
 import { consoleRuntimeConfig } from "./console-runtime-config";
 
 const workflowDueIndex = "workflow-due";
@@ -51,6 +57,30 @@ const consumerIdentityIndex = "consumer-identity";
 const secretRevisionIndex = "secret-revision";
 const auditPrefix = "audit";
 const truststoreKeyPrefix = "truststores";
+const pkiDirectoryIndex = "pki-directory";
+const pkiCrlKeyPrefix = "crl";
+const pkiMetricNamespace = "Hemlig/PKI";
+
+// PKI roles own PKI_* items and nothing in the identity plane. Item-level
+// authorization is by dynamodb:LeadingKeys. ForAllValues is vacuously true when
+// the key is absent from the request (Scan, PartiQL), so PKI roles are never
+// granted those actions.
+const pkiItemKeys = "PKI_*";
+const identityWritePrefixes = [
+  "IDENTITY#*",
+  "CONSUMER#*",
+  "AGENT_GRANT#*",
+  "TRUSTSTORE#*",
+  "SYSTEM#*",
+  "ENROLLMENT#*",
+  "BOOTSTRAP#*",
+];
+const itemWriteActions = [
+  "dynamodb:PutItem",
+  "dynamodb:UpdateItem",
+  "dynamodb:DeleteItem",
+  "dynamodb:BatchWriteItem",
+];
 
 export class HemligStack extends Stack {
   private readonly tracing: lambda.Tracing;
@@ -103,6 +133,12 @@ export class HemligStack extends Stack {
       );
     }
 
+    const pkiRate =
+      props.pkiIssuanceRateLimit ?? DEFAULT_PKI_ISSUANCE_RATE_LIMIT;
+    const pkiBurst =
+      props.pkiIssuanceBurstLimit ?? DEFAULT_PKI_ISSUANCE_BURST_LIMIT;
+    assertPkiIssuanceThrottle(pkiRate, pkiBurst);
+
     const prefix = `hml-${props.environmentName}`;
     const zone =
       props.existingHostedZoneId === undefined
@@ -133,6 +169,17 @@ export class HemligStack extends Stack {
       enforceSSL: true,
       autoDeleteObjects: true,
       removalPolicy: RemovalPolicy.DESTROY,
+      versioned: true,
+    });
+    const pkiBucket = new s3.Bucket(this, "PkiBucket", {
+      bucketNamePrefix: `${prefix}-pki`,
+      bucketNamespace: s3.BucketNamespace.ACCOUNT_REGIONAL,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      autoDeleteObjects: true,
+      removalPolicy: RemovalPolicy.DESTROY,
+      // Required: ObjectStore.putImmutable throws without a VersionId.
       versioned: true,
     });
     const table = new dynamodb.Table(this, "ControlTable", {
@@ -204,6 +251,15 @@ export class HemligStack extends Stack {
         type: dynamodb.AttributeType.STRING,
       },
       sortKey: { name: "retentionDueSk", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    table.addGlobalSecondaryIndex({
+      indexName: pkiDirectoryIndex,
+      partitionKey: {
+        name: "pkiDirectoryPk",
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: { name: "pkiDirectorySk", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
     // One customer-managed key for all Hemlig envelope material. Payloads and
@@ -382,6 +438,40 @@ export class HemligStack extends Stack {
       environment,
     );
 
+    // The PKI functions share the full base environment (loadConfig requires
+    // it) plus PKI-only variables the existing functions never see.
+    const pkiEnvironment = {
+      ...environment,
+      PKI_DIRECTORY_INDEX: pkiDirectoryIndex,
+      PKI_BUCKET_NAME: pkiBucket.bucketName,
+    };
+    const pkiAdminFunction = this.function(
+      "PkiAdminFunction",
+      `${prefix}-pki-admin`,
+      "src/handlers/pki-admin.ts",
+      {
+        ...pkiEnvironment,
+        ...(props.oidcPkiCaAdminRole === undefined
+          ? {}
+          : { ADMIN_PKI_CA_ROLE: props.oidcPkiCaAdminRole }),
+        ...(props.oidcPkiOperatorRole === undefined
+          ? {}
+          : { ADMIN_PKI_OPERATOR_ROLE: props.oidcPkiOperatorRole }),
+      },
+    );
+    const pkiIssuerFunction = this.function(
+      "PkiIssuerFunction",
+      `${prefix}-pki-issuer`,
+      "src/handlers/pki-issuer.ts",
+      pkiEnvironment,
+    );
+    const pkiMaintenanceFunction = this.function(
+      "PkiMaintenanceFunction",
+      `${prefix}-pki-maintenance`,
+      "src/handlers/pki-maintenance.ts",
+      pkiEnvironment,
+    );
+
     table.grantReadWriteData(adminFunction);
     table.grantReadWriteData(consumerFunction);
     table.grantReadWriteData(bootstrapFunction);
@@ -389,6 +479,18 @@ export class HemligStack extends Stack {
     table.grantReadWriteData(notificationPublisherFunction);
     table.grantReadWriteData(recoveryFunction);
     table.grantReadWriteData(retentionFunction);
+    for (const function_ of [
+      adminFunction,
+      auditQueryFunction,
+      consumerFunction,
+      bootstrapFunction,
+      identityRotationFunction,
+      notificationPublisherFunction,
+      recoveryFunction,
+      retentionFunction,
+    ]) {
+      denyPkiWrites(function_, table);
+    }
     // The audit-query Lambda otherwise reads only the immutable audit bucket.
     // It receives the minimum table access required for its own opaque
     // pagination state and cannot read or write the rest of Hemlig's control
@@ -550,6 +652,43 @@ export class HemligStack extends Stack {
         }),
       );
     }
+    // PKI roles: explicit statements only, no grantReadWriteData, no Scan, no
+    // IoT or API Gateway.
+    grantPkiTableAccess(pkiAdminFunction, table, {
+      reads: [pkiItemKeys, "IDEMPOTENCY#human#*"],
+      pointReads: [
+        "CONSUMER#*",
+        "AGENT_GRANT#*",
+        "SYSTEM#ISSUER",
+        "SYSTEM#ENVIRONMENTS",
+      ],
+      writes: [pkiItemKeys, "IDEMPOTENCY#human#*"],
+      conditionChecks: [pkiItemKeys],
+    });
+    grantPkiCaKey(pkiAdminFunction, applicationKey, [
+      "kms:GenerateDataKey",
+      "kms:Decrypt",
+    ]);
+    grantPkiObjects(pkiAdminFunction, pkiBucket, true);
+    auditBucket.grantPut(pkiAdminFunction, `${auditPrefix}/*`);
+    grantPkiTableAccess(pkiIssuerFunction, table, {
+      reads: [pkiItemKeys],
+      pointReads: ["CONSUMER#*", "IDENTITY#*", "AGENT_GRANT#*"],
+      writes: [pkiItemKeys, "AUDIT_SUPPRESS#*"],
+      conditionChecks: [pkiItemKeys, "IDENTITY#*", "AGENT_GRANT#*"],
+    });
+    grantPkiCaKey(pkiIssuerFunction, applicationKey, ["kms:Decrypt"]);
+    grantPkiObjects(pkiIssuerFunction, pkiBucket, false);
+    auditBucket.grantPut(pkiIssuerFunction, `${auditPrefix}/*`);
+    grantPkiTableAccess(pkiMaintenanceFunction, table, {
+      reads: [pkiItemKeys],
+      pointReads: [],
+      writes: [pkiItemKeys],
+      conditionChecks: [pkiItemKeys],
+    });
+    grantPkiCaKey(pkiMaintenanceFunction, applicationKey, ["kms:Decrypt"]);
+    grantPkiObjects(pkiMaintenanceFunction, pkiBucket, true);
+    auditBucket.grantPut(pkiMaintenanceFunction, `${auditPrefix}/*`);
     const notificationDeadLetterQueue = new sqs.Queue(
       this,
       "NotificationDeadLetterQueue",
@@ -681,6 +820,22 @@ export class HemligStack extends Stack {
       methods: [apigatewayv2.HttpMethod.GET],
       integration: auditQueryIntegration,
     });
+    // Explicit methods, never ANY: ANY would also match OPTIONS and shadow the
+    // unauthenticated preflight route. Inherits the JWT authorizer and default
+    // scopes, like GET /v1/admin/audit.
+    adminApi.addRoutes({
+      path: "/v1/admin/pki/{proxy+}",
+      methods: [
+        apigatewayv2.HttpMethod.GET,
+        apigatewayv2.HttpMethod.POST,
+        apigatewayv2.HttpMethod.PUT,
+        apigatewayv2.HttpMethod.DELETE,
+      ],
+      integration: new HttpLambdaIntegration(
+        "PkiAdminIntegration",
+        pkiAdminFunction,
+      ),
+    });
     adminApi.addRoutes({
       path: "/v1/bootstrap/redeem",
       methods: [apigatewayv2.HttpMethod.POST],
@@ -703,6 +858,15 @@ export class HemligStack extends Stack {
       path: "/v1/agent/identities/rotate",
       methods: [apigatewayv2.HttpMethod.POST],
       integration: identityRotationIntegration,
+    });
+    // No authorizer: mTLS at the domain, like every other consumer route.
+    const pkiConsumerRoutes = consumerApi.addRoutes({
+      path: "/v1/pki/{proxy+}",
+      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.POST],
+      integration: new HttpLambdaIntegration(
+        "PkiIssuerIntegration",
+        pkiIssuerFunction,
+      ),
     });
     const adminAccessLogs = accessLogGroup(
       this,
@@ -735,6 +899,19 @@ export class HemligStack extends Stack {
       autoDeploy: true,
       accessLogSettings: accessLogSettings(consumerAccessLogs),
     });
+    // routeSettings is raw CloudFormation JSON (PascalCase keys) and names a
+    // route key, so the stage must be created after the routes.
+    const consumerCfnStage = consumerStage.node
+      .defaultChild as apigatewayv2.CfnStage;
+    consumerCfnStage.routeSettings = {
+      "POST /v1/pki/{proxy+}": {
+        ThrottlingRateLimit: pkiRate,
+        ThrottlingBurstLimit: pkiBurst,
+      },
+    };
+    for (const route of pkiConsumerRoutes) {
+      consumerStage.node.addDependency(route);
+    }
     new apigatewayv2.ApiMapping(this, "AdminMapping", {
       api: adminApi,
       domainName: adminDomain,
@@ -771,6 +948,12 @@ export class HemligStack extends Stack {
       schedule: events.Schedule.rate(Duration.days(1)),
       targets: [new eventTargets.LambdaFunction(retentionFunction)],
     });
+    new events.Rule(this, "PkiMaintenanceSchedule", {
+      ruleName: `${prefix}-pki-maintenance`,
+      schedule: events.Schedule.rate(Duration.minutes(15)),
+      targets: [new eventTargets.LambdaFunction(pkiMaintenanceFunction)],
+    });
+    this.pkiAlarms(prefix, props.environmentName, pkiMaintenanceFunction);
 
     new CfnOutput(this, "AdminUrl", { value: `https://${props.adminFqdn}` });
     new CfnOutput(this, "ApiUrl", {
@@ -789,6 +972,7 @@ export class HemligStack extends Stack {
       value: revisionBucket.bucketName,
     });
     new CfnOutput(this, "AuditBucketName", { value: auditBucket.bucketName });
+    new CfnOutput(this, "PkiBucketName", { value: pkiBucket.bucketName });
     if (props.existingHostedZoneId === undefined) {
       new CfnOutput(this, "CreatedHostedZoneNameServers", {
         value: Fn.join(
@@ -1153,6 +1337,122 @@ export class HemligStack extends Stack {
     });
   }
 
+  // Alarms have no actions. Nothing emits the custom metrics until the PKI
+  // maintenance and issuance phases land; missing data is not breaching.
+  private pkiAlarms(
+    prefix: string,
+    deployment: string,
+    maintenance: lambda.IFunction,
+  ): void {
+    const alarm = (
+      id: string,
+      alarmName: string,
+      metric: cloudwatch.IMetric,
+      extra: Partial<cloudwatch.AlarmProps> = {},
+    ): void => {
+      new cloudwatch.Alarm(this, id, {
+        alarmName,
+        metric,
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        ...extra,
+      });
+    };
+    alarm(
+      "PkiMaintenanceErrorsAlarm",
+      `${prefix}-pki-maintenance-errors`,
+      maintenance.metricErrors({
+        period: Duration.minutes(15),
+        statistic: "Sum",
+      }),
+    );
+    alarm(
+      "PkiMaintenanceMissedAlarm",
+      `${prefix}-pki-maintenance-missed`,
+      maintenance.metricInvocations({
+        period: Duration.minutes(15),
+        statistic: "Sum",
+      }),
+      {
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        evaluationPeriods: 3,
+        datapointsToAlarm: 3,
+        treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      },
+    );
+    const custom = (
+      id: string,
+      suffix: string,
+      metricName: string,
+      statistic: "Max" | "Sum",
+      minutes: number,
+    ): void =>
+      alarm(
+        id,
+        `${prefix}-${suffix}`,
+        new cloudwatch.Metric({
+          namespace: pkiMetricNamespace,
+          metricName,
+          dimensionsMap: { Deployment: deployment },
+          statistic,
+          period: Duration.minutes(minutes),
+        }),
+      );
+    custom(
+      "PkiGeneratedCrlStaleAlarm",
+      "pki-generated-crl-stale",
+      "GeneratedCrlStale",
+      "Max",
+      15,
+    );
+    custom(
+      "PkiExternalCrlStaleAlarm",
+      "pki-external-crl-stale",
+      "ExternalCrlStale",
+      "Max",
+      15,
+    );
+    custom(
+      "PkiExternalCrlMissingAlarm",
+      "pki-external-crl-missing",
+      "ExternalCrlMissing",
+      "Max",
+      15,
+    );
+    custom("PkiCaExpiringAlarm", "pki-ca-expiring", "CaExpiring", "Max", 15);
+    custom(
+      "PkiCapacityHighAlarm",
+      "pki-capacity-high",
+      "CaCapacityHigh",
+      "Max",
+      15,
+    );
+    custom(
+      "PkiCrlOverCapacityAlarm",
+      "pki-crl-over-capacity",
+      "CrlOverCapacity",
+      "Max",
+      15,
+    );
+    custom(
+      "PkiCaKeyUnavailableAlarm",
+      "pki-ca-key-unavailable",
+      "CaKeyUnavailable",
+      "Sum",
+      5,
+    );
+    custom(
+      "PkiKmsAccessDeniedAlarm",
+      "pki-kms-access-denied",
+      "KmsAccessDenied",
+      "Sum",
+      5,
+    );
+  }
+
   private function(
     id: string,
     functionName: string,
@@ -1231,6 +1531,130 @@ const grantRevisionMutation = (
         "s3:PutObjectRetention",
       ],
       resources: [bucket.arnForObjects("*")],
+    }),
+  );
+};
+
+interface PkiTableAccess {
+  /** GetItem + Query on the table and the pki-directory index. */
+  readonly reads: readonly string[];
+  /** GetItem only, base table. */
+  readonly pointReads: readonly string[];
+  /** PutItem + UpdateItem. */
+  readonly writes: readonly string[];
+  readonly conditionChecks: readonly string[];
+}
+
+const leadingKeys = (
+  operator: "ForAllValues:StringLike" | "ForAnyValue:StringLike",
+  keys: readonly string[],
+) => ({ [operator]: { "dynamodb:LeadingKeys": [...keys] } });
+
+// TransactWriteItems has no IAM action of its own: each item is authorized as
+// PutItem, UpdateItem or ConditionCheckItem against its own key, so one key
+// outside these lists cancels the whole transaction.
+const grantPkiTableAccess = (
+  function_: lambda.Function,
+  table: dynamodb.ITable,
+  access: PkiTableAccess,
+): void => {
+  const indexArn = `${table.tableArn}/index/${pkiDirectoryIndex}`;
+  const allow = (
+    actions: string[],
+    resources: string[],
+    keys: readonly string[],
+  ): void =>
+    function_.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions,
+        resources,
+        conditions: leadingKeys("ForAllValues:StringLike", keys),
+      }),
+    );
+  allow(
+    ["dynamodb:GetItem", "dynamodb:Query"],
+    [table.tableArn, indexArn],
+    access.reads,
+  );
+  if (access.pointReads.length > 0) {
+    allow(["dynamodb:GetItem"], [table.tableArn], access.pointReads);
+  }
+  allow(
+    ["dynamodb:PutItem", "dynamodb:UpdateItem"],
+    [table.tableArn],
+    access.writes,
+  );
+  allow(
+    ["dynamodb:ConditionCheckItem"],
+    [table.tableArn],
+    access.conditionChecks,
+  );
+  function_.addToRolePolicy(
+    new iam.PolicyStatement({
+      effect: iam.Effect.DENY,
+      actions: itemWriteActions,
+      resources: [table.tableArn],
+      conditions: leadingKeys("ForAnyValue:StringLike", identityWritePrefixes),
+    }),
+  );
+};
+
+const denyPkiWrites = (
+  function_: lambda.Function,
+  table: dynamodb.ITable,
+): void => {
+  function_.addToRolePolicy(
+    new iam.PolicyStatement({
+      effect: iam.Effect.DENY,
+      actions: itemWriteActions,
+      resources: [table.tableArn],
+      conditions: leadingKeys("ForAnyValue:StringLike", [pkiItemKeys]),
+    }),
+  );
+};
+
+const grantPkiCaKey = (
+  function_: lambda.Function,
+  key: kms.IKey,
+  actions: readonly ("kms:GenerateDataKey" | "kms:Decrypt")[],
+): void => {
+  function_.addToRolePolicy(
+    new iam.PolicyStatement({
+      actions: [...actions],
+      resources: [key.keyArn],
+      conditions: {
+        StringEquals: {
+          "kms:EncryptionContext:service": "hemlig",
+          "kms:EncryptionContext:purpose": "pki-ca",
+        },
+        "ForAllValues:StringEquals": {
+          "kms:EncryptionContextKeys": [
+            "service",
+            "purpose",
+            "caId",
+            "environment",
+          ],
+        },
+        Null: {
+          "kms:EncryptionContext:caId": "false",
+          "kms:EncryptionContext:environment": "false",
+        },
+      },
+    }),
+  );
+};
+
+const grantPkiObjects = (
+  function_: lambda.Function,
+  bucket: s3.IBucket,
+  write: boolean,
+): void => {
+  function_.addToRolePolicy(
+    new iam.PolicyStatement({
+      actions: write
+        ? ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
+        : ["s3:GetObject", "s3:GetObjectVersion"],
+      resources: [bucket.arnForObjects(`${pkiCrlKeyPrefix}/*`)],
     }),
   );
 };

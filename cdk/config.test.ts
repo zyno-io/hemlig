@@ -256,3 +256,68 @@ describe("deploymentConfigFromContext", () => {
     ).toThrow("must not be supplied unless consoleFqdn");
   });
 });
+
+describe("PKI deployment context", () => {
+  const base = {
+    adminFqdn: "admin.example.com",
+    apiFqdn: "api.example.com",
+    zoneDomain: "example.com",
+    oidcIssuer: "https://login.example.com/tenant/v2.0",
+    oidcAudience: "hemlig-api",
+  };
+  const load = (extra: Record<string, unknown>) =>
+    deploymentConfigFromContext({
+      tryGetContext: (name: string): unknown =>
+        ({ ...base, ...extra })[name as keyof typeof base],
+    });
+
+  it("accepts and returns both PKI role tokens", () => {
+    const config = load({
+      oidcPkiCaAdminRole: "hemlig-pki-ca-admin",
+      oidcPkiOperatorRole: "hemlig-pki-operator",
+    });
+    expect(config.oidcPkiCaAdminRole).toBe("hemlig-pki-ca-admin");
+    expect(config.oidcPkiOperatorRole).toBe("hemlig-pki-operator");
+  });
+
+  it("rejects malformed PKI role tokens naming the key", () => {
+    expect(() => load({ oidcPkiCaAdminRole: "two words" })).toThrow(
+      "context oidcPkiCaAdminRole must be one role token.",
+    );
+    expect(() => load({ oidcPkiOperatorRole: "bad value!" })).toThrow(
+      "context oidcPkiOperatorRole must be one role token.",
+    );
+  });
+
+  it("leaves the throttle keys absent when unset", () => {
+    const config = load({});
+    expect(config).not.toHaveProperty("pkiIssuanceRateLimit");
+    expect(config).not.toHaveProperty("pkiIssuanceBurstLimit");
+  });
+
+  it("accepts numeric and string throttle values", () => {
+    expect(
+      load({ pkiIssuanceRateLimit: "25", pkiIssuanceBurstLimit: "50" }),
+    ).toMatchObject({ pkiIssuanceRateLimit: 25, pkiIssuanceBurstLimit: 50 });
+    expect(
+      load({ pkiIssuanceRateLimit: 5, pkiIssuanceBurstLimit: 10 }),
+    ).toMatchObject({ pkiIssuanceRateLimit: 5, pkiIssuanceBurstLimit: 10 });
+  });
+
+  it("rejects invalid throttle values", () => {
+    for (const bad of ["0", "-1", "1.5", "abc"]) {
+      expect(() => load({ pkiIssuanceRateLimit: bad })).toThrow(
+        "context pkiIssuanceRateLimit must be a positive integer.",
+      );
+    }
+    expect(() =>
+      load({ pkiIssuanceRateLimit: 5001, pkiIssuanceBurstLimit: 5001 }),
+    ).toThrow("pkiIssuanceRateLimit must be an integer from 1 to 5000.");
+  });
+
+  it("rejects a rate above the default burst", () => {
+    expect(() => load({ pkiIssuanceRateLimit: "50" })).toThrow(
+      "pkiIssuanceBurstLimit must be at least pkiIssuanceRateLimit.",
+    );
+  });
+});
