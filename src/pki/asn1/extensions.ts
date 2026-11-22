@@ -197,6 +197,12 @@ export const decodeBasicConstraints = (
 ): { ca: boolean; pathLen?: number } => {
   parseDer(value);
   const decoded = AsnConvert.parse(value, BasicConstraints);
+  if (
+    decoded.pathLenConstraint !== undefined &&
+    decoded.pathLenConstraint < 0
+  ) {
+    throw new DerError("Negative pathLenConstraint.");
+  }
   return { ca: decoded.cA, pathLen: decoded.pathLenConstraint };
 };
 

@@ -282,8 +282,14 @@ export const describePublicKey = (spkiDer: Uint8Array): PublicKeyInfo => {
   }
   let key: KeyObject;
   const load = (): KeyObject => {
+    // The SPKI must be the canonical encoding of the key it holds: no trailing bytes, no alternate forms.
     try {
-      return spkiToKeyObject(spkiDer);
+      const loaded = spkiToKeyObject(spkiDer);
+      const canonical = loaded.export({ type: "spki", format: "der" });
+      if (!canonical.equals(Buffer.from(spkiDer))) {
+        throw new Error("non-canonical SPKI");
+      }
+      return loaded;
     } catch {
       throw new PublicKeyError("malformed_public_key");
     }

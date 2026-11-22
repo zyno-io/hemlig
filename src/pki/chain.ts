@@ -60,7 +60,19 @@ const covers = (
     }
     return true;
   }
-  // dns and uri bases are hosts. `example.com` permits itself and every subdomain; `.example.com` only subdomains.
+  if (outer.type === "uri") {
+    // RFC 5280 4.2.1.10 (and OpenSSL's nc_uri): a base without a leading dot is exactly that host; with a leading
+    // dot it is every strictly subordinate host.
+    const outerHost = outer.value.toLowerCase();
+    const innerHost = inner.value.toLowerCase();
+    if (!outerHost.startsWith(".")) {
+      return innerHost === outerHost;
+    }
+    return innerHost.startsWith(".")
+      ? innerHost === outerHost || innerHost.endsWith(outerHost)
+      : innerHost.endsWith(outerHost);
+  }
+  // dns bases are hosts. `example.com` permits itself and every subdomain; `.example.com` only subdomains.
   const outerValue = outer.value.toLowerCase();
   const innerValue = inner.value.toLowerCase();
   const outerBare = outerValue.replace(/^\./, "");
@@ -247,6 +259,13 @@ export const verifyActivationChain = (
   if (root.subjectKeyIdentifier === undefined) {
     throw chainInvalid("root_missing_ski");
   }
+  // No leaf could validate under an intermediate below a root that allows no CAs beneath it.
+  if (
+    root.basicConstraints.pathLen !== undefined &&
+    root.basicConstraints.pathLen < 1
+  ) {
+    throw chainInvalid("root_path_len");
+  }
   if (root.nameConstraints !== undefined) {
     throw chainInvalid("root_name_constraints_unsupported");
   }
@@ -259,10 +278,11 @@ export const verifyActivationChain = (
   if (!verifyCertificateSignature(certificate, root.spkiDer)) {
     throw chainInvalid("signature_invalid");
   }
-  if (
-    certificate.authorityKeyIdentifier !== undefined &&
-    !certificate.authorityKeyIdentifier.equals(root.subjectKeyIdentifier)
-  ) {
+  // AKI is required (as under -x509_strict) and must be the root's SKI.
+  if (certificate.authorityKeyIdentifier === undefined) {
+    throw chainInvalid("missing_aki");
+  }
+  if (!certificate.authorityKeyIdentifier.equals(root.subjectKeyIdentifier)) {
     throw chainInvalid("aki_mismatch");
   }
   if (!certificate.spkiDer.equals(Buffer.from(input.caSpkiDer))) {
@@ -275,6 +295,9 @@ export const verifyActivationChain = (
   // 3. CA basics and remaining validity.
   if (certificate.version !== 2 || certificate.basicConstraints?.ca !== true) {
     throw chainInvalid("not_ca");
+  }
+  if (!certificate.basicConstraints.critical) {
+    throw chainInvalid("basic_constraints_not_critical");
   }
   if (
     certificate.keyUsage === undefined ||

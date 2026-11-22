@@ -12,8 +12,16 @@ import {
   parseCrl,
   verifyCrlSignature,
 } from "./crl";
-import { children, parseDer } from "./der";
-import { EXT } from "./extensions";
+import {
+  children,
+  encodeTime,
+  explicit,
+  parseDer,
+  seq,
+  tlv,
+  unsignedInteger,
+} from "./der";
+import { EXT, extension } from "./extensions";
 
 describe("CRL encoding", () => {
   it("builds a full v2 CRL with AKI and CRLNumber, entries ordered by serial", async () => {
@@ -131,5 +139,96 @@ describe("CRL encoding", () => {
     expect(
       tbs.includes(Buffer.from("32303530303130363030303030305a", "hex")),
     ).toBe(true); // GeneralizedTime
+  });
+
+  describe("strict parsing", () => {
+    const base = async () => {
+      const root = await makeRoot();
+      const algorithm = caSignatureAlgorithmIdentifier("ECDSA_P384");
+      const tbs = buildTbsCertList({
+        signatureAlgorithm: algorithm,
+        issuerDer: root.cert.subjectDer,
+        thisUpdate: new Date("2026-11-22T10:00:00Z"),
+        nextUpdate: new Date("2026-11-29T10:00:00Z"),
+        crlNumber: 1n,
+        authorityKeyId: root.cert.subjectKeyIdentifier ?? Buffer.alloc(0),
+        entries: [],
+      });
+      return { algorithm, kids: children(parseDer(tbs)).map((kid) => kid.raw) };
+    };
+
+    it.each([
+      [
+        "a duplicate [0] extensions block",
+        [explicit(0, seq(extension("1.2.3.4", false, seq())))],
+      ],
+      ["a field after the extensions", [tlv(0xa1, Buffer.alloc(0))]],
+    ])("rejects %s", async (_, extra) => {
+      const { algorithm, kids } = await base();
+      expect(() =>
+        parseCrl(
+          assembleCrl(seq(...kids, ...extra), algorithm, Buffer.alloc(8, 1)),
+        ),
+      ).toThrow();
+    });
+
+    it("rejects a reasonCode that is not one minimal ENUMERATED byte", async () => {
+      const { algorithm, kids } = await base();
+      const entryWith = (value: Buffer) =>
+        seq(
+          ...kids.slice(0, 5),
+          seq(
+            seq(
+              unsignedInteger(Buffer.from("01", "hex")),
+              encodeTime(new Date("2026-11-22T09:00:00Z")),
+              seq(extension(EXT.reasonCode, false, value)),
+            ),
+          ),
+          ...kids.slice(5),
+        );
+      const parse = (value: Buffer) =>
+        parseCrl(assembleCrl(entryWith(value), algorithm, Buffer.alloc(8, 1)));
+      expect(parse(tlv(0x0a, Buffer.from([1]))).entries[0]?.reason).toBe(1);
+      expect(() => parse(tlv(0x0a, Buffer.from([0, 1])))).toThrow();
+      expect(() => parse(tlv(0x0a, Buffer.alloc(0)))).toThrow();
+      expect(() => parse(tlv(0x0a, Buffer.from([0x81])))).toThrow();
+    });
+
+    it("rejects malformed serial hex when building", async () => {
+      const root = await makeRoot();
+      for (const serialHex of ["abc", "", "0G", "AB"]) {
+        expect(() =>
+          buildTbsCertList({
+            signatureAlgorithm: caSignatureAlgorithmIdentifier("ECDSA_P384"),
+            issuerDer: root.cert.subjectDer,
+            thisUpdate: new Date(),
+            nextUpdate: new Date(),
+            crlNumber: 1n,
+            authorityKeyId: Buffer.alloc(20),
+            entries: [{ serialHex, revokedAt: new Date() }],
+          }),
+        ).toThrow();
+      }
+    });
+
+    it("writes serials in canonical form", async () => {
+      const root = await makeRoot();
+      const algorithm = caSignatureAlgorithmIdentifier("ECDSA_P384");
+      const tbs = buildTbsCertList({
+        signatureAlgorithm: algorithm,
+        issuerDer: root.cert.subjectDer,
+        thisUpdate: new Date("2026-11-22T10:00:00Z"),
+        nextUpdate: new Date("2026-11-29T10:00:00Z"),
+        crlNumber: 1n,
+        authorityKeyId: Buffer.alloc(20),
+        entries: [
+          { serialHex: "000102", revokedAt: new Date("2026-11-22T09:00:00Z") },
+        ],
+      });
+      expect(
+        parseCrl(assembleCrl(tbs, algorithm, Buffer.alloc(8, 1))).entries[0]
+          ?.serialHex,
+      ).toBe("0102");
+    });
   });
 });

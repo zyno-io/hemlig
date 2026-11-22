@@ -18,7 +18,8 @@ import {
   type LeafTbsInput,
   type ParsedCertificate,
 } from "./certificate";
-import { EKU, EXT } from "./extensions";
+import { children, explicit, parseDer, seq, tlv } from "./der";
+import { EKU, EXT, extension } from "./extensions";
 
 const serial = Buffer.from("0102030405060708090a0b0c0d0e0f1011121314", "hex");
 
@@ -161,6 +162,59 @@ describe("buildLeafTbs", () => {
     const leaf = unsigned(tbs);
     expect(leaf.notBefore.toISOString()).toBe("2049-12-31T23:59:59.000Z");
     expect(leaf.notAfter.toISOString()).toBe("2050-03-01T00:00:00.000Z");
+  });
+});
+
+describe("certificate parsing strictness", () => {
+  const base = async () => {
+    const { issuer, leafSpki } = await fixtures();
+    const { tbs, signatureAlgorithm } = buildLeafTbs(
+      leafInput(issuer, leafSpki),
+    );
+    return {
+      kids: children(parseDer(tbs)).map((kid) => kid.raw),
+      signatureAlgorithm,
+    };
+  };
+  const extensionsBlock = explicit(3, seq());
+
+  it.each([
+    [
+      "a duplicate [3] extensions block",
+      [explicit(3, seq(extension("1.2.3.4", false, seq())))],
+    ],
+    ["a field after the extensions", [tlv(0xa4, Buffer.alloc(0))]],
+    ["an out-of-order unique id", [tlv(0xa2, Buffer.from([0, 1]))]],
+  ])("rejects %s", async (_, extra) => {
+    const { kids, signatureAlgorithm } = await base();
+    const tbs = seq(...kids, ...extra);
+    expect(() =>
+      parseCertificate(
+        assembleCertificate(tbs, signatureAlgorithm, Buffer.alloc(8, 1)),
+      ),
+    ).toThrow();
+    void extensionsBlock;
+  });
+
+  it("generates one canonical serial form", () => {
+    for (let i = 0; i < 2000; i += 1) {
+      const value = generateSerial();
+      expect(value[0]).toBeGreaterThan(0);
+      expect(value[0]).toBeLessThan(0x80);
+    }
+  });
+
+  it("keeps the generated, encoded and parsed serial identical", async () => {
+    const { issuer, leafSpki } = await fixtures();
+    const generated = generateSerial();
+    const { tbs, signatureAlgorithm } = buildLeafTbs(
+      leafInput(issuer, leafSpki, { serial: generated }),
+    );
+    const parsed = parseCertificate(
+      assembleCertificate(tbs, signatureAlgorithm, Buffer.alloc(8, 1)),
+    );
+    expect(parsed.serialHex).toBe(generated.toString("hex"));
+    expect(parsed.serialHex).toHaveLength(40);
   });
 });
 

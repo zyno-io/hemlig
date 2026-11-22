@@ -9,7 +9,9 @@ import {
 import {
   bitString,
   children,
+  canonicalSerialHex,
   decodeTime,
+  decodeVersion,
   decodeUnsignedInteger,
   DerError,
   encodeTime,
@@ -55,6 +57,16 @@ export interface TbsCertListInput {
   readonly entries: readonly CrlEntryInput[];
 }
 
+/** A CRLReason is a one-byte ENUMERATED. */
+const decodeReasonCode = (value: Uint8Array): number => {
+  const element = expectTag(parseDer(value), TAG.enumerated, "a CRLReason");
+  const code = element.value[0];
+  if (element.value.length !== 1 || code === undefined || code > 0x7f) {
+    throw new DerError("Malformed CRLReason.");
+  }
+  return code;
+};
+
 const compareSerials = (left: string, right: string): number =>
   left.length === right.length
     ? left < right
@@ -80,7 +92,7 @@ const entry = (input: CrlEntryInput): Buffer => {
       : []),
   ];
   return seq(
-    unsignedInteger(Buffer.from(input.serialHex, "hex")),
+    unsignedInteger(Buffer.from(canonicalSerialHex(input.serialHex), "hex")),
     encodeTime(input.revokedAt),
     ...(extensions.length > 0 ? [seq(...extensions)] : []),
   );
@@ -88,9 +100,9 @@ const entry = (input: CrlEntryInput): Buffer => {
 
 /** A full, direct v2 TBSCertList with AKI and CRLNumber only. Entries are ordered by serial. */
 export const buildTbsCertList = (input: TbsCertListInput): Buffer => {
-  const entries = [...input.entries].sort((left, right) =>
-    compareSerials(left.serialHex, right.serialHex),
-  );
+  const entries = input.entries
+    .map((e) => ({ ...e, serialHex: canonicalSerialHex(e.serialHex) }))
+    .sort((left, right) => compareSerials(left.serialHex, right.serialHex));
   return seq(
     smallInteger(1),
     input.signatureAlgorithm,
@@ -169,7 +181,7 @@ export const parseCrl = (input: Uint8Array): ParsedCrl => {
     let index = 0;
     let version: number | undefined;
     if (fields[0]?.tag === TAG.integer) {
-      version = fields[0].value[0];
+      version = decodeVersion(fields[0], [0, 1]);
       index = 1;
     }
     const tbsAlgorithm = fields[index];
@@ -209,22 +221,23 @@ export const parseCrl = (input: Uint8Array): ParsedCrl => {
           serialHex: decodeUnsignedInteger(serial).toString("hex"),
           revocationDate: decodeTime(date),
           reason:
-            reason === undefined
-              ? undefined
-              : expectTag(parseDer(reason.value), TAG.enumerated, "a CRLReason")
-                  .value[0],
+            reason === undefined ? undefined : decodeReasonCode(reason.value),
           extensions,
         });
       }
       index += 1;
     }
     let extensions: RawExtension[] = [];
-    for (const field of fields.slice(index)) {
-      if (field.tag !== 0xa0) {
-        throw new DerError("Unexpected TBSCertList field.");
-      }
-      const container = children(field)[0];
-      if (container === undefined) {
+    const trailing = fields.slice(index);
+    if (
+      trailing.length > 1 ||
+      (trailing[0] !== undefined && trailing[0].tag !== 0xa0)
+    ) {
+      throw new DerError("Unexpected TBSCertList field.");
+    }
+    if (trailing[0] !== undefined) {
+      const [container, ...more] = children(trailing[0]);
+      if (container === undefined || more.length > 0) {
         throw new DerError("Malformed CRL extensions.");
       }
       extensions = decodeExtensions(container);

@@ -1,6 +1,9 @@
 import {
+  canonicalSerialHex,
   children,
   decodeOid,
+  decodeUnsignedInteger,
+  decodeVersion,
   decodeTime,
   DerError,
   encodeTime,
@@ -56,6 +59,39 @@ describe("der", () => {
         parseDer(Buffer.from("170d3530303130313030303030305a", "hex")),
       ).getUTCFullYear(),
     ).toBe(1950);
+  });
+
+  it("rejects non-minimal INTEGERs, OID arcs and versions", () => {
+    expect(() =>
+      decodeUnsignedInteger(parseDer(Buffer.from("0202007f", "hex"))),
+    ).toThrow(DerError);
+    expect(() =>
+      decodeUnsignedInteger(parseDer(Buffer.from("02020080", "hex"))),
+    ).not.toThrow();
+    expect(() =>
+      decodeUnsignedInteger(parseDer(Buffer.from("0201ff", "hex"))),
+    ).toThrow(DerError);
+    expect(() =>
+      decodeOid(parseDer(Buffer.from("06038055 04".replace(" ", ""), "hex"))),
+    ).toThrow(DerError);
+    expect(() =>
+      decodeVersion(parseDer(Buffer.from("02020002", "hex")), [0, 1, 2]),
+    ).toThrow(DerError);
+    expect(() =>
+      decodeVersion(parseDer(Buffer.from("020103", "hex")), [0, 1, 2]),
+    ).toThrow(DerError);
+    expect(
+      decodeVersion(parseDer(Buffer.from("020102", "hex")), [0, 1, 2]),
+    ).toBe(2);
+  });
+
+  it("canonicalizes serial hex", () => {
+    expect(canonicalSerialHex("0001ff")).toBe("01ff");
+    expect(canonicalSerialHex("00")).toBe("00");
+    expect(canonicalSerialHex("80ff")).toBe("80ff");
+    for (const bad of ["", "abc", "0G", "AB", "1"]) {
+      expect(() => canonicalSerialHex(bad)).toThrow(DerError);
+    }
   });
 
   it("rejects indefinite, non-minimal and truncated lengths and trailing bytes", () => {

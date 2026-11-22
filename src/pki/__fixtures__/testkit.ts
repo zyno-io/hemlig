@@ -291,6 +291,11 @@ const fixtureDirectory = __dirname;
  */
 export const expectGolden = (name: string, data: Uint8Array): void => {
   const path = join(fixtureDirectory, name);
+  if (!existsSync(path) && process.env.CI) {
+    throw new Error(
+      `Golden fixture ${name} is missing; generate and commit it.`,
+    );
+  }
   if (process.env.UPDATE_GOLDEN === "1" || !existsSync(path)) {
     writeFileSync(path, data);
     return;
@@ -313,6 +318,11 @@ export const goldenFixtures = async (): Promise<{
   leafSpki: Buffer;
 }> => {
   if (!hasFixture("issuer.der")) {
+    if (process.env.CI) {
+      throw new Error(
+        "Golden fixture issuer.der is missing; generate and commit it.",
+      );
+    }
     const root = await makeRoot();
     const intermediate = await makeIntermediate(root, {
       subject: { O: "Golden Corp", CN: "Golden Issuing CA 1" },

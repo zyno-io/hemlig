@@ -19,11 +19,12 @@ export interface CaSigner {
  */
 export const signWithPkcs8 = (
   algorithm: PkiKeyAlgorithm,
-  pkcs8Der: Uint8Array,
+  pkcs8Der: Buffer,
   data: Uint8Array,
 ): Buffer => {
+  // Pass the caller's buffer straight through: a copy here would be a plaintext the caller cannot zero.
   const key = createPrivateKey({
-    key: Buffer.from(pkcs8Der),
+    key: pkcs8Der,
     format: "der",
     type: "pkcs8",
   });

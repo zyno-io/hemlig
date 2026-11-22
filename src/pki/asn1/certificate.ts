@@ -14,6 +14,7 @@ import {
   bitString,
   children,
   decodeTime,
+  decodeVersion,
   decodeUnsignedInteger,
   DerError,
   encodeTime,
@@ -131,8 +132,11 @@ export const parseCertificate = (input: Uint8Array): ParsedCertificate => {
     let index = 0;
     let version = 0;
     if (fields[0]?.tag === 0xa0) {
-      const inner = expectTag(children(fields[0])[0], TAG.integer, "a version");
-      version = inner.value[0] ?? 0;
+      const [inner, ...more] = children(fields[0]);
+      if (inner === undefined || more.length > 0) {
+        throw new DerError("Malformed version.");
+      }
+      version = decodeVersion(inner, [0, 1, 2]);
       index = 1;
     }
     const serial = fields[index];
@@ -161,15 +165,20 @@ export const parseCertificate = (input: Uint8Array): ParsedCertificate => {
     expectTag(spki, TAG.sequence, "a SubjectPublicKeyInfo");
 
     let extensions: RawExtension[] = [];
+    // Optional trailing fields, each at most once and in order: [1] issuerUniqueID, [2] subjectUniqueID, [3]
+    // extensions. Nothing may follow the extensions.
+    let lastTag = 0;
     for (const field of fields.slice(index + 6)) {
+      if (field.tag < 0xa1 || field.tag > 0xa3 || field.tag <= lastTag) {
+        throw new DerError("Unexpected TBSCertificate field.");
+      }
+      lastTag = field.tag;
       if (field.tag === 0xa3) {
-        const container = children(field)[0];
-        if (container === undefined) {
+        const [container, ...more] = children(field);
+        if (container === undefined || more.length > 0) {
           throw new DerError("Malformed extensions.");
         }
         extensions = decodeExtensions(container);
-      } else if (field.tag !== 0xa1 && field.tag !== 0xa2) {
-        throw new DerError("Unexpected TBSCertificate field.");
       }
     }
 
@@ -243,12 +252,14 @@ export const verifyCertificateSignature = (
 // Building
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** 20 random bytes with the top bit cleared: positive, 159 bits, never zero. */
+/** 20 random bytes with the top bit cleared and a non-zero first byte: positive, about 159 bits. */
 export const generateSerial = (): Buffer => {
   for (;;) {
     const serial = randomBytes(20);
     serial[0] = (serial[0] as number) & 0x7f;
-    if (serial.some((byte) => byte !== 0)) {
+    // A zero first byte would be dropped from the minimal INTEGER encoding, so the stored hex (and the CRL entry
+    // and parsed forms) would differ from the generated one. Keep one canonical 20-byte form.
+    if (serial[0] !== 0) {
       return serial;
     }
   }

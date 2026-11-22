@@ -113,11 +113,17 @@ export const decodeOid = (element: Tlv): string => {
   }
   const arcs: number[] = [];
   let current = 0;
+  let arcStart = true;
   for (const byte of bytes) {
+    if (arcStart && byte === 0x80) {
+      throw new DerError("Non-minimal OBJECT IDENTIFIER arc.");
+    }
+    arcStart = false;
     current = current * 128 + (byte & 0x7f);
     if ((byte & 0x80) === 0) {
       arcs.push(current);
       current = 0;
+      arcStart = true;
     }
   }
   if ((bytes[bytes.length - 1] as number) & 0x80) {
@@ -135,11 +141,38 @@ export const decodeUnsignedInteger = (element: Tlv): Buffer => {
   if (bytes.length === 0 || (bytes[0] as number) & 0x80) {
     throw new DerError("Expected a non-negative INTEGER.");
   }
-  let start = 0;
-  while (start < bytes.length - 1 && bytes[start] === 0) {
-    start += 1;
+  if (bytes.length > 1 && bytes[0] === 0 && !((bytes[1] as number) & 0x80)) {
+    throw new DerError("Non-minimal INTEGER.");
   }
-  return bytes.subarray(start);
+  return bytes[0] === 0 && bytes.length > 1 ? bytes.subarray(1) : bytes;
+};
+
+/**
+ * The one canonical serial form: lowercase hex of the minimal positive INTEGER content, without the sign-padding 00
+ * (a lone `00` stays). Throws unless the input is whole-byte lowercase hex.
+ */
+export const canonicalSerialHex = (hex: string): string => {
+  if (!/^([0-9a-f]{2})+$/.test(hex)) {
+    throw new DerError("Serial numbers are whole-byte lowercase hex.");
+  }
+  return hex.replace(/^(00)+(?=..)/, "");
+};
+
+/** Reads a small version INTEGER that must be one minimal byte from `allowed`. */
+export const decodeVersion = (
+  element: Tlv,
+  allowed: readonly number[],
+): number => {
+  expectTag(element, TAG.integer, "a version");
+  const value = element.value[0];
+  if (
+    element.value.length !== 1 ||
+    value === undefined ||
+    !allowed.includes(value)
+  ) {
+    throw new DerError("Unsupported version.");
+  }
+  return value;
 };
 
 const encodeLength = (length: number): Buffer => {

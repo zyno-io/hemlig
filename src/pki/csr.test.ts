@@ -11,6 +11,9 @@ import {
 import { OID } from "./asn1/algorithms";
 import {
   bitString,
+  children,
+  parseDer,
+  type Tlv,
   oid,
   seq,
   set,
@@ -265,6 +268,32 @@ describe("parseCsr", () => {
           ),
         ),
       ).toMatchObject({ reason: "bad_signature" });
+    });
+
+    it("an SPKI that is not the canonical encoding of its key", () => {
+      const rsa = leafKey({ type: "rsa", bits: 2048 });
+      const [algorithm, bits] = children(parseDer(rsa.spkiDer));
+      const padded = seq(
+        (algorithm as Tlv).raw,
+        bitString(
+          Buffer.concat([(bits as Tlv).value.subarray(1), Buffer.from([0])]),
+        ),
+      );
+      expect(
+        failure(() =>
+          parseCsr(csrPem(makeCsrDer({ key: rsa, spkiDer: padded }))),
+        ),
+      ).toEqual({
+        code: "invalid_csr",
+        status: 400,
+        reason: "malformed_public_key",
+      });
+      // The canonical form is accepted, and the hash covers exactly that encoding.
+      const parsed = parseCsr(csrPem(makeCsrDer({ key: rsa })));
+      expect(parsed.spkiSha256).toBe(
+        createHash("sha256").update(rsa.spkiDer).digest("hex"),
+      );
+      expect(parsed.spkiDer.equals(rsa.spkiDer)).toBe(true);
     });
 
     it("weak or irregular RSA keys", () => {

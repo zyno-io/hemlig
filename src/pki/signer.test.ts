@@ -1,4 +1,4 @@
-import { createPublicKey, verify } from "node:crypto";
+import { createPublicKey, Decipheriv, verify } from "node:crypto";
 import { generateCaKeyPair, wrapCaKey } from "./wrapped-keys";
 import { WrappedCaSigner, type CaSigner } from "./signer";
 import { mockKms } from "./__fixtures__/testkit";
@@ -94,35 +94,46 @@ describe("WrappedCaSigner", () => {
     expect(verify("sha256", tbs, rsa.publicKey, signature)).toBe(true);
   }, 60_000);
 
-  it("zeroes the decrypted data key and the decrypted PKCS#8, and caches nothing", async () => {
+  it("zeroes every plaintext PKCS#8 copy and the data key, and caches nothing", async () => {
     const { signer, send, handedOut, key } = await signerFor("ECDSA_P256");
-    const filled: Buffer[] = [];
-    const original = Buffer.prototype.fill;
-    const spy = jest
-      .spyOn(Buffer.prototype, "fill")
-      .mockImplementation(function (this: Buffer, ...args: unknown[]) {
-        filled.push(this);
-        return (original as (...a: unknown[]) => Buffer).apply(this, args);
-      } as never);
+    const outputs: Buffer[] = [];
+    const concats: Buffer[] = [];
+    const update = jest.spyOn(Decipheriv.prototype, "update");
+    const final = jest.spyOn(Decipheriv.prototype, "final");
+    const concat = jest.spyOn(Buffer, "concat");
     try {
       const callsBefore = send.mock.calls.length;
       const handedBefore = handedOut.length;
-      await signer.sign(tbs);
+      const signature = await signer.sign(tbs);
       await signer.sign(tbs);
       // One Decrypt per signature: plaintext is never reused across calls.
       expect(send.mock.calls.length - callsBefore).toBe(2);
       for (const plaintext of handedOut.slice(handedBefore)) {
         expect(plaintext.every((byte) => byte === 0)).toBe(true);
       }
-      const pkcs8Wipes = filled.filter(
+      for (const result of [...update.mock.results, ...final.mock.results]) {
+        outputs.push(result.value as Buffer);
+      }
+      for (const result of concat.mock.results) {
+        concats.push(result.value as Buffer);
+      }
+      // The decipher's own outputs and the concatenated plaintext are the actual buffers, and all are zeroed.
+      expect(outputs).toHaveLength(4);
+      expect(
+        outputs.every((buffer) => buffer.every((byte) => byte === 0)),
+      ).toBe(true);
+      const plaintexts = concats.filter(
         (buffer) => buffer.length === key.privateKeyDer.length,
       );
-      expect(pkcs8Wipes).toHaveLength(2);
+      expect(plaintexts).toHaveLength(2);
       expect(
-        pkcs8Wipes.every((buffer) => buffer.every((byte) => byte === 0)),
+        plaintexts.every((buffer) => buffer.every((byte) => byte === 0)),
       ).toBe(true);
+      expect(signature.length).toBeGreaterThan(0);
     } finally {
-      spy.mockRestore();
+      update.mockRestore();
+      final.mockRestore();
+      concat.mockRestore();
     }
   });
 

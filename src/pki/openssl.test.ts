@@ -43,6 +43,14 @@ if (!haveOpenssl) {
   );
 }
 const suite = haveOpenssl ? describe : describe.skip;
+if (!haveOpenssl && process.env.CI) {
+  // CI must not silently lose the cross-checks.
+  it("requires openssl on PATH when CI is set", () => {
+    throw new Error(
+      "openssl is not on PATH, but CI requires the cross-checks.",
+    );
+  });
+}
 
 /** The offline root recipe's configuration from the PKI plan, with an absolute `dir`. */
 const rootConfig = (dir: string): string => `

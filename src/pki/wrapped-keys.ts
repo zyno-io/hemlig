@@ -188,6 +188,8 @@ export const unwrapCaKey = async (
     throw serviceUnavailable("KMS did not return plaintext key material.");
   }
   const key = Buffer.from(plaintext);
+  let update: Buffer | undefined;
+  let last: Buffer | undefined;
   try {
     const decipher = createDecipheriv(
       "aes-256-gcm",
@@ -196,13 +198,15 @@ export const unwrapCaKey = async (
     );
     decipher.setAAD(aad(binding));
     decipher.setAuthTag(Buffer.from(wrapped.tag, "base64"));
-    return Buffer.concat([
-      decipher.update(Buffer.from(wrapped.ciphertext, "base64")),
-      decipher.final(),
-    ]);
+    update = decipher.update(Buffer.from(wrapped.ciphertext, "base64"));
+    last = decipher.final();
+    return Buffer.concat([update, last]);
   } catch {
     throw keyUnavailable();
   } finally {
+    // Every intermediate plaintext copy goes, not just the one returned.
+    update?.fill(0);
+    last?.fill(0);
     key.fill(0);
     plaintext.fill(0);
   }

@@ -195,7 +195,72 @@ describe("nameConstraintsWithin", () => {
     ["disjoint cidr", ["11.0.0.0/8"], [], ["10.0.0.0/8"], [], false],
     ["ipv6 cidr", ["fd00:1::/32"], [], ["fd00::/8"], [], true],
     ["ipv4 vs ipv6", ["10.0.0.0/8"], [], ["fd00::/8"], [], false],
-    ["uri host", ["uri:prod.example.com"], [], ["uri:example.com"], [], true],
+    // URI bases: no leading dot means exactly that host; a leading dot means strictly subordinate hosts.
+    ["uri exact host", ["uri:example.com"], [], ["uri:example.com"], [], true],
+    [
+      "uri subdomain is not covered by a bare host",
+      ["uri:prod.example.com"],
+      [],
+      ["uri:example.com"],
+      [],
+      false,
+    ],
+    [
+      "uri dotted base inside bare is not covered",
+      ["uri:.example.com"],
+      [],
+      ["uri:example.com"],
+      [],
+      false,
+    ],
+    [
+      "uri host inside a dotted base",
+      ["uri:prod.example.com"],
+      [],
+      ["uri:.example.com"],
+      [],
+      true,
+    ],
+    [
+      "uri the dotted base host itself is not subordinate",
+      ["uri:example.com"],
+      [],
+      ["uri:.example.com"],
+      [],
+      false,
+    ],
+    [
+      "uri dotted inside dotted",
+      ["uri:.a.example.com"],
+      [],
+      ["uri:.example.com"],
+      [],
+      true,
+    ],
+    [
+      "uri sibling suffix",
+      ["uri:.badexample.com"],
+      [],
+      ["uri:.example.com"],
+      [],
+      false,
+    ],
+    [
+      "uri excluded exact host does not cover subdomains",
+      ["uri:.example.com"],
+      ["uri:example.com"],
+      ["uri:.example.com"],
+      ["uri:a.example.com"],
+      false,
+    ],
+    [
+      "uri excluded dotted base covers subdomains",
+      ["uri:.example.com"],
+      ["uri:.example.com"],
+      ["uri:.example.com"],
+      ["uri:a.example.com"],
+      true,
+    ],
     [
       "uri vs dns do not cover each other",
       ["uri:example.com"],
@@ -608,9 +673,92 @@ describe("verifyActivationChain", () => {
         replace: [EXT.authorityKeyIdentifier],
       });
       expect(
-        verifyActivationChain({ ...s.input, certificatePem: noAki.pem })
-          .broaderThanRequested,
-      ).toBe(false);
+        reasonOf(() =>
+          verifyActivationChain({ ...s.input, certificatePem: noAki.pem }),
+        ),
+      ).toBe("missing_aki");
+    });
+
+    it("requires BasicConstraints to be critical", async () => {
+      const s = await setup();
+      const ca = customCa(s.root, s.key, {
+        replace: [EXT.basicConstraints],
+        extensions: [
+          extension(
+            EXT.basicConstraints,
+            false,
+            basicConstraintsValue(true, 0),
+          ),
+        ],
+      });
+      expect(
+        reasonOf(() =>
+          verifyActivationChain({ ...s.input, certificatePem: ca.pem }),
+        ),
+      ).toBe("basic_constraints_not_critical");
+    });
+
+    it("refuses a root whose pathLen leaves no room for an intermediate", async () => {
+      const s = await setup();
+      const zero = await makeRoot({
+        extensions: (key) => [
+          extension(EXT.basicConstraints, true, basicConstraintsValue(true, 0)),
+          extension(
+            EXT.keyUsage,
+            true,
+            keyUsageValue(["keyCertSign", "cRLSign"]),
+          ),
+          skiExtension(key),
+        ],
+      });
+      const ca = await makeIntermediate(zero, { key: s.key, subject });
+      expect(
+        reasonOf(() =>
+          verifyActivationChain({
+            ...s.input,
+            chainPem: zero.pem,
+            certificatePem: ca.pem,
+          }),
+        ),
+      ).toBe("root_path_len");
+      const one = await makeRoot({
+        extensions: (key) => [
+          extension(EXT.basicConstraints, true, basicConstraintsValue(true, 1)),
+          extension(
+            EXT.keyUsage,
+            true,
+            keyUsageValue(["keyCertSign", "cRLSign"]),
+          ),
+          skiExtension(key),
+        ],
+      });
+      const ok = await makeIntermediate(one, { key: s.key, subject });
+      expect(
+        reasonOf(() =>
+          verifyActivationChain({
+            ...s.input,
+            chainPem: one.pem,
+            certificatePem: ok.pem,
+          }),
+        ),
+      ).toBeUndefined();
+    });
+
+    it("refuses a negative pathLen", async () => {
+      const s = await setup();
+      // BasicConstraints { cA TRUE, pathLenConstraint -1 }
+      expect(() =>
+        customCa(s.root, s.key, {
+          replace: [EXT.basicConstraints],
+          extensions: [
+            extension(
+              EXT.basicConstraints,
+              true,
+              Buffer.from("30060101ff0201ff", "hex"),
+            ),
+          ],
+        }),
+      ).toThrow();
     });
 
     it("requires the SPKI to be the CA key and an SKI", async () => {
