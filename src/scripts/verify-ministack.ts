@@ -20,6 +20,7 @@ import { AgentSyncService } from "../services/agent-sync";
 import { CursorService } from "../services/cursor";
 import type { AgentGrantRecord } from "../domain/types";
 import { verifyPkiOnMiniStack } from "./verify-ministack-pki";
+import { verifyPkiLifecycleOnMiniStack } from "./verify-ministack-pki-lifecycle";
 
 const endpoint = process.env.AWS_ENDPOINT_URL ?? "http://localhost:4566";
 const region = process.env.AWS_REGION ?? "us-east-1";
@@ -376,6 +377,16 @@ const run = async (): Promise<void> => {
       "MiniStack allowed deletion of a Compliance-retained object.",
     );
   }
+  // The lifecycle suite runs first: the older suite seeds partial CA items that a maintenance pass would reject.
+  await verifyPkiLifecycleOnMiniStack({
+    dynamo,
+    kms,
+    s3,
+    keyArn: keyId,
+    table,
+    bucket,
+    config,
+  });
   await verifyPkiOnMiniStack({
     dynamo,
     kms,
