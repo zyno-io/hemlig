@@ -239,4 +239,40 @@ describe("AgentService", () => {
       snapshot,
     );
   });
+  describe("an ACTIVE empty-scope grant", () => {
+    const empty = { ...grant, capabilities: [], secretGrants: [] };
+    const service = () =>
+      new AgentService(
+        {
+          getAgentGrantForConsumer: jest.fn(async () => empty),
+        } as unknown as DynamoRepository,
+        {
+          getControlRevision: jest.fn(),
+          getControlSnapshotBySecretUid: jest.fn(),
+        } as unknown as SecretService,
+      );
+
+    it("forbids read, control, write and change listing", async () => {
+      await expect(
+        service().read("payments-agent", "prod", "payments/api", undefined),
+      ).rejects.toMatchObject({ statusCode: 403 });
+      await expect(
+        service().control("payments-agent", "prod", "payments/api"),
+      ).rejects.toMatchObject({ statusCode: 403 });
+      await expect(
+        service().update({
+          consumerId: "payments-agent",
+          environment: "prod",
+          secretId: "payments/api",
+          expectedControlVersionId: "ctl-current",
+          metadata: {},
+          actor: { type: "consumer", id: "fp" },
+          idempotencyKey: "idempotency-key-1",
+        }),
+      ).rejects.toMatchObject({ statusCode: 403 });
+      await expect(
+        service().listChanges("payments-agent", "prod"),
+      ).rejects.toMatchObject({ statusCode: 403 });
+    });
+  });
 });
