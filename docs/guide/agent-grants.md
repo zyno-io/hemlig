@@ -85,6 +85,7 @@ Rules the server enforces:
 - Every permission in `secretGrants` must also be in `capabilities`.
 - Each capability (`read`, `write`) needs at least one secret that uses it.
 - Secret IDs must be unique within the grant.
+- Both lists may be empty together, for an agent with no secret access.
 
 The Pulumi tab uses `dependsOn` because the grant resolves each secret when it is created. Without it the grant fails unless the secret already exists.
 

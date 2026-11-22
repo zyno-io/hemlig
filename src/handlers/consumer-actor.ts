@@ -1,9 +1,15 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import { consumerActorFromEvent } from "../auth/actors";
+import { consumerActorFromEvent, type IdentityLookup } from "../auth/actors";
 import { IdentityRejectedError } from "../domain/errors";
 import type { Actor } from "../domain/types";
-import type { Application } from "../app";
-import type { RequestAuditContext } from "./shared";
+import type { DynamoRepository } from "../repositories/dynamo";
+import type { RequestAuditContext } from "./request";
+
+/** The slice of an application this module needs; a PKI application satisfies it too. */
+interface ConsumerActorApp {
+  readonly repository: IdentityLookup &
+    Pick<DynamoRepository, "claimIdentityRejectionAudit">;
+}
 
 /** One rejected-identity event per fingerprint per window; see the repository. */
 const identityRejectionAuditWindowSeconds = 10 * 60;
@@ -16,7 +22,7 @@ const identityRejectionAuditWindowSeconds = 10 * 60;
  */
 export const resolveConsumerActor = async (
   event: APIGatewayProxyEventV2,
-  app: Application,
+  app: ConsumerActorApp,
   operation: string,
   setAuditContext: (context: RequestAuditContext) => void,
 ): Promise<Actor> => {
@@ -44,7 +50,7 @@ export const resolveConsumerActor = async (
 
 // Fails open: if the limiter itself errors, the event is still recorded.
 const mayAuditRejection = async (
-  app: Application,
+  app: ConsumerActorApp,
   fingerprint: string,
 ): Promise<boolean> => {
   try {

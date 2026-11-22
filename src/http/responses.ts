@@ -14,9 +14,24 @@ export const empty = (statusCode: number, headers: Record<string, string> = {}):
 
 export const errorResponse = (error: unknown, correlationId: string): APIGatewayProxyStructuredResultV2 => {
     if (error instanceof ApiError) {
-        return json(error.statusCode, {
-            error: { code: error.code, message: error.message, correlationId },
-        });
+        // An error may add headers such as Retry-After but never override the content type or caching.
+        const headers = Object.fromEntries(
+            Object.entries(error.headers ?? {}).filter(
+                ([name]) => !['content-type', 'cache-control'].includes(name.toLowerCase()),
+            ),
+        );
+        return json(
+            error.statusCode,
+            {
+                error: {
+                    code: error.code,
+                    message: error.message,
+                    correlationId,
+                    ...(error.details === undefined ? {} : { details: error.details }),
+                },
+            },
+            headers,
+        );
     }
     return json(500, {
         error: { code: 'internal_error', message: 'The request could not be completed.', correlationId },

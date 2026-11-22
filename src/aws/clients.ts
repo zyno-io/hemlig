@@ -4,6 +4,7 @@ import { KMSClient } from '@aws-sdk/client-kms';
 import { IoTClient } from '@aws-sdk/client-iot';
 import { S3Client } from '@aws-sdk/client-s3';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { awsClientOptions } from './client-options';
 import type { AppConfig } from './config';
 
 export interface AwsClients {
@@ -15,9 +16,7 @@ export interface AwsClients {
 }
 
 export const createAwsClients = (config: AppConfig): AwsClients => {
-    const common = config.awsEndpointUrl === undefined
-        ? { region: config.region }
-        : { region: config.region, endpoint: config.awsEndpointUrl, forcePathStyle: true };
+    const common = awsClientOptions(config);
     const dynamoClient = new DynamoDBClient(common);
     return {
         dynamo: DynamoDBDocumentClient.from(dynamoClient, {

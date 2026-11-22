@@ -71,6 +71,7 @@ aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
 | Status | `204` | `401`: the explicit `OPTIONS` route is not outranking `$default`. Confirm it exists with `AuthorizationType: NONE` |
 | Headers | `access-control-allow-origin: https://acc.example.com`, four methods, four allowed headers, `access-control-expose-headers: etag` | `204` without `allow-origin`: API Gateway ignores integration CORS headers when CORS is configured on the API. The fix is to drop the catch-all for explicit per-route definitions so API Gateway answers preflight itself, then review every route |
 | Audit count | Unchanged | A preflight wrote audit evidence. It must not, because it is a browser capability check |
+| PKI preflight | Repeat the request against `/v1/admin/pki/cas`: same `204` and headers, still no audit object | The PKI admin routes use `ANY`, which catches `OPTIONS`. They must list `GET`, `POST`, `PUT` and `DELETE` |
 
 ## Gate 2: the access token is the right shape
 
@@ -176,6 +177,82 @@ aws s3api get-object-lock-configuration --bucket REVISION_BUCKET
 | Revision bucket | Default retention is 90 days, mode `COMPLIANCE` | Retention is not applied |
 | Audit bucket | Default retention is 7 years, mode `COMPLIANCE` | Retention is not applied |
 | Delete an audit object version | Fails | Object Lock is not enforcing |
+
+## Gate PKI-0: PKI resources deploy and stay inert
+
+Run after gate 8. You need the gate 2 `$TOKEN` and a consumer certificate that is still active (`consumer.crt`, `consumer.key`). Gate 6 revokes its certificate, so either run the consumer probe before that revocation or enroll a second consumer and use its certificate.
+
+```sh
+export DEP=hml-acc
+ADMIN_API=$(aws apigatewayv2 get-apis --query "Items[?Name=='$DEP-admin'].ApiId" --output text)
+CONSUMER_API=$(aws apigatewayv2 get-apis --query "Items[?Name=='$DEP-consumer'].ApiId" --output text)
+aws apigatewayv2 get-routes --api-id "$ADMIN_API" --query "Items[?contains(RouteKey,'pki')].[RouteKey,AuthorizationType]" --output text
+aws apigatewayv2 get-routes --api-id "$CONSUMER_API" --query "Items[?contains(RouteKey,'pki')].[RouteKey,AuthorizationType]" --output text
+aws apigatewayv2 get-stage --api-id "$CONSUMER_API" --stage-name '$default' --query RouteSettings
+aws dynamodb describe-table --table-name "$DEP-control" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='pki-directory'].[IndexStatus,KeySchema[].AttributeName,Projection.ProjectionType]"
+PKI_BUCKET=$(aws cloudformation describe-stacks --stack-name "$DEP" \
+  --query "Stacks[0].Outputs[?OutputKey=='PkiBucketName'].OutputValue" --output text)
+aws s3api get-public-access-block --bucket "$PKI_BUCKET"
+aws s3api get-bucket-versioning --bucket "$PKI_BUCKET"
+aws lambda invoke --function-name "$DEP-pki-maintenance" /tmp/pki-maintenance.json > /dev/null && cat /tmp/pki-maintenance.json
+aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
+curl -s https://admin.acc.example.com/v1/admin/pki/cas -H "authorization: Bearer $TOKEN"
+curl -s --cert consumer.crt --key consumer.key https://api.acc.example.com/v1/pki/issuance-grants
+aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
+aws cloudwatch describe-alarms --alarm-name-prefix "$DEP-pki-" --query 'MetricAlarms[].[AlarmName,StateValue]' --output text
+```
+
+| Check | Pass | Fail means |
+| --- | --- | --- |
+| Admin routes | Exactly `GET`, `POST`, `PUT`, `DELETE /v1/admin/pki/{proxy+}`, each `JWT` | An `ANY` route catches `OPTIONS` and breaks gate 1 |
+| Consumer routes | `GET` and `POST /v1/pki/{proxy+}`, `NONE` | |
+| Throttle | `POST /v1/pki/{proxy+}` with your `pkiIssuanceRateLimit` and `pkiIssuanceBurstLimit` (default 20 and 40) | Issuance is bounded only by the account limit |
+| GSI | `ACTIVE`, `pkiDirectoryPk` and `pkiDirectorySk`, `ALL` | |
+| PKI bucket | All four public-access blocks `true`, versioning `Enabled` | |
+| Maintenance | `{"status":"idle"}` | `AccessDeniedException` on `Query`: the role's GSI allowlist is wrong. Read `/aws/lambda/hml-acc-pki-maintenance` |
+| Admin probe | `404`, message `This PKI route is not available.` | Another message: the request reached the admin Lambda, not `pki-admin` |
+| Consumer probe | `404` with the same message | `403 identity_not_active` with an active certificate: `pki-issuer` cannot read `IDENTITY#` |
+| Audit count | Unchanged across both probes | A PKI 404 wrote evidence |
+| Alarms | Ten `hml-acc-pki-*` alarms, all `OK` or `INSUFFICIENT_DATA`. `pki-maintenance-missed` is `ALARM` until the first scheduled pass and must be `OK` within 15 minutes of deploy | The schedule or its invoke permission is missing |
+
+## Gate PKI-1: PKI IAM boundaries
+
+```sh
+TABLE=$(aws dynamodb describe-table --table-name "$DEP-control" --query Table.TableArn --output text)
+KEY=$(aws kms describe-key --key-id "alias/$DEP-application" --query KeyMetadata.Arn --output text)
+role() { aws lambda get-function-configuration --function-name "$DEP-$1" --query Role --output text; }
+ddb() { aws iam simulate-principal-policy --policy-source-arn "$(role "$1")" --action-names "$2" --resource-arns "$TABLE" \
+  --context-entries "ContextKeyName=dynamodb:LeadingKeys,ContextKeyValues=$3,ContextKeyType=stringList" \
+  --query 'EvaluationResults[0].EvalDecision' --output text; }
+kmsd() { aws iam simulate-principal-policy --policy-source-arn "$(role "$1")" --action-names "$2" --resource-arns "$KEY" \
+  --context-entries "ContextKeyName=kms:EncryptionContext:service,ContextKeyValues=hemlig,ContextKeyType=string" \
+    "ContextKeyName=kms:EncryptionContext:purpose,ContextKeyValues=$3,ContextKeyType=string" \
+    "ContextKeyName=kms:EncryptionContext:caId,ContextKeyValues=ca-acceptance,ContextKeyType=string" \
+    "ContextKeyName=kms:EncryptionContext:environment,ContextKeyValues=prod,ContextKeyType=string" \
+    "ContextKeyName=kms:EncryptionContextKeys,ContextKeyValues=service,purpose,caId,environment${4:+,$4},ContextKeyType=stringList" \
+  --query 'EvaluationResults[0].EvalDecision' --output text; }
+```
+
+DynamoDB authorizes each `TransactWriteItems` item as its own `PutItem`, `UpdateItem` or `ConditionCheckItem`, so one denied item denies the whole transaction.
+
+| Command | Pass |
+| --- | --- |
+| `ddb pki-issuer dynamodb:PutItem 'IDENTITY#x'` | `explicitDeny` |
+| `ddb pki-issuer dynamodb:PutItem 'PKI_CERT#ca-x#01'` | `allowed` |
+| `ddb pki-issuer dynamodb:ConditionCheckItem 'IDENTITY#x'` | `allowed`. `pki-admin` and `pki-maintenance`: `implicitDeny` |
+| For `pki-admin`, `pki-issuer`, `pki-maintenance` and each of `CONSUMER#y`, `IDENTITY#y`, `AGENT_GRANT#y`: `ddb ROLE dynamodb:PutItem KEY` | `explicitDeny` |
+| `ddb ROLE dynamodb:BatchWriteItem 'PKI_CA#x,CONSUMER#y'` (each PKI role) | `explicitDeny`. With `'PKI_CA#x'` alone: `implicitDeny` |
+| `aws iam simulate-principal-policy --policy-source-arn "$(role pki-admin)" --action-names dynamodb:Scan --resource-arns "$TABLE"` | `implicitDeny` |
+| `ddb ROLE dynamodb:PutItem 'PKI_CA#x'` for `admin`, `audit-query`, `consumer`, `bootstrap`, `identity-rotation`, `notification-publisher`, `recovery`, `retention` | `explicitDeny` |
+| `kmsd pki-admin kms:Decrypt pki-ca` and `kmsd pki-admin kms:GenerateDataKey pki-ca` | `allowed` |
+| `kmsd pki-admin kms:Decrypt issuer-ca`, `… secret-payload`, `kmsd pki-admin kms:Decrypt pki-ca extra` | `implicitDeny` |
+| `kmsd pki-issuer kms:GenerateDataKey pki-ca` | `implicitDeny` |
+| `aws iam simulate-principal-policy --policy-source-arn "$(role ROLE)" --action-names dynamodb:PutItem --resource-arns "$TABLE" --context-entries "ContextKeyName=dynamodb:LeadingKeys,ContextKeyValues=PKI_CA#x,ContextKeyType=stringList" "ContextKeyName=dynamodb:Attributes,ContextKeyValues=pk,sk,workflowDuePk,ContextKeyType=stringList" --query 'EvaluationResults[0].EvalDecision' --output text` for each PKI role | `explicitDeny`. A PKI role must not write another index's key attributes |
+| The same simulation for `admin`, `consumer`, `recovery` and the other existing roles, with `LeadingKeys=SECRET#x` and `dynamodb:Attributes=pk,sk,pkiDirectoryPk` | `explicitDeny`. An existing role must not write the PKI directory attributes |
+| `kmsd ROLE kms:Decrypt pki-ca` for `admin`, `consumer`, `bootstrap`, `identity-rotation` | `implicitDeny` |
+
+The simulator evaluates identity policies only. With `existingApplicationKeyArn`, also confirm that the key policy grants these roles nothing directly. Gate PKI-4 proves the `ConditionCheckItem` grants with a real commit.
 
 ## Teardown
 

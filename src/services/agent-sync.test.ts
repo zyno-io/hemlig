@@ -314,3 +314,17 @@ it("allows an empty active grant to remove mirrors but rejects inactive/unscoped
     code: "sync_index_not_ready",
   });
 });
+
+it("serves an empty-scope ACTIVE grant an empty change set with a checkpoint", async () => {
+  const f = fixture();
+  const result = await f.service.sync(
+    "c",
+    "prod",
+    {},
+    { ...grant, capabilities: [], secretGrants: [] },
+  );
+  expect(result.changes).toEqual([]);
+  expect(result.config.grant.capabilities).toEqual([]);
+  expect(result.config.grant.secretGrants).toEqual([]);
+  expect(result.syncCursor).toBeDefined();
+});

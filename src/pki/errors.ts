@@ -1,8 +1,8 @@
 import { ApiError } from "../domain/errors";
 
 /**
- * PKI errors carry the plan's `details.reason` as `safeReason` until `ApiError` gains `details`. Messages never
- * contain key, CSR or certificate material.
+ * PKI errors carry the plan's `details.reason`, also recorded as the audit `safeReason`. Messages never contain key,
+ * CSR or certificate material.
  */
 export const chainInvalid = (reason: string, message?: string): ApiError =>
   new ApiError(
@@ -10,6 +10,7 @@ export const chainInvalid = (reason: string, message?: string): ApiError =>
     "chain_invalid",
     message ?? `The certificate chain is invalid (${reason}).`,
     reason,
+    { details: { reason } },
   );
 
 export const crlInvalid = (reason: string, message?: string): ApiError =>
@@ -18,6 +19,7 @@ export const crlInvalid = (reason: string, message?: string): ApiError =>
     "crl_invalid",
     message ?? `The CRL is invalid (${reason}).`,
     reason,
+    { details: { reason } },
   );
 
 export const issuanceDenied = (reason: string, message?: string): ApiError =>
@@ -26,6 +28,7 @@ export const issuanceDenied = (reason: string, message?: string): ApiError =>
     "issuance_denied",
     message ?? `Issuance denied (${reason}).`,
     reason,
+    { details: { reason } },
   );
 
 export const csrInvalid = (reason: string, message?: string): ApiError =>
@@ -34,4 +37,13 @@ export const csrInvalid = (reason: string, message?: string): ApiError =>
     "invalid_csr",
     message ?? `The certificate request is invalid (${reason}).`,
     reason,
+    { details: { reason } },
+  );
+
+export const caKeyUnavailable = (): ApiError =>
+  new ApiError(
+    409,
+    "ca_key_unavailable",
+    "The CA key is unavailable.",
+    "ca_key_unavailable",
   );

@@ -68,10 +68,17 @@ export class AgentGrantService {
         "An agent grant requires a consumer ID that has not been enrolled.",
       );
     }
-    const capabilities = parseAgentCapabilities(input.capabilities);
+    // A PKI-only agent holds no secret access: both lists empty together. Any other combination keeps
+    // the one-or-more rules (and the existing cross-checks still refuse half-empty policies).
+    const emptyScope =
+      Array.isArray(input.capabilities) &&
+      input.capabilities.length === 0 &&
+      Array.isArray(input.secretGrants) &&
+      input.secretGrants.length === 0;
+    const capabilities = parseAgentCapabilities(input.capabilities, emptyScope);
     const secretGrants = await this.resolveSecretGrants(
       input.environment,
-      parseSecretGrants(input.secretGrants, capabilities, false),
+      parseSecretGrants(input.secretGrants, capabilities, emptyScope),
     );
     if (
       input.displayName !== undefined &&

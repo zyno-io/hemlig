@@ -12,13 +12,14 @@ import {
   TransactWriteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { EnvelopeCrypto } from "../crypto/envelope";
-import type { AppConfig } from "../aws/config";
+import type { PkiConfig } from "../aws/config";
 import { ObjectStore } from "../repositories/object-store";
 import { DynamoRepository } from "../repositories/dynamo";
 import { stableJson } from "../util/encoding";
 import { AgentSyncService } from "../services/agent-sync";
 import { CursorService } from "../services/cursor";
 import type { AgentGrantRecord } from "../domain/types";
+import { verifyPkiOnMiniStack } from "./verify-ministack-pki";
 
 const endpoint = process.env.AWS_ENDPOINT_URL ?? "http://localhost:4566";
 const region = process.env.AWS_REGION ?? "us-east-1";
@@ -73,6 +74,8 @@ const run = async (): Promise<void> => {
       { AttributeName: "identityConsumerSk", AttributeType: "S" },
       { AttributeName: "revisionPk", AttributeType: "S" },
       { AttributeName: "revisionSk", AttributeType: "S" },
+      { AttributeName: "pkiDirectoryPk", AttributeType: "S" },
+      { AttributeName: "pkiDirectorySk", AttributeType: "S" },
     ],
     KeySchema: [
       { AttributeName: "pk", KeyType: "HASH" },
@@ -108,6 +111,14 @@ const run = async (): Promise<void> => {
         KeySchema: [
           { AttributeName: "revisionPk", KeyType: "HASH" },
           { AttributeName: "revisionSk", KeyType: "RANGE" },
+        ],
+        Projection: { ProjectionType: "ALL" },
+      },
+      {
+        IndexName: "pki-directory",
+        KeySchema: [
+          { AttributeName: "pkiDirectoryPk", KeyType: "HASH" },
+          { AttributeName: "pkiDirectorySk", KeyType: "RANGE" },
         ],
         Projection: { ProjectionType: "ALL" },
       },
@@ -365,10 +376,17 @@ const run = async (): Promise<void> => {
       "MiniStack allowed deletion of a Compliance-retained object.",
     );
   }
+  await verifyPkiOnMiniStack({
+    dynamo,
+    kms,
+    keyArn: keyId,
+    table,
+    config,
+  });
   process.stdout.write(`MiniStack verification passed for ${bucket}.\n`);
 };
 
-const testConfig = (payloadKmsKeyArn: string): AppConfig => ({
+const testConfig = (payloadKmsKeyArn: string): PkiConfig => ({
   region,
   environmentName: "ministack",
   controlTableName: table,
@@ -378,6 +396,8 @@ const testConfig = (payloadKmsKeyArn: string): AppConfig => ({
   consumerDirectoryIndex: "consumer-directory",
   consumerIdentityIndex: "consumer-identity",
   secretRevisionIndex: "secret-revision",
+  pkiDirectoryIndex: "pki-directory",
+  pkiBucketName: bucket,
   revisionBucketName: bucket,
   truststoreBucketName: bucket,
   truststoreKeyPrefix: "truststores",

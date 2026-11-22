@@ -6,6 +6,7 @@ import {
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { handler as auditQueryHandler } from "../handlers/audit-query";
 import { handler as adminHandler } from "../handlers/admin";
+import { handler as pkiAdminHandler } from "../handlers/pki-admin";
 
 const port = Number.parseInt(process.env.DEV_BRIDGE_PORT ?? "5274", 10);
 const origin = process.env.DEV_BRIDGE_ORIGIN ?? "http://127.0.0.1:5273";
@@ -113,10 +114,16 @@ const buildServer = () =>
         // The deployed HTTP API routes this exact path to a distinct
         // archive-read Lambda. Keep the local bridge faithful so the console's
         // Audit page can be exercised against MiniStack too.
+        // PKI routes go to their own handler, as in the deployed API.
+        const isPkiRoute =
+          url.pathname.startsWith("/v1/admin/pki/") &&
+          ["GET", "POST", "PUT", "DELETE"].includes(method);
         const result =
           url.pathname === "/v1/admin/audit"
             ? await auditQueryHandler(event)
-            : await adminHandler(event);
+            : isPkiRoute
+              ? await pkiAdminHandler(event)
+              : await adminHandler(event);
         const status = result.statusCode ?? 200;
         response.writeHead(status, {
           ...corsHeaders(),

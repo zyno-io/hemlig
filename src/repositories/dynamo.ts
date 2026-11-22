@@ -44,6 +44,7 @@ import type {
 import type { StoredCursor } from "../services/cursor";
 import { isoNow, newId } from "../util/encoding";
 import { AgentSyncRepository, syncRecord } from "./agent-sync";
+import { DynamoCursorStore } from "./cursor-store";
 
 /** How many newest self-rotated fingerprints the consumer profile remembers. */
 export const RECENT_SELF_ROTATED_FINGERPRINT_LIMIT = 3;
@@ -166,11 +167,17 @@ const maximumEnvironments = 100;
 
 export class DynamoRepository {
   public readonly agentSync: AgentSyncRepository;
+  private readonly cursorStore: DynamoCursorStore;
   public constructor(
     private readonly dynamo: DynamoDBDocumentClient,
     private readonly config: AppConfig,
   ) {
     this.agentSync = new AgentSyncRepository(dynamo, config.controlTableName);
+    this.cursorStore = new DynamoCursorStore(
+      dynamo,
+      config.controlTableName,
+      "CURSOR#",
+    );
   }
 
   public async getHead(
@@ -212,72 +219,13 @@ export class DynamoRepository {
     return response.Item as HeadRecord | undefined;
   }
 
-  /**
-   * Pagination state is opaque to callers and expires through the table's TTL
-   * attribute. A conditional put turns the already negligible 256-bit token
-   * collision chance into a retry rather than a state overwrite.
-   */
-  public async createCursor(cursor: StoredCursor): Promise<boolean> {
-    try {
-      await this.dynamo.send(
-        new PutCommand({
-          TableName: this.config.controlTableName,
-          Item: {
-            pk: cursorPk(cursor.token),
-            sk: "STATE",
-            scope: cursor.scope,
-            ...(cursor.lastEvaluatedKey === undefined
-              ? {}
-              : { lastEvaluatedKey: cursor.lastEvaluatedKey }),
-            expiresAt: cursor.expiresAt,
-            ttl: cursor.ttl,
-          },
-          ConditionExpression: "attribute_not_exists(pk)",
-        }),
-      );
-      return true;
-    } catch (error) {
-      if (isConditionalCheckFailure(error)) {
-        return false;
-      }
-      throw error;
-    }
+  /** Opaque pagination state; see DynamoCursorStore. */
+  public createCursor(cursor: StoredCursor): Promise<boolean> {
+    return this.cursorStore.createCursor(cursor);
   }
 
-  public async getCursor(token: string): Promise<StoredCursor | undefined> {
-    const response = await this.dynamo.send(
-      new GetCommand({
-        TableName: this.config.controlTableName,
-        Key: { pk: cursorPk(token), sk: "STATE" },
-        ConsistentRead: true,
-      }),
-    );
-    if (response.Item === undefined) {
-      return undefined;
-    }
-    const item = response.Item;
-    if (
-      typeof item.scope !== "string" ||
-      typeof item.expiresAt !== "string" ||
-      typeof item.ttl !== "number" ||
-      (item.lastEvaluatedKey !== undefined &&
-        (item.lastEvaluatedKey === null ||
-          typeof item.lastEvaluatedKey !== "object" ||
-          Array.isArray(item.lastEvaluatedKey)))
-    ) {
-      return undefined;
-    }
-    return {
-      token,
-      scope: item.scope,
-      ...(item.lastEvaluatedKey === undefined
-        ? {}
-        : {
-            lastEvaluatedKey: item.lastEvaluatedKey as Record<string, string>,
-          }),
-      expiresAt: item.expiresAt,
-      ttl: item.ttl,
-    };
+  public getCursor(token: string): Promise<StoredCursor | undefined> {
+    return this.cursorStore.getCursor(token);
   }
 
   public async listEnvironments(): Promise<readonly EnvironmentRecord[]> {
@@ -2536,8 +2484,6 @@ const auditSuppressPk = (fingerprint: string): string =>
   `AUDIT_SUPPRESS#${fingerprint}`;
 
 const bootstrapPk = (tokenHash: string): string => `BOOTSTRAP#${tokenHash}`;
-
-const cursorPk = (token: string): string => `CURSOR#${token}`;
 
 const environmentsPk = "SYSTEM#ENVIRONMENTS";
 

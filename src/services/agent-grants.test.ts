@@ -4,10 +4,7 @@ import type {
 } from "../domain/types";
 import type { DynamoRepository } from "../repositories/dynamo";
 import type { AgentNotificationService } from "./agent-notifications";
-import {
-  AgentGrantService,
-  MAX_AGENT_SECRET_GRANTS,
-} from "./agent-grants";
+import { AgentGrantService, MAX_AGENT_SECRET_GRANTS } from "./agent-grants";
 import type { ConsumerService } from "./consumers";
 import type { EnvironmentService } from "./environments";
 import type { SecretService } from "./secrets";
@@ -407,5 +404,109 @@ describe("AgentGrantService", () => {
     expect(secrets.reconcileAgentReadAccess).toHaveBeenCalledWith(
       expect.objectContaining({ secretGrants: [] }),
     );
+  });
+  describe("empty-scope (PKI-only) agent grants", () => {
+    const createService = () => {
+      const repository = {
+        getConsumer: jest.fn(async () => undefined),
+        requireHead: jest.fn(async () => ({ secretUid: "sec-x" })),
+        createAgentGrant: jest.fn(async () => undefined),
+      };
+      const service = new AgentGrantService(
+        repository as unknown as DynamoRepository,
+        {} as ConsumerService,
+        {
+          require: jest.fn(async () => undefined),
+        } as unknown as EnvironmentService,
+        {} as AgentNotificationService,
+        secretService(),
+      );
+      return { repository, service };
+    };
+    const base = {
+      consumerId: "pki-only-agent",
+      environment: "prod",
+      actor,
+    };
+
+    it("creates a pending grant with both lists empty and resolves no secret", async () => {
+      const { repository, service } = createService();
+      await expect(
+        service.create({ ...base, capabilities: [], secretGrants: [] }),
+      ).resolves.toMatchObject({
+        status: "PENDING",
+        capabilities: [],
+        secretGrants: [],
+      });
+      expect(repository.requireHead).not.toHaveBeenCalled();
+      expect(repository.createAgentGrant).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses empty capabilities with secret grants", async () => {
+      const { service } = createService();
+      await expect(
+        service.create({
+          ...base,
+          capabilities: [],
+          secretGrants: [{ secretId: "payments/api", permissions: ["read"] }],
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "capabilities must contain read and/or write.",
+      });
+    });
+
+    it("refuses capabilities with empty secret grants", async () => {
+      const { service } = createService();
+      await expect(
+        service.create({ ...base, capabilities: ["read"], secretGrants: [] }),
+      ).rejects.toThrow("between one and");
+    });
+
+    it("reconciles an empty grant with no secret grants on redeem", async () => {
+      const emptyGrant = {
+        ...grant,
+        status: "PENDING" as const,
+        activatedFingerprint: undefined,
+        capabilities: [],
+        secretGrants: [],
+      };
+      const repository = {
+        getBootstrapCapability: jest.fn(async () => ({
+          ...capability,
+          status: "PENDING" as const,
+          consumedFingerprint: undefined,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        })),
+        getAgentGrant: jest.fn(async () => emptyGrant),
+        activateAgentGrant: jest.fn(async () => undefined),
+        consumeBootstrapCapability: jest.fn(async () => undefined),
+      } as unknown as DynamoRepository;
+      const consumers = {
+        recoverActiveIdentity: jest.fn(async () => ({
+          consumerId: emptyGrant.consumerId,
+          environment: emptyGrant.environment,
+          rootFingerprint: "b".repeat(64),
+          apiFingerprint: "a".repeat(64),
+          apiCertificatePem: "public-certificate",
+          status: "ACTIVE" as const,
+        })),
+        enroll: jest.fn(),
+      } as unknown as ConsumerService;
+      const secrets = secretService();
+      const service = new AgentGrantService(
+        repository,
+        consumers,
+        {} as EnvironmentService,
+        {
+          provision: jest.fn(async () => undefined),
+        } as unknown as AgentNotificationService,
+        secrets,
+      );
+      await service.redeem("hmlb_token", "csr");
+      expect(secrets.reconcileAgentReadAccess).toHaveBeenCalledWith(
+        expect.objectContaining({ secretGrants: [] }),
+      );
+    });
   });
 });
