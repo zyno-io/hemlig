@@ -158,6 +158,9 @@ export interface ParsedCrl {
   readonly authorityKeyIdentifier?: Buffer;
 }
 
+/** Upper bound on ASN.1 nodes in a CRL: 12,000 entries at about 12 nodes each, with headroom. */
+const maxCrlNodes = 250_000;
+
 export const parseCrl = (input: Uint8Array): ParsedCrl => {
   const der = Buffer.from(input);
   try {
@@ -177,7 +180,11 @@ export const parseCrl = (input: Uint8Array): ParsedCrl => {
     if (signatureBits.value[0] !== 0 || signatureBits.value.length < 2) {
       throw new DerError("Malformed signature BIT STRING.");
     }
-    AsnConvert.parse(der, CertificateList);
+    // asn1js defaults to 10,000 nodes, which a CRL of about 800 entries already exceeds; the capacity bound of 12,000
+    // entries needs about 150,000.
+    AsnConvert.parse(der, CertificateList, {
+      berOptions: { maxNodes: maxCrlNodes },
+    });
 
     const fields = children(tbs);
     let index = 0;

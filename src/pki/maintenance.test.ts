@@ -50,6 +50,9 @@ interface World {
   retireExpired?: jest.Mock;
   disable?: jest.Mock;
   failLoad?: string;
+  /** Count returned by the capacity recount; a thrown error when `failCapacity`. */
+  counted?: number;
+  failCapacity?: string;
 }
 
 const run = async (world: World, remainingMs = () => 300_000) => {
@@ -113,6 +116,15 @@ const run = async (world: World, remainingMs = () => 300_000) => {
         }),
     },
     crls: { publish },
+    capacity: {
+      recount: jest.fn(async (target: CaRecord) => {
+        if (target.caId === world.failCapacity) {
+          throw new Error("boom");
+        }
+        order.push(`count:${target.caId}`);
+        return world.counted ?? 0;
+      }),
+    },
   };
   const emit = jest.fn();
   const log = jest.fn();
@@ -214,7 +226,8 @@ describe("runMaintenancePass", () => {
     ).toEqual(["publish:ca-urgent", "publish:ca-skipped", "publish:ca-late"]);
     let calls = 0;
     const cut = await run(worlds, () => (calls++ === 0 ? 300_000 : 10_000));
-    expect(cut.result).toMatchObject({ published: 1, skipped: 2 });
+    // Two skipped publications and three skipped capacity recounts.
+    expect(cut.result).toMatchObject({ published: 1, skipped: 5 });
     expect(cut.log).toHaveBeenCalledWith(
       expect.objectContaining({ event: "pki_maintenance_budget_exhausted" }),
     );
@@ -242,6 +255,7 @@ describe("runMaintenancePass", () => {
       ExternalCrlMissing: 0,
       CaExpiring: 0,
       CrlOverCapacity: 0,
+      CaCapacityHigh: 0,
     });
     expect(app.audit.write).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -353,5 +367,59 @@ describe("runMaintenancePass", () => {
     };
     const { emit } = await run({ cas: [stale], crls });
     expect(emit.mock.calls[0]![1].GeneratedCrlStale).toBe(0);
+  });
+});
+
+describe("capacity recount", () => {
+  it("runs for ACTIVE CAs only", async () => {
+    const { app, result, error } = await run({
+      cas: [
+        ca("ca-a"),
+        ca("ca-b", { status: "RETIRED", retiredAt: iso(-day) }),
+        ca("ca-c", { status: "REVOKED" }),
+      ],
+      crls: { "ca-a": crlState(), "ca-b": crlState() },
+    });
+    expect(error).toBeUndefined();
+    expect(app.capacity.recount).toHaveBeenCalledTimes(1);
+    expect(app.capacity.recount).toHaveBeenCalledWith(
+      expect.objectContaining({ caId: "ca-a" }),
+      expect.anything(),
+      now,
+    );
+    expect(result).toMatchObject({ counted: 1 });
+  });
+
+  it.each([
+    [81, 1],
+    [80, 0],
+  ])("emits CaCapacityHigh for a count of %i of 100", async (counted, high) => {
+    const { emit } = await run({
+      cas: [ca("ca-a")],
+      crls: { "ca-a": crlState() },
+      counted,
+    });
+    expect(emit.mock.calls[0]![1]).toMatchObject({ CaCapacityHigh: high });
+  });
+
+  it("isolates a failing recount and fails the pass", async () => {
+    const { error, emit, app } = await run({
+      cas: [ca("ca-a"), ca("ca-b")],
+      crls: { "ca-a": crlState(), "ca-b": crlState() },
+      failCapacity: "ca-a",
+      counted: 90,
+    });
+    expect(error?.message).toMatch(/1 failure/);
+    expect(app.capacity.recount).toHaveBeenCalledTimes(2);
+    expect(emit.mock.calls[0]![1]).toMatchObject({ CaCapacityHigh: 1 });
+  });
+
+  it("skips the recount when the invocation budget is spent", async () => {
+    const { app, result } = await run(
+      { cas: [ca("ca-a")], crls: { "ca-a": crlState() } },
+      () => 1_000,
+    );
+    expect(app.capacity.recount).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ skipped: expect.any(Number) });
   });
 });

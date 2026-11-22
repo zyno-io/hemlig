@@ -238,6 +238,10 @@ export default withMermaid(
                     link: "/reference/api/admin-pki",
                   },
                   {
+                    text: "PKI consumer routes",
+                    link: "/reference/api/pki",
+                  },
+                  {
                     text: "Delivery and agent routes",
                     link: "/reference/api/delivery",
                   },

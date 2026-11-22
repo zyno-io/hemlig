@@ -197,8 +197,8 @@ aws s3api get-public-access-block --bucket "$PKI_BUCKET"
 aws s3api get-bucket-versioning --bucket "$PKI_BUCKET"
 aws lambda invoke --function-name "$DEP-pki-maintenance" /tmp/pki-maintenance.json > /dev/null && cat /tmp/pki-maintenance.json
 aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
-curl -s https://admin.acc.example.com/v1/admin/pki/consumers/x/issuance-grants -H "authorization: Bearer $TOKEN"
-curl -s --cert consumer.crt --key consumer.key https://api.acc.example.com/v1/pki/issuance-grants
+curl -s https://admin.acc.example.com/v1/admin/pki/_probe -H "authorization: Bearer $TOKEN"
+curl -s --cert consumer.crt --key consumer.key https://api.acc.example.com/v1/pki/_probe
 aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
 aws cloudwatch describe-alarms --alarm-name-prefix "$DEP-pki-" --query 'MetricAlarms[].[AlarmName,StateValue]' --output text
 ```
@@ -211,7 +211,7 @@ aws cloudwatch describe-alarms --alarm-name-prefix "$DEP-pki-" --query 'MetricAl
 | GSI | `ACTIVE`, `pkiDirectoryPk` and `pkiDirectorySk`, `ALL` | |
 | PKI bucket | All four public-access blocks `true`, versioning `Enabled` | |
 | Maintenance | `{"status":"idle"}` | `AccessDeniedException` on `Query`: the role's GSI allowlist is wrong. Read `/aws/lambda/hml-acc-pki-maintenance` |
-| Admin probe | `404`, message `This PKI route is not available.` The probe path stays unrouted until issuance arrives, unlike `/v1/admin/pki/cas`, which answers `400` or `200` | Another message: the request reached the admin Lambda, not `pki-admin` |
+| Admin probe | `404`, message `This PKI route is not available.` `/v1/admin/pki/_probe` is never routed, unlike `/v1/admin/pki/cas`, which answers `400` or `200` | Another message: the request reached the admin Lambda, not `pki-admin` |
 | Consumer probe | `404` with the same message | `403 identity_not_active` with an active certificate: `pki-issuer` cannot read `IDENTITY#` |
 | Audit count | Unchanged across both probes | A PKI 404 wrote evidence |
 | Alarms | Ten `hml-acc-pki-*` alarms, all `OK` or `INSUFFICIENT_DATA`. `pki-maintenance-missed` is `ALARM` until the first scheduled pass and must be `OK` within 15 minutes of deploy | The schedule or its invoke permission is missing |
@@ -316,6 +316,85 @@ aws lambda invoke --function-name "$DEP-pki-maintenance" /tmp/pki-maintenance.js
 | Audit | Succeeded events for `pki.ca.create`, `pki.ca.activate`, three `pki.external-ca.upload-crl`, and `pki.crl.get`. Failed events with reason codes `crl_not_newer` and `bad_signature`. No object contains `-----BEGIN` | |
 
 Keep `acc-root` for PKI-4 to PKI-6.
+
+## Gate PKI-3: a PKI certificate never authenticates to the delivery API
+
+Run after gate 6 (the identity root is provisioned and published) and PKI-2 (`acc-issuing-1` is ACTIVE).
+
+```sh
+DOMAIN=api.acc.example.com
+read TS_URI TS_VERSION < <(aws apigatewayv2 get-domain-name --domain-name "$DOMAIN" \
+  --query 'MutualTlsAuthentication.[TruststoreUri,TruststoreVersion]' --output text)
+TS_BUCKET=$(echo "$TS_URI" | cut -d/ -f3); TS_KEY=$(echo "$TS_URI" | cut -d/ -f4-)
+aws s3api get-object --bucket "$TS_BUCKET" --key "$TS_KEY" --version-id "$TS_VERSION" ts-before.pem >/dev/null
+grep -c 'BEGIN CERTIFICATE' ts-before.pem
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout pki-client.key \
+  -subj "/CN=client.acc.example.com" -addext "subjectAltName=DNS:client.acc.example.com" -out pki-client.csr
+hemlig pki cert issue acc-issuing-1 --csr pki-client.csr --use-csr-names \
+  --usage digitalSignature --usage clientAuth --duration 1h --out pki-client.pem --chain-out pki-client-chain.pem
+cat pki-client.pem pki-client-chain.pem > pki-client-full.pem
+aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
+for P in /v1/pki/issuance-grants /v1/agent/config; do
+  curl -sS -o pki3.body -w "%{http_code}\n" --cert pki-client-full.pem --key pki-client.key "https://$DOMAIN$P"; echo "curl=$?"; cat pki3.body; echo; done
+aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
+aws apigatewayv2 get-domain-name --domain-name "$DOMAIN" --query 'MutualTlsAuthentication.TruststoreVersion' --output text
+aws s3api get-object --bucket "$TS_BUCKET" --key "$TS_KEY" ts-after.pem >/dev/null && grep -c 'BEGIN CERTIFICATE' ts-after.pem
+```
+
+| Check | Pass | Fail means |
+| --- | --- | --- |
+| Issue | Receipt `status: ISSUED` with EKU `clientAuth` | Admin issuance or the operator role is broken |
+| Both requests | Rejected by API Gateway: a TLS failure (`curl` exit 35 or 56) or `403` with body `{"message":"Forbidden"}`, **never** a Hemlig `error` envelope | A Hemlig envelope means the request reached a Lambda: the truststore admits the PKI chain |
+| Audit count | Unchanged | Any new object (including `identity_not_active`) means the certificate reached a handler |
+| Truststore | Same `TruststoreVersion`, same anchor count, and no PKI anchor (`openssl x509 -fingerprint` of each block differs from `acc-root/root.pem`) | PKI code wrote the truststore |
+
+## Gate PKI-4: deployed issuance, revocation and quota
+
+Run after PKI-3 with an active consumer certificate (`consumer.crt`, `consumer.key`, consumer `$CONSUMER_ID` in `prod`) and `acc-root` from PKI-2.
+
+```sh
+cat > grant.json <<'EOF'
+{ "names": { "dns": { "allow": ["*.acc.example.com"] }, "maxSans": 10 },
+  "keyUsages": ["digitalSignature", "keyEncipherment"],
+  "extendedKeyUsages": { "allow": ["serverAuth", "clientAuth"], "default": ["serverAuth"] },
+  "lifetime": { "defaultSeconds": 3600, "maxSeconds": 86400, "minSeconds": 600 },
+  "quotas": { "perHour": 3, "perDay": 10 } }
+EOF
+hemlig pki grant create "$CONSUMER_ID" acc-web --ca acc-issuing-1 --file grant.json
+issue() { openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$1.key" \
+    -subj "/CN=$1.acc.example.com" -addext "subjectAltName=DNS:$1.acc.example.com" -out "$1.csr" 2>/dev/null
+  jq -n --rawfile csr "$1.csr" '{certificateSigningRequestPem:$csr, usages:["digital signature","key encipherment","server auth"]}' > "$1.json"
+  curl -sS -D "$1.headers" --cert consumer.crt --key consumer.key -H 'content-type: application/json' \
+    -H "idempotency-key: pki4-$2" --data @"$1.json" https://api.acc.example.com/v1/pki/issuance-grants/acc-web/certificates; }
+issue web 0001 > issued.json
+jq -r .certificatePem issued.json > leaf.pem; jq -r .chainPem issued.json > chain.pem; jq -r .caPem issued.json > ca.pem
+cmp <(openssl x509 -in ca.pem -outform DER) <(openssl x509 -in acc-root/root.pem -outform DER) && echo anchor-ok
+openssl verify -x509_strict -purpose sslserver -CAfile acc-root/root.pem -untrusted chain.pem leaf.pem
+curl -sS --cert consumer.crt --key consumer.key -H 'content-type: application/json' -H 'idempotency-key: pki4-0001' \
+  --data @web.json https://api.acc.example.com/v1/pki/issuance-grants/acc-web/certificates | jq -r .serial   # replay
+SERIAL=$(jq -r .serial issued.json); T0=$(date +%s)
+hemlig pki cert revoke acc-issuing-1 "$SERIAL" --reason keyCompromise
+until hemlig pki ca crl get acc-issuing-1 --out issuing.crl >/dev/null && \
+  openssl crl -inform DER -in issuing.crl -noout -text | grep -qi "Serial Number: $SERIAL"; do
+  [ $(( $(date +%s) - T0 )) -ge 60 ] && break; sleep 5; done; echo "elapsed=$(( $(date +%s) - T0 ))"
+openssl crl -inform DER -in issuing.crl -out issuing.crl.pem
+openssl verify -crl_check_all -CAfile acc-root/root.pem -untrusted chain.pem \
+  -CRLfile issuing.crl.pem -CRLfile acc-root/root2.crl.pem leaf.pem
+curl -sS --cert consumer.crt --key consumer.key -H 'content-type: application/json' -H 'idempotency-key: pki4-0001' \
+  --data @web.json https://api.acc.example.com/v1/pki/issuance-grants/acc-web/certificates            # revoked replay
+issue api2 0002 >/dev/null; issue api3 0003 >/dev/null; issue api4 0004; grep -i retry-after api4.headers
+```
+
+| Check | Pass | Fail means |
+| --- | --- | --- |
+| Issue | `201` through the deployed `pki-issuer` role. This proves its `ConditionCheckItem` on `IDENTITY#*` and `AGENT_GRANT#*`, and its `PKI_*` writes | `503` with `AccessDeniedException` in `/aws/lambda/hml-acc-pki-issuer`: the IAM allowlist is wrong |
+| Chain | `anchor-ok`, and `leaf.pem: OK` under `-x509_strict -purpose sslserver` | Wrong chain or profile |
+| Replay | The same serial | Replay records are broken |
+| Revocation | `elapsed` ≤ 60, and `verify` reports `certificate revoked` | Inline publication failed: read the `pki_inline_crl_failed` log |
+| Revoked replay | `409 issuance_revoked` | A revoked certificate was re-delivered |
+| Quota | `api2` and `api3` give `201`; `api4` gives `429 issuance_rate_limited`, `details.reason: grant_hour`, and a `Retry-After` of 1 to 3600 | Quota is not enforced |
+| CloudTrail | `Decrypt` with `purpose=pki-ca` and this `caId` from the `pki-issuer` role (issuance) and the `pki-admin` role (inline CRL) | |
+| Audit | Succeeded: `pki.grant.create`, four `pki.certificate.issue` (one `replayed: "true"`), `pki.certificate.revoke` (`crlEntry: "true"`). Failed: `pki.certificate.issue` with `certificate_revoked` and with `grant_hour`. No event for `GET /v1/pki/issuance-grants`. No object contains `-----BEGIN` | |
 
 ## Teardown
 

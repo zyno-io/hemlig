@@ -1436,7 +1436,7 @@ export const verifyPkiLifecycleOnMiniStack = async (
 };
 
 /** The offline root recipe's configuration from the PKI plan, with an absolute `dir`. */
-const rootConfig = (dir: string): string => `
+export const rootConfig = (dir: string): string => `
 [ ca ]
 default_ca = root_ca
 

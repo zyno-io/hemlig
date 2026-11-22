@@ -286,7 +286,9 @@ describe("CrlService.publish", () => {
     environment: "prod",
   } as unknown as CaRecord;
 
+  const clock = { now: new Date("2026-11-01T00:00:00.500Z") };
   const setup = async (pkiOverrides: Record<string, unknown>) => {
+    clock.now = new Date("2026-11-01T00:00:00.500Z");
     const root = await makeRoot();
     const caKey = await newKey("ECDSA_P256");
     const cert = await makeIntermediate(root, { key: caKey });
@@ -304,6 +306,7 @@ describe("CrlService.publish", () => {
       commitCrlPublication: jest.fn(async () => "committed"),
       expireCarriedRevocations: jest.fn(async () => 0),
       markCrlSwept: jest.fn(async () => undefined),
+      releaseCrlLease: jest.fn(async () => undefined),
       getCaCrlState: jest.fn(),
       ...pkiOverrides,
     };
@@ -319,13 +322,46 @@ describe("CrlService.publish", () => {
           sign: async (tbs: Uint8Array) => caKey.sign(tbs),
         }),
         config: { pkiBucketName: "pki", environmentName: "test" },
-        now: () => new Date("2026-11-01T00:00:00.500Z"),
+        now: () => clock.now,
         emit,
       } as never,
       wait,
     );
     return { service, pki, putImmutableOrGet, emit, wait, ca: full };
   };
+
+  it("returns deadline before signing when an inline deadline has passed, and releases the lease", async () => {
+    const { service, pki, putImmutableOrGet, ca } = await setup({});
+    const result = await service.publish(ca, {
+      trigger: "inline",
+      deadline: new Date(clock.now.getTime() - 1),
+    });
+    expect(result).toEqual({ kind: "deadline" });
+    expect(pki.releaseCrlLease).toHaveBeenCalledWith("ca-test-one", owner);
+    expect(putImmutableOrGet).not.toHaveBeenCalled();
+    expect(pki.commitCrlPublication).not.toHaveBeenCalled();
+  });
+
+  it("returns deadline before the commit when signing outlasts the deadline", async () => {
+    const { service, pki, putImmutableOrGet, ca } = await setup({});
+    putImmutableOrGet.mockImplementation(async () => {
+      clock.now = new Date(clock.now.getTime() + 6_000);
+      return {};
+    });
+    const result = await service.publish(ca, {
+      trigger: "inline",
+      deadline: new Date(clock.now.getTime() + 5_000),
+    });
+    expect(result).toEqual({ kind: "deadline" });
+    expect(pki.releaseCrlLease).toHaveBeenCalledTimes(1);
+    expect(pki.commitCrlPublication).not.toHaveBeenCalled();
+  });
+
+  it("ignores the deadline when none is given", async () => {
+    const { service, ca } = await setup({});
+    clock.now = new Date(clock.now.getTime() + 86_400_000);
+    expect((await service.publish(ca, { trigger: "force" })).kind).toBe("published");
+  });
 
   it("publishes: lease, number, object, pointer, sweep", async () => {
     const { service, pki, putImmutableOrGet, ca } = await setup({});

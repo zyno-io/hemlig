@@ -202,6 +202,54 @@ describe("pki-admin handler", () => {
         "pki.external-ca.upload-crl",
         "ca-admin",
       ],
+      ["GET", `/cas/${ca}/issuance-grants`, "pki.grant.list", "read"],
+      ["GET", "/consumers/payments/issuance-grants", "pki.grant.list", "read"],
+      [
+        "POST",
+        "/consumers/payments/issuance-grants",
+        "pki.grant.create",
+        "operator",
+      ],
+      [
+        "GET",
+        "/consumers/payments/issuance-grants/web",
+        "pki.grant.get",
+        "read",
+      ],
+      [
+        "PUT",
+        "/consumers/payments/issuance-grants/web",
+        "pki.grant.update",
+        "operator",
+      ],
+      [
+        "DELETE",
+        "/consumers/payments/issuance-grants/web",
+        "pki.grant.delete",
+        "operator",
+      ],
+      [
+        "POST",
+        "/consumers/payments/issuance-grants/web/evaluate",
+        "pki.grant.evaluate",
+        "read",
+      ],
+      ["GET", `/cas/${ca}/certificates`, "pki.certificate.list", "read"],
+      ["POST", `/cas/${ca}/certificates`, "pki.certificate.issue", "operator"],
+      ["GET", `/cas/${ca}/certificates/0a1b`, "pki.certificate.get", "read"],
+      [
+        "POST",
+        `/cas/${ca}/certificates/0a1b/revoke`,
+        "pki.certificate.revoke",
+        "operator",
+      ],
+      ["GET", "/consumers/payments/certificates", "pki.certificate.list", "read"],
+      [
+        "POST",
+        "/consumers/payments/certificates/revoke",
+        "pki.certificate.revoke",
+        "operator",
+      ],
     ];
 
     it.each(rows)("%s %s is %s (%s)", (method, path, operation, role) => {
@@ -214,12 +262,220 @@ describe("pki-admin handler", () => {
       expect(matches[0]).toMatchObject({ operation, role });
     });
 
-    it("leaves the Phase 4 consumer path unrouted", () => {
-      expect(
-        pkiAdminRoutes.some((candidate) =>
-          candidate.pattern.test("/v1/admin/pki/consumers/x/issuance-grants"),
+    it("labels consumer-scoped routes with the consumer, not a CA", () => {
+      const grant = pkiAdminRoutes.find((candidate) =>
+        candidate.pattern.test(
+          "/v1/admin/pki/consumers/payments/issuance-grants/web",
         ),
-      ).toBe(false);
+      );
+      expect(grant?.auditTarget?.(["payments", "web"])).toEqual({
+        consumerId: "payments",
+        issuanceGrant: "web",
+      });
+    });
+  });
+
+  describe("Phase 4 routes", () => {
+    const grants = {
+      listForConsumer: jest.fn(),
+      validateCreate: jest.fn(async () => ({ valid: true, errors: [], warnings: [] })),
+      validateUpdate: jest.fn(async () => ({ valid: true, errors: [], warnings: [] })),
+      create: jest.fn(),
+    };
+    const issuance = { issueForAdmin: jest.fn(), evaluate: jest.fn() };
+    const certificates = { bulkRevoke: jest.fn() };
+    const markAuditSucceeded = jest.fn(async () => undefined);
+    const phase4 = {
+      config,
+      audit: { write },
+      repository: { markAuditSucceeded },
+      grants,
+      issuance,
+      certificates,
+    } as unknown as PkiApplication;
+    const phase4Respond = createErrorResponder(() => phase4);
+    const call = (
+      method: string,
+      path: string,
+      options: {
+        query?: Record<string, string>;
+        headers?: Record<string, string>;
+        body?: unknown;
+        claims?: Record<string, unknown>;
+      } = {},
+    ) =>
+      createPkiAdminHandler(
+        pkiAdminRoutes,
+        phase4Respond,
+      )({
+        ...event(true, `/v1/admin/pki${path}`, method, options.claims),
+        headers: options.headers ?? {},
+        ...(options.query === undefined
+          ? {}
+          : { queryStringParameters: options.query }),
+        ...(options.body === undefined
+          ? {}
+          : { body: JSON.stringify(options.body) }),
+      } as APIGatewayProxyEventV2);
+    afterEach(() => {
+      delete config.adminPkiOperatorRole;
+    });
+
+    it("audits a consumer-scoped failure under consumerId", async () => {
+      grants.listForConsumer.mockRejectedValueOnce(
+        new ApiError(404, "not_found", "No.", "consumer_not_found"),
+      );
+      await call("GET", "/consumers/payments/issuance-grants");
+      expect(write).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "pki.grant.list",
+          target: { consumerId: "payments" },
+        }),
+      );
+    });
+
+    it("validateOnly needs no key, relabels the audit and writes one read event", async () => {
+      const result = await call("POST", "/consumers/payments/issuance-grants", {
+        query: { validateOnly: "true" },
+        body: { name: "web" },
+      });
+      expect(result).toMatchObject({ statusCode: 200 });
+      expect(grants.validateCreate).toHaveBeenCalled();
+      expect(grants.create).not.toHaveBeenCalled();
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(write).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "pki.grant.validate",
+          permission: "read",
+          outcome: "succeeded",
+        }),
+      );
+    });
+
+    it("needs If-Match on a validateOnly PUT, and a key without it", async () => {
+      const put = (headers: Record<string, string>, query?: Record<string, string>) =>
+        call("PUT", "/consumers/payments/issuance-grants/web", {
+          headers,
+          body: {},
+          ...(query === undefined ? {} : { query }),
+        });
+      expect(await put({}, { validateOnly: "true" })).toMatchObject({ statusCode: 400 });
+      expect(
+        await put({ "if-match": '"pkv-1"' }, { validateOnly: "true" }),
+      ).toMatchObject({ statusCode: 200 });
+      expect(grants.validateUpdate).toHaveBeenCalledWith(
+        "payments",
+        "web",
+        "pkv-1",
+        {},
+      );
+      expect(await put({ "if-match": '"pkv-1"' })).toMatchObject({ statusCode: 400 });
+    });
+
+    it("treats evaluate as a read even when the operator role is configured", async () => {
+      config.adminPkiOperatorRole = "pki-operator";
+      issuance.evaluate.mockResolvedValueOnce({
+        decision: "deny",
+        denial: { reason: "name_not_permitted" },
+        trace: [],
+      });
+      const result = await call(
+        "POST",
+        "/consumers/payments/issuance-grants/web/evaluate",
+        { body: {}, claims: { roles: [] } },
+      );
+      expect(result).toMatchObject({ statusCode: 200 });
+      expect(write).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "pki.grant.evaluate",
+          permission: "read",
+          reasonCode: "name_not_permitted",
+          target: expect.objectContaining({ decision: "deny" }),
+        }),
+      );
+      const refused = await call("POST", "/cas/ca-prod-one/certificates", {
+        body: {},
+        headers: { "idempotency-key": "key-0000001" },
+        claims: { roles: [] },
+      });
+      expect(refused).toMatchObject({ statusCode: 403 });
+    });
+
+    it("passes 429 headers through and merges the denied name into the audit target", async () => {
+      issuance.issueForAdmin.mockRejectedValueOnce(
+        new ApiError(429, "issuance_rate_limited", "Slow down.", "admin_hour", {
+          details: { reason: "admin_hour", retryAfterSeconds: 30 },
+          headers: { "retry-after": "30" },
+        }),
+      );
+      const limited = await call("POST", "/cas/ca-prod-one/certificates", {
+        body: {},
+        headers: { "idempotency-key": "key-0000001" },
+      });
+      expect(limited).toMatchObject({
+        statusCode: 429,
+        headers: expect.objectContaining({ "retry-after": "30" }),
+      });
+      issuance.issueForAdmin.mockRejectedValueOnce(
+        new ApiError(403, "issuance_denied", "No.", "name_not_permitted", {
+          details: {
+            reason: "name_not_permitted",
+            deniedNameType: "dns",
+            deniedName: "evil.test",
+          },
+        }),
+      );
+      await call("POST", "/cas/ca-prod-one/certificates", {
+        body: {},
+        headers: { "idempotency-key": "key-0000002" },
+      });
+      expect(write).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          reasonCode: "name_not_permitted",
+          target: {
+            caId: "ca-prod-one",
+            deniedNameType: "dns",
+            deniedName: "evil.test",
+          },
+        }),
+      );
+    });
+
+    it("writes an incomplete bulk revoke's audit directly, without marking an idempotency record", async () => {
+      const result = {
+        body: { complete: false },
+        status: 200,
+        shouldWriteTerminalAudit: false,
+        auditTarget: { consumerId: "payments", bulk: "true", complete: "false" },
+        complete: false,
+      };
+      certificates.bulkRevoke.mockResolvedValueOnce(result);
+      const response = await call(
+        "POST",
+        "/consumers/payments/certificates/revoke",
+        { body: {}, headers: { "idempotency-key": "key-0000003" } },
+      );
+      expect(response).toMatchObject({ statusCode: 200 });
+      expect(write).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: "succeeded",
+          operation: "pki.certificate.revoke",
+          target: expect.objectContaining({ complete: "false" }),
+        }),
+      );
+      expect(markAuditSucceeded).not.toHaveBeenCalled();
+      certificates.bulkRevoke.mockResolvedValueOnce({
+        ...result,
+        body: { complete: true },
+        shouldWriteTerminalAudit: true,
+        complete: true,
+      });
+      (write as jest.Mock).mockResolvedValueOnce({ eventId: "e-1" });
+      await call("POST", "/consumers/payments/certificates/revoke", {
+        body: {},
+        headers: { "idempotency-key": "key-0000004" },
+      });
+      expect(markAuditSucceeded).toHaveBeenCalledTimes(1);
     });
   });
 });

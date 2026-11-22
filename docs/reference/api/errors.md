@@ -27,9 +27,9 @@ Quote the `correlationId` when you report a problem. It finds the request's [aud
 | Code | Status | Meaning | Action |
 | --- | --- | --- | --- |
 | `bad_request` | 400 | Invalid JSON, path, query, header, ID, ACL, payload, or a missing required header | Fix the request. Do not retry unchanged. |
-| `invalid_csr` | 400 | A self-rotation CSR is malformed, too weak, too large or reuses the caller's key | Generate a new RSA key of at least 2048 bits and a new CSR |
+| `invalid_csr` | 400 | A self-rotation or PKI issuance CSR is malformed, too weak, too large or reuses the caller's key | Generate a new key (RSA of at least 2048 bits for rotation) and a new CSR |
 | `forbidden` | 403 | The token or certificate is accepted but not permitted: no grant or ACL, wrong environment, or an invalid bootstrap token | Check the grant or ACL, or request a new bootstrap token |
-| `identity_not_active` | 403 | The client certificate is unknown, revoked or outside its validity | Re-enroll, or use a certificate that is `ACTIVE` |
+| `identity_not_active` | 403 | The client certificate is unknown, revoked or outside its validity. On PKI issuance, `details.reason: agent_grant_inactive` means the agent's AgentGrant is not active | Re-enroll, or use a certificate that is `ACTIVE` |
 | `not_found` | 404 | The secret, consumer, grant, issuing root or active payload does not exist | Check the ID and `environment`. A secret with no payload also returns this on payload reads. |
 | `conflict` | 409 | A used idempotency key, an unavailable revision lease, a duplicate or full registry, or an agent ACL change | Read the current state before acting. Do not mint a new key just to bypass it. |
 | `enrollment_failed` | 409 | Terminal truststore publication failure for this enrollment | Do not retry. Repair the issuer or truststore, then enroll with a new key. |
@@ -44,6 +44,13 @@ Quote the `correlationId` when you report a problem. It finds the request's [aud
 | `ca_subject_in_use` | 409 | The CA subject DN is already claimed | Choose a new DN |
 | `ca_key_unavailable` | 409 | The CA key cannot be used to sign | Check the CA's `key.state` and KMS access |
 | `ca_issuance_budget_exceeded` | 409 | `capacity + 2 x issuancePerHour` is over 12,000 | Lower the capacity or the rate |
+| `issuance_denied` | 403 | The grant or the CA refuses the request. `details.reason` names the rule, with `deniedNameType` and `deniedName` when a name caused it | Fix the CSR or the grant. Retrying the same request fails the same way |
+| `issuance_grant_not_found` | 404 | The grant does not exist, is deleted or is in another environment | Check the name with `GET /v1/pki/issuance-grants` |
+| `issuance_grant_inactive` | 403 | The grant is disabled or expired (`grant_disabled`, `grant_expired`) | Ask an administrator to enable or renew it |
+| `ca_capacity_exceeded` | 409 | The CA already holds its configured number of certificates | Wait for expiry, or ask an administrator to raise `capacity` or use another CA |
+| `issuance_revoked` | 409 | A replayed issuance was revoked, or its CA was (`certificate_revoked`, `ca_revoked`). Terminal | Issue a new certificate with a new key |
+| `issuance_expired` | 409 | A replayed result expires within 60 seconds, or its record is over 90 days past expiry. Terminal | Issue a new certificate with a new key |
+| `issuance_rate_limited` | 429 | A grant, administrator or CA quota is used up (`grant_hour`, `grant_day`, `admin_hour`, `ca_hour`). Has `Retry-After` | Wait `Retry-After` seconds, then retry with the same key |
 | `precondition_failed` | 412 | `If-Match` is not the current control revision | Read the current revision, reconcile, then retry with its ETag. Never retry blindly. |
 | `sync_reset_required` | 410 | The sync token is no longer valid | Discard it and start a new snapshot |
 | `internal_error` | 500 | Unexpected failure; details withheld | Retry later; report the `correlationId` if it persists |
@@ -53,7 +60,9 @@ Quote the `correlationId` when you report a problem. It finds the request's [aud
 
 `internal_error` is the fallback for any error that is not one of the typed codes. The sync codes are raised by the sync service and backfill rather than the shared error helpers.
 
-PKI administration also uses `bad_request`, `forbidden` (reason `pki_role_required`), `not_found`, `conflict` and `service_unavailable` with a `details.reason`. The full list of reasons is in [Admin: PKI](admin-pki.md#errors).
+PKI administration also uses `bad_request`, `forbidden` (reason `pki_role_required`), `not_found`, `conflict` and `service_unavailable` with a `details.reason`. The full list of reasons is in [Admin: PKI](admin-pki.md#errors), and the consumer issuance errors are in [PKI consumer routes](pki.md#errors).
+
+A `429` from Hemlig always has this envelope, a `Retry-After` header and `error.details.retryAfterSeconds`. A throttled request from API Gateway has no envelope.
 
 ## Errors outside the envelope
 

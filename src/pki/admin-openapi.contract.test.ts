@@ -3,12 +3,24 @@ import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020";
 import { parse } from "yaml";
 import { pkiAdminRoutes } from "../handlers/pki-admin-routes";
+import { pkiIssuerRoutes } from "../handlers/pki-issuer-routes";
 import {
   parseActivateRequest,
   parseCreateCaRequest,
   parseUpdateCaRequest,
   parseUploadCrlRequest,
 } from "./ca-model";
+import {
+  parseBulkRevokeRequest,
+  parseRevokeRequest,
+} from "./certificate-service";
+import { parseGrantRequest } from "./grant-model";
+import { validateGrantPolicy } from "./grant-policy";
+import {
+  parseAdminIssueRequest,
+  parseConsumerIssueRequest,
+} from "./issuance-model";
+import { parseEvaluateRequest } from "./issuance-service";
 
 const document = parse(
   readFileSync(join(__dirname, "../../openapi/consumer-secrets.yaml"), "utf8"),
@@ -33,6 +45,55 @@ const create = (extra: Record<string, unknown> = {}) => ({
   kind: "EXTERNAL_INTERMEDIATE",
   keyAlgorithm: "ECDSA_P256",
   subject,
+  ...extra,
+});
+
+
+const futureNow = new Date("2026-06-01T00:00:00.000Z");
+const grantPolicy = {
+  names: { dns: { allow: ["*.example.com"] }, maxSans: 10 },
+  keyUsages: ["digitalSignature"],
+  extendedKeyUsages: { allow: ["serverAuth"], default: ["serverAuth"] },
+  lifetime: { defaultSeconds: 3600, maxSeconds: 86400 },
+};
+const grant = (extra: Record<string, unknown> = {}) => ({
+  name: "web",
+  caId: "ca-test-one",
+  ...grantPolicy,
+  ...extra,
+});
+const parseGrant =
+  (kind: "create" | "update") =>
+  (body: unknown): unknown => {
+    const { policyFields } = parseGrantRequest(body, kind, futureNow, "web");
+    const result = validateGrantPolicy(policyFields);
+    if (!result.ok) {
+      throw new Error("invalid policy");
+    }
+    return result;
+  };
+const grantCases = (kind: "create" | "update"): [string, unknown][] => {
+  const named = (extra: Record<string, unknown>) =>
+    kind === "create"
+      ? grant(extra)
+      : (({ name: _name, ...rest }) => rest)(grant(extra));
+  return [
+    ["minimal", named({})],
+    ["envelope", named({ displayName: "Web", status: "DISABLED", expiresAt: "2999-01-01T00:00:00Z" })],
+    ["unknown key", named({ other: 1 })],
+    ["expectedGrantUid", named({ expectedGrantUid: "pkg-x" })],
+    ["status DELETED", named({ status: "DELETED" })],
+    ["bad caId", named({ caId: "x" })],
+    ["missing caId", { ...named({}), caId: undefined }],
+    ["missing names", { ...named({}), names: undefined }],
+    ["missing lifetime", { ...named({}), lifetime: undefined }],
+    ["quotas", named({ quotas: { perHour: 5, perDay: 50 } })],
+    ["unknown quota key", named({ quotas: { perWeek: 5 } })],
+    ["display name too long", named({ displayName: "x".repeat(129) })],
+  ];
+};
+const issueBody = (extra: Record<string, unknown> = {}) => ({
+  certificateSigningRequestPem: "csr",
   ...extra,
 });
 
@@ -138,6 +199,74 @@ const corpora: [string, (body: unknown) => unknown, [string, unknown][]][] = [
       ["not a string", { crl: 1 }],
     ],
   ],
+  ["PkiCreateIssuanceGrantRequest", parseGrant("create"), grantCases("create")],
+  ["PkiIssuanceGrantInput", parseGrant("update"), grantCases("update")],
+  [
+    "PkiIssueCertificateRequest",
+    parseConsumerIssueRequest,
+    [
+      ["minimal", issueBody()],
+      ["full", issueBody({ durationSeconds: 60, usages: ["server auth"], requester: { kubernetes: { namespace: "a", name: "b", uid: "1" } } })],
+      ["sans refused", issueBody({ sans: { dns: ["a"] } })],
+      ["unknown", issueBody({ extra: 1 })],
+      ["expectedGrantUid", issueBody({ expectedGrantUid: "x" })],
+      ["missing csr", {}],
+      ["csr not string", { certificateSigningRequestPem: 1 }],
+      ["zero duration", issueBody({ durationSeconds: 0 })],
+      ["too many usages", issueBody({ usages: new Array(17).fill("a") })],
+      ["requester unknown", issueBody({ requester: { other: 1 } })],
+      ["requester bad uid", issueBody({ requester: { kubernetes: { namespace: "a", name: "b", uid: "zz" } } })],
+      ["requester missing name", issueBody({ requester: { kubernetes: { namespace: "a", uid: "1" } } })],
+    ],
+  ],
+  [
+    "PkiAdminIssueCertificateRequest",
+    parseAdminIssueRequest,
+    [
+      ["minimal", issueBody()],
+      ["names", issueBody({ sans: { dns: ["a.example.com"] }, subject: { commonName: "a", country: "US" } })],
+      ["csr names", issueBody({ useCsrNames: true })],
+      ["unknown", issueBody({ extra: 1 })],
+      ["unknown sans key", issueBody({ sans: { email: [] } })],
+      ["unknown subject key", issueBody({ subject: { title: "x" } })],
+      ["useCsrNames not boolean", issueBody({ useCsrNames: "yes" })],
+      ["too many sans", issueBody({ sans: { dns: new Array(101).fill("a.example.com") } })],
+    ],
+  ],
+  [
+    "PkiRevokeCertificateRequest",
+    (body: unknown) => parseRevokeRequest(body, futureNow),
+    [
+      ["empty", {}],
+      ["reason", { reason: "superseded" }],
+      ["keyCompromise date", { reason: "keyCompromise", invalidityDate: "2026-05-01T00:00:00Z" }],
+      ["caCompromise", { reason: "caCompromise" }],
+      ["unknown", { other: 1 }],
+      ["reason not string", { reason: 1 }],
+    ],
+  ],
+  [
+    "PkiBulkRevokeRequest",
+    (body: unknown) => parseBulkRevokeRequest(body, futureNow),
+    [
+      ["empty", {}],
+      ["grant", { issuanceGrant: "web", issuanceGrantUid: "pkg-1" }],
+      ["unknown", { other: 1 }],
+      ["grant not string", { issuanceGrant: 1 }],
+    ],
+  ],
+  [
+    "PkiEvaluateRequest",
+    parseEvaluateRequest,
+    [
+      ["csr", { certificateSigningRequestPem: "x" }],
+      ["names", { keyAlgorithm: "ECDSA_P256", sans: { dns: ["a.example.com"] }, commonName: "a.example.com" }],
+      ["unknown", { keyAlgorithm: "ECDSA_P256", sans: {}, other: 1 }],
+      ["unknown sans", { keyAlgorithm: "ECDSA_P256", sans: { email: [] } }],
+      ["bad duration", { keyAlgorithm: "ECDSA_P256", sans: {}, durationSeconds: 0 }],
+      ["isCA not boolean", { keyAlgorithm: "ECDSA_P256", sans: {}, isCA: "x" }],
+    ],
+  ],
 ];
 
 describe("PKI admin OpenAPI contract", () => {
@@ -154,23 +283,33 @@ describe("PKI admin OpenAPI contract", () => {
     });
   }
 
+  const openApiPath = (source: string): string => {
+    const names = source.includes("consumers")
+      ? ["{consumerId}", "{name}"]
+      : ["{name}"];
+    // `/consumers/C/issuance-grants` and `/consumers/C/certificates` carry no grant name.
+    return source
+      .replace(/^\^/, "")
+      .replace(/\\\//g, "/")
+      .replace(/\$$/, "")
+      .replace(
+        /\((ca-[^)]*\|ext-[^)]*)\)|\(ca-[^)]*\)|\(ext-[^)]*\)/g,
+        (match) =>
+          match.startsWith("(ext-")
+            ? "{extId}"
+            : match.includes("|")
+              ? "{id}"
+              : "{caId}",
+      )
+      .replace(/\(\[a-z\]\[a-z0-9-\]\{2,63\}\)/g, () => names.shift() as string)
+      .replace(/\(\[0-9a-f\]\{2,40\}\)/g, "{serial}");
+  };
+
   it("documents every routed path and method", () => {
-    for (const route of pkiAdminRoutes) {
-      const path = route.pattern.source
-        .replace(/^\^\\\/v1\\\/admin\\\/pki/, "/v1/admin/pki")
-        .replace(/\\\//g, "/")
-        .replace(/\$$/, "")
-        .replace(
-          /\((ca-[^)]*\|ext-[^)]*)\)|\(ca-[^)]*\)|\(ext-[^)]*\)/g,
-          (match) =>
-            match.startsWith("(ext-")
-              ? "{extId}"
-              : match.includes("|")
-                ? "{id}"
-                : "{caId}",
-        );
+    for (const route of [...pkiAdminRoutes, ...pkiIssuerRoutes]) {
+      const path = openApiPath(route.pattern.source);
       const entry = document.paths[path];
-      expect(entry).toBeDefined();
+      expect({ path, entry: entry !== undefined }).toEqual({ path, entry: true });
       expect(entry?.[route.method.toLowerCase()]).toBeDefined();
     }
   });
@@ -187,6 +326,13 @@ describe("PKI admin OpenAPI contract", () => {
       "ca_not_active",
       "ca_key_unavailable",
       "ca_issuance_budget_exceeded",
+      "issuance_denied",
+      "issuance_grant_not_found",
+      "issuance_grant_inactive",
+      "ca_capacity_exceeded",
+      "issuance_revoked",
+      "issuance_expired",
+      "issuance_rate_limited",
     ]) {
       expect(codes).toContain(code);
     }

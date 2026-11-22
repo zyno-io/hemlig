@@ -1,8 +1,14 @@
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { IssuedCertificateRecord } from "../pki/types";
+import type { IssuanceGrantRecord, IssuedCertificateRecord } from "../pki/types";
 import {
+  buildBulkRevokeBatch,
+  buildCreateGrantTransaction,
+  buildDeleteGrantTransaction,
   buildIssuanceCommit,
+  buildRevokeTransaction,
+  buildUpdateGrantTransaction,
   classifyIssuanceCancellation,
+  quotaRetryAfterSeconds,
   PKI_DIRECTORY_ATTRIBUTES,
   pkiDirectory,
   pkiKeys,
@@ -887,5 +893,345 @@ describe("PkiRepository", () => {
     expect(inputOf(send.mock.calls[0] as unknown[])).toMatchObject({
       ConsistentRead: true,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4 builders and reads
+// ---------------------------------------------------------------------------
+
+const actor = { type: "human" as const, id: "admin-1" };
+const idempotency = {
+  actor,
+  idempotencyKey: "idempotency-key-3",
+  operationType: "pki.grant.create",
+  requestDigest: "d".repeat(64),
+  result: { consumerId: "payments", name: "web" },
+  now: now.toISOString(),
+};
+const grant = (overrides: Partial<IssuanceGrantRecord> = {}): IssuanceGrantRecord => ({
+  uid: "pkg-1234",
+  consumerId: "payments",
+  environment: "prod",
+  name: "web",
+  caId: "ca-prod-one",
+  status: "ACTIVE",
+  policy: { names: {}, keyUsages: [], extendedKeyUsages: { allow: [], default: [] }, lifetime: { defaultSeconds: 1, maxSeconds: 2 } },
+  policyDigest: "p".repeat(64),
+  version: "pkv-1",
+  createdAt: now.toISOString(),
+  createdBy: actor,
+  updatedAt: now.toISOString(),
+  updatedBy: actor,
+  ...overrides,
+});
+
+describe("grant transactions", () => {
+  it("creates a grant over nothing or a tombstone, guarded by the CA version", () => {
+    const items = buildCreateGrantTransaction("control", {
+      idempotency,
+      grant: grant({ displayName: "Web" }),
+      caVersion: "cv-1",
+    });
+    expect(items.map((item) => item.slot)).toEqual(["idempotency", "grant", "ca"]);
+    expect(items[1]!.item.Put).toMatchObject({
+      Item: {
+        pk: "PKI_GRANT#payments",
+        sk: "NAME#web",
+        pkiDirectoryPk: "PKI_CA_GRANTS#ca-prod-one",
+        pkiDirectorySk: "payments#web",
+        uid: "pkg-1234",
+        displayName: "Web",
+      },
+      ConditionExpression: "attribute_not_exists(pk) OR #status = :deleted",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: { ":deleted": "DELETED" },
+    });
+    expect(items[2]!.item.ConditionCheck).toMatchObject({
+      Key: pkiKeys.caProfile("ca-prod-one"),
+      ConditionExpression: "#status = :active AND #version = :v",
+      ExpressionAttributeValues: { ":active": "ACTIVE", ":v": "cv-1" },
+    });
+  });
+
+  it("updates under If-Match with the uid and removes absent optionals", () => {
+    const items = buildUpdateGrantTransaction("control", {
+      idempotency,
+      grant: grant({ version: "pkv-2" }),
+      ifMatch: "pkv-1",
+      caVersion: "cv-1",
+    });
+    const update = items[1]!.item.Update!;
+    expect(update.UpdateExpression).toMatch(/^SET .*#caId = :caId.*#pkiDirectoryPk = :pkiDirectoryPk.* REMOVE #displayName, #expiresAt$/);
+    expect(update.ConditionExpression).toBe(
+      "#version = :ifMatch AND #uid = :uid AND #deletedStatus <> :deleted",
+    );
+    expect(update.ExpressionAttributeValues).toMatchObject({
+      ":ifMatch": "pkv-1",
+      ":uid": "pkg-1234",
+      ":version": "pkv-2",
+    });
+    const withBoth = buildUpdateGrantTransaction("control", {
+      idempotency,
+      grant: grant({ displayName: "x", expiresAt: "2999-01-01T00:00:00.000Z" }),
+      ifMatch: "pkv-1",
+      caVersion: "cv-1",
+    })[1]!.item.Update!;
+    expect(withBoth.UpdateExpression).not.toContain("REMOVE");
+    expect(withBoth.UpdateExpression).toContain("#displayName = :displayName");
+  });
+
+  it("tombstones a grant and removes its directory attributes", () => {
+    const update = buildDeleteGrantTransaction("control", {
+      idempotency,
+      consumerId: "payments",
+      name: "web",
+      ifMatch: "pkv-1",
+      newVersion: "pkv-3",
+      now: now.toISOString(),
+      actor,
+    })[1]!.item.Update!;
+    expect(update.UpdateExpression).toBe(
+      "SET #status = :deleted, #version = :v, #deletedAt = :now, #deletedBy = :actor, #updatedAt = :now, #updatedBy = :actor REMOVE #pkiDirectoryPk, #pkiDirectorySk",
+    );
+    expect(update.ConditionExpression).toBe("#version = :ifMatch AND #status <> :deleted");
+  });
+});
+
+describe("revoke transactions", () => {
+  const base = {
+    idempotency: { ...idempotency, operationType: "pki.certificate.revoke" },
+    caId: "ca-prod-one",
+    serial: "0a1b",
+    notAfter,
+    now: now.toISOString(),
+    reason: "keyCompromise" as const,
+    invalidityDate: "2026-11-01T00:00:00.000Z",
+    by: actor,
+  };
+
+  it("entry mode: certificate, entry and CRL revision in one transaction", () => {
+    const items = buildRevokeTransaction("control", { ...base, mode: "entry" });
+    expect(items.map((item) => item.slot)).toEqual(["idempotency", "certificate", "entry", "crl"]);
+    expect(items[1]!.item.Update).toMatchObject({
+      Key: pkiKeys.certificate("ca-prod-one", "0a1b"),
+      UpdateExpression: "SET #status = :revoked, #revocation = :rev",
+      ConditionExpression: "#status = :issued AND #notAfter > :now",
+      ExpressionAttributeValues: {
+        ":rev": { at: now.toISOString(), reason: "keyCompromise", invalidityDate: "2026-11-01T00:00:00.000Z", by: actor },
+      },
+    });
+    // The entry has exactly Phase 3's RevocationEntryRecord keys, and no TTL.
+    expect(Object.keys(items[2]!.item.Put!.Item!).sort()).toEqual(
+      ["caId", "invalidityDate", "notAfter", "pk", "reason", "revokedAt", "serial", "sk"],
+    );
+    expect(items[2]!.item.Put).toMatchObject({
+      Item: { pk: "PKI_CA#ca-prod-one", sk: "REVOKED#0a1b", revokedAt: now.toISOString() },
+      ConditionExpression: "attribute_not_exists(pk)",
+    });
+    expect(items[3]!.item.Update).toMatchObject({
+      Key: pkiKeys.caCrl("ca-prod-one"),
+      UpdateExpression: "SET #revision = #revision + :one, #dirtySince = if_not_exists(#dirtySince, :now)",
+      ConditionExpression: "attribute_exists(pk)",
+    });
+  });
+
+  it("inventory mode touches only the certificate", () => {
+    const expired = buildRevokeTransaction("control", { ...base, mode: "inventory", expired: true });
+    expect(expired.map((item) => item.slot)).toEqual(["idempotency", "certificate"]);
+    expect(expired[1]!.item.Update!.ConditionExpression).toBe("#status = :issued AND #notAfter <= :now");
+    const revokedCa = buildRevokeTransaction("control", { ...base, mode: "inventory", expired: false });
+    expect(revokedCa[1]!.item.Update!.ConditionExpression).toBe("#status = :issued");
+  });
+
+  it("upgrade mode edits the reason, and the entry and revision only when the entry is live", () => {
+    const certificateOnly = buildRevokeTransaction("control", { ...base, mode: "upgrade", entryLive: false });
+    expect(certificateOnly.map((item) => item.slot)).toEqual(["idempotency", "certificate"]);
+    expect(certificateOnly[1]!.item.Update).toMatchObject({
+      UpdateExpression:
+        "SET #revocation.#reason = :kc, #revocation.#upgradedAt = :now, #revocation.#invalidityDate = :inv",
+      ConditionExpression: "#status = :revoked AND #revocation.#reason <> :kc",
+    });
+    const live = buildRevokeTransaction("control", { ...base, mode: "upgrade", entryLive: true });
+    expect(live.map((item) => item.slot)).toEqual(["idempotency", "certificate", "entry", "crl"]);
+    expect(live[2]!.item.Update).toMatchObject({
+      ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(#ttl)",
+    });
+  });
+
+  it("builds a bulk batch of at most 30 certificates and no idempotency slot", () => {
+    const items = Array.from({ length: 30 }, (_, i) => ({
+      serial: (i + 1).toString(16).padStart(4, "0"),
+      notAfter,
+    }));
+    const batch = buildBulkRevokeBatch("control", {
+      caId: "ca-prod-one",
+      items,
+      withEntries: true,
+      now: now.toISOString(),
+      actor,
+      reason: "superseded",
+    });
+    expect(batch).toHaveLength(61);
+    expect(batch[0]!.slot).toBe("cert:0001");
+    expect(batch[30]!.slot).toBe("entry:0001");
+    expect(batch[60]!.slot).toBe("crl");
+    expect(
+      buildBulkRevokeBatch("control", {
+        caId: "ca-prod-one",
+        items: items.slice(0, 2),
+        withEntries: false,
+        now: now.toISOString(),
+        actor,
+        reason: "superseded",
+      }).map((item) => item.slot),
+    ).toEqual(["cert:0001", "cert:0002"]);
+    expect(() =>
+      buildBulkRevokeBatch("control", {
+        caId: "ca-prod-one",
+        items: [...items, { serial: "ffff", notAfter }],
+        withEntries: true,
+        now: now.toISOString(),
+        actor,
+        reason: "superseded",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("quotaRetryAfterSeconds", () => {
+  it("uses the hour end for hour slots and the day end for the day slot", () => {
+    expect(quotaRetryAfterSeconds(["grantHour"], now)).toBe(1800);
+    expect(quotaRetryAfterSeconds(["grantHour", "grantDay"], now)).toBe(13.5 * 3600);
+    expect(quotaRetryAfterSeconds(["caHour", "adminHour"], new Date("2026-11-22T10:59:59.999Z"))).toBe(1);
+  });
+});
+
+describe("Phase 4 repository reads and writes", () => {
+  const setupPhase4 = (send: jest.Mock) =>
+    new PkiRepository({ send } as unknown as DynamoDBDocumentClient, {
+      tableName: "control",
+      directoryIndex: "pki-directory",
+      sleep: async () => undefined,
+      random: () => 0,
+    });
+  const inputs = (send: jest.Mock) =>
+    send.mock.calls.map((call) => (call[0] as { input: Record<string, unknown> }).input);
+
+  it("sums Count over every page for the certificate count", async () => {
+    const send = jest
+      .fn()
+      .mockResolvedValueOnce({ Count: 5, LastEvaluatedKey: { pk: "a" } })
+      .mockResolvedValueOnce({ Count: 7 });
+    await expect(
+      setupPhase4(send).countCertificatesSince("ca-prod-one", "2026-11-22T00:00:00.000Z"),
+    ).resolves.toBe(12);
+    expect(inputs(send)[0]).toMatchObject({
+      IndexName: "pki-directory",
+      Select: "COUNT",
+      KeyConditionExpression: "#pk = :pk AND #sk > :from",
+      ExpressionAttributeValues: { ":pk": "PKI_CERTS#ca-prod-one", ":from": "2026-11-22T00:00:00.000Z" },
+    });
+    expect(inputs(send)[1]).toMatchObject({ ExclusiveStartKey: { pk: "a" } });
+  });
+
+  it("maps a backfilling index to PkiIndexNotReadyError on a count", async () => {
+    const send = jest.fn().mockRejectedValue(
+      Object.assign(new Error("index is backfilling"), { name: "ValidationException" }),
+    );
+    await expect(
+      setupPhase4(send).countCertificatesSince("ca-prod-one", "2026-11-22T00:00:00.000Z"),
+    ).rejects.toBeInstanceOf(PkiIndexNotReadyError);
+  });
+
+  it("stores a capacity count monotonically and releases only an owned lease", async () => {
+    const send = jest.fn().mockResolvedValue({});
+    const repository = setupPhase4(send);
+    await repository.storeCapacityCount("ca-prod-one", {
+      count: 3,
+      countFrom: "2026-11-22T10:00:00.000Z",
+      countedAt: now.toISOString(),
+    });
+    await repository.releaseCrlLease("ca-prod-one", "crl-owner");
+    expect(inputs(send)[0]).toMatchObject({
+      Key: pkiKeys.caCrl("ca-prod-one"),
+      UpdateExpression: "SET #capacity = :c",
+      ConditionExpression:
+        "attribute_exists(pk) AND (attribute_not_exists(#capacity) OR #capacity.#countedAt <= :at)",
+    });
+    expect(inputs(send)[1]).toMatchObject({
+      UpdateExpression: "REMOVE #lease",
+      ConditionExpression: "#lease.#owner = :owner",
+      ExpressionAttributeValues: { ":owner": "crl-owner" },
+    });
+    send.mockRejectedValueOnce(Object.assign(new Error("x"), { name: "ConditionalCheckFailedException" }));
+    await expect(repository.releaseCrlLease("ca-prod-one", "other")).resolves.toBeUndefined();
+  });
+
+  it("reads grants strongly and filters tombstones unless asked", async () => {
+    const send = jest.fn().mockResolvedValue({ Items: [{ pk: "PKI_GRANT#payments", sk: "NAME#web", ...grant() }] });
+    const repository = setupPhase4(send);
+    await repository.listGrantsPage("payments", { includeDeleted: false, limit: 100 });
+    await repository.listGrantsPage("payments", { includeDeleted: true, limit: 100 });
+    expect(inputs(send)[0]).toMatchObject({
+      KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+      FilterExpression: "#status <> :deleted",
+      ConsistentRead: true,
+    });
+    expect(inputs(send)[1]!.FilterExpression).toBeUndefined();
+    send.mockResolvedValueOnce({ Item: { pk: "x", sk: "y", uid: "pkg-1" } });
+    await expect(repository.getGrant("payments", "web")).rejects.toMatchObject({ statusCode: 503 });
+  });
+
+  it("queries certificates with range bounds and a status filter", async () => {
+    const send = jest.fn().mockResolvedValue({ Items: [] });
+    await setupPhase4(send).queryCertificatesPage("ca-prod-one", {
+      after: "2026-11-22T00:00:00.000Z",
+      before: "2026-12-22T00:00:00.000Z",
+      status: "ISSUED",
+      limit: 100,
+    });
+    expect(inputs(send)[0]).toMatchObject({
+      IndexName: "pki-directory",
+      KeyConditionExpression: "#pk = :pk AND #sk BETWEEN :after AND :before",
+      FilterExpression: "#status = :s",
+    });
+  });
+
+  it("lists consumer pointers newest first with its filters", async () => {
+    const send = jest.fn().mockResolvedValue({ Items: [] });
+    await setupPhase4(send).listConsumerPointersPage("payments", {
+      notAfterAfter: "2026-11-22T00:00:00.000Z",
+      grantName: "web",
+      newestFirst: true,
+      limit: 50,
+    });
+    expect(inputs(send)[0]).toMatchObject({
+      ScanIndexForward: false,
+      ConsistentRead: true,
+      FilterExpression: "#notAfter > :notAfter AND #issuanceGrant = :grantName",
+    });
+  });
+
+  it("keeps the consumer issuance commit's slots unchanged", () => {
+    expect(buildIssuanceCommit("control", consumerCommit()).slots).toEqual([
+      "replay",
+      "certificate",
+      "consumerPointer",
+      "grantHour",
+      "grantDay",
+      "caHour",
+      "grant",
+      "ca",
+      "identity",
+      "agentGrant",
+    ]);
+    expect(buildIssuanceCommit("control", adminCommit()).slots).toEqual([
+      "replay",
+      "certificate",
+      "adminHour",
+      "caHour",
+      "ca",
+    ]);
   });
 });

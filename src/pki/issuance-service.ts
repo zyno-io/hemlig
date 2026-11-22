@@ -1034,7 +1034,7 @@ const planView = (plan: IssuancePlan): Json => ({
 // Evaluate request
 // ---------------------------------------------------------------------------------------------------------------------
 
-interface EvaluateInput {
+export interface EvaluateInput {
   csr?: string;
   keyAlgorithm?: string;
   sans?: { dns?: string[]; ip?: string[]; uri?: string[] };
@@ -1063,7 +1063,7 @@ const evaluateSubjectKeys = [
   "state",
 ] as const;
 
-const parseEvaluateRequest = (body: unknown): EvaluateInput => {
+export const parseEvaluateRequest = (body: unknown): EvaluateInput => {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     throw pkiBadRequest("evaluate_input", "The request body must be an object.");
   }
@@ -1149,7 +1149,16 @@ const parseEvaluateRequest = (body: unknown): EvaluateInput => {
       throw pkiBadRequest("evaluate_input", "subject must be an object.");
     }
     const entries: SubjectEntry[] = [];
+    if (subject.commonName !== undefined) {
+      if (typeof subject.commonName !== "string" || raw.commonName !== undefined) {
+        throw pkiBadRequest("evaluate_input", "commonName is given twice.");
+      }
+      input.commonName = subject.commonName;
+    }
     for (const key of Object.keys(subject)) {
+      if (key === "commonName") {
+        continue;
+      }
       if (!(evaluateSubjectKeys as readonly string[]).includes(key)) {
         throw pkiBadRequest("unknown_field", "The request has an unknown field.");
       }

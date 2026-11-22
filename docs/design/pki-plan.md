@@ -582,10 +582,10 @@ One implementation (`src/pki/issuance-service.ts`) serves consumer and admin iss
 
 1. **Authenticate and parse.** On the consumer path, names come from the CSR alone, and a body with `sans` or `subject` is `400 bad_request`. `isCA: true` on any path is `issuance_denied` (`ca_not_permitted`).
 2. **Replay lookup.** A strongly consistent read of the replay record (consumer path) or the human idempotency record (admin path). A digest mismatch is `409 conflict`. A match goes to "Replay" and never consults quota.
-3. **Preconditions** (strongly consistent reads, each asserted again at commit). The identity is `ACTIVE` and unexpired. An agent's AgentGrant is `ACTIVE` in the same environment. The grant is `ACTIVE`, unexpired and in the same environment. The CA is `ACTIVE` with `issueLeaves` and inside its validity, and its key is `ACTIVE`.
-4. **Pre-checks.** The capacity count, recounted if it is older than 30 minutes, must be below `capacity` (otherwise `ca_capacity_exceeded`). The current quota counters (grant or admin, and the CA's hourly counter) must be below their limits (otherwise `429`). This avoids signing doomed requests, and the commit enforces both again. **Before returning any early quota or capacity denial,** repeat the strongly consistent replay lookup and apply the "Replay" checks (digest, expiry, revocation). A request whose winner committed after step 2 replays instead of being denied.
+3. **Preconditions** (strongly consistent reads, each asserted again at commit). The identity is `ACTIVE` and unexpired, and is re-read on every attempt, so a rerun after an identity precondition failure reports the correct denial. An agent's AgentGrant is `ACTIVE` in the same environment. The grant is `ACTIVE`, unexpired and in the same environment. The CA is `ACTIVE` with `issueLeaves` and inside its validity, and its key is `ACTIVE`.
+4. **Pre-checks.** The capacity count, recounted if it is older than 30 minutes, must be below `capacity` (otherwise `ca_capacity_exceeded`). The current quota counters (grant or admin, and the CA's hourly counter) must be below their limits (otherwise `429`). This avoids signing doomed requests. The commit enforces the quota counters again. Capacity is not a commit condition: the CA's hourly counter is the commit-time bound (see Capacity). **Before returning any early quota or capacity denial,** repeat the strongly consistent replay lookup and apply the "Replay" checks (digest, expiry, revocation). A request whose winner committed after step 2 replays instead of being denied.
 5. **Parse and verify the CSR.**
-6. **Normalize.** Collect names (CSR only, or CSR plus API on the admin path). Apply the CN mode. Canonicalize. Map usages and apply the KeyUsage matrix.
+6. **Normalize.** Collect names (CSR only, or CSR plus API on the admin path). Apply the CN mode. Canonicalize. Map usages and apply the KeyUsage matrix. The usages come from the request body when it lists any, and otherwise from the CSR's KeyUsage and ExtendedKeyUsage (anything beyond `digitalSignature`, `keyEncipherment`, `serverAuth` and `clientAuth` is denied).
 7. **Entitlement.** Key algorithm. KeyUsage and EKU ⊆ allowed, where an empty EKU takes the grant default. DNS, IP and URI rules, deny first. The CN rule. Subject attributes.
 8. **CA constraints.** The CA's leaf key algorithms and maximum lifetime, the chain's effective NameConstraints and EKU, and lifetime clamping.
 9. **Forced attributes** from the grant: subject attributes, SANs and policy OIDs.
@@ -670,7 +670,7 @@ The signed certificate stays in Lambda memory until one `TransactWriteItems` com
 | `IDENTITY#fp / PROFILE`                    | `ConditionCheck status = ACTIVE AND notAfter > :now AND consumerId = :consumerId`                                                         |
 | `AGENT_GRANT#grantId / PROFILE`            | `ConditionCheck status = ACTIVE AND environment = :env` (agents)                                                                          |
 
-Immediately before committing, the service checks `notAfter > now + 60 s`, and fails with `issuance_expired` otherwise. The commit is the linearization point: a concurrent grant change, CA policy change, retirement, parent revocation, or identity or AgentGrant revocation either precedes it (and the request is refused) or follows it.
+Immediately before committing, the service checks `notAfter > now + 60 s`, and fails with `issuance_expired` otherwise. The commit is the linearization point: a concurrent grant change, CA policy change, retirement, parent revocation, or identity revocation (an AgentGrant has no revoked state, so identity revocation is the agent kill switch; the commit guards the AgentGrant's `ACTIVE` status, environment and consumer) either precedes it (and the request is refused) or follows it.
 
 | Outcome                                            | Handling                                                                                                                                                                                                                  |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -707,7 +707,7 @@ Both errors are terminal. The controller marks the request `Failed`, and cert-ma
 - **Reasons:** `unspecified` (encoded by omitting the reason), `keyCompromise`, `affiliationChanged`, `superseded`, `cessationOfOperation`, `privilegeWithdrawn`. Phase 7 adds `caCompromise` for CA certificates. `certificateHold` and `removeFromCRL` aren't supported, and revocation is irreversible. A repeated revoke returns the current state. The first reason wins, except that an upgrade to `keyCompromise` is allowed. `invalidityDate` is optional and applies to `keyCompromise` only.
 - **Transaction:** update the certificate from `ISSUED` to `REVOKED` (condition `status = ISSUED AND notAfter > :now`), put `REVOKED#serial` (`attribute_not_exists`), and on the `CRL` item set `revision = revision + 1` and `dirtySince = if_not_exists(dirtySince, :now)`, plus the human idempotency record.
 - **Already expired** (the `notAfter` condition fails): the status becomes `REVOKED` and is audited, with no entry and no revision bump, and the response reports `crlEntry: false`. A drained CA therefore stays clean, and a CRL never gains an entry for a certificate the capacity count no longer covers.
-- **Bulk revoke by consumer** (`POST /consumers/{id}/certificates/revoke`, optionally filtered by grant) walks the unexpired pointers and revokes in batches per CA: up to 30 certificate updates, 30 entries and one `CRL` item update per transaction. It is idempotent per certificate and finishes with one publication per affected CA.
+- **Bulk revoke by consumer** (`POST /consumers/{id}/certificates/revoke`, optionally filtered by grant) walks the unexpired pointers and revokes in batches per CA: up to 30 certificate updates, 30 entries and one `CRL` item update per transaction. It is idempotent per certificate and finishes with one publication per affected CA. A run is bounded to 20 seconds. Its idempotency record is written only when it completes; an incomplete run answers `complete: false`, writes no record and is retried with the same key.
 - Revocation is never refused. Under a `REVOKED` CA it updates the inventory only, because the key can't sign a CRL.
 - Grant deletion and identity or AgentGrant revocation don't revoke certificates. An administrator uses the bulk action.
 
@@ -725,7 +725,7 @@ A crash before step 6 leaves an orphaned object and a skipped number, which RFC 
 
 **Triggers:**
 
-- Inline after a revoke commits, with a 5-second budget. The response reports `crlPublished` and `crlNumber`.
+- Inline after a revoke commits, with a 5-second budget: `CrlService.publish` takes a `deadline` and, once it has passed, starts no signing and no commit, releases its lease and returns `deadline`. The response reports `crlPublished` and `crlNumber`.
 - `POST /cas/{caId}/crl` (operator, force).
 - `pki-maintenance` every 15 minutes, for any CA that is:
   - dirty (`revision > published.revision`);
@@ -828,7 +828,7 @@ Everything is deny by default: an empty `allow` permits nothing. `ip` and `uri` 
 On create and on update, including migration `PUT`s and `?validateOnly=true`:
 
 - **Consumer:** has an AgentGrant (`PENDING` allowed, so grants can be pre-created before bootstrap) or an `ACTIVE` ConsumerRecord, in the CA's environment.
-- **CA:** `ACTIVE` with `issueLeaves`, in the same environment.
+- **CA:** `ACTIVE` with `issueLeaves`, in the same environment. A `PUT` that only disables a grant still needs its CA `ACTIVE`; `DELETE` works whatever the CA's state.
 - **Rules:** every rule parses and uses no reserved name. A rule entirely outside the CA's effective NameConstraints is an error, and a partial overlap is a warning. Forced SANs satisfy the CA constraints and the reserved names.
 - **Keys, usages, lifetime:** key algorithms ⊆ the CA's leaf policy; usages and EKUs come from the supported set and fit any CA EKU constraint; `300 ≤ minSeconds ≤ defaultSeconds ≤ maxSeconds ≤ CA maximum ≤ 397 days`.
 - **Size:** the canonical JSON is ≤ 32 KiB (`400 bad_request`, reason `policy_too_large`).
@@ -1301,10 +1301,10 @@ Each phase is one PR. PKI is always deployed, so routes return `404` until their
     - A simulated worst case (capacity plus `2 × rate`, all revoked with reason and invalidity date) fits a ConfigMap.
     - The per-CA hourly counter is incremented in every commit (consumer, admin) and refuses at `rate`; a grant spent, deleted and recreated can't bypass it; CA policy updates breaking `capacity + 2 × rate ≤ 12,000` are refused.
   - **Revocation:** an expired revoke is audit-only; bulk revoke batches correctly.
-  - **Request validation:** consumer `sans` and `subject` are rejected; an admin retry with changed `sans` is a digest conflict; `isCA` is denied; the KU defaults hold; RSA-8192 is issued only when listed; `certificate_too_large`.
+  - **Request validation:** consumer `sans` and `subject` are rejected; an admin retry with changed `sans` is a digest conflict; `isCA` is denied; the KU defaults hold; RSA-8192 is issued unless the grant's `keyAlgorithms` omits it (the default set includes it); `certificate_too_large`.
   - **Audit:** no events for successful reads; failure suppression; one event per outcome; the log and audit scan finds no `-----BEGIN`.
 - **Gates:**
-  - PKI-3: provision and publish the identity root, confirm the truststore version, then present a PKI client certificate to `apiFqdn`. It is rejected with `403` before integration, and the anchor count is unchanged.
+  - PKI-3: provision and publish the identity root, confirm the truststore version, then present a PKI client certificate to `apiFqdn`. It is rejected by API Gateway (a TLS failure, or `403` with the gateway's `Forbidden` body, never a Hemlig error envelope), no audit event is written, and the anchor count is unchanged.
   - PKI-4:
     - A consumer issues a leaf under the activated intermediate through the deployed `pki-issuer` role, which proves the `ConditionCheckItem` grants, and `openssl verify` chains it to the offline root.
     - A revoke appears on the CRL route within 60 seconds.

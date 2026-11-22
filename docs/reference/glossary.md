@@ -483,3 +483,39 @@ See: [Offline root recipe](../operations/pki-offline-root.md#upload-a-fresh-root
 A retired CA whose published CRL covers every certificate it could have issued. Hemlig then disables its key.
 
 See: [PKI](../guide/pki.md#ca-states).
+
+### IssuanceGrant
+
+A consumer's entitlement to request leaf certificates from one PKI CA. It lists the names, subject attributes, key algorithms, usages and lifetimes allowed, and everything else is denied. It is separate from an AgentGrant, and a deleted one leaves a tombstone.
+
+See: [PKI](../guide/pki.md#grant-a-consumer).
+
+### Forced attribute
+
+A subject attribute, SAN or certificate policy an administrator puts in an IssuanceGrant. Hemlig adds it to every certificate under the grant, whatever the CSR asks for. It bypasses the grant's name allowlists but not the CA's name constraints.
+
+See: [Admin: PKI](api/admin-pki.md#issuance-grants).
+
+### Issued certificate
+
+A leaf Hemlig signed from a CSR, stored with its status, requester and revocation. The inventory keeps it until 90 days after it expires.
+
+See: [Admin: PKI](api/admin-pki.md#certificate-inventory).
+
+### Revocation entry
+
+The record of a revoked unexpired leaf that a CA's next CRL carries. Revoking writes it in the same transaction as the certificate update. Expired certificates have none.
+
+See: [PKI](../guide/pki.md#revoke).
+
+### Replay record
+
+The stored result of a consumer issuance, keyed by the consumer and its `Idempotency-Key`. A retry with the same request returns the same certificate while it is valid.
+
+See: [PKI consumer routes](api/pki.md#replay).
+
+### Capacity count
+
+The number of a CA's certificates, of any status, that can still appear on its CRL. Maintenance and issuance refresh it, and issuance is refused when it reaches the CA's `capacity`.
+
+See: [PKI](../guide/pki.md#capacity-and-rate).

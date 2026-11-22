@@ -49,7 +49,7 @@ Lifetimes for cursors, checkpoints and archived markers are in [Limits](limits.m
 
 ## PKI
 
-Items whose `pk` starts with `PKI_` belong to the PKI and are written only by the PKI Lambdas; the other Lambdas are denied writes to them. The exception is the human idempotency record of an administrator issuance, `IDEMPOTENCY#human#ACTOR_ID`, which uses the same key shape as the secrets records. Pagination state for PKI lists uses `PKI_CURSOR#TOKEN`.
+Items whose `pk` starts with `PKI_` belong to the PKI and are written only by the PKI Lambdas; the other Lambdas are denied writes to them. The exceptions are the human idempotency record of an administrator write, `IDEMPOTENCY#human#ACTOR_ID`, which uses the same key shape as the secrets records, and the `AUDIT_SUPPRESS#` throttle items that `pki-issuer` writes. Pagination state for PKI lists uses `PKI_CURSOR#TOKEN`.
 
 | `pk` | `sk` | Purpose |
 | --- | --- | --- |
@@ -59,9 +59,10 @@ Items whose `pk` starts with `PKI_` belong to the PKI and are written only by th
 | `PKI_EXTCA#EXT_ID` | `PROFILE` | An external CA |
 | `PKI_CERT#CA_ID#SERIAL` | `PROFILE` | An issued certificate. TTL is its `notAfter` plus 90 days |
 | `PKI_CONSUMER#ID` | `CERT#ISSUED_AT#CA_ID#SERIAL` | A consumer's certificate pointer. TTL as above |
-| `PKI_GRANT#ID` | `NAME#NAME` | An issuance grant |
-| `PKI_QUOTA#UID`, `PKI_QUOTA#admin#CA_ID`, `PKI_QUOTA#ca#CA_ID` | `HOUR#yyyymmddhh`, `DAY#yyyymmdd` | Quota counters. TTL 48 hours (hour) or 3 days (day) |
-| `PKI_IDEMPOTENCY#ID` | `REQUEST#KEY` | Consumer replay record. TTL is `notAfter` plus 400 days |
+| `PKI_GRANT#CONSUMER_ID` | `NAME#NAME` | An issuance grant, or its `DELETED` tombstone |
+| `PKI_QUOTA#GRANT_UID`, `PKI_QUOTA#admin#CA_ID`, `PKI_QUOTA#ca#CA_ID` | `HOUR#yyyymmddhh`, `DAY#yyyymmdd` | Quota counters. TTL 48 hours (hour) or 3 days (day) |
+| `PKI_IDEMPOTENCY#CONSUMER_ID` | `REQUEST#KEY` | Consumer replay record. TTL is `notAfter` plus 400 days |
+| `AUDIT_SUPPRESS#FINGERPRINT` | `PKI#HASH` | Failure-event throttle for consumer issuance. One per identity, operation, grant and reason. Written by `pki-issuer`, TTL 10 minutes |
 | `PKI_CURSOR#TOKEN` | `STATE` | Opaque pagination continuation |
 
 ### PKI record details
@@ -69,11 +70,17 @@ Items whose `pk` starts with `PKI_` belong to the PKI and are written only by th
 | Record | Fields | Notes |
 | --- | --- | --- |
 | CA `PROFILE` | `status`, `version`, `key` (state, wrapped envelope), `subject`, `subjectKey`, `parent`, `crlIssuers`, `policy`, `maxIssueLifetimeEverSeconds`, `activatedAt`, `retiredAt`, `drainedAt`, `keyDestroyedAt` | `version` is the ETag. `subjectDer` is base64 DER and `subjectKeyIdentifier` is lowercase hex |
-| CA `CRL` | `revision`, `lastNumber`, `dirtySince`, `lease` (owner, expiry), `published`, `sweptThrough` | `published` holds `number`, `objectKey`, `sha256`, `thisUpdate`, `nextUpdate`, `revision`, `entryCount` and `dropDueAt`. `sweptThrough` is the `thisUpdate` whose expired-entry sweep finished |
-| `REVOKED#SERIAL` | `serial`, `revokedAt`, `reason`, `invalidityDate`, `notAfter`, `ttl` | Written when a leaf is revoked. `ttl` is set one day after a CRL issued after `notAfter` has carried the entry |
+| CA `CRL` | `revision`, `lastNumber`, `dirtySince`, `lease` (owner, expiry), `published`, `sweptThrough`, `capacity` | `published` holds `number`, `objectKey`, `sha256`, `thisUpdate`, `nextUpdate`, `revision`, `entryCount` and `dropDueAt`. `sweptThrough` is the `thisUpdate` whose expired-entry sweep finished |
+| `REVOKED#SERIAL` | `serial`, `revokedAt`, `reason`, `invalidityDate`, `notAfter`, `ttl` | Written by revoke in the same transaction that marks the certificate and bumps the CRL `revision`. Not written for an expired certificate or one under a revoked CA. A `keyCompromise` upgrade updates it. `ttl` is set one day after a CRL issued after `notAfter` has carried the entry |
 | External CA | `extId`, `certificatePem`, `fingerprint`, `spkiSha256`, `subjectDer`, `subjectAttributes`, `subjectKey`, `subjectKeyIdentifier`, `notAfter`, `createdAt`, `dependents`, `environments`, `version`, `crl` | `dependents` and `environments` are DynamoDB string sets. `crl` holds `numberHex` (40 hex digits), `thisUpdate`, `nextUpdate`, `sha256`, `objectKey`, `uploadedAt` and `uploadedBy` |
 | `PKI_SUBJECT#KEY` | `ownerType` (`ca` or `external`), `caId` or `extId`, `spkiSha256`, `claimedAt` | Claims are never released |
 | `PKI_CA_NAME#ENV#NAME` | `caId`, `environment`, `name`, `claimedAt` | Never released |
+| Issuance grant | `uid` (`pkg-...`), `consumerId`, `environment`, `name`, `caId`, `status` (`ACTIVE`, `DISABLED`, `DELETED`), `displayName`, `policy`, `policyDigest`, `version` (`pkv-...`), `expiresAt`, `createdAt`, `createdBy`, `updatedAt`, `updatedBy`, `deletedAt`, `deletedBy` | `version` is the ETag. A live grant carries the `pki-directory` attributes under `PKI_CA_GRANTS#CA_ID`. A delete removes them and keeps the record as a tombstone, so a recreated name gets a new `uid` |
+| Issued certificate | `caId`, `environment`, `serial`, `status` (`ISSUED`, `REVOKED`), `certificatePem`, `fingerprint`, `spkiSha256`, `subject`, `sans`, `keyAlgorithm`, `keyUsages`, `extendedKeyUsages`, `notBefore`, `notAfter`, `issuedAt`, `lifetimeClamped`, `requester`, `revocation` | `requester` has `type` (`consumer` or `human`), `id`, `consumerId`, the grant's `name`, `uid` and `version`, and the caller-asserted Kubernetes metadata. `revocation` has `at`, `reason`, `invalidityDate`, `upgradedAt` and `by`. The `pki-directory` attributes put it under `PKI_CERTS#CA_ID` |
+| Consumer certificate pointer | `caId`, `serial`, `environment`, `notAfter`, `issuedAt`, `issuanceGrant`, `issuanceGrantUid` | Written with the certificate. Lists a consumer's certificates newest first |
+| Replay record | `requestDigest`, `caId`, `serial`, `notAfter`, `grantUid` | Written with the certificate, so a retry returns the same one. A different digest under the same key is refused |
+| Quota counter | `count` | `ADD`ed in the issuance commit, with a condition on the limit. Hour counters per grant, per CA and for administrators per CA, and a day counter per grant |
+| CRL `capacity` | `count`, `countFrom`, `countedAt` | `count` is the number of the CA's certificates of any status with `notAfter` after `countFrom`, from a count of the `pki-directory` index. `countFrom` is the earliest of the count time, `dirtySince` and the published CRL's `dropDueAt`. A recount writes it only if it is newer |
 
 CRL objects live in the PKI bucket: `crl/CA_ID/NUMBER-SHA16.crl` for a generated CRL and `crl/EXT_ID/NUMBER_HEX-SHA16.crl` for an uploaded root CRL, where `SHA16` is the first 16 hex digits of the DER SHA-256. Objects are immutable; the pointer in the record names the current one.
 

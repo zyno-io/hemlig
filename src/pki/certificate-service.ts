@@ -98,6 +98,42 @@ const strictBody = (body: unknown, allowed: readonly string[]): Json => {
   return body;
 };
 
+export const parseRevokeRequest = (
+  body: unknown,
+  now: Date,
+): { raw: Json; fields: RevokeFields } => {
+  const raw = strictBody(body, ["reason", "invalidityDate"]);
+  return { raw, fields: parseReason(raw, now) };
+};
+
+export const parseBulkRevokeRequest = (
+  body: unknown,
+  now: Date,
+): { raw: Json; fields: RevokeFields; grantName?: string; grantUid?: string } => {
+  const raw = strictBody(body, [
+    "reason",
+    "invalidityDate",
+    "issuanceGrant",
+    "issuanceGrantUid",
+  ]);
+  const fields = parseReason(raw, now);
+  for (const field of ["issuanceGrant", "issuanceGrantUid"] as const) {
+    if (raw[field] !== undefined && typeof raw[field] !== "string") {
+      throw pkiBadRequest("invalid_filter", `${field} must be a string.`);
+    }
+  }
+  return {
+    raw,
+    fields,
+    ...(raw.issuanceGrant === undefined
+      ? {}
+      : { grantName: raw.issuanceGrant as string }),
+    ...(raw.issuanceGrantUid === undefined
+      ? {}
+      : { grantUid: raw.issuanceGrantUid as string }),
+  };
+};
+
 export const effectiveStatus = (
   cert: Pick<IssuedCertificateRecord, "status" | "notAfter">,
   ca: Pick<CaRecord, "status"> | undefined,
@@ -419,7 +455,7 @@ export class CertificateService {
     publishedRevision: number | undefined,
   ): Json {
     return {
-      ...(crl?.published === undefined ? {} : { number: crl.published.number }),
+      number: crl?.published?.number ?? 0,
       pendingRevocations:
         crl === undefined
           ? 0
@@ -570,8 +606,7 @@ export class CertificateService {
     serial: string,
     body: unknown,
   ): Promise<MutationResult> {
-    const raw = strictBody(body, ["reason", "invalidityDate"]);
-    const fields = parseReason(raw, this.now());
+    const { raw, fields } = parseRevokeRequest(body, this.now());
     const digest = requestDigest("pki.certificate.revoke", {
       caId,
       serial,
@@ -710,20 +745,10 @@ export class CertificateService {
     consumerId: string,
     body: unknown,
   ): Promise<BulkRevokeResult> {
-    const raw = strictBody(body, [
-      "reason",
-      "invalidityDate",
-      "issuanceGrant",
-      "issuanceGrantUid",
-    ]);
-    const fields = parseReason(raw, this.now());
-    for (const field of ["issuanceGrant", "issuanceGrantUid"] as const) {
-      if (raw[field] !== undefined && typeof raw[field] !== "string") {
-        throw pkiBadRequest("invalid_filter", `${field} must be a string.`);
-      }
-    }
-    const grantName = raw.issuanceGrant as string | undefined;
-    const grantUid = raw.issuanceGrantUid as string | undefined;
+    const { raw, fields, grantName, grantUid } = parseBulkRevokeRequest(
+      body,
+      this.now(),
+    );
     const digest = requestDigest("pki.certificate.revoke", {
       consumerId,
       body: raw,

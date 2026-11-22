@@ -100,6 +100,21 @@ Object Lock Compliance retention cannot be shortened by anyone. Revisions and au
 | CRL lease | 60 seconds | `src/repositories/pki.ts` |
 | Maintenance schedule | Every 15 minutes, with a 5-minute timeout; it stops starting CRL publications with less than 30 seconds left | `src/pki/maintenance.ts` |
 | Expired revocation entries | Get a 1-day TTL once a CRL issued after their certificate's `notAfter` has carried them | `src/pki/crl-service.ts` |
+| Issuance grants per consumer | 20 live grants; best effort under concurrent creates | `src/pki/grant-service.ts` |
+| Grant policy | At most 32 KiB canonical JSON, 200 name rules, 10 forced SANs, 10 certificate policy OIDs | `src/pki/grant-policy.ts` |
+| Grant quotas | 100 per hour and 1,000 per day by default, each 1 to 1,000,000 | `src/pki/grant-model.ts` |
+| CA hourly issuance | The CA's `issuancePerHour` (default 2,000), shared by all grants and administrators | `src/repositories/pki.ts` |
+| Administrator issuance | 100 certificates per hour per CA | `src/pki/issuance-service.ts` |
+| SANs per certificate | 100, and the grant's `maxSans` | `src/pki/grant-policy.ts` |
+| Issued certificate size | 16 KiB DER (the TBS is checked at 15 KiB) | `src/pki/issuance-model.ts` |
+| CSR PEM | 32 KiB. Usages: 16 entries of up to 64 characters | `src/pki/issuance-model.ts` |
+| Certificate lifetime | 300 seconds to 397 days; the grant minimum defaults to 1 hour; clamped to the CA certificate's validity | `src/pki/grant-policy.ts` |
+| Replay window | A replay is refused within 60 seconds of `notAfter`, and 90 days after it. Replay records last until 400 days after `notAfter` | `src/pki/issuance-service.ts` |
+| Capacity count age | A count older than 30 minutes is recounted by the next issuance; maintenance recounts every pass | `src/pki/capacity-service.ts` |
+| Inline CRL publication after a revoke | 5-second deadline, then the next maintenance pass publishes | `src/pki/certificate-service.ts` |
+| Bulk revoke | 30 certificates per transaction, a 20-second run; repeat with the same key while `complete` is `false` | `src/pki/certificate-service.ts` |
+| Failure audit events | One per identity, grant and reason every 10 minutes | `src/handlers/pki-issuer-routes.ts` |
+| List pages | 100 certificates or grants per page | `src/repositories/pki.ts` |
 
 ## Controller
 

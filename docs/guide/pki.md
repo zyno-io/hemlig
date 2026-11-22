@@ -1,6 +1,6 @@
 ---
 title: "PKI: certificate authorities and CRLs"
-description: "How Hemlig holds an intermediate CA signed by your offline root, publishes its CRLs, and tracks your root's CRL."
+description: "How Hemlig holds an intermediate CA signed by your offline root, grants consumers the right to issue leaf certificates, revokes them and publishes CRLs."
 pageType: explanation
 ---
 
@@ -8,7 +8,7 @@ pageType: explanation
 
 Hemlig can hold an intermediate certificate authority (CA) that your offline root signs, and publishes that CA's certificate revocation lists (CRLs).
 
-Issuing leaf certificates, issuance grants, cert-manager and trust bundles arrive in later releases. This page covers the CA lifecycle and CRLs.
+Consumers get leaf certificates through issuance grants. cert-manager and trust bundles arrive in later releases. This page covers the CA lifecycle, grants, issuance, revocation and CRLs.
 
 ## The topology
 
@@ -71,6 +71,97 @@ Hemlig CA names and subject DNs are claimed permanently, so a new CA, even after
 
 A retired CA is drained once every certificate it could have issued has expired. Hemlig then disables its key. `destroy-key` removes the wrapped key for good, and works only after the key is disabled.
 
+## Grant a consumer
+
+An issuance grant says what one consumer may get from one CA. The consumer is a direct consumer or an agent's consumer. A grant can be created before an agent bootstraps. Everything is denied unless the grant allows it.
+
+Write the policy as JSON. This one lets a consumer request server certificates for one DNS zone:
+
+```json
+{
+  "names": { "dns": { "allow": ["*.payments.example.com"] }, "maxSans": 10 },
+  "keyUsages": ["digitalSignature", "keyEncipherment"],
+  "extendedKeyUsages": { "allow": ["serverAuth"], "default": ["serverAuth"] },
+  "lifetime": { "defaultSeconds": 7776000, "maxSeconds": 7776000, "minSeconds": 3600 },
+  "quotas": { "perHour": 100, "perDay": 1000 }
+}
+```
+
+```sh
+hemlig pki grant create payments-prod web --ca prod-issuing-1 --file grant.json --validate-only
+hemlig pki grant create payments-prod web --ca prod-issuing-1 --file grant.json
+```
+
+`--validate-only` writes nothing and prints errors and warnings. A rule outside the CA's name constraints is an error, and a partial overlap is a warning. See the [grant fields](../reference/api/admin-pki.md#issuance-grants).
+
+Before you rely on a grant, dry-run a request against it. `evaluate` returns the decision, the engine trace and the planned certificate without issuing anything:
+
+```sh
+hemlig pki grant evaluate payments-prod web --dns api.payments.example.com --key-algorithm ECDSA_P256
+```
+
+A consumer can hold up to 20 grants. A delete leaves a tombstone, and creating the name again makes a new grant identity, so old certificates never point at a different policy. Disable a grant by updating its `status` to `DISABLED`.
+
+## Issue and renew
+
+The consumer sends a CSR with its mTLS client certificate. Hemlig takes the names from the CSR, checks them against the grant and the CA's constraints, signs, and returns the leaf, the chain and the anchor.
+
+```sh
+curl --cert consumer.crt --key consumer.key -H 'content-type: application/json' \
+  -H 'idempotency-key: web-renew-0001' --data @request.json \
+  https://api.example.com/v1/pki/issuance-grants/web/certificates
+```
+
+Use one `Idempotency-Key` per intended certificate. Retrying with it returns the same certificate while it is valid, and never charges the quota twice. A replay of a certificate that was revoked or is about to expire fails instead of redelivering it. Renewal is a new request with a new key and a new CSR, ideally with a new key pair.
+
+Hemlig clamps the lifetime to the grant's maximum, the CA's maximum and the CA certificate's remaining validity. The response says so with `lifetimeClamped`. The details are in [PKI consumer routes](../reference/api/pki.md).
+
+## Admin issuance
+
+An administrator can issue a certificate without a grant, for infrastructure that has no consumer:
+
+```sh
+hemlig pki cert issue prod-issuing-1 --csr server.csr --dns api.example.com \
+  --duration 24h --out leaf.pem --chain-out chain.pem --ca-out root.pem
+```
+
+Use `--use-csr-names` to take the names from the CSR. The CA's constraints, the Hemlig ceilings and the reserved names still apply. Administrators have their own quota of 100 certificates per hour per CA.
+
+## Revoke
+
+Revoke one certificate, or every certificate of a consumer:
+
+```sh
+hemlig pki cert revoke prod-issuing-1 4f1c --reason keyCompromise
+hemlig pki consumer revoke-certificates payments-prod --reason keyCompromise
+```
+
+Revocation is one transaction that marks the certificate, writes its CRL entry and publishes a fresh CRL, usually within seconds. If inline publication fails, the next maintenance pass publishes it within 15 minutes. Expired certificates, and certificates under a revoked CA, are only marked in the inventory because no CRL needs them.
+
+A consumer-wide revoke commits in batches and stops after about 20 seconds. The CLI repeats the call with the same idempotency key until it reports `complete`. Revoking a consumer's leaves does not revoke its client certificate: do that too if the consumer itself is compromised.
+
+List what a CA or consumer holds with `hemlig pki cert list`, and read one certificate with `hemlig pki cert get`.
+
+## Capacity and rate
+
+A CRL must stay deliverable, so Hemlig bounds how many certificates a CA can hold.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `capacity` | 8,000 | Issuance is refused (`ca_capacity_exceeded`) once the CA's count reaches this. The count covers certificates of every status that are not yet expired |
+| `issuancePerHour` | 2,000 | Certificates per clock hour for the whole CA, across all grants and administrators (`ca_hour`) |
+
+`capacity + 2 x issuancePerHour` stays at or below 12,000, so no CRL exceeds 12,000 entries.
+
+- Maintenance recounts every active CA each pass. An issuance recounts when the stored count is older than 30 minutes.
+- The per-CA hourly counter bounds what is issued between counts.
+- The CA detail shows `capacity.count` and `capacity.countedAt`. The `pki-capacity-high` alarm fires above 80%.
+- Revocation is never refused for capacity.
+
+See [Limits](../reference/limits.md#pki).
+
+Grants also have their own `perHour` and `perDay` quotas, 100 and 1,000 by default. They are per grant only. Deleting and recreating a grant cannot bypass the CA's hourly counter.
+
 ## Roles
 
 Two optional identity-provider roles narrow who may change PKI state. Reads need only the normal administrator token.
@@ -78,7 +169,7 @@ Two optional identity-provider roles narrow who may change PKI state. Reads need
 | Role setting          | Required for                                                              |
 | --------------------- | ------------------------------------------------------------------------- |
 | `oidcPkiCaAdminRole`  | Create, update, delete, activate, retire, destroy-key and root CRL upload |
-| `oidcPkiOperatorRole` | Force-publishing a CRL                                                    |
+| `oidcPkiOperatorRole` | Issuance grants, administrator issuance, revoke, bulk revoke, CRL publish |
 
 When a role is unset, any administrator may perform those operations. See [Configuration](../reference/configuration.md).
 
@@ -113,6 +204,7 @@ Revoke the intermediate at the root (`openssl ca -revoke`), regenerate the root 
 | `pki-external-crl-stale`                          | A root CRL with a live dependent is within 30 days of `nextUpdate`      |
 | `pki-external-crl-missing`                        | A root with a live dependent has had no CRL for 24 hours                |
 | `pki-ca-expiring`                                 | An active CA is within its longest leaf lifetime plus 30 days of expiry |
+| `pki-capacity-high`                               | An active CA holds more than 80% of its capacity                        |
 | `pki-crl-over-capacity`                           | A CRL carries more entries than the CA's capacity                       |
 | `pki-ca-key-unavailable`, `pki-kms-access-denied` | Signing failed because the key or KMS access is unusable                |
 | `pki-maintenance-errors`                          | A maintenance pass failed for at least one CA                           |
