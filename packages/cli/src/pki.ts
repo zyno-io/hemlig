@@ -10,11 +10,18 @@ import {
 import { parseArgs } from "node:util";
 import {
   HemligClient,
+  HemligError,
   type BinaryResult,
   type PkiCaDetail,
   type PkiCaPolicyInput,
   type PkiCaSubject,
+  type PkiAdminIssueCertificateRequest,
+  type PkiCertificateStatus,
   type PkiCreateCaRequest,
+  type PkiEvaluateRequest,
+  type PkiIssuanceGrant,
+  type PkiIssuanceGrantInput,
+  type PkiRevocationReason,
   type PkiKeyAlgorithm,
   type PkiLeafKeyAlgorithm,
   type PkiNameSubtrees,
@@ -57,6 +64,20 @@ const ENVIRONMENT_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 const MAX_LIST_PAGES = 10;
 const MAX_PEM_FILE_BYTES = 32768;
 const MAX_CRL_FILE_BYTES = 1048576;
+const MAX_GRANT_FILE_BYTES = 65536;
+const MAX_MIGRATE_PAGES = 50;
+const MAX_REVOKE_ATTEMPTS = 20;
+const CONSUMER_ID_PATTERN = /^[a-z][a-z0-9-]{2,63}$/;
+const SERIAL_PATTERN = /^[0-9a-f]{2,40}$/;
+const REVOCATION_REASONS = [
+  "unspecified",
+  "keyCompromise",
+  "affiliationChanged",
+  "superseded",
+  "cessationOfOperation",
+  "privilegeWithdrawn",
+] as const;
+const CERTIFICATE_STATUSES = ["ISSUED", "REVOKED", "EXPIRED"] as const;
 
 const POLICY_FLAGS = [
   "max-leaf-lifetime",
@@ -144,6 +165,92 @@ const commandSpecs: Record<string, CommandSpec> = {
     mutation: false,
     flags: ["environment", "out", "format", "if-none-match"],
   },
+  "grant list": {
+    positionals: [0, 1],
+    mutation: false,
+    flags: ["environment", "ca", "include-deleted", "cursor"],
+  },
+  "grant get": { positionals: [2, 2], mutation: false, flags: [] },
+  "grant create": {
+    positionals: [2, 2],
+    mutation: true,
+    flags: ["environment", "file", "ca", "validate-only"],
+  },
+  "grant update": {
+    positionals: [2, 2],
+    mutation: true,
+    flags: ["environment", "file", "ca", "if-match", "validate-only"],
+  },
+  "grant delete": {
+    positionals: [2, 2],
+    mutation: true,
+    flags: ["if-match"],
+  },
+  "grant evaluate": {
+    positionals: [2, 2],
+    mutation: false,
+    flags: [
+      "csr",
+      "dns",
+      "ip",
+      "uri",
+      "cn",
+      "key-algorithm",
+      "duration",
+      "usage",
+    ],
+  },
+  "grant migrate": {
+    positionals: [0, 0],
+    mutation: false,
+    flags: ["environment", "from", "to", "dry-run"],
+  },
+  "cert list": {
+    positionals: [0, 1],
+    mutation: false,
+    flags: [
+      "environment",
+      "consumer",
+      "status",
+      "expiring-before",
+      "grant",
+      "include-expired",
+      "cursor",
+    ],
+  },
+  "cert get": {
+    positionals: [2, 2],
+    mutation: false,
+    flags: ["environment", "out"],
+  },
+  "cert issue": {
+    positionals: [1, 1],
+    mutation: true,
+    flags: [
+      "environment",
+      "csr",
+      "use-csr-names",
+      "dns",
+      "ip",
+      "uri",
+      "subject",
+      "duration",
+      "usage",
+      "out",
+      "chain-out",
+      "ca-out",
+    ],
+  },
+  "cert revoke": {
+    positionals: [2, 2],
+    mutation: true,
+    flags: ["environment", "reason", "invalidity-date"],
+  },
+  "consumer revoke-certificates": {
+    positionals: [1, 1],
+    mutation: true,
+    flags: ["grant", "reason"],
+  },
   "external-ca list": {
     positionals: [0, 0],
     mutation: false,
@@ -159,7 +266,7 @@ const commandSpecs: Record<string, CommandSpec> = {
 
 export const pkiHelp = {
   usage:
-    "hemlig pki ca <list|get|create|activate|update|retire|destroy-key|delete> | hemlig pki ca crl <publish|get> | hemlig pki external-ca <list|get|upload-crl>",
+    "hemlig pki ca <list|get|create|activate|update|retire|destroy-key|delete> | hemlig pki ca crl <publish|get> | hemlig pki external-ca <list|get|upload-crl> | hemlig pki grant <list|get|create|update|delete|evaluate|migrate> | hemlig pki cert <list|get|issue|revoke> | hemlig pki consumer revoke-certificates",
   commands: {
     "ca list": "--environment [--cursor]",
     "ca get <ca>": "[--environment] (needed only when <ca> is a name)",
@@ -179,6 +286,27 @@ export const pkiHelp = {
     "external-ca get <ext-id>": "",
     "external-ca upload-crl (<ext-id> | --for-ca <ca>)":
       "--crl FILE [--idempotency-key]",
+    "grant list (<consumer> | --ca <ca>)": "[--include-deleted] [--cursor]",
+    "grant get <consumer> <name>": "",
+    "grant create <consumer> <name>":
+      "--file FILE [--ca <ca>] [--validate-only] [--idempotency-key]",
+    "grant update <consumer> <name>":
+      "--file FILE [--ca <ca>] --if-match ETAG|current [--validate-only] [--idempotency-key]",
+    "grant delete <consumer> <name>":
+      "--if-match ETAG|current [--idempotency-key]",
+    "grant evaluate <consumer> <name>":
+      "(--csr FILE | --key-algorithm A [--dns N]... [--ip N]... [--uri N]... [--cn N]) [--duration 1h] [--usage U]...",
+    "grant migrate":
+      "--from <ca> --to <ca> [--dry-run]; re-points every grant of the old CA, exit 5 if any grant is invalid or failed",
+    "cert list (<ca> | --consumer <id>)":
+      "[--status ISSUED|REVOKED|EXPIRED] [--expiring-before ISO|duration] [--grant N] [--include-expired] [--cursor]",
+    "cert get <ca> <serial>": "[--out FILE] (writes the certificate PEM)",
+    "cert issue <ca>":
+      "--csr FILE (--use-csr-names | [--dns N]... [--ip N]... [--uri N]... [--subject 'CN=..,O=..']) [--duration 1h] [--usage U]... [--out FILE] [--chain-out FILE] [--ca-out FILE] [--idempotency-key]",
+    "cert revoke <ca> <serial>":
+      "[--reason R] [--invalidity-date ISO] [--idempotency-key]",
+    "consumer revoke-certificates <consumer>":
+      "[--grant N] [--reason R] [--idempotency-key]; repeats with the same key until complete",
   },
   references:
     "A <ca> is a ca-<uuid> ID, or a name resolved in --environment (HEMLIG_ENVIRONMENT).",
@@ -193,6 +321,10 @@ const multipleFlags = new Set([
   ...CONSTRAINT_FLAGS,
   "eku",
   "leaf-key-algorithm",
+  "dns",
+  "ip",
+  "uri",
+  "usage",
 ]);
 const stringFlags = [
   "admin-url",
@@ -223,6 +355,25 @@ const stringFlags = [
   "if-none-match",
   "crl",
   "for-ca",
+  "file",
+  "ca",
+  "csr",
+  "dns",
+  "ip",
+  "uri",
+  "usage",
+  "cn",
+  "duration",
+  "from",
+  "to",
+  "consumer",
+  "status",
+  "expiring-before",
+  "grant",
+  "reason",
+  "invalidity-date",
+  "chain-out",
+  "ca-out",
 ];
 
 const parseOptions = (
@@ -238,6 +389,11 @@ const parseOptions = (
   > = {
     help: { type: "boolean" },
     "accept-broader-constraints": { type: "boolean" },
+    "validate-only": { type: "boolean" },
+    "dry-run": { type: "boolean" },
+    "include-deleted": { type: "boolean" },
+    "include-expired": { type: "boolean" },
+    "use-csr-names": { type: "boolean" },
   };
   for (const name of stringFlags) {
     options[name] = multipleFlags.has(name)
@@ -313,6 +469,14 @@ const subjectKeys: Record<string, keyof PkiCaSubject> = {
 
 /** Parses `CN=Example CA, O=Example, C=US` into the API subject object. */
 export function parseSubject(text: string): PkiCaSubject {
+  const subject = parseSubjectAttributes(text);
+  if (subject.commonName === undefined)
+    return usage("--subject requires a CN.");
+  return subject as PkiCaSubject;
+}
+
+/** Like `parseSubject`, but a CN is optional (administrator issuance). */
+export function parseSubjectAttributes(text: string): Partial<PkiCaSubject> {
   const subject: Partial<Record<keyof PkiCaSubject, string>> = {};
   const hint =
     "--subject must be comma-separated KEY=value pairs using C, ST, L, O, OU and CN (a literal comma in a value is written \\,).";
@@ -329,9 +493,7 @@ export function parseSubject(text: string): PkiCaSubject {
       return usage(`--subject repeats the ${key} attribute.`);
     subject[field] = value;
   }
-  if (subject.commonName === undefined)
-    return usage("--subject requires a CN.");
-  return subject as PkiCaSubject;
+  return subject;
 }
 
 /** Increments the trailing integer of a name, keeping zero padding. */
@@ -500,11 +662,232 @@ async function resolveCa(
   );
 }
 
+/** Claims output files with `wx` before any request, so nothing is clobbered. */
+async function claimOutputs(
+  paths: Record<string, string | undefined>,
+  placeholders: string[],
+  claimedHandles: FileHandle[],
+): Promise<Map<string, FileHandle>> {
+  const handles = new Map<string, FileHandle>();
+  for (const [key, path] of Object.entries(paths)) {
+    if (path === undefined) continue;
+    try {
+      const handle = await open(path, "wx");
+      handles.set(key, handle);
+      claimedHandles.push(handle);
+      placeholders.push(path);
+    } catch {
+      for (const handle of handles.values())
+        await handle.close().catch(() => undefined);
+      for (const claimed of placeholders.splice(0))
+        await unlink(claimed).catch(() => undefined);
+      throw new CliError(
+        9,
+        "output_io_error",
+        "Cannot create an output file; it may already exist.",
+      );
+    }
+  }
+  return handles;
+}
+
+async function writeClaimed(
+  handle: FileHandle,
+  content: string,
+): Promise<void> {
+  try {
+    await handle.writeFile(content);
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
 function crlFileContent(
   bytes: Uint8Array,
   format: "der" | "pem",
 ): Buffer | string {
   return format === "der" ? Buffer.from(bytes) : derToPem(bytes, "X509 CRL");
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+function consumerOperand(value: string | undefined, what = "consumer"): string {
+  if (value === undefined || !CONSUMER_ID_PATTERN.test(value))
+    return usage(`Supply a valid ${what} ID.`);
+  return value;
+}
+
+function nameOperand(value: string | undefined): string {
+  if (value === undefined || !CONSUMER_ID_PATTERN.test(value))
+    return usage("Supply a valid grant name.");
+  return value;
+}
+
+function reasonFlag(
+  values: PkiValues,
+  invalidityDate: string | undefined,
+): PkiRevocationReason | undefined {
+  const reason = str(values, "reason");
+  if (
+    reason !== undefined &&
+    !(REVOCATION_REASONS as readonly string[]).includes(reason)
+  )
+    usage(`--reason must be one of ${REVOCATION_REASONS.join(", ")}.`);
+  if (invalidityDate !== undefined && reason !== "keyCompromise")
+    usage("--invalidity-date requires --reason keyCompromise.");
+  return reason as PkiRevocationReason | undefined;
+}
+
+/** Reads the grant JSON file: policy fields plus optional caId, displayName, expiresAt, status and name. */
+async function readGrantFile(
+  path: string,
+  expectedName: string,
+): Promise<Record<string, unknown>> {
+  const bytes = await readFileBytes(path, MAX_GRANT_FILE_BYTES, "grant");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    return usage("The grant file is not valid JSON.");
+  }
+  if (!isRecord(parsed)) return usage("The grant file must be a JSON object.");
+  if (parsed.name !== undefined && parsed.name !== expectedName)
+    usage("The grant file name does not match the <name> operand.");
+  if (parsed.caId !== undefined && typeof parsed.caId !== "string")
+    usage("The grant file caId must be a string.");
+  return parsed;
+}
+
+/** A PEM CSR is sent as text; DER is wrapped. A private key is never sent. */
+async function readCsrFile(path: string): Promise<string> {
+  let bytes = await readFileBytes(path, MAX_PEM_FILE_BYTES, "CSR");
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+    bytes = bytes.subarray(3);
+  // Scan the whole file: keys may follow "Bag Attributes" or other leading text.
+  if (/PRIVATE KEY-----/.test(bytes.toString("latin1")))
+    usage("The --csr file contains a private key; supply a CSR.");
+  if (isPem(bytes)) {
+    const text = bytes.toString("utf8");
+    if (!/-----BEGIN (NEW )?CERTIFICATE REQUEST-----/.test(text))
+      usage("The --csr file is not a certificate request.");
+    return text;
+  }
+  // DER: SEQUENCE { SEQUENCE (certificationRequestInfo), ... }. A key starts with an INTEGER.
+  const lengthBytes =
+    bytes[1] !== undefined && bytes[1] >= 0x80 ? 1 + (bytes[1] & 0x7f) : 1;
+  if (bytes[0] !== 0x30 || bytes[1 + lengthBytes] !== 0x30)
+    usage("The --csr file is not a certificate request.");
+  return derToPem(bytes, "CERTIFICATE REQUEST");
+}
+
+function sansFrom(values: PkiValues): PkiAdminIssueCertificateRequest["sans"] {
+  const sans: { dns?: string[]; ip?: string[]; uri?: string[] } = {};
+  for (const kind of ["dns", "ip", "uri"] as const) {
+    const entries = list(values, kind);
+    if (entries.some((entry) => entry === ""))
+      usage(`--${kind} must not be empty.`);
+    if (entries.length > 0) sans[kind] = entries;
+  }
+  return Object.keys(sans).length === 0 ? undefined : sans;
+}
+
+function usagesFrom(values: PkiValues): string[] | undefined {
+  const usages = list(values, "usage");
+  if (usages.length > 16 || usages.some((u) => u === "" || u.length > 64))
+    usage("--usage accepts at most 16 values of 1 to 64 characters.");
+  return usages.length === 0 ? undefined : usages;
+}
+
+/** An ISO timestamp, or a duration counted forward from now. */
+function parseWhen(
+  name: string,
+  value: string,
+  nowMs: number,
+  direction: 1 | -1 = 1,
+): string {
+  if (/^\d+[smhd]?$/.test(value))
+    return new Date(
+      nowMs + direction * parseDuration(name, value) * 1000,
+    ).toISOString();
+  const time = Date.parse(value);
+  if (!/^\d{4}-\d{2}-\d{2}/.test(value) || Number.isNaN(time))
+    return usage(`--${name} must be an ISO 8601 timestamp or a duration.`);
+  return new Date(time).toISOString();
+}
+
+/** The policy fields of a stored grant plus the PUT envelope, re-pointed at `caId`. */
+function grantPutBody(
+  grant: PkiIssuanceGrant,
+  caId: string,
+): PkiIssuanceGrantInput {
+  return {
+    ...grant.policy,
+    caId,
+    ...(grant.status === "ACTIVE" || grant.status === "DISABLED"
+      ? { status: grant.status }
+      : {}),
+    ...(grant.displayName === undefined
+      ? {}
+      : { displayName: grant.displayName }),
+    ...(grant.expiresAt === undefined ? {} : { expiresAt: grant.expiresAt }),
+  };
+}
+
+interface MigrateResult {
+  consumerId: string;
+  name: string;
+  uid?: string;
+  outcome: "migrated" | "valid" | "invalid" | "skipped" | "failed";
+  reason?: string;
+  errors?: unknown[];
+  warnings?: unknown[];
+}
+
+/** A request error as receipt data; remote messages are never echoed. */
+function errorEntry(error: unknown): Record<string, string | number | boolean> {
+  if (error instanceof HemligError) {
+    const entry: Record<string, string | number | boolean> = {
+      status: error.status,
+      code: error.code ?? `http_${error.status}`,
+    };
+    for (const [key, value] of Object.entries(error.details ?? {}))
+      if (entry[key] === undefined) entry[key] = value;
+    return entry;
+  }
+  return { code: "transport_error" };
+}
+
+const migrationKey = (
+  from: string,
+  to: string,
+  consumerId: string,
+  name: string,
+  version: string,
+): string =>
+  `migrate-${createHash("sha256")
+    .update(JSON.stringify([from, to, consumerId, name, version]))
+    .digest("hex")
+    .slice(0, 32)}`;
+
+async function listGrantsOfCa(
+  client: HemligClient,
+  token: string,
+  caId: string,
+): Promise<{ grants: { consumerId: string; name: string }[]; more: boolean }> {
+  const grants: { consumerId: string; name: string }[] = [];
+  let cursor: string | undefined;
+  const seen = new Set<string>();
+  for (let page = 0; page < MAX_MIGRATE_PAGES; page += 1) {
+    const result = await client.listCaIssuanceGrants(token, caId, { cursor });
+    for (const grant of result.grants)
+      grants.push({ consumerId: grant.consumerId, name: grant.name });
+    cursor = result.nextCursor;
+    if (cursor === undefined) return { grants, more: false };
+    if (seen.has(cursor)) break;
+    seen.add(cursor);
+  }
+  return { grants, more: true };
 }
 
 /** Runs `hemlig pki ...` (the arguments after `pki`). */
@@ -523,6 +906,8 @@ export async function runPkiCli(
   let ifMatch: string | undefined;
   let mutationAttempted = false;
   let csrPlaceholder: string | undefined;
+  const placeholders: string[] = [];
+  const claimedHandles: FileHandle[] = [];
   try {
     const { values, positionals, seen } = parseOptions(args);
     if (values.help === true) {
@@ -547,7 +932,7 @@ export async function runPkiCli(
       operands.length > spec.positionals[1]
     )
       return usage(
-        "Expected hemlig pki ca <command> or hemlig pki external-ca <command>. Run hemlig pki --help.",
+        "Expected hemlig pki <ca|external-ca|grant|cert|consumer> <command>. Run hemlig pki --help.",
       );
     const allowed = new Set([
       "admin-url",
@@ -569,13 +954,24 @@ export async function runPkiCli(
     const rolloverFrom = str(values, "rollover-from");
     const forCa = str(values, "for-ca");
     const references: string[] = [];
-    if (!isExtCommand && operands[0] !== undefined) {
+    const caOperand =
+      group === "ca" ||
+      name === "cert list" ||
+      name === "cert get" ||
+      name === "cert issue" ||
+      name === "cert revoke";
+    if (caOperand && !isExtCommand && operands[0] !== undefined) {
       const isExtTarget =
         name === "ca crl get" && EXT_ID_PATTERN.test(operands[0]);
       if (!isExtTarget) references.push(operands[0]);
     }
     if (rolloverFrom !== undefined) references.push(rolloverFrom);
     if (forCa !== undefined) references.push(forCa);
+    const caFlag = str(values, "ca");
+    const fromFlag = str(values, "from");
+    const toFlag = str(values, "to");
+    for (const flagged of [caFlag, fromFlag, toFlag])
+      if (flagged !== undefined) references.push(flagged);
     const flagEnvironment = str(values, "environment");
     const needsEnvironment =
       ((name === "ca list" || name === "ca create") &&
@@ -672,8 +1068,207 @@ export async function runPkiCli(
       const ifNoneMatch = str(values, "if-none-match");
       if (ifNoneMatch !== undefined) strongEtag(ifNoneMatch, "if-none-match");
     }
+    // Grant, certificate and consumer commands: validate operands, flags and files locally first.
+    const validateOnly = values["validate-only"] === true;
+    const dryRun = values["dry-run"] === true;
+    let grantConsumer: string | undefined;
+    let grantName: string | undefined;
+    let grantFile: Record<string, unknown> | undefined;
+    let evaluateBody: PkiEvaluateRequest | undefined;
+    let issueBody: PkiAdminIssueCertificateRequest | undefined;
+    let revokeBody: {
+      reason?: PkiRevocationReason;
+      invalidityDate?: string;
+      issuanceGrant?: string;
+    } = {};
+    let certOut: Record<"out" | "chain-out" | "ca-out", string | undefined> = {
+      out: undefined,
+      "chain-out": undefined,
+      "ca-out": undefined,
+    };
+    let certSerial: string | undefined;
+    let certList:
+      | {
+          consumer?: string;
+          status?: PkiCertificateStatus;
+          expiringBefore?: string;
+          grant?: string;
+          includeExpired: boolean;
+        }
+      | undefined;
+    if (name.startsWith("grant ") && name !== "grant migrate") {
+      if (name === "grant list") {
+        if ((operands[0] === undefined) === (caFlag === undefined))
+          usage("Supply exactly one of <consumer> or --ca <ca>.");
+        if (operands[0] !== undefined)
+          grantConsumer = consumerOperand(operands[0]);
+        if (values["include-deleted"] === true && caFlag !== undefined)
+          usage("--include-deleted applies to <consumer> listings only.");
+      } else {
+        grantConsumer = consumerOperand(operands[0]);
+        grantName = nameOperand(operands[1]);
+      }
+      if (name === "grant create" || name === "grant update") {
+        const file = str(values, "file");
+        if (!file) usage("Supply --file <grant.json>.");
+        grantFile = await readGrantFile(file!, grantName!);
+        if (caFlag === undefined && grantFile.caId === undefined)
+          usage("Supply --ca or a caId in the grant file.");
+        if (validateOnly && str(values, "idempotency-key") !== undefined)
+          usage("--validate-only writes nothing and takes no idempotency key.");
+      }
+      if (name === "grant evaluate") {
+        const csr = str(values, "csr");
+        const sans = sansFrom(values);
+        const cn = str(values, "cn");
+        const keyAlgorithm = str(values, "key-algorithm");
+        const duration = str(values, "duration");
+        if (
+          keyAlgorithm !== undefined &&
+          !(LEAF_KEY_ALGORITHMS as readonly string[]).includes(keyAlgorithm)
+        )
+          usage("--key-algorithm is not a supported algorithm.");
+        if (csr !== undefined) {
+          if (
+            sans !== undefined ||
+            cn !== undefined ||
+            keyAlgorithm !== undefined
+          )
+            usage(
+              "--csr cannot be combined with --dns, --ip, --uri, --cn or --key-algorithm.",
+            );
+        } else if (keyAlgorithm === undefined) {
+          usage("Supply --csr, or --key-algorithm with names.");
+        } else if (sans === undefined && cn === undefined) {
+          usage("Supply at least one of --dns, --ip, --uri or --cn.");
+        }
+        const usages = usagesFrom(values);
+        evaluateBody = {
+          ...(csr === undefined
+            ? {
+                keyAlgorithm: keyAlgorithm as PkiLeafKeyAlgorithm,
+                ...(sans === undefined ? {} : { sans }),
+                ...(cn === undefined ? {} : { commonName: cn }),
+              }
+            : { certificateSigningRequestPem: await readCsrFile(csr) }),
+          ...(duration === undefined
+            ? {}
+            : { durationSeconds: parseDuration("duration", duration) }),
+          ...(usages === undefined ? {} : { usages }),
+        };
+      }
+    } else if (name === "grant migrate") {
+      if (!fromFlag || !toFlag) usage("Supply --from <ca> and --to <ca>.");
+    } else if (name === "cert list") {
+      const consumerFlag = str(values, "consumer");
+      if ((operands[0] === undefined) === (consumerFlag === undefined))
+        usage("Supply exactly one of <ca> or --consumer <id>.");
+      const status = str(values, "status");
+      if (
+        status !== undefined &&
+        !(CERTIFICATE_STATUSES as readonly string[]).includes(status)
+      )
+        usage(`--status must be one of ${CERTIFICATE_STATUSES.join(", ")}.`);
+      const expiring = str(values, "expiring-before");
+      const grant = str(values, "grant");
+      const includeExpired = values["include-expired"] === true;
+      if (consumerFlag !== undefined) {
+        consumerOperand(consumerFlag);
+        if (status !== undefined || expiring !== undefined)
+          usage("--status and --expiring-before apply to <ca> listings only.");
+        if (grant !== undefined) nameOperand(grant);
+      } else if (grant !== undefined || includeExpired) {
+        usage(
+          "--grant and --include-expired apply to --consumer listings only.",
+        );
+      }
+      certList = {
+        ...(consumerFlag === undefined ? {} : { consumer: consumerFlag }),
+        ...(status === undefined
+          ? {}
+          : { status: status as PkiCertificateStatus }),
+        ...(expiring === undefined
+          ? {}
+          : { expiringBefore: parseWhen("expiring-before", expiring, now()) }),
+        ...(grant === undefined ? {} : { grant }),
+        includeExpired,
+      };
+    } else if (name === "cert get" || name === "cert revoke") {
+      certSerial = operands[1]?.toLowerCase();
+      if (certSerial === undefined || !SERIAL_PATTERN.test(certSerial))
+        usage("Supply a valid hexadecimal certificate serial.");
+      if (name === "cert get") {
+        certOut = { ...certOut, out: str(values, "out") };
+      } else {
+        const when = str(values, "invalidity-date");
+        const reason = reasonFlag(values, when);
+        revokeBody = {
+          ...(reason === undefined ? {} : { reason }),
+          ...(when === undefined
+            ? {}
+            : {
+                invalidityDate: parseWhen("invalidity-date", when, now(), -1),
+              }),
+        };
+      }
+    } else if (name === "cert issue") {
+      const csr = str(values, "csr");
+      if (!csr) usage("Supply --csr <file>.");
+      const sans = sansFrom(values);
+      const subjectText = str(values, "subject");
+      const subject =
+        subjectText === undefined
+          ? undefined
+          : parseSubjectAttributes(subjectText);
+      const useCsrNames = values["use-csr-names"] === true;
+      if (useCsrNames && (sans !== undefined || subject !== undefined))
+        usage(
+          "--use-csr-names cannot be combined with --dns, --ip, --uri or --subject.",
+        );
+      if (!useCsrNames && sans === undefined && subject === undefined)
+        usage(
+          "Supply --use-csr-names, or names with --dns, --ip, --uri or --subject.",
+        );
+      const duration = str(values, "duration");
+      const usages = usagesFrom(values);
+      certOut = {
+        out: str(values, "out"),
+        "chain-out": str(values, "chain-out"),
+        "ca-out": str(values, "ca-out"),
+      };
+      const outPaths = Object.values(certOut).filter(
+        (path): path is string => path !== undefined,
+      );
+      if (new Set(outPaths).size !== outPaths.length)
+        usage("--out, --chain-out and --ca-out must be different files.");
+      issueBody = {
+        certificateSigningRequestPem: await readCsrFile(csr!),
+        ...(useCsrNames ? { useCsrNames: true } : {}),
+        ...(sans === undefined ? {} : { sans }),
+        ...(subject === undefined ? {} : { subject }),
+        ...(duration === undefined
+          ? {}
+          : { durationSeconds: parseDuration("duration", duration) }),
+        ...(usages === undefined ? {} : { usages }),
+      };
+    } else if (name === "consumer revoke-certificates") {
+      consumerOperand(operands[0]);
+      const grant = str(values, "grant");
+      if (grant !== undefined) nameOperand(grant);
+      const reason = reasonFlag(values, undefined);
+      revokeBody = {
+        ...(reason === undefined ? {} : { reason }),
+        ...(grant === undefined ? {} : { issuanceGrant: grant }),
+      };
+    }
     const ifMatchFlag = str(values, "if-match");
-    if ((name === "ca update" || name === "ca delete") && !ifMatchFlag)
+    if (
+      (name === "ca update" ||
+        name === "ca delete" ||
+        name === "grant update" ||
+        name === "grant delete") &&
+      !ifMatchFlag
+    )
       usage(
         "Supply --if-match with a known ETag, or current to fetch it once.",
       );
@@ -688,7 +1283,7 @@ export async function runPkiCli(
       env,
       { configDir, now },
     );
-    if (spec.mutation)
+    if (spec.mutation && !validateOnly)
       idempotencyKey = resolveIdempotencyKey(str(values, "idempotency-key"));
     const client = new HemligClient(
       origin,
@@ -724,6 +1319,362 @@ export async function runPkiCli(
       case "ca get": {
         const detail = await client.getPkiCa(token, await ca(operands[0]!));
         return receipt(detail, detail.version);
+      }
+      case "grant list": {
+        if (caFlag !== undefined)
+          return receipt(
+            await client.listCaIssuanceGrants(token, await ca(caFlag), {
+              cursor,
+            }),
+          );
+        return receipt(
+          await client.listAdminIssuanceGrants(token, grantConsumer!, {
+            includeDeleted: values["include-deleted"] === true,
+            cursor,
+          }),
+        );
+      }
+      case "grant get": {
+        const grant = await client.getAdminIssuanceGrant(
+          token,
+          grantConsumer!,
+          grantName!,
+        );
+        return receipt(grant, grant.version);
+      }
+      case "grant create":
+      case "grant update": {
+        const file = grantFile!;
+        const { name: _name, caId: fileCa, ...policyFields } = file;
+        const resolvedFlag =
+          caFlag === undefined ? undefined : await ca(caFlag);
+        const resolvedFile =
+          typeof fileCa === "string" ? await ca(fileCa) : undefined;
+        if (
+          resolvedFlag !== undefined &&
+          resolvedFile !== undefined &&
+          resolvedFlag !== resolvedFile
+        )
+          usage("--ca and the grant file caId name different CAs.");
+        const caId = (resolvedFlag ?? resolvedFile)!;
+        const input = {
+          ...policyFields,
+          caId,
+        } as unknown as PkiIssuanceGrantInput;
+        if (name === "grant create") {
+          const body = { ...input, name: grantName! };
+          if (validateOnly) {
+            const result = await client.validateIssuanceGrantCreate(
+              token,
+              grantConsumer!,
+              body,
+            );
+            await receipt(result);
+            return result.valid === false ? 5 : 0;
+          }
+          mutationAttempted = true;
+          const created = await client.createIssuanceGrant(
+            token,
+            grantConsumer!,
+            body,
+            idempotencyKey!,
+          );
+          return receipt(created, created.version);
+        }
+        if (ifMatchFlag === "current")
+          ifMatch = (
+            await client.getAdminIssuanceGrant(
+              token,
+              grantConsumer!,
+              grantName!,
+            )
+          ).version;
+        if (validateOnly) {
+          const result = await client.validateIssuanceGrantUpdate(
+            token,
+            grantConsumer!,
+            grantName!,
+            ifMatch!,
+            input,
+          );
+          await receipt(result);
+          return result.valid === false ? 5 : 0;
+        }
+        mutationAttempted = true;
+        const updated = await client.updateIssuanceGrant(
+          token,
+          grantConsumer!,
+          grantName!,
+          ifMatch!,
+          input,
+          idempotencyKey!,
+        );
+        return receipt(updated, updated.version);
+      }
+      case "grant delete": {
+        if (ifMatchFlag === "current")
+          ifMatch = (
+            await client.getAdminIssuanceGrant(
+              token,
+              grantConsumer!,
+              grantName!,
+            )
+          ).version;
+        mutationAttempted = true;
+        const deleted = await client.deleteIssuanceGrant(
+          token,
+          grantConsumer!,
+          grantName!,
+          ifMatch!,
+          idempotencyKey!,
+        );
+        return receipt(deleted, deleted.version);
+      }
+      case "grant evaluate":
+        return receipt(
+          await client.evaluateIssuanceGrant(
+            token,
+            grantConsumer!,
+            grantName!,
+            evaluateBody!,
+          ),
+        );
+      case "grant migrate": {
+        const fromId = await ca(fromFlag!);
+        const toId = await ca(toFlag!);
+        if (fromId === toId) usage("--from and --to must be different CAs.");
+        const { grants: listed, more } = await listGrantsOfCa(
+          client,
+          token,
+          fromId,
+        );
+        const results: MigrateResult[] = [];
+        for (const { consumerId, name: grantNameOf } of listed) {
+          const result: MigrateResult = {
+            consumerId,
+            name: grantNameOf,
+            outcome: "failed",
+          };
+          results.push(result);
+          let current: PkiIssuanceGrant;
+          try {
+            current = await client.getAdminIssuanceGrant(
+              token,
+              consumerId,
+              grantNameOf,
+            );
+          } catch (error) {
+            if (
+              error instanceof HemligError &&
+              (error.status === 401 || error.status === 403)
+            )
+              throw error;
+            result.errors = [errorEntry(error)];
+            continue;
+          }
+          result.uid = current.uid;
+          if (current.status === "DELETED" || current.caId !== fromId) {
+            result.outcome = "skipped";
+            continue;
+          }
+          if (current.expired === true) {
+            // The server rejects a past expiresAt, so an expired grant cannot move.
+            result.outcome = "skipped";
+            result.reason = "expired";
+            continue;
+          }
+          const body = grantPutBody(current, toId);
+          try {
+            if (dryRun) {
+              const check = await client.validateIssuanceGrantUpdate(
+                token,
+                consumerId,
+                grantNameOf,
+                current.version,
+                body,
+              );
+              result.outcome = check.valid ? "valid" : "invalid";
+              if (check.errors.length > 0) result.errors = [...check.errors];
+              if (check.warnings.length > 0)
+                result.warnings = [...check.warnings];
+            } else {
+              mutationAttempted = true;
+              const moved = await client.updateIssuanceGrant(
+                token,
+                consumerId,
+                grantNameOf,
+                current.version,
+                body,
+                migrationKey(
+                  fromId,
+                  toId,
+                  consumerId,
+                  grantNameOf,
+                  current.version,
+                ),
+              );
+              result.outcome = "migrated";
+              if (moved.warnings !== undefined && moved.warnings.length > 0)
+                result.warnings = [...moved.warnings];
+            }
+          } catch (error) {
+            if (
+              error instanceof HemligError &&
+              (error.status === 401 || error.status === 403)
+            )
+              throw error;
+            result.outcome =
+              error instanceof HemligError && error.status === 400
+                ? "invalid"
+                : "failed";
+            result.errors = [errorEntry(error)];
+          }
+        }
+        const remaining = await listGrantsOfCa(client, token, fromId);
+        await receipt({
+          from: fromId,
+          to: toId,
+          dryRun,
+          results,
+          listedTruncated: more,
+          remainingListed: remaining.grants.length,
+          remainingTruncated: remaining.more,
+        });
+        return more ||
+          results.some((r) => r.outcome === "invalid" || r.outcome === "failed")
+          ? 5
+          : 0;
+      }
+      case "cert list": {
+        const list = certList!;
+        if (list.consumer !== undefined)
+          return receipt(
+            await client.listConsumerPkiCertificates(token, list.consumer, {
+              issuanceGrant: list.grant,
+              includeExpired: list.includeExpired,
+              cursor,
+            }),
+          );
+        return receipt(
+          await client.listPkiCertificates(token, await ca(operands[0]!), {
+            status: list.status,
+            expiringBefore: list.expiringBefore,
+            cursor,
+          }),
+        );
+      }
+      case "cert get": {
+        const caId = await ca(operands[0]!);
+        const outPath = certOut.out;
+        const handles = await claimOutputs(
+          { certificate: outPath },
+          placeholders,
+          claimedHandles,
+        );
+        const detail = await client.getPkiCertificate(token, caId, certSerial!);
+        if (outPath === undefined) return receipt(detail);
+        placeholders.length = 0;
+        await writeClaimed(handles.get("certificate")!, detail.certificatePem);
+        const { certificatePem: _pem, ...rest } = detail;
+        return receipt({ ...rest, out: outPath });
+      }
+      case "cert issue": {
+        const caId = await ca(operands[0]!);
+        const handles = await claimOutputs(
+          {
+            certificate: certOut.out,
+            chain: certOut["chain-out"],
+            ca: certOut["ca-out"],
+          },
+          placeholders,
+          claimedHandles,
+        );
+        mutationAttempted = true;
+        const issued = await client.issuePkiCertificate(
+          token,
+          caId,
+          issueBody!,
+          idempotencyKey!,
+        );
+        if (handles.size === 0) return receipt(issued);
+        const pems = {
+          certificate: issued.certificatePem,
+          chain: issued.chainPem,
+          ca: issued.caPem,
+        };
+        const outPaths: Record<string, string | undefined> = {
+          certificate: certOut.out,
+          chain: certOut["chain-out"],
+          ca: certOut["ca-out"],
+        };
+        const complete = new Set<string>();
+        try {
+          for (const [key, handle] of handles) {
+            await writeClaimed(handle, pems[key as keyof typeof pems]);
+            complete.add(key);
+          }
+        } catch {
+          // Never leave a truncated or empty file behind.
+          for (const [key, path] of Object.entries(outPaths))
+            if (path !== undefined && !complete.has(key))
+              await unlink(path).catch(() => undefined);
+          placeholders.length = 0;
+          throw new CliError(
+            9,
+            "output_io_error",
+            `The certificate was issued (caId ${issued.caId}, serial ${issued.serial}) but an output file could not be written; incomplete files were removed. Rerun the same command with the same --idempotency-key and new output paths to replay it, or read it with \`hemlig pki cert get\`.`,
+          );
+        }
+        placeholders.length = 0;
+        const { certificatePem, chainPem, caPem, ...rest } = issued;
+        return receipt({
+          ...rest,
+          ...(certOut.out === undefined
+            ? { certificatePem }
+            : { out: certOut.out }),
+          ...(certOut["chain-out"] === undefined
+            ? { chainPem }
+            : { chainOut: certOut["chain-out"] }),
+          ...(certOut["ca-out"] === undefined
+            ? { caPem }
+            : { caOut: certOut["ca-out"] }),
+        });
+      }
+      case "cert revoke": {
+        const caId = await ca(operands[0]!);
+        mutationAttempted = true;
+        return receipt(
+          await client.revokePkiCertificate(
+            token,
+            caId,
+            certSerial!,
+            revokeBody,
+            idempotencyKey!,
+          ),
+        );
+      }
+      case "consumer revoke-certificates": {
+        mutationAttempted = true;
+        let attempts = 0;
+        let revokedTotal = 0;
+        let result;
+        do {
+          result = await client.revokeConsumerPkiCertificates(
+            token,
+            operands[0]!,
+            revokeBody,
+            idempotencyKey!,
+          );
+          attempts += 1;
+          revokedTotal += result.revoked ?? 0;
+        } while (result.complete === false && attempts < MAX_REVOKE_ATTEMPTS);
+        if (result.complete === false)
+          throw new CliError(
+            7,
+            "revoke_incomplete",
+            `Revocation was still incomplete after ${MAX_REVOKE_ATTEMPTS} attempts; repeat the command with the same --idempotency-key.`,
+          );
+        return receipt({ ...result, revoked: revokedTotal, attempts });
       }
       case "external-ca list":
         return receipt(await client.listExternalCas(token, { cursor }));
@@ -992,6 +1943,9 @@ export async function runPkiCli(
     }
     return usage("Run hemlig pki --help.");
   } catch (error) {
+    for (const handle of claimedHandles)
+      await handle.close().catch(() => undefined);
+    for (const path of placeholders) await unlink(path).catch(() => undefined);
     if (csrPlaceholder !== undefined) {
       // Nothing was created: remove the empty placeholder claimed for --csr-out.
       await unlink(csrPlaceholder).catch(() => undefined);

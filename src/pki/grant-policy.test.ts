@@ -577,3 +577,16 @@ describe("external review regressions", () => {
     expect(validateGrantPolicy(pattern).ok).toBe(false);
   });
 });
+
+describe("forced policy OID arcs", () => {
+  it("rejects an arc above 2^32-1 and accepts the maximum", () => {
+    const check = (oid: string) => {
+      const policy = validPolicy();
+      policy.forced.certificatePolicies = [oid];
+      return codes(validateGrantPolicy(policy).errors);
+    };
+    expect(check("1.3.562949953421312")).toContain("invalid_oid");
+    expect(check("1.3.4294967296")).toContain("invalid_oid");
+    expect(check("1.3.4294967295")).not.toContain("invalid_oid");
+  });
+});

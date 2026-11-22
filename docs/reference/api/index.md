@@ -78,6 +78,8 @@ An [idempotency key](../glossary.md#idempotency-key) is a random value (8 to 128
 | Revoke a client certificate (`DELETE .../api-identities/{fingerprint}`) | Required | Returns `200` and re-applies the AWS IoT revocation |
 | Agent self-rotation (`POST /v1/agent/identities/rotate`) | Required | Same key from the same certificate: returns the same new certificate |
 | Provision the issuing root (`POST /v1/admin/issuer`) | Required (validated) | Safe to repeat: `201` when it creates the root, `200` afterwards |
+| PKI certificate issuance (`POST /v1/pki/issuance-grants/{name}/certificates`, `POST /v1/admin/pki/cas/{caId}/certificates`) | Required | Same request: returns the same certificate while it is valid. Different request: `409 conflict` (reason `idempotency_key_reused` on the consumer route) |
+| PKI grant create, update and delete, revoke, bulk revoke | Required. Not with `validateOnly=true` | Same request: returns the current resource. Different request: `409 conflict`. A bulk revoke that returns `complete: false` is repeated with the same key |
 | Create an environment, create or update an AgentGrant, issue a bootstrap token | Not used | Not applicable |
 | Bootstrap redemption | Not used | A retry with the same CSR returns the same result; a different CSR is rejected |
 
@@ -105,6 +107,7 @@ Every failure uses one envelope with a stable `code` and a `correlationId`. All 
 | [Data types](data-types.md) | Shared shapes: IDs, environments, metadata, ACL, payload, control revision |
 | [Administrator: secrets](admin-secrets.md) | Environments, secret catalog, tree, create, update, payload, archive, revisions, archived lookup |
 | [Administrator: consumers, certificates and grants](admin-consumers.md) | Consumers, client certificates, issuing root, AgentGrants, bootstrap |
-| [Administrator: PKI](admin-pki.md) | CA lifecycle, CRL download and publication, root CRL upload |
+| [Administrator: PKI](admin-pki.md) | CA lifecycle, CRLs, issuance grants, administrator issuance, certificate inventory, revocation |
+| [PKI consumer routes](pki.md) | Issuance grants and certificate issuance for consumers and agents |
 | [Delivery and agent routes](delivery.md) | Consumer reads, change snapshots, agent configuration, sync and writes, self-rotation |
 | [Audit](audit.md) | Audit archive browsing and audit behavior |

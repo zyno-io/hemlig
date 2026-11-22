@@ -8,15 +8,18 @@ import {
   type UpdateCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { assertEnvironmentName } from "../domain/validation";
-import { serviceUnavailable } from "../domain/errors";
+import { ApiError, serviceUnavailable } from "../domain/errors";
 import type { Actor } from "../domain/types";
 import type {
   CaCrlState,
   CaRecord,
+  ConsumerCertificatePointer,
   ExternalCaRecord,
+  IssuanceGrantRecord,
   IssuedCertificateRecord,
   ReplayRecord,
   RevocationEntryRecord,
+  RevocationReason,
 } from "../pki/types";
 import { newId, sha256Hex, stableJson } from "../util/encoding";
 
@@ -163,6 +166,52 @@ const toRevocationEntry = (
   }
   const { pk: _pk, sk: _sk, ...rest } = item;
   return rest as unknown as RevocationEntryRecord;
+};
+
+export const toGrantRecord = (
+  item: Record<string, unknown>,
+): IssuanceGrantRecord => {
+  const record = withoutKeys(item);
+  if (
+    typeof record.uid !== "string" ||
+    typeof record.status !== "string" ||
+    typeof record.version !== "string" ||
+    typeof record.caId !== "string" ||
+    typeof record.policy !== "object" ||
+    record.policy === null
+  ) {
+    throw malformed("grant");
+  }
+  return record as unknown as IssuanceGrantRecord;
+};
+
+export const toCertificateRecord = (
+  item: Record<string, unknown>,
+): IssuedCertificateRecord => {
+  const { ttl: _ttl, ...record } = withoutKeys(item);
+  if (
+    typeof record.caId !== "string" ||
+    typeof record.serial !== "string" ||
+    typeof record.status !== "string" ||
+    typeof record.notAfter !== "string" ||
+    typeof record.certificatePem !== "string"
+  ) {
+    throw malformed("certificate");
+  }
+  return record as unknown as IssuedCertificateRecord;
+};
+
+const toPointer = (item: Record<string, unknown>): ConsumerCertificatePointer => {
+  const { ttl: _ttl, ...record } = withoutKeys(item);
+  if (
+    typeof record.caId !== "string" ||
+    typeof record.serial !== "string" ||
+    typeof record.notAfter !== "string" ||
+    typeof record.issuedAt !== "string"
+  ) {
+    throw malformed("consumer certificate");
+  }
+  return record as unknown as ConsumerCertificatePointer;
 };
 
 export const pkiKeys = {
@@ -692,7 +741,8 @@ export type Classified =
   | { readonly kind: "retry" };
 
 export type IssuanceCommitOutcome =
-  | { readonly kind: "committed" }
+  /** `ambiguous`: an earlier send of this commit had an unknown outcome, so the result must be checked again. */
+  | { readonly kind: "committed"; readonly ambiguous?: boolean }
   | Exclude<Classified, { readonly kind: "retry" }>
   | { readonly kind: "conflict" }
   | { readonly kind: "ambiguous" };
@@ -761,17 +811,7 @@ export const classifyIssuanceCancellation = (
   }
   const quotas = failedWhere(quotaSlots) as QuotaSlot[];
   if (quotas.length > 0) {
-    const windows = quotaWindows(commit.now);
-    const retryAfterSeconds = Math.max(
-      1,
-      ...quotas.map((slot) =>
-        Math.ceil(
-          ((slot === "grantDay" ? windows.dayEnd : windows.hourEnd).getTime() -
-            commit.now.getTime()) /
-            1000,
-        ),
-      ),
-    );
+    const retryAfterSeconds = quotaRetryAfterSeconds(quotas, commit.now);
     return { kind: "quotaExhausted", quotas, retryAfterSeconds };
   }
   if (failed("certificate") || failed("consumerPointer")) {
@@ -1500,6 +1540,500 @@ export const buildCommitExternalCrlTransaction = (
 ];
 
 // ---------------------------------------------------------------------------
+// Grants (Phase 4)
+// ---------------------------------------------------------------------------
+
+const caActiveCheck = (
+  tableName: string,
+  id: string,
+  version: string,
+): TransactItem => ({
+  ConditionCheck: {
+    TableName: tableName,
+    Key: { ...pkiKeys.caProfile(id) },
+    ConditionExpression: "#status = :active AND #version = :v",
+    ExpressionAttributeNames: { "#status": "status", "#version": "version" },
+    ExpressionAttributeValues: { ":active": "ACTIVE", ":v": version },
+  },
+});
+
+export interface CreateGrantTransaction {
+  readonly idempotency: HumanIdempotencyWrite;
+  readonly grant: IssuanceGrantRecord;
+  /** The CA version the grant was validated against. */
+  readonly caVersion: string;
+}
+
+export const buildCreateGrantTransaction = (
+  tableName: string,
+  input: CreateGrantTransaction,
+): NamedItem[] => {
+  const { grant } = input;
+  return [
+    {
+      slot: "idempotency",
+      item: buildHumanIdempotencyPut(tableName, input.idempotency),
+    },
+    {
+      slot: "grant",
+      item: {
+        Put: {
+          TableName: tableName,
+          Item: {
+            ...pkiKeys.grant(grant.consumerId, grant.name),
+            ...pkiDirectory.grant(grant.caId, grant.consumerId, grant.name),
+            ...defined(grant),
+          },
+          ConditionExpression: "attribute_not_exists(pk) OR #status = :deleted",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: { ":deleted": "DELETED" },
+        },
+      },
+    },
+    { slot: "ca", item: caActiveCheck(tableName, grant.caId, input.caVersion) },
+  ];
+};
+
+export interface UpdateGrantTransaction {
+  readonly idempotency: HumanIdempotencyWrite;
+  /** The complete new record: same `uid`, new `version`. */
+  readonly grant: IssuanceGrantRecord;
+  readonly ifMatch: string;
+  readonly caVersion: string;
+}
+
+export const buildUpdateGrantTransaction = (
+  tableName: string,
+  input: UpdateGrantTransaction,
+): NamedItem[] => {
+  const { grant } = input;
+  const directory = pkiDirectory.grant(
+    grant.caId,
+    grant.consumerId,
+    grant.name,
+  );
+  const set: Record<string, unknown> = {
+    caId: grant.caId,
+    status: grant.status,
+    policy: grant.policy,
+    policyDigest: grant.policyDigest,
+    version: grant.version,
+    updatedAt: grant.updatedAt,
+    updatedBy: grant.updatedBy,
+    pkiDirectoryPk: directory.pkiDirectoryPk,
+    pkiDirectorySk: directory.pkiDirectorySk,
+  };
+  const remove: string[] = [];
+  for (const optional of ["displayName", "expiresAt"] as const) {
+    if (grant[optional] === undefined) {
+      remove.push(optional);
+    } else {
+      set[optional] = grant[optional];
+    }
+  }
+  const names: Record<string, string> = { "#uid": "uid", "#deletedStatus": "status" };
+  const values: Record<string, unknown> = {
+    ":ifMatch": input.ifMatch,
+    ":uid": grant.uid,
+    ":deleted": "DELETED",
+  };
+  const assignments: string[] = [];
+  for (const [field, value] of Object.entries(set)) {
+    names[`#${field}`] = field;
+    values[`:${field}`] = value;
+    assignments.push(`#${field} = :${field}`);
+  }
+  for (const field of remove) {
+    names[`#${field}`] = field;
+  }
+  return [
+    {
+      slot: "idempotency",
+      item: buildHumanIdempotencyPut(tableName, input.idempotency),
+    },
+    {
+      slot: "grant",
+      item: {
+        Update: {
+          TableName: tableName,
+          Key: { ...pkiKeys.grant(grant.consumerId, grant.name) },
+          UpdateExpression: `SET ${assignments.join(", ")}${
+            remove.length === 0
+              ? ""
+              : ` REMOVE ${remove.map((field) => `#${field}`).join(", ")}`
+          }`,
+          ConditionExpression:
+            "#version = :ifMatch AND #uid = :uid AND #deletedStatus <> :deleted",
+          ExpressionAttributeNames: names,
+          ExpressionAttributeValues: values,
+        },
+      },
+    },
+    { slot: "ca", item: caActiveCheck(tableName, grant.caId, input.caVersion) },
+  ];
+};
+
+export interface DeleteGrantTransaction {
+  readonly idempotency: HumanIdempotencyWrite;
+  readonly consumerId: string;
+  readonly name: string;
+  readonly ifMatch: string;
+  readonly newVersion: string;
+  readonly now: string;
+  readonly actor: Actor;
+}
+
+export const buildDeleteGrantTransaction = (
+  tableName: string,
+  input: DeleteGrantTransaction,
+): NamedItem[] => [
+  {
+    slot: "idempotency",
+    item: buildHumanIdempotencyPut(tableName, input.idempotency),
+  },
+  {
+    slot: "grant",
+    item: {
+      Update: {
+        TableName: tableName,
+        Key: { ...pkiKeys.grant(input.consumerId, input.name) },
+        UpdateExpression:
+          "SET #status = :deleted, #version = :v, #deletedAt = :now, #deletedBy = :actor, #updatedAt = :now, #updatedBy = :actor REMOVE #pkiDirectoryPk, #pkiDirectorySk",
+        ConditionExpression: "#version = :ifMatch AND #status <> :deleted",
+        ExpressionAttributeNames: {
+          "#status": "status",
+          "#version": "version",
+          "#deletedAt": "deletedAt",
+          "#deletedBy": "deletedBy",
+          "#updatedAt": "updatedAt",
+          "#updatedBy": "updatedBy",
+          "#pkiDirectoryPk": "pkiDirectoryPk",
+          "#pkiDirectorySk": "pkiDirectorySk",
+        },
+        ExpressionAttributeValues: {
+          ":deleted": "DELETED",
+          ":v": input.newVersion,
+          ":now": input.now,
+          ":actor": input.actor,
+          ":ifMatch": input.ifMatch,
+        },
+      },
+    },
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Revocation (Phase 4)
+// ---------------------------------------------------------------------------
+
+export type RevokeMode = "entry" | "inventory" | "upgrade";
+
+export interface RevokeTransaction {
+  readonly mode: RevokeMode;
+  readonly idempotency: HumanIdempotencyWrite;
+  readonly caId: string;
+  readonly serial: string;
+  readonly notAfter: string;
+  readonly now: string;
+  readonly reason: RevocationReason;
+  readonly invalidityDate?: string;
+  readonly by: Actor;
+  /** `inventory`: true when the certificate expired, false when its CA is REVOKED. */
+  readonly expired?: boolean;
+  /** `upgrade`: the live (TTL-less) revocation entry exists. */
+  readonly entryLive?: boolean;
+}
+
+const crlRevisionBump = (
+  tableName: string,
+  id: string,
+  now: string,
+): TransactItem => ({
+  Update: {
+    TableName: tableName,
+    Key: { ...pkiKeys.caCrl(id) },
+    UpdateExpression:
+      "SET #revision = #revision + :one, #dirtySince = if_not_exists(#dirtySince, :now)",
+    ConditionExpression: "attribute_exists(pk)",
+    ExpressionAttributeNames: {
+      "#revision": "revision",
+      "#dirtySince": "dirtySince",
+    },
+    ExpressionAttributeValues: { ":one": 1, ":now": now },
+  },
+});
+
+const revocationOf = (input: {
+  now: string;
+  reason: RevocationReason;
+  invalidityDate?: string;
+  by: Actor;
+}): Record<string, unknown> => ({
+  at: input.now,
+  reason: input.reason,
+  ...(input.invalidityDate === undefined
+    ? {}
+    : { invalidityDate: input.invalidityDate }),
+  by: input.by,
+});
+
+const revokeCertificateUpdate = (
+  tableName: string,
+  input: {
+    caId: string;
+    serial: string;
+    now: string;
+    reason: RevocationReason;
+    invalidityDate?: string;
+    by: Actor;
+  },
+  condition: string,
+): TransactItem => ({
+  Update: {
+    TableName: tableName,
+    Key: { ...pkiKeys.certificate(input.caId, input.serial) },
+    UpdateExpression: "SET #status = :revoked, #revocation = :rev",
+    ConditionExpression: condition,
+    // DynamoDB rejects placeholders no expression uses.
+    ExpressionAttributeNames: {
+      "#status": "status",
+      "#revocation": "revocation",
+      ...(condition.includes("#notAfter") ? { "#notAfter": "notAfter" } : {}),
+    },
+    ExpressionAttributeValues: {
+      ":revoked": "REVOKED",
+      ":issued": "ISSUED",
+      ":rev": revocationOf(input),
+      ...(condition.includes(":now") ? { ":now": input.now } : {}),
+    },
+  },
+});
+
+const revocationEntryPut = (
+  tableName: string,
+  input: {
+    caId: string;
+    serial: string;
+    notAfter: string;
+    now: string;
+    reason: RevocationReason;
+    invalidityDate?: string;
+  },
+): TransactItem => ({
+  Put: {
+    TableName: tableName,
+    Item: {
+      ...pkiKeys.revocation(input.caId, input.serial),
+      caId: input.caId,
+      serial: input.serial,
+      revokedAt: input.now,
+      reason: input.reason,
+      ...(input.invalidityDate === undefined
+        ? {}
+        : { invalidityDate: input.invalidityDate }),
+      notAfter: input.notAfter,
+    },
+    ConditionExpression: "attribute_not_exists(pk)",
+  },
+});
+
+export const buildRevokeTransaction = (
+  tableName: string,
+  input: RevokeTransaction,
+): NamedItem[] => {
+  const items: NamedItem[] = [
+    {
+      slot: "idempotency",
+      item: buildHumanIdempotencyPut(tableName, input.idempotency),
+    },
+  ];
+  if (input.mode === "upgrade") {
+    const names: Record<string, string> = {
+      "#status": "status",
+      "#revocation": "revocation",
+      "#reason": "reason",
+      "#upgradedAt": "upgradedAt",
+      ...(input.invalidityDate === undefined
+        ? {}
+        : { "#invalidityDate": "invalidityDate" }),
+    };
+    items.push({
+      slot: "certificate",
+      item: {
+        Update: {
+          TableName: tableName,
+          Key: { ...pkiKeys.certificate(input.caId, input.serial) },
+          UpdateExpression: `SET #revocation.#reason = :kc, #revocation.#upgradedAt = :now${
+            input.invalidityDate === undefined
+              ? ""
+              : ", #revocation.#invalidityDate = :inv"
+          }`,
+          ConditionExpression:
+            "#status = :revoked AND #revocation.#reason <> :kc",
+          ExpressionAttributeNames: names,
+          ExpressionAttributeValues: {
+            ":revoked": "REVOKED",
+            ":kc": "keyCompromise",
+            ":now": input.now,
+            ...(input.invalidityDate === undefined
+              ? {}
+              : { ":inv": input.invalidityDate }),
+          },
+        },
+      },
+    });
+    if (input.entryLive === true) {
+      items.push({
+        slot: "entry",
+        item: {
+          Update: {
+            TableName: tableName,
+            Key: { ...pkiKeys.revocation(input.caId, input.serial) },
+            UpdateExpression: `SET #reason = :kc${
+              input.invalidityDate === undefined
+                ? ""
+                : ", #invalidityDate = :inv"
+            }`,
+            ConditionExpression:
+              "attribute_exists(pk) AND attribute_not_exists(#ttl)",
+            ExpressionAttributeNames: {
+              "#reason": "reason",
+              "#ttl": "ttl",
+              ...(input.invalidityDate === undefined
+                ? {}
+                : { "#invalidityDate": "invalidityDate" }),
+            },
+            ExpressionAttributeValues: {
+              ":kc": "keyCompromise",
+              ...(input.invalidityDate === undefined
+                ? {}
+                : { ":inv": input.invalidityDate }),
+            },
+          },
+        },
+      });
+      items.push({
+        slot: "crl",
+        item: crlRevisionBump(tableName, input.caId, input.now),
+      });
+    }
+    return items;
+  }
+  if (input.mode === "entry") {
+    items.push({
+      slot: "certificate",
+      item: revokeCertificateUpdate(
+        tableName,
+        input,
+        "#status = :issued AND #notAfter > :now",
+      ),
+    });
+    items.push({ slot: "entry", item: revocationEntryPut(tableName, input) });
+    items.push({
+      slot: "crl",
+      item: crlRevisionBump(tableName, input.caId, input.now),
+    });
+    return items;
+  }
+  items.push({
+    slot: "certificate",
+    item: revokeCertificateUpdate(
+      tableName,
+      input,
+      input.expired === true
+        ? "#status = :issued AND #notAfter <= :now"
+        : "#status = :issued",
+    ),
+  });
+  return items;
+};
+
+export interface BulkRevokeBatch {
+  readonly caId: string;
+  readonly items: readonly { serial: string; notAfter: string }[];
+  /** False for a REVOKED CA: inventory only. */
+  readonly withEntries: boolean;
+  readonly now: string;
+  readonly actor: Actor;
+  readonly reason: RevocationReason;
+  readonly invalidityDate?: string;
+}
+
+export const maxBulkRevokeBatch = 30;
+
+/** At most 30 certificates: 30 certificate updates, 30 entries and one revision bump (61 items). No idempotency slot. */
+export const buildBulkRevokeBatch = (
+  tableName: string,
+  batch: BulkRevokeBatch,
+): NamedItem[] => {
+  if (batch.items.length === 0 || batch.items.length > maxBulkRevokeBatch) {
+    throw new Error("A bulk revoke batch holds 1 to 30 certificates.");
+  }
+  const named: NamedItem[] = [];
+  for (const item of batch.items) {
+    named.push({
+      slot: `cert:${item.serial}`,
+      item: revokeCertificateUpdate(
+        tableName,
+        {
+          caId: batch.caId,
+          serial: item.serial,
+          now: batch.now,
+          reason: batch.reason,
+          ...(batch.invalidityDate === undefined
+            ? {}
+            : { invalidityDate: batch.invalidityDate }),
+          by: batch.actor,
+        },
+        batch.withEntries
+          ? "#status = :issued AND #notAfter > :now"
+          : "#status = :issued",
+      ),
+    });
+  }
+  if (batch.withEntries) {
+    for (const item of batch.items) {
+      named.push({
+        slot: `entry:${item.serial}`,
+        item: revocationEntryPut(tableName, {
+          caId: batch.caId,
+          serial: item.serial,
+          notAfter: item.notAfter,
+          now: batch.now,
+          reason: batch.reason,
+          ...(batch.invalidityDate === undefined
+            ? {}
+            : { invalidityDate: batch.invalidityDate }),
+        }),
+      });
+    }
+    named.push({
+      slot: "crl",
+      item: crlRevisionBump(tableName, batch.caId, batch.now),
+    });
+  }
+  return named;
+};
+
+/** Seconds until the window of the longest-lived exhausted slot ends; at least 1. */
+export const quotaRetryAfterSeconds = (
+  slots: readonly QuotaSlot[],
+  now: Date,
+): number => {
+  const windows = quotaWindows(now);
+  return Math.max(
+    1,
+    ...slots.map((slot) =>
+      Math.ceil(
+        ((slot === "grantDay" ? windows.dayEnd : windows.hourEnd).getTime() -
+          now.getTime()) /
+          1000,
+      ),
+    ),
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Repository
 // ---------------------------------------------------------------------------
 
@@ -1525,9 +2059,15 @@ const errorName = (error: unknown): string =>
   error instanceof Error ? error.name : typeof error;
 
 /** The `pki-directory` index exists but cannot be queried yet (still backfilling after an upgrade). */
-export class PkiIndexNotReadyError extends Error {
+export class PkiIndexNotReadyError extends ApiError {
   public constructor() {
-    super("The PKI directory index is not ready.");
+    super(
+      503,
+      "service_unavailable",
+      "The PKI directory index is not ready.",
+      "index_not_ready",
+      { details: { reason: "index_not_ready" }, headers: { "retry-after": "60" } },
+    );
     this.name = "PkiIndexNotReadyError";
   }
 }
@@ -1685,7 +2225,9 @@ export class PkiRepository {
     for (;;) {
       try {
         await this.dynamo.send(new TransactWriteCommand(built.input));
-        return { kind: "committed" };
+        return ambiguous > 0
+          ? { kind: "committed", ambiguous: true }
+          : { kind: "committed" };
       } catch (error) {
         const name = errorName(error);
         if (name === "TransactionCanceledException") {
@@ -2403,6 +2945,499 @@ export class PkiRepository {
       return "externalChanged";
     }
     throw serviceUnavailable("The CRL could not be committed.");
+  }
+
+  // -------------------------------------------------------------------------
+  // Grants (Phase 4)
+  // -------------------------------------------------------------------------
+
+  public async createGrant(
+    input: CreateGrantTransaction,
+  ): Promise<
+    | { kind: "created" }
+    | { kind: "replay" }
+    | { kind: "exists" }
+    | { kind: "caChanged" }
+  > {
+    const outcome = await this.commitHuman(
+      "create-grant",
+      input.idempotency,
+      buildCreateGrantTransaction(this.tableName, input),
+    );
+    if (outcome.kind === "committed") {
+      return { kind: "created" };
+    }
+    if (outcome.failed.includes("idempotency")) {
+      return { kind: "replay" };
+    }
+    if (outcome.failed.includes("grant")) {
+      return { kind: "exists" };
+    }
+    if (outcome.failed.includes("ca")) {
+      return { kind: "caChanged" };
+    }
+    throw serviceUnavailable("The grant could not be created.");
+  }
+
+  public async updateGrant(
+    input: UpdateGrantTransaction,
+  ): Promise<
+    | { kind: "updated" }
+    | { kind: "replay" }
+    | { kind: "stale" }
+    | { kind: "caChanged" }
+  > {
+    const outcome = await this.commitHuman(
+      "update-grant",
+      input.idempotency,
+      buildUpdateGrantTransaction(this.tableName, input),
+    );
+    if (outcome.kind === "committed") {
+      return { kind: "updated" };
+    }
+    if (outcome.failed.includes("idempotency")) {
+      return { kind: "replay" };
+    }
+    if (outcome.failed.includes("grant")) {
+      return { kind: "stale" };
+    }
+    if (outcome.failed.includes("ca")) {
+      return { kind: "caChanged" };
+    }
+    throw serviceUnavailable("The grant could not be updated.");
+  }
+
+  public async deleteGrant(
+    input: DeleteGrantTransaction,
+  ): Promise<{ kind: "deleted" } | { kind: "replay" } | { kind: "stale" }> {
+    const outcome = await this.commitHuman(
+      "delete-grant",
+      input.idempotency,
+      buildDeleteGrantTransaction(this.tableName, input),
+    );
+    if (outcome.kind === "committed") {
+      return { kind: "deleted" };
+    }
+    if (outcome.failed.includes("idempotency")) {
+      return { kind: "replay" };
+    }
+    if (outcome.failed.includes("grant")) {
+      return { kind: "stale" };
+    }
+    throw serviceUnavailable("The grant could not be deleted.");
+  }
+
+  /** Strong read. Tombstones are returned; a record missing a required field is a 503. */
+  public async getGrant(
+    consumerId: string,
+    name: string,
+  ): Promise<IssuanceGrantRecord | undefined> {
+    const item = await this.getItem(pkiKeys.grant(consumerId, name));
+    return item === undefined ? undefined : toGrantRecord(item);
+  }
+
+  public async listGrantsPage(
+    consumerId: string,
+    options: {
+      includeDeleted: boolean;
+      limit: number;
+      start?: Record<string, unknown>;
+    },
+  ): Promise<{
+    grants: IssuanceGrantRecord[];
+    lastEvaluatedKey?: Record<string, unknown>;
+  }> {
+    const page = await this.queryLoop({
+      key: {
+        expression: "pk = :pk AND begins_with(sk, :prefix)",
+        values: { ":pk": pkiKeys.grant(consumerId, "aaa").pk, ":prefix": "NAME#" },
+      },
+      ...(options.includeDeleted
+        ? {}
+        : {
+            filter: {
+              expression: "#status <> :deleted",
+              names: { "#status": "status" },
+              values: { ":deleted": "DELETED" },
+            },
+          }),
+      consistent: true,
+      limit: options.limit,
+      ...(options.start === undefined ? {} : { start: options.start }),
+    });
+    return {
+      grants: page.items.map(toGrantRecord),
+      ...(page.lastEvaluatedKey === undefined
+        ? {}
+        : { lastEvaluatedKey: page.lastEvaluatedKey }),
+    };
+  }
+
+  /** Live (not DELETED) grants, summed over every page. */
+  public async countLiveGrants(consumerId: string): Promise<number> {
+    let total = 0;
+    let start: Record<string, unknown> | undefined;
+    do {
+      const response = await this.dynamo.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+          FilterExpression: "#status <> :deleted",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: {
+            ":pk": pkiKeys.grant(consumerId, "aaa").pk,
+            ":prefix": "NAME#",
+            ":deleted": "DELETED",
+          },
+          Select: "COUNT",
+          ConsistentRead: true,
+          ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+        }),
+      );
+      total += response.Count ?? 0;
+      start = response.LastEvaluatedKey;
+    } while (start !== undefined);
+    return total;
+  }
+
+  public async listGrantsByCaPage(
+    id: string,
+    options: { limit: number; start?: Record<string, unknown> },
+  ): Promise<{
+    grants: IssuanceGrantRecord[];
+    lastEvaluatedKey?: Record<string, unknown>;
+  }> {
+    const page = await this.queryDirectoryPage(`PKI_CA_GRANTS#${caId(id)}`, {
+      limit: options.limit,
+      exclusiveStartKey: options.start,
+    });
+    return {
+      grants: page.items.map(toGrantRecord),
+      ...(page.lastEvaluatedKey === undefined
+        ? {}
+        : { lastEvaluatedKey: page.lastEvaluatedKey }),
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Inventory, capacity and quota reads (Phase 4)
+  // -------------------------------------------------------------------------
+
+  public async getCertificate(
+    id: string,
+    certSerial: string,
+  ): Promise<IssuedCertificateRecord | undefined> {
+    const item = await this.getItem(pkiKeys.certificate(id, certSerial));
+    return item === undefined ? undefined : toCertificateRecord(item);
+  }
+
+  /** One page of a CA's certificates by `notAfter`, through the directory index. */
+  public async queryCertificatesPage(
+    id: string,
+    options: {
+      before?: string;
+      after?: string;
+      status?: "ISSUED" | "REVOKED";
+      limit: number;
+      start?: Record<string, unknown>;
+    },
+  ): Promise<{
+    certificates: IssuedCertificateRecord[];
+    lastEvaluatedKey?: Record<string, unknown>;
+  }> {
+    const names: Record<string, string> = { "#pk": "pkiDirectoryPk" };
+    const values: Record<string, unknown> = {
+      ":pk": `PKI_CERTS#${caId(id)}`,
+    };
+    let expression = "#pk = :pk";
+    if (options.before !== undefined && options.after !== undefined) {
+      expression += " AND #sk BETWEEN :after AND :before";
+      names["#sk"] = "pkiDirectorySk";
+      values[":after"] = guardIso("after", options.after);
+      values[":before"] = guardIso("before", options.before);
+    } else if (options.before !== undefined) {
+      expression += " AND #sk < :before";
+      names["#sk"] = "pkiDirectorySk";
+      values[":before"] = guardIso("before", options.before);
+    } else if (options.after !== undefined) {
+      expression += " AND #sk > :after";
+      names["#sk"] = "pkiDirectorySk";
+      values[":after"] = guardIso("after", options.after);
+    }
+    const page = await this.queryLoop({
+      index: this.directoryIndex,
+      key: { expression, names, values },
+      ...(options.status === undefined
+        ? {}
+        : {
+            filter: {
+              expression: "#status = :s",
+              names: { "#status": "status" },
+              values: { ":s": options.status },
+            },
+          }),
+      limit: options.limit,
+      ...(options.start === undefined ? {} : { start: options.start }),
+    });
+    return {
+      certificates: page.items.map(toCertificateRecord),
+      ...(page.lastEvaluatedKey === undefined
+        ? {}
+        : { lastEvaluatedKey: page.lastEvaluatedKey }),
+    };
+  }
+
+  /** A consumer's certificate pointers, strongly consistent. */
+  public async listConsumerPointersPage(
+    consumerId: string,
+    options: {
+      notAfterAfter?: string;
+      grantName?: string;
+      grantUid?: string;
+      newestFirst: boolean;
+      limit: number;
+      start?: Record<string, unknown>;
+    },
+  ): Promise<{
+    pointers: ConsumerCertificatePointer[];
+    lastEvaluatedKey?: Record<string, unknown>;
+  }> {
+    const clauses: string[] = [];
+    const names: Record<string, string> = {};
+    const values: Record<string, unknown> = {};
+    if (options.notAfterAfter !== undefined) {
+      clauses.push("#notAfter > :notAfter");
+      names["#notAfter"] = "notAfter";
+      values[":notAfter"] = guardIso("notAfter", options.notAfterAfter);
+    }
+    if (options.grantName !== undefined) {
+      clauses.push("#issuanceGrant = :grantName");
+      names["#issuanceGrant"] = "issuanceGrant";
+      values[":grantName"] = options.grantName;
+    }
+    if (options.grantUid !== undefined) {
+      clauses.push("#issuanceGrantUid = :grantUid");
+      names["#issuanceGrantUid"] = "issuanceGrantUid";
+      values[":grantUid"] = options.grantUid;
+    }
+    const page = await this.queryLoop({
+      key: {
+        expression: "pk = :pk AND begins_with(sk, :prefix)",
+        values: {
+          ":pk": pkiKeys.consumerCertificate(
+            consumerId,
+            "2000-01-01T00:00:00.000Z",
+            "ca-aaa",
+            "aa",
+          ).pk,
+          ":prefix": "CERT#",
+        },
+      },
+      ...(clauses.length === 0
+        ? {}
+        : {
+            filter: {
+              expression: clauses.join(" AND "),
+              names,
+              values,
+            },
+          }),
+      consistent: true,
+      forward: !options.newestFirst,
+      limit: options.limit,
+      ...(options.start === undefined ? {} : { start: options.start }),
+    });
+    return {
+      pointers: page.items.map(toPointer),
+      ...(page.lastEvaluatedKey === undefined
+        ? {}
+        : { lastEvaluatedKey: page.lastEvaluatedKey }),
+    };
+  }
+
+  /**
+   * Certificates (every status) whose directory sort key is above `countFrom`, summed over every page. Equal
+   * `notAfter` values count: a conservative over-count.
+   */
+  public async countCertificatesSince(
+    id: string,
+    countFrom: string,
+  ): Promise<number> {
+    let total = 0;
+    let start: Record<string, unknown> | undefined;
+    do {
+      let response;
+      try {
+        response = await this.dynamo.send(
+          new QueryCommand({
+            TableName: this.tableName,
+            IndexName: this.directoryIndex,
+            KeyConditionExpression: "#pk = :pk AND #sk > :from",
+            ExpressionAttributeNames: {
+              "#pk": "pkiDirectoryPk",
+              "#sk": "pkiDirectorySk",
+            },
+            ExpressionAttributeValues: {
+              ":pk": `PKI_CERTS#${caId(id)}`,
+              ":from": guardIso("countFrom", countFrom),
+            },
+            Select: "COUNT",
+            ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+          }),
+        );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.name === "ValidationException" &&
+          /backfill|specified index/i.test(error.message)
+        ) {
+          throw new PkiIndexNotReadyError();
+        }
+        throw error;
+      }
+      total += response.Count ?? 0;
+      start = response.LastEvaluatedKey;
+    } while (start !== undefined);
+    return total;
+  }
+
+  /** Monotone in `countedAt`: a condition failure means a newer count exists and is ignored. */
+  public async storeCapacityCount(
+    id: string,
+    count: { count: number; countFrom: string; countedAt: string },
+  ): Promise<void> {
+    await this.updateWithRetry({
+      TableName: this.tableName,
+      Key: { ...pkiKeys.caCrl(id) },
+      UpdateExpression: "SET #capacity = :c",
+      ConditionExpression:
+        "attribute_exists(pk) AND (attribute_not_exists(#capacity) OR #capacity.#countedAt <= :at)",
+      ExpressionAttributeNames: {
+        "#capacity": "capacity",
+        "#countedAt": "countedAt",
+      },
+      ExpressionAttributeValues: { ":c": count, ":at": count.countedAt },
+    });
+  }
+
+  public async releaseCrlLease(id: string, owner: string): Promise<void> {
+    await this.updateWithRetry({
+      TableName: this.tableName,
+      Key: { ...pkiKeys.caCrl(id) },
+      UpdateExpression: "REMOVE #lease",
+      ConditionExpression: "#lease.#owner = :owner",
+      ExpressionAttributeNames: { "#lease": "lease", "#owner": "owner" },
+      ExpressionAttributeValues: { ":owner": owner },
+    });
+  }
+
+  /** The live (TTL-less) revocation entry, if any. */
+  public async getRevocationEntry(
+    id: string,
+    certSerial: string,
+  ): Promise<RevocationEntryRecord | undefined> {
+    const item = await this.getItem(pkiKeys.revocation(id, certSerial));
+    return item === undefined ? undefined : toRevocationEntry(item);
+  }
+
+  // -------------------------------------------------------------------------
+  // Revocation (Phase 4)
+  // -------------------------------------------------------------------------
+
+  public revokeCertificate(input: RevokeTransaction): Promise<TransactOutcome> {
+    return this.commitHuman(
+      "revoke-certificate",
+      input.idempotency,
+      buildRevokeTransaction(this.tableName, input),
+    );
+  }
+
+  /** No idempotency slot: per-certificate idempotency comes from the conditions. */
+  public revokeBatch(batch: BulkRevokeBatch): Promise<TransactOutcome> {
+    return this.transact(
+      "bulk-revoke",
+      buildBulkRevokeBatch(this.tableName, batch),
+      { principal: `human:${batch.actor.id}` },
+    );
+  }
+
+  /**
+   * Shared paging loop: one Query per round trip with `Limit` = what is still needed, collecting items whose `pk`
+   * starts with `PKI_` until `limit` are found or the partition ends.
+   */
+  private async queryLoop(options: {
+    index?: string;
+    key: {
+      expression: string;
+      names?: Record<string, string>;
+      values: Record<string, unknown>;
+    };
+    filter?: {
+      expression: string;
+      names: Record<string, string>;
+      values: Record<string, unknown>;
+    };
+    consistent?: boolean;
+    forward?: boolean;
+    limit: number;
+    start?: Record<string, unknown>;
+  }): Promise<{
+    items: Record<string, unknown>[];
+    lastEvaluatedKey?: Record<string, unknown>;
+  }> {
+    const found: Record<string, unknown>[] = [];
+    let start = options.start;
+    for (;;) {
+      const remaining = options.limit - found.length;
+      const names = { ...options.key.names, ...options.filter?.names };
+      let response;
+      try {
+        response = await this.dynamo.send(
+          new QueryCommand({
+            TableName: this.tableName,
+            ...(options.index === undefined
+              ? {}
+              : { IndexName: options.index }),
+            KeyConditionExpression: options.key.expression,
+            ...(options.filter === undefined
+              ? {}
+              : { FilterExpression: options.filter.expression }),
+            ...(Object.keys(names).length === 0
+              ? {}
+              : { ExpressionAttributeNames: names }),
+            ExpressionAttributeValues: {
+              ...options.key.values,
+              ...options.filter?.values,
+            },
+            ...(options.consistent === true ? { ConsistentRead: true } : {}),
+            ...(options.forward === false ? { ScanIndexForward: false } : {}),
+            Limit: remaining,
+            ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+          }),
+        );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.name === "ValidationException" &&
+          /backfill|specified index/i.test(error.message)
+        ) {
+          throw new PkiIndexNotReadyError();
+        }
+        throw error;
+      }
+      for (const item of response.Items ?? []) {
+        if (typeof item.pk === "string" && item.pk.startsWith("PKI_")) {
+          found.push(item);
+        }
+      }
+      start = response.LastEvaluatedKey;
+      if (found.length >= options.limit || start === undefined) {
+        return {
+          items: found,
+          ...(start === undefined ? {} : { lastEvaluatedKey: start }),
+        };
+      }
+    }
   }
 
   private backoff(attempt: number): number {

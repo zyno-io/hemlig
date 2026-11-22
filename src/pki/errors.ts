@@ -22,13 +22,38 @@ export const crlInvalid = (reason: string, message?: string): ApiError =>
     { details: { reason } },
   );
 
-export const issuanceDenied = (reason: string, message?: string): ApiError =>
+export interface DeniedNameDetails {
+  readonly type: string;
+  readonly value: string;
+}
+
+/**
+ * The denied name for an error or audit target. Caller text is dropped when it could carry key material or control
+ * characters: anything with `-----` or outside printable ASCII.
+ */
+export const deniedNameFields = (
+  denied: DeniedNameDetails,
+): { deniedNameType: string; deniedName: string } | Record<string, never> =>
+  denied.value.includes("-----") || /[^\x20-\x7e]/.test(denied.value)
+    ? {}
+    : { deniedNameType: denied.type, deniedName: denied.value.slice(0, 253) };
+
+export const issuanceDenied = (
+  reason: string,
+  message?: string,
+  denied?: DeniedNameDetails,
+): ApiError =>
   new ApiError(
     403,
     "issuance_denied",
     message ?? `Issuance denied (${reason}).`,
     reason,
-    { details: { reason } },
+    {
+      details: {
+        reason,
+        ...(denied === undefined ? {} : deniedNameFields(denied)),
+      },
+    },
   );
 
 export const csrInvalid = (reason: string, message?: string): ApiError =>
@@ -112,4 +137,109 @@ export const crlPublicationBusy = (): ApiError =>
     "crl_publication_busy",
     "A CRL publication is already in progress.",
     { "retry-after": "30" },
+  );
+
+export const issuanceGrantNotFound = (): ApiError =>
+  reasoned(
+    404,
+    "issuance_grant_not_found",
+    "grant_not_found",
+    "The issuance grant was not found.",
+  );
+
+export const issuanceGrantInactive = (
+  reason: "grant_disabled" | "grant_expired",
+): ApiError =>
+  reasoned(
+    403,
+    "issuance_grant_inactive",
+    reason,
+    `The issuance grant is not active (${reason}).`,
+  );
+
+export const caCapacityExceeded = (): ApiError =>
+  reasoned(
+    409,
+    "ca_capacity_exceeded",
+    "ca_capacity_exceeded",
+    "The CA has reached its certificate capacity.",
+  );
+
+export const issuanceRevoked = (
+  reason: "certificate_revoked" | "ca_revoked",
+): ApiError =>
+  reasoned(
+    409,
+    "issuance_revoked",
+    reason,
+    `The issued certificate is no longer valid (${reason}).`,
+  );
+
+export const issuanceExpired = (
+  reason: "result_expiring" | "inventory_expired" | "issuance_expired",
+): ApiError =>
+  reasoned(
+    409,
+    "issuance_expired",
+    reason,
+    `The certificate is too close to expiry (${reason}).`,
+  );
+
+export type RateLimitReason =
+  "grant_hour" | "grant_day" | "admin_hour" | "ca_hour";
+
+export const issuanceRateLimited = (
+  reason: RateLimitReason,
+  retryAfterSeconds: number,
+): ApiError =>
+  new ApiError(
+    429,
+    "issuance_rate_limited",
+    `The issuance rate limit was reached (${reason}).`,
+    reason,
+    {
+      details: { reason, retryAfterSeconds },
+      headers: { "retry-after": String(retryAfterSeconds) },
+    },
+  );
+
+export const agentGrantInactive = (): ApiError =>
+  new ApiError(
+    403,
+    "identity_not_active",
+    "The agent grant is not active.",
+    "agent_grant_inactive",
+    { details: { reason: "agent_grant_inactive" } },
+  );
+
+export const idempotencyKeyReused = (): ApiError =>
+  reasoned(
+    409,
+    "conflict",
+    "idempotency_key_reused",
+    "This idempotency key has already been used for a different request.",
+  );
+
+export const grantInvalid = (
+  first: { code: string; path: string; message: string },
+  count: number,
+): ApiError =>
+  new ApiError(
+    400,
+    "bad_request",
+    `The grant policy is invalid (${first.code} at ${first.path}).`,
+    first.code === "policy_too_large"
+      ? "policy_too_large"
+      : "invalid_grant_policy",
+    {
+      details: {
+        reason:
+          first.code === "policy_too_large"
+            ? "policy_too_large"
+            : "invalid_grant_policy",
+        code: first.code,
+        path: first.path,
+        errorCount: count,
+      },
+    },
   );

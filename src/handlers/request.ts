@@ -35,7 +35,7 @@ export const createErrorResponder =
     action: (
       app: A,
       correlationId: string,
-      setAuditContext: (context: RequestAuditContext) => void,
+      setAuditContext: (context: RequestAuditContext | undefined) => void,
     ) => Promise<APIGatewayProxyStructuredResultV2>,
   ): Promise<APIGatewayProxyStructuredResultV2> => {
     const correlationId = event.requestContext.requestId || newId();

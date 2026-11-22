@@ -8,9 +8,9 @@ pageType: how-to
 
 Replace `prod-issuing-1` with `prod-issuing-2` while the old CA drains.
 
-**Role:** administrator with the PKI CA role, and the root key holder. **Before you start:** an active `prod-issuing-1` and the [offline root recipe](pki-offline-root.md). Allow about an hour.
+**Role:** administrator with the PKI CA role and the PKI operator role (to migrate grants), and the root key holder. **Before you start:** an active `prod-issuing-1` and the [offline root recipe](pki-offline-root.md). Allow about an hour.
 
-Steps 2 to 5 need trust bundles and issuance grants, which arrive in later releases. Today you can complete steps 1 and 6.
+Step 3 needs trust bundles, which arrive in a later release. Steps 4 and 5 are available now, except that step 4 cannot check the bundle yet.
 
 ## Create the replacement
 
@@ -25,8 +25,23 @@ Steps 2 to 5 need trust bundles and issuance grants, which arrive in later relea
 ## Move trust and grants
 
 3. Add the new CA to every trust bundle and confirm its CRL is mounted. <Badge type="warning" text="later release" />
-4. Issue a test leaf under the new CA and verify it against the bundle with full-chain CRL checking. <Badge type="warning" text="later release" />
-5. Migrate each issuance grant to the new CA, then check that the old CA lists no grants. <Badge type="warning" text="later release" />
+4. Issue a test leaf under the new CA and verify it with full-chain CRL checking against your root and both CRLs. Verifying against a trust bundle arrives in a later release. <Badge type="warning" text="bundle check: later release" />
+
+   ```sh
+   hemlig pki cert issue prod-issuing-2 --csr test.csr --use-csr-names --out leaf.pem --chain-out chain.pem
+   openssl verify -x509_strict -crl_check_all -CAfile root.pem -untrusted chain.pem \
+     -CRLfile issuing2.crl.pem -CRLfile root.crl.pem leaf.pem
+   ```
+
+5. Migrate each issuance grant to the new CA, then check that the old CA lists no grants.
+
+   ```sh
+   hemlig pki grant migrate --from prod-issuing-1 --to prod-issuing-2 --dry-run
+   hemlig pki grant migrate --from prod-issuing-1 --to prod-issuing-2
+   hemlig pki grant list --ca prod-issuing-1
+   ```
+
+   The migration re-validates each grant against the new CA and exits with code 5 when any grant is invalid or fails. A grant that fails stays on the old CA. A rerun skips grants already moved. Certificates issued before the move stay valid until they expire or you revoke them.
 
 ## Retire the old CA
 

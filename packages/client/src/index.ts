@@ -426,6 +426,15 @@ export interface PkiCaDetail extends PkiCaSummary {
   readonly crl?: PkiCrlView;
   readonly rootCrl?: PkiRootCrlView;
   readonly warnings?: readonly PkiWarning[];
+  readonly capacity?: PkiCaCapacityView;
+}
+
+export interface PkiCaCapacityView {
+  readonly capacity: number;
+  readonly issuancePerHour: number;
+  readonly count?: number;
+  readonly countFrom?: string;
+  readonly countedAt?: string;
 }
 
 export interface PkiCreateCaResponse extends PkiCaDetail {
@@ -481,6 +490,298 @@ export interface PkiUploadCrlResponse {
   readonly crl: PkiExternalCaCrlPointer;
   readonly changed: boolean;
   readonly revokedCaIds: readonly string[];
+}
+
+export type PkiGrantStatus = "ACTIVE" | "DISABLED" | "DELETED";
+export type PkiCertificateStatus = "ISSUED" | "REVOKED" | "EXPIRED";
+export type PkiRevocationReason =
+  | "unspecified"
+  | "keyCompromise"
+  | "affiliationChanged"
+  | "superseded"
+  | "cessationOfOperation"
+  | "privilegeWithdrawn";
+
+export interface PkiGrantNameRules {
+  readonly allow?: readonly string[];
+  readonly deny?: readonly string[];
+}
+
+export interface PkiGrantDnsRules extends PkiGrantNameRules {
+  readonly allowWildcardNames?: boolean;
+}
+
+export interface PkiGrantNames {
+  readonly dns?: PkiGrantDnsRules;
+  readonly ip?: PkiGrantNameRules;
+  readonly uri?: PkiGrantNameRules;
+  readonly commonName?: Readonly<Record<string, unknown>>;
+  readonly maxSans?: number;
+}
+
+/** The grant policy fields (the grant shape minus its envelope). */
+export interface PkiGrantPolicyFields {
+  readonly names?: PkiGrantNames;
+  readonly subject?: {
+    readonly allow?: Readonly<Record<string, readonly string[]>>;
+  };
+  readonly keyAlgorithms?: readonly PkiLeafKeyAlgorithm[];
+  readonly keyUsages?: readonly string[];
+  readonly extendedKeyUsages?: {
+    readonly allow: readonly string[];
+    readonly default: readonly string[];
+  };
+  readonly lifetime?: {
+    readonly defaultSeconds: number;
+    readonly maxSeconds: number;
+    readonly minSeconds?: number;
+  };
+  readonly forced?: {
+    readonly subject?: Readonly<Record<string, string>>;
+    readonly sans?: PkiNameSubtrees;
+    readonly certificatePolicies?: readonly string[];
+  };
+  readonly quotas?: { readonly perHour?: number; readonly perDay?: number };
+}
+
+/** Body of a grant PUT: policy fields plus the envelope. */
+export interface PkiIssuanceGrantInput extends PkiGrantPolicyFields {
+  readonly caId: string;
+  readonly displayName?: string;
+  readonly status?: "ACTIVE" | "DISABLED";
+  readonly expiresAt?: string;
+}
+
+export interface PkiCreateIssuanceGrantRequest extends PkiIssuanceGrantInput {
+  readonly name: string;
+}
+
+export interface PkiGrantQuotas {
+  readonly perHour: number;
+  readonly perDay: number;
+}
+
+export interface PkiIssuanceGrant {
+  readonly consumerId: string;
+  readonly environment: string;
+  readonly name: string;
+  readonly uid: string;
+  readonly caId: string;
+  readonly status: PkiGrantStatus;
+  readonly expired: boolean;
+  readonly displayName?: string;
+  readonly expiresAt?: string;
+  readonly policy: PkiGrantPolicyFields;
+  readonly policyDigest: string;
+  readonly quotas: PkiGrantQuotas;
+  readonly version: string;
+  readonly createdAt: string;
+  readonly createdBy: Record<string, unknown>;
+  readonly updatedAt: string;
+  readonly updatedBy: Record<string, unknown>;
+  readonly deletedAt?: string;
+  readonly deletedBy?: Record<string, unknown>;
+  readonly warnings?: readonly PkiGrantIssue[];
+}
+
+export interface PkiIssuanceGrantListPage {
+  readonly grants: readonly PkiIssuanceGrant[];
+  readonly nextCursor?: string;
+  readonly generatedAt: string;
+}
+
+export interface PkiGrantIssue {
+  readonly code: string;
+  readonly path: string;
+  readonly message: string;
+}
+
+export interface PkiGrantValidationResult {
+  readonly valid: boolean;
+  readonly errors: readonly PkiGrantIssue[];
+  readonly warnings: readonly PkiGrantIssue[];
+  readonly policyDigest?: string;
+}
+
+export interface PkiEvaluateRequest {
+  readonly certificateSigningRequestPem?: string;
+  readonly keyAlgorithm?: PkiLeafKeyAlgorithm;
+  readonly sans?: {
+    readonly dns?: readonly string[];
+    readonly ip?: readonly string[];
+    readonly uri?: readonly string[];
+  };
+  readonly commonName?: string;
+  readonly subject?: Readonly<Record<string, string>>;
+  readonly durationSeconds?: number;
+  readonly usages?: readonly string[];
+  readonly isCA?: boolean;
+}
+
+export interface PkiTraceStep {
+  readonly step: number;
+  readonly name: string;
+  readonly outcome: string;
+  readonly [key: string]: unknown;
+}
+
+export interface PkiEvaluateResponse {
+  readonly decision: "allow" | "deny";
+  readonly denial?: {
+    readonly reason: string;
+    readonly detail?: string;
+    readonly deniedNameType?: string;
+    readonly deniedName?: string;
+  };
+  readonly trace: readonly PkiTraceStep[];
+  readonly plan?: Readonly<Record<string, unknown>>;
+  readonly context: Readonly<Record<string, unknown>>;
+}
+
+/** Consumer issue request: names come from the CSR only. */
+export interface PkiIssueCertificateRequest {
+  readonly certificateSigningRequestPem: string;
+  readonly durationSeconds?: number;
+  readonly usages?: readonly string[];
+  readonly isCA?: boolean;
+  readonly requester?: {
+    readonly kubernetes?: {
+      readonly namespace: string;
+      readonly name: string;
+      readonly uid: string;
+      readonly certificateName?: string;
+      readonly revision?: string;
+    };
+  };
+}
+
+export interface PkiAdminIssueCertificateRequest {
+  readonly certificateSigningRequestPem: string;
+  readonly useCsrNames?: boolean;
+  readonly sans?: {
+    readonly dns?: readonly string[];
+    readonly ip?: readonly string[];
+    readonly uri?: readonly string[];
+  };
+  readonly subject?: Partial<
+    Record<
+      | "commonName"
+      | "organization"
+      | "organizationalUnit"
+      | "country"
+      | "locality"
+      | "state",
+      string
+    >
+  >;
+  readonly durationSeconds?: number;
+  readonly usages?: readonly string[];
+  readonly isCA?: boolean;
+}
+
+export interface PkiIssuedCertificate {
+  readonly caId: string;
+  readonly serial: string;
+  readonly fingerprint: string;
+  readonly certificatePem: string;
+  readonly chainPem: string;
+  readonly caPem: string;
+  readonly notBefore: string;
+  readonly notAfter: string;
+  readonly lifetimeClamped: boolean;
+  readonly issuanceGrant?: string;
+}
+
+export interface PkiCertificateSummary {
+  readonly caId: string;
+  readonly serial: string;
+  readonly status: PkiCertificateStatus | "CA_REVOKED";
+  readonly storedStatus: "ISSUED" | "REVOKED";
+  readonly fingerprint: string;
+  readonly subject: string;
+  readonly sans: Readonly<Record<string, readonly string[]>>;
+  readonly keyAlgorithm?: string;
+  readonly notBefore: string;
+  readonly notAfter: string;
+  readonly issuedAt: string;
+  readonly requester: Readonly<Record<string, unknown>>;
+  readonly revocation?: Readonly<Record<string, unknown>>;
+}
+
+export interface PkiCertificateDetail extends PkiCertificateSummary {
+  readonly certificatePem: string;
+  readonly spkiSha256: string;
+  readonly keyUsages: readonly string[];
+  readonly extendedKeyUsages: readonly string[];
+  readonly lifetimeClamped: boolean;
+}
+
+export interface PkiCertificateListPage {
+  readonly certificates: readonly PkiCertificateSummary[];
+  readonly nextCursor?: string;
+  readonly generatedAt: string;
+}
+
+export interface PkiRevokeCertificateRequest {
+  readonly reason?: PkiRevocationReason;
+  readonly invalidityDate?: string;
+}
+
+export interface PkiRevokeCertificateResponse {
+  readonly certificate: PkiCertificateDetail;
+  readonly crlEntry: boolean;
+  readonly crlPublished: boolean;
+  readonly crlNumber?: number;
+  readonly changed: boolean;
+  readonly crl?: {
+    readonly number?: number;
+    readonly pendingRevocations?: number;
+  };
+}
+
+export interface PkiBulkRevokeRequest {
+  readonly reason?: PkiRevocationReason;
+  readonly invalidityDate?: string;
+  readonly issuanceGrant?: string;
+  readonly issuanceGrantUid?: string;
+}
+
+export interface PkiBulkRevokeResponse {
+  readonly consumerId: string;
+  readonly issuanceGrant?: string;
+  /** False when the run hit its deadline: retry with the same idempotency key. */
+  readonly complete: boolean;
+  readonly revoked: number;
+  readonly alreadyRevoked: number;
+  readonly caIds: readonly string[];
+  readonly crls?: readonly {
+    readonly caId: string;
+    readonly crlPublished: boolean;
+    readonly crlNumber?: number;
+  }[];
+}
+
+export interface PkiConsumerIssuanceGrant {
+  readonly name: string;
+  readonly uid: string;
+  readonly status: PkiGrantStatus;
+  readonly expired: boolean;
+  readonly version: string;
+  readonly expiresAt?: string;
+  readonly policy: PkiGrantPolicyFields;
+  readonly quotas: PkiGrantQuotas;
+  readonly ca: {
+    readonly caId: string;
+    readonly name?: string;
+    readonly fingerprint?: string;
+    readonly notAfter?: string;
+    readonly status: PkiCaStatus | "UNKNOWN";
+  };
+}
+
+export interface PkiConsumerIssuanceGrantList {
+  readonly grants: readonly PkiConsumerIssuanceGrant[];
+  readonly generatedAt: string;
 }
 
 export interface TransportRequest {
@@ -1178,6 +1479,267 @@ export class HemligClient {
     );
   }
 
+  public async listCaIssuanceGrants(
+    token: string,
+    caId: string,
+    query: { readonly cursor?: string } = {},
+  ): Promise<PkiIssuanceGrantListPage> {
+    return this.request(
+      "GET",
+      withQuery(`${pkiCaPath(caId)}/issuance-grants`, query),
+      token,
+    );
+  }
+
+  public async listAdminIssuanceGrants(
+    token: string,
+    consumerId: string,
+    query: { readonly includeDeleted?: boolean; readonly cursor?: string } = {},
+  ): Promise<PkiIssuanceGrantListPage> {
+    return this.request(
+      "GET",
+      withQuery(pkiGrantsPath(consumerId), {
+        includeDeleted: query.includeDeleted ? "true" : undefined,
+        cursor: query.cursor,
+      }),
+      token,
+    );
+  }
+
+  public async getAdminIssuanceGrant(
+    token: string,
+    consumerId: string,
+    name: string,
+  ): Promise<PkiIssuanceGrant> {
+    return this.request("GET", pkiGrantPath(consumerId, name), token);
+  }
+
+  public async createIssuanceGrant(
+    token: string,
+    consumerId: string,
+    input: PkiCreateIssuanceGrantRequest,
+    idempotencyKey: string,
+  ): Promise<PkiIssuanceGrant> {
+    return this.request(
+      "POST",
+      pkiGrantsPath(consumerId),
+      token,
+      input,
+      idempotencyKey,
+    );
+  }
+
+  /** Dry-runs a grant create: nothing is written and no key is needed. */
+  public async validateIssuanceGrantCreate(
+    token: string,
+    consumerId: string,
+    input: PkiCreateIssuanceGrantRequest,
+  ): Promise<PkiGrantValidationResult> {
+    return this.request(
+      "POST",
+      withQuery(pkiGrantsPath(consumerId), { validateOnly: "true" }),
+      token,
+      input,
+    );
+  }
+
+  public async updateIssuanceGrant(
+    token: string,
+    consumerId: string,
+    name: string,
+    version: string,
+    input: PkiIssuanceGrantInput,
+    idempotencyKey: string,
+  ): Promise<PkiIssuanceGrant> {
+    return this.request(
+      "PUT",
+      pkiGrantPath(consumerId, name),
+      token,
+      input,
+      idempotencyKey,
+      version,
+    );
+  }
+
+  /** Dry-runs a grant update: `If-Match` is required, no key is sent. */
+  public async validateIssuanceGrantUpdate(
+    token: string,
+    consumerId: string,
+    name: string,
+    version: string,
+    input: PkiIssuanceGrantInput,
+  ): Promise<PkiGrantValidationResult> {
+    return this.request(
+      "PUT",
+      withQuery(pkiGrantPath(consumerId, name), { validateOnly: "true" }),
+      token,
+      input,
+      undefined,
+      version,
+    );
+  }
+
+  public async deleteIssuanceGrant(
+    token: string,
+    consumerId: string,
+    name: string,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<PkiIssuanceGrant> {
+    return this.request(
+      "DELETE",
+      pkiGrantPath(consumerId, name),
+      token,
+      undefined,
+      idempotencyKey,
+      version,
+    );
+  }
+
+  public async evaluateIssuanceGrant(
+    token: string,
+    consumerId: string,
+    name: string,
+    input: PkiEvaluateRequest,
+  ): Promise<PkiEvaluateResponse> {
+    return this.request(
+      "POST",
+      `${pkiGrantPath(consumerId, name)}/evaluate`,
+      token,
+      input,
+    );
+  }
+
+  public async listPkiCertificates(
+    token: string,
+    caId: string,
+    query: {
+      readonly status?: PkiCertificateStatus;
+      readonly expiringBefore?: string;
+      readonly cursor?: string;
+    } = {},
+  ): Promise<PkiCertificateListPage> {
+    return this.request(
+      "GET",
+      withQuery(`${pkiCaPath(caId)}/certificates`, query),
+      token,
+    );
+  }
+
+  public async getPkiCertificate(
+    token: string,
+    caId: string,
+    serial: string,
+  ): Promise<PkiCertificateDetail> {
+    return this.request(
+      "GET",
+      `${pkiCaPath(caId)}/certificates/${encodeURIComponent(serial)}`,
+      token,
+    );
+  }
+
+  public async issuePkiCertificate(
+    token: string,
+    caId: string,
+    input: PkiAdminIssueCertificateRequest,
+    idempotencyKey: string,
+  ): Promise<PkiIssuedCertificate> {
+    return this.request(
+      "POST",
+      `${pkiCaPath(caId)}/certificates`,
+      token,
+      input,
+      idempotencyKey,
+    );
+  }
+
+  public async revokePkiCertificate(
+    token: string,
+    caId: string,
+    serial: string,
+    input: PkiRevokeCertificateRequest,
+    idempotencyKey: string,
+  ): Promise<PkiRevokeCertificateResponse> {
+    return this.request(
+      "POST",
+      `${pkiCaPath(caId)}/certificates/${encodeURIComponent(serial)}/revoke`,
+      token,
+      input,
+      idempotencyKey,
+    );
+  }
+
+  public async listConsumerPkiCertificates(
+    token: string,
+    consumerId: string,
+    query: {
+      readonly issuanceGrant?: string;
+      readonly includeExpired?: boolean;
+      readonly cursor?: string;
+    } = {},
+  ): Promise<PkiCertificateListPage> {
+    return this.request(
+      "GET",
+      withQuery(
+        `/v1/admin/pki/consumers/${encodeURIComponent(consumerId)}/certificates`,
+        {
+          issuanceGrant: query.issuanceGrant,
+          includeExpired: query.includeExpired ? "true" : undefined,
+          cursor: query.cursor,
+        },
+      ),
+      token,
+    );
+  }
+
+  /**
+   * Revokes a consumer's certificates. When `complete` is false the run hit its
+   * deadline: repeat the call with the same idempotency key.
+   */
+  public async revokeConsumerPkiCertificates(
+    token: string,
+    consumerId: string,
+    input: PkiBulkRevokeRequest,
+    idempotencyKey: string,
+  ): Promise<PkiBulkRevokeResponse> {
+    return this.request(
+      "POST",
+      `/v1/admin/pki/consumers/${encodeURIComponent(consumerId)}/certificates/revoke`,
+      token,
+      input,
+      idempotencyKey,
+    );
+  }
+
+  /** Lists the calling consumer's live grants (mTLS; no token). */
+  public async listIssuanceGrants(): Promise<PkiConsumerIssuanceGrantList> {
+    return this.request("GET", "/v1/pki/issuance-grants");
+  }
+
+  public async getIssuanceGrant(
+    name: string,
+  ): Promise<PkiConsumerIssuanceGrant> {
+    return this.request(
+      "GET",
+      `/v1/pki/issuance-grants/${encodeURIComponent(name)}`,
+    );
+  }
+
+  /** Reuse the same idempotency key (for example a CSR hash) when retrying. */
+  public async issueCertificate(
+    name: string,
+    input: PkiIssueCertificateRequest,
+    idempotencyKey: string,
+  ): Promise<PkiIssuedCertificate> {
+    return this.request(
+      "POST",
+      `/v1/pki/issuance-grants/${encodeURIComponent(name)}/certificates`,
+      undefined,
+      input,
+      idempotencyKey,
+    );
+  }
+
   private request<T>(
     method: TransportRequest["method"],
     path: string,
@@ -1314,6 +1876,12 @@ const withQuery = (
 
 const pkiCaPath = (caId: string): string =>
   `/v1/admin/pki/cas/${encodeURIComponent(caId)}`;
+
+const pkiGrantsPath = (consumerId: string): string =>
+  `/v1/admin/pki/consumers/${encodeURIComponent(consumerId)}/issuance-grants`;
+
+const pkiGrantPath = (consumerId: string, name: string): string =>
+  `${pkiGrantsPath(consumerId)}/${encodeURIComponent(name)}`;
 
 const unquoteEtag = (value: string | undefined): string | undefined => {
   if (value === undefined) {

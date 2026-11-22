@@ -12,7 +12,13 @@ export interface PkiServiceDeps {
   readonly pki: PkiRepository;
   readonly repository: Pick<
     DynamoRepository,
-    "getIdempotency" | "getIssuer" | "requireEnvironment"
+    | "getIdempotency"
+    | "getIssuer"
+    | "requireEnvironment"
+    | "getIdentity"
+    | "getConsumer"
+    | "getAgentGrant"
+    | "getAgentGrantIdForConsumer"
   >;
   readonly objects: Pick<ObjectStore, "putImmutableOrGet" | "getBytes">;
   readonly signerFor: PkiApplication["signerFor"];

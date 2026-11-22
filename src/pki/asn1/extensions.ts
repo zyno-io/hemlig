@@ -144,6 +144,11 @@ export const certificatePoliciesValue = (oids: readonly string[]): Buffer =>
     ),
   );
 
+export const decodeCertificatePolicies = (value: Uint8Array): string[] =>
+  AsnConvert.parse(value, CertificatePolicies).map(
+    (policy) => policy.policyIdentifier,
+  );
+
 export const keyIdentifierValue = (keyId: Uint8Array): Buffer =>
   octetString(keyId);
 

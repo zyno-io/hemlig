@@ -2,7 +2,8 @@
  * Root, intermediate, CRL and key builders shared by the jest suites and the MiniStack scripts. Lives outside
  * `__fixtures__`, which the build excludes.
  */
-import { caSignatureAlgorithmIdentifier } from "../pki/asn1/algorithms";
+import { generateKeyPairSync, sign } from "node:crypto";
+import { caSignatureAlgorithmIdentifier, OID } from "../pki/asn1/algorithms";
 import {
   assembleCertificate,
   buildCaTbs,
@@ -12,8 +13,11 @@ import {
 } from "../pki/asn1/certificate";
 import { assembleCrl } from "../pki/asn1/crl";
 import {
+  bitString,
   explicit,
+  oid,
   seq,
+  set,
   smallInteger,
   tlv,
   unsignedInteger,
@@ -30,6 +34,7 @@ import {
   keyIdentifierValue,
   keyUsageValue,
 } from "../pki/asn1/extensions";
+import { encodeSubjectAltName } from "../pki/asn1/names";
 import { toPem } from "../pki/asn1/pem";
 import { signWithPkcs8 } from "../pki/signer";
 import { buildCaSubject } from "../pki/subject";
@@ -272,3 +277,45 @@ export const crlPem = (der: Uint8Array): string => toPem(der, "X509 CRL");
 /** ENUMERATED-valued reason code extension with an arbitrary code (for removeFromCRL = 8). */
 export const rawReasonExtension = (code: number): Buffer =>
   extension(EXT.reasonCode, false, tlv(TAG.enumerated, Buffer.from([code])));
+
+/** A P-256 leaf CSR with a common name and optional DNS SANs, for the issuance suites. */
+export const makeLeafCsr = (options: {
+  commonName: string;
+  dns?: readonly string[];
+}): { pem: string; privateKeyPem: string } => {
+  const { privateKey, publicKey } = generateKeyPairSync("ec", {
+    namedCurve: "prime256v1",
+  });
+  const extensions =
+    options.dns === undefined || options.dns.length === 0
+      ? []
+      : [
+          extension(
+            EXT.subjectAltName,
+            false,
+            encodeSubjectAltName({ dns: options.dns }),
+          ),
+        ];
+  const info = seq(
+    smallInteger(0),
+    subjectDer(options.commonName),
+    publicKey.export({ type: "spki", format: "der" }),
+    tlv(
+      0xa0,
+      ...(extensions.length === 0
+        ? []
+        : [seq(oid(EXT.extensionRequest), set(seq(...extensions)))]),
+    ),
+  );
+  const signature = sign("sha256", info, {
+    key: privateKey,
+    dsaEncoding: "der",
+  });
+  return {
+    pem: toPem(
+      seq(info, seq(oid(OID.ecdsaSha256)), bitString(signature)),
+      "CERTIFICATE REQUEST",
+    ),
+    privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }) as string,
+  };
+};

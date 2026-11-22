@@ -781,3 +781,1098 @@ test("a CSR write failure after create says the CA exists", async () => {
     assert.match(JSON.parse(result.stderr).error.message, /CA was created/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4: grants, certificates and bulk revocation.
+
+const grantPolicy = {
+  names: { dns: { allow: ["*.acc.example.com"] }, maxSans: 5 },
+  keyUsages: ["digitalSignature"],
+  extendedKeyUsages: { allow: ["serverAuth"], default: ["serverAuth"] },
+  lifetime: { defaultSeconds: 3600, maxSeconds: 86400 },
+};
+const otherCaId = "ca-99999999-2222-3333-4444-555555555555";
+const grantView = (over: Record<string, unknown> = {}) => ({
+  consumerId: "web-1",
+  environment: "production",
+  name: "acc-web",
+  uid: "pkg-1",
+  caId,
+  status: "ACTIVE",
+  expired: false,
+  policy: grantPolicy,
+  version: "pkv-1",
+  ...over,
+});
+const jsonResponse = (body: unknown, status = 200): TransportResponse => ({
+  status,
+  headers: {},
+  body,
+});
+
+test("grant file rules and --ca resolution are checked before any request", async () => {
+  await withDir(async (dir) => {
+    const good = join(dir, "grant.json");
+    await writeFile(good, JSON.stringify(grantPolicy));
+    const named = join(dir, "named.json");
+    await writeFile(named, JSON.stringify({ ...grantPolicy, name: "other" }));
+    const withCa = join(dir, "with-ca.json");
+    await writeFile(withCa, JSON.stringify({ ...grantPolicy, caId }));
+    const notJson = join(dir, "bad.json");
+    await writeFile(notJson, "{");
+    const big = join(dir, "big.json");
+    await writeFile(big, "x".repeat(65537));
+    const array = join(dir, "array.json");
+    await writeFile(array, "[]");
+    for (const args of [
+      ["grant", "create", "web-1", "acc-web"],
+      ["grant", "create", "web-1", "acc-web", "--file", good],
+      ["grant", "create", "web-1", "acc-web", "--file", named, "--ca", caId],
+      ["grant", "create", "web-1", "acc-web", "--file", notJson, "--ca", caId],
+      ["grant", "create", "web-1", "acc-web", "--file", big, "--ca", caId],
+      ["grant", "create", "web-1", "acc-web", "--file", array, "--ca", caId],
+      [
+        "grant",
+        "create",
+        "web-1",
+        "acc-web",
+        "--file",
+        withCa,
+        "--ca",
+        otherCaId,
+      ],
+      ["grant", "create", "Web", "acc-web", "--file", withCa],
+      ["grant", "update", "web-1", "acc-web", "--file", withCa],
+      [
+        "grant",
+        "create",
+        "web-1",
+        "acc-web",
+        "--file",
+        withCa,
+        "--validate-only",
+        "--idempotency-key",
+        "key-12345678",
+      ],
+      ["grant", "delete", "web-1", "acc-web"],
+      ["grant", "list"],
+      ["grant", "list", "web-1", "--ca", caId],
+      ["grant", "get", "web-1"],
+    ]) {
+      const result = await execute(["pki", ...args]);
+      assert.equal(result.exitCode, 2, args.join(" "));
+      assert.equal(result.requests.length, 0, args.join(" "));
+    }
+    const missing = await execute([
+      "pki",
+      "grant",
+      "create",
+      "web-1",
+      "acc-web",
+      "--file",
+      join(dir, "nope.json"),
+      "--ca",
+      caId,
+    ]);
+    assert.equal(missing.exitCode, 9);
+  });
+});
+
+test("grant create sends the envelope, resolves --ca by name and replays by key", async () => {
+  await withDir(async (dir) => {
+    const file = join(dir, "grant.json");
+    await writeFile(
+      file,
+      JSON.stringify({ ...grantPolicy, name: "acc-web", displayName: "Web" }),
+    );
+    const result = await execute(
+      [
+        "pki",
+        "grant",
+        "create",
+        "web-1",
+        "acc-web",
+        "--file",
+        file,
+        "--ca",
+        "issuing-1",
+        "--idempotency-key",
+        "key-12345678",
+      ],
+      (request) =>
+        request.method === "GET"
+          ? jsonResponse({ cas: [{ caId, name: "issuing-1" }] })
+          : jsonResponse(grantView(), 201),
+    );
+    assert.equal(result.exitCode, 0, result.stderr);
+    const post = result.requests[1]!;
+    assert.equal(post.method, "POST");
+    assert.equal(
+      post.url.pathname,
+      "/v1/admin/pki/consumers/web-1/issuance-grants",
+    );
+    assert.equal(post.url.search, "");
+    assert.equal(post.headers?.["idempotency-key"], "key-12345678");
+    assert.deepEqual(post.body, {
+      ...grantPolicy,
+      displayName: "Web",
+      caId,
+      name: "acc-web",
+    });
+    const receipt = JSON.parse(result.stdout);
+    assert.equal(receipt.etag, "pkv-1");
+    assert.equal(receipt.idempotencyKey, "key-12345678");
+  });
+});
+
+test("grant create and update --validate-only send validateOnly and no key", async () => {
+  await withDir(async (dir) => {
+    const file = join(dir, "grant.json");
+    await writeFile(file, JSON.stringify({ ...grantPolicy, caId }));
+    const created = await execute(
+      [
+        "pki",
+        "grant",
+        "create",
+        "web-1",
+        "acc-web",
+        "--file",
+        file,
+        "--validate-only",
+      ],
+      () => jsonResponse({ valid: true, errors: [], warnings: [] }),
+    );
+    assert.equal(created.exitCode, 0, created.stderr);
+    const first = created.requests[0]!;
+    assert.equal(first.url.searchParams.get("validateOnly"), "true");
+    assert.equal(first.headers?.["idempotency-key"], undefined);
+    assert.equal(JSON.parse(created.stdout).idempotencyKey, undefined);
+
+    const updated = await execute(
+      [
+        "pki",
+        "grant",
+        "update",
+        "web-1",
+        "acc-web",
+        "--file",
+        file,
+        "--if-match",
+        "current",
+        "--validate-only",
+      ],
+      (request) =>
+        request.method === "GET"
+          ? jsonResponse(grantView({ version: "pkv-7" }))
+          : jsonResponse({
+              valid: false,
+              errors: [{ code: "x", path: "p", message: "m" }],
+              warnings: [],
+            }),
+    );
+    assert.equal(updated.exitCode, 5);
+    const put = updated.requests[1]!;
+    assert.equal(put.method, "PUT");
+    assert.equal(put.url.searchParams.get("validateOnly"), "true");
+    assert.equal(put.headers?.["if-match"], '"pkv-7"');
+    assert.equal(put.headers?.["idempotency-key"], undefined);
+    assert.equal(JSON.parse(updated.stdout).data.valid, false);
+  });
+});
+
+test("grant update and delete send If-Match, and list/get/evaluate read", async () => {
+  await withDir(async (dir) => {
+    const file = join(dir, "grant.json");
+    await writeFile(file, JSON.stringify(grantPolicy));
+    const update = await execute(
+      [
+        "pki",
+        "grant",
+        "update",
+        "web-1",
+        "acc-web",
+        "--file",
+        file,
+        "--ca",
+        caId,
+        "--if-match",
+        '"pkv-1"',
+        "--idempotency-key",
+        "key-12345678",
+      ],
+      () => jsonResponse(grantView({ version: "pkv-2" })),
+    );
+    assert.equal(update.exitCode, 0, update.stderr);
+    assert.equal(update.requests[0]?.method, "PUT");
+    assert.equal(update.requests[0]?.headers?.["if-match"], '"pkv-1"');
+    assert.deepEqual(update.requests[0]?.body, { ...grantPolicy, caId });
+    const del = await execute(
+      ["pki", "grant", "delete", "web-1", "acc-web", "--if-match", "pkv-2"],
+      () => jsonResponse(grantView({ status: "DELETED" })),
+    );
+    assert.equal(del.exitCode, 0, del.stderr);
+    assert.equal(del.requests[0]?.method, "DELETE");
+    assert.equal(del.requests[0]?.headers?.["if-match"], '"pkv-2"');
+    assert.ok(del.requests[0]?.headers?.["idempotency-key"]);
+
+    const byConsumer = await execute(
+      ["pki", "grant", "list", "web-1", "--include-deleted", "--cursor", "c1"],
+      () => jsonResponse({ grants: [] }),
+    );
+    assert.equal(
+      byConsumer.requests[0]?.url.search,
+      "?includeDeleted=true&cursor=c1",
+    );
+    const byCa = await execute(["pki", "grant", "list", "--ca", caId], () =>
+      jsonResponse({ grants: [] }),
+    );
+    assert.equal(
+      byCa.requests[0]?.url.pathname,
+      `/v1/admin/pki/cas/${caId}/issuance-grants`,
+    );
+    const got = await execute(["pki", "grant", "get", "web-1", "acc-web"], () =>
+      jsonResponse(grantView()),
+    );
+    assert.equal(JSON.parse(got.stdout).etag, "pkv-1");
+  });
+});
+
+test("grant evaluate takes a CSR or names, never both, and refuses a private key", async () => {
+  await withDir(async (dir) => {
+    const csr = join(dir, "x.csr");
+    await writeFile(
+      csr,
+      "-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n",
+    );
+    const key = join(dir, "x.key");
+    await writeFile(
+      key,
+      "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+    );
+    for (const args of [
+      ["grant", "evaluate", "web-1", "acc-web"],
+      [
+        "grant",
+        "evaluate",
+        "web-1",
+        "acc-web",
+        "--csr",
+        csr,
+        "--dns",
+        "a.example.com",
+      ],
+      [
+        "grant",
+        "evaluate",
+        "web-1",
+        "acc-web",
+        "--key-algorithm",
+        "ECDSA_P256",
+      ],
+      [
+        "grant",
+        "evaluate",
+        "web-1",
+        "acc-web",
+        "--key-algorithm",
+        "DES",
+        "--cn",
+        "x",
+      ],
+      ["grant", "evaluate", "web-1", "acc-web", "--csr", key],
+    ]) {
+      const result = await execute(["pki", ...args]);
+      assert.equal(result.exitCode, 2, args.join(" "));
+      assert.equal(result.requests.length, 0);
+      assert.doesNotMatch(result.stderr, /PRIVATE KEY/);
+    }
+    const viaCsr = await execute(
+      [
+        "pki",
+        "grant",
+        "evaluate",
+        "web-1",
+        "acc-web",
+        "--csr",
+        csr,
+        "--duration",
+        "2h",
+        "--usage",
+        "server auth",
+      ],
+      () => jsonResponse({ decision: "allow", trace: [], context: {} }),
+    );
+    assert.equal(viaCsr.exitCode, 0, viaCsr.stderr);
+    assert.equal(
+      viaCsr.requests[0]?.url.pathname,
+      "/v1/admin/pki/consumers/web-1/issuance-grants/acc-web/evaluate",
+    );
+    assert.deepEqual(viaCsr.requests[0]?.body, {
+      certificateSigningRequestPem: await readFile(csr, "utf8"),
+      durationSeconds: 7200,
+      usages: ["server auth"],
+    });
+    const viaNames = await execute(
+      [
+        "pki",
+        "grant",
+        "evaluate",
+        "web-1",
+        "acc-web",
+        "--key-algorithm",
+        "ECDSA_P256",
+        "--dns",
+        "a.acc.example.com",
+        "--dns",
+        "b.acc.example.com",
+        "--ip",
+        "10.0.0.1",
+        "--cn",
+        "a.acc.example.com",
+      ],
+      () => jsonResponse({ decision: "deny", trace: [], context: {} }),
+    );
+    assert.deepEqual(viaNames.requests[0]?.body, {
+      keyAlgorithm: "ECDSA_P256",
+      sans: {
+        dns: ["a.acc.example.com", "b.acc.example.com"],
+        ip: ["10.0.0.1"],
+      },
+      commonName: "a.acc.example.com",
+    });
+  });
+});
+
+const migrateKey = (consumer: string, name: string, version: string) =>
+  `migrate-${createHash("sha256")
+    .update(JSON.stringify([caId, otherCaId, consumer, name, version]))
+    .digest("hex")
+    .slice(0, 32)}`;
+
+function migrationServer(
+  onPut?: (request: TransportRequest) => TransportResponse,
+) {
+  const grants: Record<string, ReturnType<typeof grantView>> = {
+    a: grantView({
+      consumerId: "web-1",
+      name: "a",
+      uid: "pkg-a",
+      version: "v-a",
+      displayName: "A",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      status: "DISABLED",
+    }),
+    b: grantView({
+      consumerId: "web-2",
+      name: "b",
+      uid: "pkg-b",
+      version: "v-b",
+      caId: otherCaId,
+    }),
+    c: grantView({
+      consumerId: "web-3",
+      name: "c",
+      uid: "pkg-c",
+      version: "v-c",
+      status: "DELETED",
+    }),
+    d: grantView({
+      consumerId: "web-4",
+      name: "d",
+      uid: "pkg-d",
+      version: "v-d",
+    }),
+  };
+  const respond: Responder = (request) => {
+    const path = request.url.pathname;
+    if (path === `/v1/admin/pki/cas/${caId}/issuance-grants`)
+      return jsonResponse({
+        grants: Object.values(grants).filter((g) => g.caId === caId),
+      });
+    const match = /consumers\/(web-\d)\/issuance-grants\/([a-z])$/.exec(path);
+    if (match === null) return jsonResponse({}, 404);
+    const grant = grants[match[2]!]!;
+    if (request.method === "GET") return jsonResponse(grant);
+    return onPut ? onPut(request) : jsonResponse({ ...grant, caId: otherCaId });
+  };
+  return respond;
+}
+
+test("grant migrate --dry-run validates with If-Match, sends no key and writes nothing", async () => {
+  const result = await execute(
+    ["pki", "grant", "migrate", "--from", caId, "--to", otherCaId, "--dry-run"],
+    (request) =>
+      request.method === "PUT"
+        ? jsonResponse({
+            valid: !request.url.pathname.endsWith("/d"),
+            errors: request.url.pathname.endsWith("/d")
+              ? [
+                  {
+                    code: "name_outside_constraints",
+                    path: "names",
+                    message: "m",
+                  },
+                ]
+              : [],
+            warnings: [],
+          })
+        : migrationServer()(request),
+  );
+  const puts = result.requests.filter((r) => r.method === "PUT");
+  assert.equal(puts.length, 2);
+  for (const put of puts) {
+    assert.equal(put.url.searchParams.get("validateOnly"), "true");
+    assert.equal(put.headers?.["idempotency-key"], undefined);
+  }
+  assert.equal(puts[0]?.headers?.["if-match"], '"v-a"');
+  assert.deepEqual(puts[0]?.body, {
+    ...grantPolicy,
+    caId: otherCaId,
+    status: "DISABLED",
+    displayName: "A",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  });
+  assert.equal(result.exitCode, 5);
+  const data = JSON.parse(result.stdout).data;
+  assert.deepEqual(
+    data.results.map((r: { name: string; outcome: string }) => [
+      r.name,
+      r.outcome,
+    ]),
+    [
+      ["a", "valid"],
+      ["c", "skipped"],
+      ["d", "invalid"],
+    ],
+  );
+});
+
+test("grant migrate skips moved and deleted grants, uses deterministic keys and exits 5 on failure", async () => {
+  // The listing is a snapshot: b lists under the old CA but was moved already.
+  const base = migrationServer();
+  const listing = [
+    { consumerId: "web-1", name: "a" },
+    { consumerId: "web-2", name: "b" },
+    { consumerId: "web-3", name: "c" },
+    { consumerId: "web-4", name: "d" },
+  ];
+  let listCalls = 0;
+  const respond: Responder = (request) => {
+    if (
+      request.url.pathname.endsWith("/issuance-grants") &&
+      request.method === "GET"
+    ) {
+      listCalls += 1;
+      return jsonResponse({
+        grants:
+          listCalls === 1 ? listing : [{ consumerId: "web-4", name: "d" }],
+      });
+    }
+    if (request.method === "PUT" && request.url.pathname.endsWith("/d"))
+      return {
+        status: 412,
+        headers: {},
+        body: {
+          error: { code: "precondition_failed", message: "secret detail" },
+        },
+      };
+    return base(request);
+  };
+  const first = await execute(
+    ["pki", "grant", "migrate", "--from", caId, "--to", otherCaId],
+    respond,
+  );
+  assert.equal(first.exitCode, 5);
+  const puts = first.requests.filter((r) => r.method === "PUT");
+  assert.equal(puts.length, 2);
+  assert.equal(
+    puts[0]?.headers?.["idempotency-key"],
+    migrateKey("web-1", "a", "v-a"),
+  );
+  assert.equal(puts[0]?.headers?.["if-match"], '"v-a"');
+  assert.equal(puts[0]?.url.search, "");
+  const data = JSON.parse(first.stdout).data;
+  assert.deepEqual(
+    data.results.map((r: { name: string; outcome: string }) => [
+      r.name,
+      r.outcome,
+    ]),
+    [
+      ["a", "migrated"],
+      ["b", "skipped"],
+      ["c", "skipped"],
+      ["d", "failed"],
+    ],
+  );
+  assert.equal(data.remainingListed, 1);
+  assert.deepEqual(data.results[3].errors, [
+    { status: 412, code: "precondition_failed" },
+  ]);
+  assert.doesNotMatch(first.stdout, /secret detail/);
+
+  listCalls = 0;
+  const rerun = await execute(
+    ["pki", "grant", "migrate", "--from", caId, "--to", otherCaId],
+    respond,
+  );
+  assert.equal(
+    rerun.requests.find((r) => r.method === "PUT")?.headers?.[
+      "idempotency-key"
+    ],
+    migrateKey("web-1", "a", "v-a"),
+  );
+});
+
+test("grant migrate needs two different CAs and aborts on an auth failure", async () => {
+  for (const args of [
+    ["--from", caId],
+    ["--from", caId, "--to", caId],
+  ]) {
+    const result = await execute(["pki", "grant", "migrate", ...args]);
+    assert.equal(result.exitCode, 2);
+  }
+  const denied = await execute(
+    ["pki", "grant", "migrate", "--from", caId, "--to", otherCaId],
+    (request) =>
+      request.method === "GET" &&
+      request.url.pathname.endsWith("/issuance-grants")
+        ? jsonResponse({ grants: [{ consumerId: "web-1", name: "a" }] })
+        : {
+            status: 403,
+            headers: {},
+            body: { error: { code: "forbidden", message: "m" } },
+          },
+  );
+  assert.equal(denied.exitCode, 3);
+});
+
+const issued = {
+  caId,
+  serial: "0a1b",
+  fingerprint: "ff",
+  certificatePem: "LEAF\n",
+  chainPem: "CHAIN\n",
+  caPem: "ANCHOR\n",
+  notBefore: "2026-01-01T00:00:00.000Z",
+  notAfter: "2026-01-02T00:00:00.000Z",
+  lifetimeClamped: false,
+};
+
+test("cert issue builds the admin request and writes the requested files without overwriting", async () => {
+  await withDir(async (dir) => {
+    const csr = join(dir, "x.csr");
+    await writeFile(
+      csr,
+      "-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n",
+    );
+    const out = join(dir, "leaf.pem");
+    const chain = join(dir, "chain.pem");
+    const args = [
+      "pki",
+      "cert",
+      "issue",
+      caId,
+      "--csr",
+      csr,
+      "--dns",
+      "a.example.com",
+      "--subject",
+      "O=Example,C=US",
+      "--duration",
+      "1h",
+      "--usage",
+      "server auth",
+      "--out",
+      out,
+      "--chain-out",
+      chain,
+      "--idempotency-key",
+      "key-12345678",
+    ];
+    const result = await execute(args, () => jsonResponse(issued, 201));
+    assert.equal(result.exitCode, 0, result.stderr);
+    const request = result.requests[0]!;
+    assert.equal(
+      request.url.pathname,
+      `/v1/admin/pki/cas/${caId}/certificates`,
+    );
+    assert.equal(request.headers?.["idempotency-key"], "key-12345678");
+    assert.deepEqual(request.body, {
+      certificateSigningRequestPem: await readFile(csr, "utf8"),
+      sans: { dns: ["a.example.com"] },
+      subject: { organization: "Example", country: "US" },
+      durationSeconds: 3600,
+      usages: ["server auth"],
+    });
+    assert.equal(await readFile(out, "utf8"), "LEAF\n");
+    assert.equal(await readFile(chain, "utf8"), "CHAIN\n");
+    const data = JSON.parse(result.stdout).data;
+    assert.equal(data.certificatePem, undefined);
+    assert.equal(data.chainPem, undefined);
+    assert.equal(data.caPem, "ANCHOR\n");
+    assert.equal(data.out, out);
+
+    // Existing output files are never replaced, and nothing is sent.
+    const again = await execute(args, () => jsonResponse(issued, 201));
+    assert.equal(again.exitCode, 9);
+    assert.equal(again.requests.length, 0);
+    assert.equal(await readFile(out, "utf8"), "LEAF\n");
+  });
+});
+
+test("cert issue validates names, leaves no placeholder on failure and prints PEM without --out", async () => {
+  await withDir(async (dir) => {
+    const csr = join(dir, "x.csr");
+    await writeFile(
+      csr,
+      "-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n",
+    );
+    for (const args of [
+      ["cert", "issue", caId],
+      ["cert", "issue", caId, "--csr", csr],
+      [
+        "cert",
+        "issue",
+        caId,
+        "--csr",
+        csr,
+        "--use-csr-names",
+        "--dns",
+        "a.example.com",
+      ],
+      [
+        "cert",
+        "issue",
+        caId,
+        "--csr",
+        csr,
+        "--use-csr-names",
+        "--out",
+        csr,
+        "--chain-out",
+        csr,
+      ],
+    ]) {
+      const result = await execute(["pki", ...args]);
+      assert.equal(result.exitCode, 2, args.join(" "));
+      assert.equal(result.requests.length, 0);
+    }
+    const out = join(dir, "leaf.pem");
+    const failed = await execute(
+      [
+        "pki",
+        "cert",
+        "issue",
+        caId,
+        "--csr",
+        csr,
+        "--use-csr-names",
+        "--out",
+        out,
+      ],
+      () => ({
+        status: 403,
+        headers: {},
+        body: {
+          error: {
+            code: "issuance_denied",
+            message: "m",
+            details: { reason: "name_not_permitted" },
+          },
+        },
+      }),
+    );
+    assert.equal(failed.exitCode, 3);
+    assert.equal(
+      JSON.parse(failed.stderr).error.apiDetails.reason,
+      "name_not_permitted",
+    );
+    await assert.rejects(readFile(out));
+
+    const printed = await execute(
+      ["pki", "cert", "issue", caId, "--csr", csr, "--use-csr-names"],
+      () => jsonResponse(issued, 201),
+    );
+    assert.equal(JSON.parse(printed.stdout).data.certificatePem, "LEAF\n");
+    assert.equal(
+      printed.requests[0]?.body &&
+        (printed.requests[0].body as Record<string, unknown>).useCsrNames,
+      true,
+    );
+  });
+});
+
+test("cert revoke validates the reason and serial; cert get writes the PEM; cert list filters", async () => {
+  for (const args of [
+    ["cert", "revoke", caId, "0a1b", "--reason", "caCompromise"],
+    [
+      "cert",
+      "revoke",
+      caId,
+      "0a1b",
+      "--invalidity-date",
+      "2026-01-01T00:00:00Z",
+    ],
+    ["cert", "revoke", caId, "xyz"],
+    ["cert", "list"],
+    ["cert", "list", caId, "--consumer", "web-1"],
+    ["cert", "list", "--consumer", "web-1", "--status", "REVOKED"],
+    ["cert", "list", caId, "--include-expired"],
+    ["cert", "list", caId, "--status", "BOGUS"],
+  ]) {
+    const result = await execute(["pki", ...args]);
+    assert.equal(result.exitCode, 2, args.join(" "));
+    assert.equal(result.requests.length, 0);
+  }
+  const revoked = await execute(
+    [
+      "pki",
+      "cert",
+      "revoke",
+      caId,
+      "0A1B",
+      "--reason",
+      "keyCompromise",
+      "--invalidity-date",
+      "2026-01-01T00:00:00Z",
+      "--idempotency-key",
+      "key-12345678",
+    ],
+    () => jsonResponse({ crlEntry: true, crlPublished: true, changed: true }),
+  );
+  assert.equal(revoked.exitCode, 0, revoked.stderr);
+  assert.equal(
+    revoked.requests[0]?.url.pathname,
+    `/v1/admin/pki/cas/${caId}/certificates/0a1b/revoke`,
+  );
+  assert.deepEqual(revoked.requests[0]?.body, {
+    reason: "keyCompromise",
+    invalidityDate: "2026-01-01T00:00:00.000Z",
+  });
+
+  await withDir(async (dir) => {
+    const out = join(dir, "got.pem");
+    const got = await execute(
+      ["pki", "cert", "get", caId, "0a1b", "--out", out],
+      () => jsonResponse({ ...issued, status: "ISSUED" }),
+    );
+    assert.equal(got.exitCode, 0, got.stderr);
+    assert.equal(await readFile(out, "utf8"), "LEAF\n");
+    assert.equal(JSON.parse(got.stdout).data.certificatePem, undefined);
+    const clash = await execute([
+      "pki",
+      "cert",
+      "get",
+      caId,
+      "0a1b",
+      "--out",
+      out,
+    ]);
+    assert.equal(clash.exitCode, 9);
+    assert.equal(clash.requests.length, 0);
+    assert.equal(await readFile(out, "utf8"), "LEAF\n");
+  });
+
+  const byCa = await execute(
+    [
+      "pki",
+      "cert",
+      "list",
+      caId,
+      "--status",
+      "ISSUED",
+      "--expiring-before",
+      "2h",
+    ],
+    () => jsonResponse({ certificates: [] }),
+    // No fixed clock in `execute`; assert the shape only.
+  );
+  assert.equal(byCa.requests[0]?.url.searchParams.get("status"), "ISSUED");
+  assert.match(
+    byCa.requests[0]?.url.searchParams.get("expiringBefore") ?? "",
+    /^\d{4}-\d{2}-\d{2}T.*Z$/,
+  );
+  const byConsumer = await execute(
+    [
+      "pki",
+      "cert",
+      "list",
+      "--consumer",
+      "web-1",
+      "--grant",
+      "acc-web",
+      "--include-expired",
+    ],
+    () => jsonResponse({ certificates: [] }),
+  );
+  assert.equal(
+    byConsumer.requests[0]?.url.pathname,
+    "/v1/admin/pki/consumers/web-1/certificates",
+  );
+  assert.equal(
+    byConsumer.requests[0]?.url.search,
+    "?issuanceGrant=acc-web&includeExpired=true",
+  );
+});
+
+test("consumer revoke-certificates repeats with the same key until complete", async () => {
+  let calls = 0;
+  const result = await execute(
+    [
+      "pki",
+      "consumer",
+      "revoke-certificates",
+      "web-1",
+      "--grant",
+      "acc-web",
+      "--reason",
+      "superseded",
+      "--idempotency-key",
+      "key-12345678",
+    ],
+    () => {
+      calls += 1;
+      return jsonResponse({
+        consumerId: "web-1",
+        complete: calls >= 3,
+        revoked: calls,
+        alreadyRevoked: 0,
+        caIds: [caId],
+      });
+    },
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.requests.length, 3);
+  for (const request of result.requests) {
+    assert.equal(request.method, "POST");
+    assert.equal(
+      request.url.pathname,
+      "/v1/admin/pki/consumers/web-1/certificates/revoke",
+    );
+    assert.equal(request.headers?.["idempotency-key"], "key-12345678");
+    assert.deepEqual(request.body, {
+      reason: "superseded",
+      issuanceGrant: "acc-web",
+    });
+  }
+  const data = JSON.parse(result.stdout).data;
+  assert.equal(data.attempts, 3);
+  assert.equal(data.complete, true);
+});
+
+test("consumer revoke-certificates gives up after 20 incomplete attempts", async () => {
+  const result = await execute(
+    [
+      "pki",
+      "consumer",
+      "revoke-certificates",
+      "web-1",
+      "--idempotency-key",
+      "key-12345678",
+    ],
+    () =>
+      jsonResponse({
+        consumerId: "web-1",
+        complete: false,
+        revoked: 1,
+        alreadyRevoked: 0,
+        caIds: [],
+      }),
+  );
+  assert.equal(result.requests.length, 20);
+  assert.equal(result.exitCode, 7);
+  const error = JSON.parse(result.stderr);
+  assert.equal(error.error.code, "revoke_incomplete");
+  assert.equal(error.idempotencyKey, "key-12345678");
+  assert.equal(error.error.outcome, "unknown");
+  for (const args of [
+    ["consumer", "revoke-certificates"],
+    ["consumer", "revoke-certificates", "Web"],
+    ["consumer", "revoke-certificates", "web-1", "--reason", "caCompromise"],
+  ]) {
+    const bad = await execute(["pki", ...args]);
+    assert.equal(bad.exitCode, 2, args.join(" "));
+    assert.equal(bad.requests.length, 0);
+  }
+});
+
+test("pki help lists the new commands", async () => {
+  const result = await execute(["pki", "--help"]);
+  const help = JSON.parse(result.stdout);
+  for (const key of [
+    "grant migrate",
+    "cert issue <ca>",
+    "consumer revoke-certificates <consumer>",
+  ])
+    assert.ok(key in help.commands, key);
+});
+
+test("cert issue refuses private keys in any encoding and non-CSR DER", async () => {
+  await withDir(async (dir) => {
+    const csrPem =
+      "-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n";
+    const keyPem =
+      "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n";
+    const files: Record<string, Buffer | string> = {
+      bom: Buffer.concat([
+        Buffer.from([0xef, 0xbb, 0xbf]),
+        Buffer.from(keyPem),
+      ]),
+      bag: `Bag Attributes\n    friendlyName: x\n${keyPem}`,
+      derKey: Buffer.from([0x30, 0x05, 0x02, 0x01, 0x00, 0x04, 0x00]),
+      notCsr: "hello world",
+      pemCert: "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+      bomCsrWithKey: Buffer.from(csrPem + keyPem),
+    };
+    for (const [label, content] of Object.entries(files)) {
+      const path = join(dir, label);
+      await writeFile(path, content);
+      const result = await execute([
+        "pki",
+        "cert",
+        "issue",
+        caId,
+        "--csr",
+        path,
+        "--use-csr-names",
+      ]);
+      assert.equal(result.exitCode, 2, label);
+      assert.equal(result.requests.length, 0, label);
+      assert.doesNotMatch(result.stderr, /AAAA/, label);
+    }
+    // A DER CSR shape (SEQUENCE { SEQUENCE ... }) and a BOM-prefixed PEM CSR pass.
+    const der = join(dir, "csr.der");
+    await writeFile(der, Buffer.from([0x30, 0x04, 0x30, 0x02, 0x05, 0x00]));
+    const ok = await execute(
+      ["pki", "cert", "issue", caId, "--csr", der, "--use-csr-names"],
+      () => jsonResponse(issued, 201),
+    );
+    assert.equal(ok.exitCode, 0, ok.stderr);
+    assert.match(
+      (ok.requests[0]!.body as { certificateSigningRequestPem: string })
+        .certificateSigningRequestPem,
+      /^-----BEGIN CERTIFICATE REQUEST-----/,
+    );
+    const bomCsr = join(dir, "bom.csr");
+    await writeFile(
+      bomCsr,
+      Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(csrPem)]),
+    );
+    const bomOk = await execute(
+      ["pki", "cert", "issue", caId, "--csr", bomCsr, "--use-csr-names"],
+      () => jsonResponse(issued, 201),
+    );
+    assert.equal(bomOk.exitCode, 0, bomOk.stderr);
+  });
+});
+
+test("cert issue removes incomplete files and reports the serial after a write failure", async () => {
+  await withDir(async (dir) => {
+    const csr = join(dir, "x.csr");
+    await writeFile(
+      csr,
+      "-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n",
+    );
+    const out = join(dir, "leaf.pem");
+    const ca = join(dir, "ca.pem");
+    const result = await execute(
+      [
+        "pki",
+        "cert",
+        "issue",
+        caId,
+        "--csr",
+        csr,
+        "--use-csr-names",
+        "--out",
+        out,
+        "--ca-out",
+        ca,
+        "--idempotency-key",
+        "key-12345678",
+      ],
+      // caPem is not a string, so that write fails after the leaf was written.
+      () => jsonResponse({ ...issued, caPem: 42 }, 201),
+    );
+    assert.equal(result.exitCode, 9);
+    const error = JSON.parse(result.stderr);
+    assert.match(error.error.message, /serial 0a1b/);
+    assert.match(error.error.message, new RegExp(caId));
+    assert.match(error.error.message, /same --idempotency-key/);
+    assert.equal(error.idempotencyKey, "key-12345678");
+    assert.equal(await readFile(out, "utf8"), "LEAF\n");
+    await assert.rejects(readFile(ca));
+  });
+});
+
+test("migrate skips expired grants and a truncated listing exits 5", async () => {
+  const listed = [
+    { consumerId: "web-1", name: "a" },
+    { consumerId: "web-2", name: "b" },
+  ];
+  const result = await execute(
+    ["pki", "grant", "migrate", "--from", caId, "--to", otherCaId],
+    (request) => {
+      if (request.url.pathname.endsWith("/issuance-grants"))
+        return request.url.searchParams.has("cursor")
+          ? jsonResponse({ grants: [], nextCursor: "again" })
+          : jsonResponse({ grants: listed, nextCursor: "again" });
+      return jsonResponse(
+        grantView({
+          consumerId: request.url.pathname.includes("web-1")
+            ? "web-1"
+            : "web-2",
+          name: request.url.pathname.endsWith("/a") ? "a" : "b",
+          expired: request.url.pathname.endsWith("/a"),
+          expiresAt: "2020-01-01T00:00:00.000Z",
+        }),
+      );
+    },
+  );
+  assert.equal(result.requests.filter((r) => r.method === "PUT").length, 1);
+  const data = JSON.parse(result.stdout).data;
+  assert.equal(data.results[0].outcome, "skipped");
+  assert.equal(data.results[0].reason, "expired");
+  assert.equal(data.results[1].outcome, "migrated");
+  assert.equal(data.listedTruncated, true);
+  assert.equal(result.exitCode, 5);
+});
+
+test("revoke-certificates sums revoked and --invalidity-date durations count backwards", async () => {
+  let calls = 0;
+  const bulk = await execute(
+    ["pki", "consumer", "revoke-certificates", "web-1"],
+    () => {
+      calls += 1;
+      return jsonResponse({
+        consumerId: "web-1",
+        complete: calls === 2,
+        revoked: 5 * calls,
+        alreadyRevoked: 0,
+        caIds: [],
+      });
+    },
+  );
+  assert.equal(JSON.parse(bulk.stdout).data.revoked, 15);
+  const before = Date.now();
+  const revoke = await execute(
+    [
+      "pki",
+      "cert",
+      "revoke",
+      caId,
+      "0a1b",
+      "--reason",
+      "keyCompromise",
+      "--invalidity-date",
+      "1h",
+    ],
+    () => jsonResponse({}),
+  );
+  const when = Date.parse(
+    (revoke.requests[0]!.body as { invalidityDate: string }).invalidityDate,
+  );
+  assert.ok(
+    when <= Date.now() - 3600_000 + 1000 && when >= before - 3600_000 - 1000,
+  );
+});

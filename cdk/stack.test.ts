@@ -983,7 +983,8 @@ describe("HemligStack", () => {
       for (const kind of ["admin", "issuer", "maintenance"]) {
         const props = lambdaProps(`hml-test-pki-${kind}`);
         expect(props.Runtime).toBe("nodejs24.x");
-        expect(props.MemorySize).toBe(512);
+        // CRL self-verification of up to 12,000 entries needs more than 512 MB.
+        expect(props.MemorySize).toBe(1024);
         // Maintenance publishes CRLs and runs up to five minutes; the request Lambdas stay at 29 s.
         expect(props.Timeout).toBe(kind === "maintenance" ? 300 : 29);
         const variables = props.Environment.Variables;

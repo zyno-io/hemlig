@@ -14,6 +14,8 @@ export interface PkiRoute<Context> {
   readonly operation: string;
   /** Defaults to `read`. */
   readonly role?: PkiRole;
+  /** The audit target for the matched params; the default labels `params[0]` as `caId` or `extId`. */
+  readonly auditTarget?: (params: string[]) => Record<string, string>;
   readonly handle: (
     context: Context,
     params: string[],

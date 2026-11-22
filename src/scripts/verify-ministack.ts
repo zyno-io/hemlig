@@ -20,6 +20,7 @@ import { AgentSyncService } from "../services/agent-sync";
 import { CursorService } from "../services/cursor";
 import type { AgentGrantRecord } from "../domain/types";
 import { verifyPkiOnMiniStack } from "./verify-ministack-pki";
+import { verifyPkiIssuanceOnMiniStack } from "./verify-ministack-pki-issuance";
 import { verifyPkiLifecycleOnMiniStack } from "./verify-ministack-pki-lifecycle";
 
 const endpoint = process.env.AWS_ENDPOINT_URL ?? "http://localhost:4566";
@@ -379,6 +380,15 @@ const run = async (): Promise<void> => {
   }
   // The lifecycle suite runs first: the older suite seeds partial CA items that a maintenance pass would reject.
   await verifyPkiLifecycleOnMiniStack({
+    dynamo,
+    kms,
+    s3,
+    keyArn: keyId,
+    table,
+    bucket,
+    config,
+  });
+  await verifyPkiIssuanceOnMiniStack({
     dynamo,
     kms,
     s3,

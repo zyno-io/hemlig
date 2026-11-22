@@ -104,6 +104,7 @@ export interface GrantValidationResult {
 export const policyDigest = (policy: unknown): string =>
   sha256Hex(stableJson(policy));
 
+const MAX_OID_ARC = 0xffffffffn;
 const oidPattern = /^[0-2](?:\.(?:0|[1-9]\d*))+$/;
 
 /**
@@ -890,7 +891,9 @@ const compile = (
     const arcs = oid.split(".");
     if (
       !oidPattern.test(oid) ||
-      (Number(arcs[0]) < 2 && Number(arcs[1]) > 39)
+      (Number(arcs[0]) < 2 && Number(arcs[1]) > 39) ||
+      // The encoder is only exact below 2^32.
+      arcs.some((arc) => BigInt(arc) > MAX_OID_ARC)
     ) {
       out.error(
         "invalid_oid",

@@ -284,12 +284,15 @@ export type PublishResult =
   | { kind: "published"; pointer: PublishedCrl }
   | { kind: "busy" }
   | { kind: "superseded" }
+  | { kind: "deadline" }
   | { kind: "replay" };
 
 export interface PublishOptions {
   readonly trigger: "force" | "maintenance" | "inline";
   readonly idempotency?: HumanIdempotencyWrite;
   readonly waitForLeaseMs?: number;
+  /** Inline publication only: no new signing or commit starts after this instant; the lease is released. */
+  readonly deadline?: Date;
 }
 
 export type CrlDownload =
@@ -353,6 +356,14 @@ export class CrlService {
       await pki.listRevocationsSince(ca.caId, previous?.thisUpdate),
       previous,
     );
+    // The skipped number and any orphan object are allowed.
+    const pastDeadline = (): boolean =>
+      options.deadline !== undefined &&
+      this.deps.now().getTime() > options.deadline.getTime();
+    if (pastDeadline()) {
+      await pki.releaseCrlLease(ca.caId, owner);
+      return { kind: "deadline" };
+    }
     const built = await buildSignedCrl(
       issuerMaterialOf(ca),
       this.deps.signerFor(ca),
@@ -387,6 +398,10 @@ export class CrlService {
         ? {}
         : { idempotency: options.idempotency }),
     };
+    if (pastDeadline()) {
+      await pki.releaseCrlLease(ca.caId, owner);
+      return { kind: "deadline" };
+    }
     let outcome = await pki.commitCrlPublication({ ...base, clearDirty: true });
     if (outcome === "conditionFailed") {
       const current = await pki.getCaCrlState(ca.caId);
