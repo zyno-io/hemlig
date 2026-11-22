@@ -8,7 +8,7 @@ pageType: explanation
 
 Hemlig can hold an intermediate certificate authority (CA) that your offline root signs, and publishes that CA's certificate revocation lists (CRLs).
 
-Consumers get leaf certificates through issuance grants. cert-manager and trust bundles arrive in later releases. This page covers the CA lifecycle, grants, issuance, revocation and CRLs.
+Consumers get leaf certificates through issuance grants. [cert-manager](cert-manager.md) can request and renew them unattended. Trust bundles arrive in a later release. This page covers the CA lifecycle, grants, issuance, revocation and CRLs.
 
 ## The topology
 

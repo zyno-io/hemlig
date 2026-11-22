@@ -68,6 +68,7 @@ spec:
               properties:
                 providerRef: { type: string, minLength: 1 }
                 allowCrossNamespaceReferences: { type: boolean }
+                allowClusterIssuers: { type: boolean }
                 bootstrapTokenRef:
                   type: object
                   required: [name, key]

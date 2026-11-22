@@ -58,6 +58,9 @@ Unknown values are rejected by `values.schema.json`.
 | `securityContext`                          | no privilege escalation, read-only root FS, drop `ALL` |                                                    |
 | `controller.reconcileIntervalMilliseconds` | `600000`                                 | Periodic resync; sets `HEMLIG_RECONCILE_INTERVAL_MS`             |
 | `controller.sourceDebounceMilliseconds`    | `250`                                    | Source Secret debounce; sets `HEMLIG_SOURCE_DEBOUNCE_MS`         |
+| `certManager.maxConcurrentRequests`        | `4`                                      | 1 to 64. Concurrent Hemlig PKI calls across all issuers, at most 2 per consumer; sets `HEMLIG_PKI_CONCURRENCY` |
+| `certManager.approval.grantDefaultApprover` | `true`                                  | Lets cert-manager's built-in approver approve every request that references a Hemlig issuer. Set `false` to gate with approver-policy |
+| `certManager.approval.serviceAccount`, `.namespace` | `cert-manager`, `cert-manager`  | The ServiceAccount that receives `approve`. Must match your cert-manager install |
 | `resources`, `nodeSelector`, `tolerations`, `affinity` | empty                        |                                                                  |
 
 ## Environment variables
@@ -99,6 +102,7 @@ Used by the [maintenance scripts](../operations/upgrades.md). The AWS SDK also r
 | ------------------------------- | -------- | ------------ | ----------------------------------- |
 | `HEMLIG_RECONCILE_INTERVAL_MS`  | `600000` | 1 to 3600000 | Periodic full reconcile interval    |
 | `HEMLIG_SOURCE_DEBOUNCE_MS`     | `250`    | 1 to 3600000 | Debounce for watched source changes |
+| `HEMLIG_PKI_CONCURRENCY`        | `4`      | 1 to 64      | Concurrent Hemlig PKI calls for the cert-manager issuer |
 
 The controller uses the in-cluster Kubernetes configuration (or your kubeconfig
 when run locally). It needs no AWS credentials and no administrator token.

@@ -8,3 +8,21 @@ scope before creating HemligConsumer resources.
 Install the HemligProvider, HemligConsumer, HemligSecretImport, and
 HemligSecretExport resources after the administrator has minted a one-use
 bootstrap capability for the consumer.
+
+cert-manager issuer: the controller issues certificates for cert-manager
+CertificateRequests that reference a HemligIssuer or HemligClusterIssuer. It
+starts working once cert-manager and the crds/hemlig.zyno.io-pki.yaml CRDs are
+present.
+{{- if .Values.certManager.approval.grantDefaultApprover }}
+
+ServiceAccount {{ .Values.certManager.approval.namespace }}/{{ .Values.certManager.approval.serviceAccount }} may approve CertificateRequests for the
+hemligissuers.hemlig.zyno.io/* and hemligclusterissuers.hemlig.zyno.io/* signers. Every
+request that references a Hemlig issuer is therefore approved, and the Hemlig
+IssuanceGrant is the authorization boundary. Set
+certManager.approval.grantDefaultApprover=false to hand approval to approver-policy.
+{{- else }}
+
+Default approval is off; Hemlig CertificateRequests wait for an approver.
+{{- end }}
+
+Helm does not upgrade CRDs; after an upgrade apply crds/hemlig.zyno.io.yaml and crds/hemlig.zyno.io-pki.yaml.

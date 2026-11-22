@@ -49,6 +49,8 @@ spec:
               value: {{ .Values.controller.reconcileIntervalMilliseconds | quote }}
             - name: HEMLIG_SOURCE_DEBOUNCE_MS
               value: {{ .Values.controller.sourceDebounceMilliseconds | quote }}
+            - name: HEMLIG_PKI_CONCURRENCY
+              value: {{ .Values.certManager.maxConcurrentRequests | quote }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           resources:

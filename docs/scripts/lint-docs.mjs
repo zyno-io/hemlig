@@ -16,6 +16,7 @@ const allowedHosts = [
   "ghcr.io",
   "docs.npmjs.com",
   "vitepress.dev",
+  "cert-manager.io",
   "aws.amazon.com",
   "localhost",
   "127.0.0.1",

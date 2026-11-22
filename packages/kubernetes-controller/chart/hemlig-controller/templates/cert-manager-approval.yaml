@@ -1,0 +1,31 @@
+{{- if .Values.certManager.approval.grantDefaultApprover }}
+# Lets cert-manager's built-in approver approve requests for Hemlig issuers. The IssuanceGrant is the boundary.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "hemlig-controller.fullname" . }}-cert-manager-approver
+  labels:
+    {{- include "hemlig-controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["cert-manager.io"]
+    resources: ["signers"]
+    verbs: ["approve"]
+    resourceNames:
+      - "hemligissuers.hemlig.zyno.io/*"
+      - "hemligclusterissuers.hemlig.zyno.io/*"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "hemlig-controller.fullname" . }}-cert-manager-approver
+  labels:
+    {{- include "hemlig-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "hemlig-controller.fullname" . }}-cert-manager-approver
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.certManager.approval.serviceAccount | quote }}
+    namespace: {{ .Values.certManager.approval.namespace | quote }}
+{{- end }}
