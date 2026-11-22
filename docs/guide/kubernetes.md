@@ -104,7 +104,7 @@ An administrator first [creates the grant and issues a token](agent-grants.md). 
 
 ```sh
 kubectl create namespace payments
-kubectl label namespace payments hemlig.io/provider-production=true
+kubectl label namespace payments hemlig.zyno.io/provider-production=true
 kubectl -n payments create secret generic payments-bootstrap \
   --from-literal=token='hmlb_...'
 ```
@@ -112,7 +112,7 @@ kubectl -n payments create secret generic payments-bootstrap \
 2. Declare the provider and the consumer.
 
 ```yaml
-apiVersion: hemlig.io/v1beta1
+apiVersion: hemlig.zyno.io/v1beta1
 kind: HemligProvider
 metadata:
   name: production
@@ -121,9 +121,9 @@ spec:
   apiUrl: https://api.example.com           # your apiFqdn
   allowedNamespaces:
     matchLabels:
-      hemlig.io/provider-production: "true"
+      hemlig.zyno.io/provider-production: "true"
 ---
-apiVersion: hemlig.io/v1beta1
+apiVersion: hemlig.zyno.io/v1beta1
 kind: HemligConsumer
 metadata:
   name: payments

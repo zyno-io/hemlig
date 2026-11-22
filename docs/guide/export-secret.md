@@ -26,7 +26,7 @@ Without the write grant, the export reports `ReconcileFailed` ("Hemlig returned 
 1. Declare the export.
 
    ```yaml
-   apiVersion: hemlig.io/v1beta1
+   apiVersion: hemlig.zyno.io/v1beta1
    kind: HemligSecretExport
    metadata:
      name: webhook-source

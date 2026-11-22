@@ -36,5 +36,5 @@ export const payloadChecksum = (payload: SecretPayload): string =>
 
 /** An imported target is mutable only by the exact importing custom resource. */
 export const isOwnedByImport = (metadata: ObjectMeta | undefined, importOwner: string): boolean =>
-  metadata?.labels?.["hemlig.io/managed-by"] === "import" &&
-  metadata.annotations?.["hemlig.io/import-owner"] === importOwner;
+  metadata?.labels?.["hemlig.zyno.io/managed-by"] === "import" &&
+  metadata.annotations?.["hemlig.zyno.io/import-owner"] === importOwner;

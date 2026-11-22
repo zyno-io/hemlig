@@ -2,7 +2,7 @@
 
 Full documentation: the [Kubernetes controller guide](https://zyno-io.github.io/hemlig/guide/kubernetes), [CRD reference](https://zyno-io.github.io/hemlig/reference/crds), and [identity rotation](https://zyno-io.github.io/hemlig/operations/identity-rotation).
 
-The Node 24 controller uses `hemlig.io/v1beta1` resources and never mounts an
+The Node 24 controller uses `hemlig.zyno.io/v1beta1` resources and never mounts an
 administrator OIDC token. A platform administrator creates a remote Hemlig
 AgentGrant and its one-use bootstrap capability, then places that capability in
 the target namespace. The controller generates and retains its private key in
@@ -48,12 +48,12 @@ The agent mTLS leaf is rotated by the controller itself; no administrator
 credential is involved. When fewer than `spec.identity.rotateBefore` (default
 `720h`, clamped to half the certificate lifetime; `0h` disables automatic
 rotation) remain, the controller generates a new RSA key asynchronously,
-persists it in the identity Secret (`hemlig.io.next-tls.key`,
-`hemlig.io.next-csr`), asks Hemlig to sign the CSR over the current mTLS
+persists it in the identity Secret (`hemlig.zyno.io.next-tls.key`,
+`hemlig.zyno.io.next-csr`), asks Hemlig to sign the CSR over the current mTLS
 identity (`POST /v1/agent/identities/rotate`, idempotent by CSR hash), stores
-the issued leaf (`hemlig.io.next-tls.crt`), and **verifies it by authenticating
-with it** before swapping. The old pair is kept as `hemlig.io.previous-tls.crt`
-and `hemlig.io.previous-tls.key` (rollback: copy them back over `tls.crt` and
+the issued leaf (`hemlig.zyno.io.next-tls.crt`), and **verifies it by authenticating
+with it** before swapping. The old pair is kept as `hemlig.zyno.io.previous-tls.crt`
+and `hemlig.zyno.io.previous-tls.key` (rollback: copy them back over `tls.crt` and
 `tls.key`). Until verification succeeds the old identity keeps being used, and a
 rotation failure never makes the consumer `Ready=False`; it is reported on the
 separate `IdentityRotation` condition with a reason such as `RotationFailed`,
@@ -64,7 +64,7 @@ rotation of the same consumer; retried with the same staged key), `Authenticatio
 backoff (60 s doubling to 6 h; reset on restart), with the periodic sweep as a
 safety net. Pending keys are discarded only when Hemlig rejects the request or
 the issued certificate is unusable. If the current certificate can no longer
-authenticate but an issued successor (`hemlig.io.next-tls.*`) is still valid and
+authenticate but an issued successor (`hemlig.zyno.io.next-tls.*`) is still valid and
 verifies, the controller automatically recovers by swapping it in; the pending
 keys are never discarded on that path. The swap only applies if `tls.crt` is
 unchanged, so a concurrent operator rollback is not overwritten.
@@ -76,11 +76,11 @@ columns) or `status.identity` (`apiFingerprint`, `notBefore`, `notAfter`,
 To rotate on demand, set a new token (any unique value) on the consumer:
 
 ```sh
-kubectl annotate hemligconsumer payments hemlig.io/rotate-identity=$(date +%s) --overwrite
+kubectl annotate hemligconsumer payments hemlig.zyno.io/rotate-identity=$(date +%s) --overwrite
 ```
 
 The consumed token is recorded on the identity Secret
-(`hemlig.io/rotation-request`) in the same write as the new certificate, so a
+(`hemlig.zyno.io/rotation-request`) in the same write as the new certificate, so a
 token rotates exactly once even across restarts and failed passes.
 
 ### Imported Secrets are not deleted on our own failures
@@ -106,7 +106,7 @@ a new bootstrap capability). Instead:
    `POST /v1/admin/consumers/{consumerId}/api-identities`
    (`apiCertificateSigningRequestPem` = the CSR) and returns the certificate.
 3. Patch the identity Secret with base64 `tls.crt` and `tls.key`, and remove any
-   stale `hemlig.io.next-*` keys:
+   stale `hemlig.zyno.io.next-*` keys:
    `kubectl -n payments patch secret hemlig-payments-client --type json -p '[{"op":"replace","path":"/data/tls.crt","value":"<b64>"},{"op":"replace","path":"/data/tls.key","value":"<b64>"}]'`
 4. Run the on-demand rotation above so the controller moves onto a leaf issued
    through self-rotation, then have the administrator revoke the admin-issued
@@ -144,7 +144,7 @@ For a non-Helm installation, apply [CRDs](config/crds.yaml) then the broad
 cluster-operator [manager manifest](config/manager.yaml).
 
 ```yaml
-apiVersion: hemlig.io/v1beta1
+apiVersion: hemlig.zyno.io/v1beta1
 kind: HemligProvider
 metadata:
   name: production
@@ -153,9 +153,9 @@ spec:
   apiUrl: https://api.hml.example.net
   allowedNamespaces:
     matchLabels:
-      hemlig.io/provider-production: "true"
+      hemlig.zyno.io/provider-production: "true"
 ---
-apiVersion: hemlig.io/v1beta1
+apiVersion: hemlig.zyno.io/v1beta1
 kind: HemligConsumer
 metadata:
   name: payments
@@ -165,7 +165,7 @@ spec:
   bootstrapTokenRef: { name: payments-bootstrap, key: token }
   identity: { secretName: hemlig-payments-client }
 ---
-apiVersion: hemlig.io/v1beta1
+apiVersion: hemlig.zyno.io/v1beta1
 kind: HemligSecretImport
 metadata:
   name: payments-api
@@ -175,7 +175,7 @@ spec:
   secretId: payments/production/api-key
   target: { name: payments-api, type: Opaque }
 ---
-apiVersion: hemlig.io/v1beta1
+apiVersion: hemlig.zyno.io/v1beta1
 kind: HemligSecretExport
 metadata:
   name: payments-api-source

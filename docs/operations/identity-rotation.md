@@ -43,7 +43,7 @@ sequenceDiagram
 1. **Stage.** The controller generates an RSA-3072 key and CSR and stores them in the identity Secret.
 2. **Issue.** It calls the rotation route, authenticated with its **current** certificate. The `Idempotency-Key` is the SHA-256 of the CSR, so a retry after a crash replays the same certificate. The route contract is in [`POST /v1/agent/identities/rotate`](../reference/api/delivery.md#post-v1-agent-identities-rotate).
 3. **Verify.** It calls `GET /v1/agent/config` with the new certificate. The reply must name the same consumer and environment.
-4. **Swap.** Only then does it replace `tls.crt` and `tls.key`. The old pair is kept as `hemlig.io.previous-tls.crt` and `hemlig.io.previous-tls.key`, and the annotations `hemlig.io/api-fingerprint` and `hemlig.io/rotated-at` are updated.
+4. **Swap.** Only then does it replace `tls.crt` and `tls.key`. The old pair is kept as `hemlig.zyno.io.previous-tls.crt` and `hemlig.zyno.io.previous-tls.key`, and the annotations `hemlig.zyno.io/api-fingerprint` and `hemlig.zyno.io/rotated-at` are updated.
 
 Crashes are safe at every step. The staged key, the CSR and the issued certificate persist in the Secret, and the swap is one guarded write. The same issuing root signs the new certificate, so the API Gateway truststore does not change.
 
@@ -97,7 +97,7 @@ Annotate the consumer with any token that differs from `status.identity.rotation
 
 ```sh
 kubectl -n payments annotate hmlconsumer payments \
-  hemlig.io/rotate-identity="$(date +%s)" --overwrite
+  hemlig.zyno.io/rotate-identity="$(date +%s)" --overwrite
 ```
 
 One rotation runs on the next pass. Use it to test staging, or after a suspected key compromise (then also revoke the old certificate). The same token does nothing twice. A new token also skips any failure backoff.
@@ -127,7 +127,7 @@ Failures appear on the `IdentityRotation` condition and in `status.identity.last
    Handle anything inside 30 days first.
 3. **Upgrade the controller on staging** ([Flux rollout](flux-rollout.md)).
 4. **Set `rotateBefore` on staging** and force one rotation with the annotation above.
-5. **Verify.** `IdentityRotation=True`, a new `apiFingerprint`, `Ready=True`, imports current, and `hemlig.io.previous-tls.*` present in the identity Secret.
+5. **Verify.** `IdentityRotation=True`, a new `apiFingerprint`, `Ready=True`, imports current, and `hemlig.zyno.io.previous-tls.*` present in the identity Secret.
 6. **Roll to production** the same way.
 7. **Revoke old certificates** once a cluster has run healthy on the new one.
 
@@ -183,7 +183,7 @@ The script is idempotent. The full list of maintenance scripts is in [Upgrades](
 
 ## Roll back to the previous certificate
 
-If the new certificate misbehaves, copy `hemlig.io.previous-tls.crt` and `hemlig.io.previous-tls.key` back over `tls.crt` and `tls.key` in the identity Secret. This only works while the previous certificate is valid and not revoked.
+If the new certificate misbehaves, copy `hemlig.zyno.io.previous-tls.crt` and `hemlig.zyno.io.previous-tls.key` back over `tls.crt` and `tls.key` in the identity Secret. This only works while the previous certificate is valid and not revoked.
 
 Then revoke the faulty successor with the admin API. A certificate may have only one active successor, so revoking it lets the restored one rotate again later.
 
@@ -220,7 +220,7 @@ Recover by hand:
      "{\"data\":{\"tls.crt\":\"$(base64 < new.crt | tr -d '\n')\",\"tls.key\":\"$(base64 < new.key | tr -d '\n')\"}}"
    ```
 
-   Remove any stale `hemlig.io.next-tls.key`, `hemlig.io.next-csr` and `hemlig.io.next-tls.crt` keys left by an interrupted rotation, with `kubectl edit secret`.
+   Remove any stale `hemlig.zyno.io.next-tls.key`, `hemlig.zyno.io.next-csr` and `hemlig.zyno.io.next-tls.crt` keys left by an interrupted rotation, with `kubectl edit secret`.
 4. The controller picks the Secret up on its next pass. Delete `new.key` from your workstation.
 5. Optionally revoke the superseded certificate. The controller rotates the new one automatically inside `rotateBefore`.
 

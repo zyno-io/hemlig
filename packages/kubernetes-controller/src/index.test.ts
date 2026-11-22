@@ -40,8 +40,8 @@ test("uses a key-order-independent checksum for exported material", () => {
 
 test("recognizes only the exact import owner", () => {
   const metadata = {
-    labels: { "hemlig.io/managed-by": "import" },
-    annotations: { "hemlig.io/import-owner": "payments/payments-api" },
+    labels: { "hemlig.zyno.io/managed-by": "import" },
+    annotations: { "hemlig.zyno.io/import-owner": "payments/payments-api" },
   };
   assert.equal(isOwnedByImport(metadata, "payments/payments-api"), true);
   assert.equal(isOwnedByImport(metadata, "payments/other"), false);
@@ -51,7 +51,7 @@ test("requires an explicit consumer opt-in for a cross-namespace reference", () 
   assert.equal(consumerReferenceKey("payments", "cluster", "hemlig-system"), "hemlig-system/cluster");
   assert.equal(allowsConsumerReference("payments", "hemlig-system", undefined), false);
   assert.equal(allowsConsumerReference("payments", "hemlig-system", {
-    apiVersion: "hemlig.io/v1beta1",
+    apiVersion: "hemlig.zyno.io/v1beta1",
     kind: "HemligConsumer",
     metadata: { name: "cluster", namespace: "hemlig-system" },
     spec: {
@@ -130,7 +130,7 @@ test("backs off exponentially while a reconciliation keeps failing", async () =>
 test("writes reconciliation status as JSON Patch", async () => {
   const statusPatches: unknown[] = [];
   const consumer = {
-    apiVersion: "hemlig.io/v1beta1" as const,
+    apiVersion: "hemlig.zyno.io/v1beta1" as const,
     kind: "HemligConsumer" as const,
     metadata: { generation: 1, name: "sentinel", namespace: "hemlig-sentinel" },
     spec: {
@@ -208,7 +208,7 @@ test("writes reconciliation status as JSON Patch", async () => {
       })),
     },
     {
-      group: "hemlig.io",
+      group: "hemlig.zyno.io",
       version: "v1beta1",
       namespace: "hemlig-sentinel",
       plural: "hemligconsumers",
@@ -381,7 +381,7 @@ test("advances the watch position even when a controller status update needs no 
   );
   assert.ok(session);
   session.event("MODIFIED", {
-    apiVersion: "hemlig.io/v1beta1",
+    apiVersion: "hemlig.zyno.io/v1beta1",
     metadata: { generation: 1, resourceVersion: "status-update" },
     status: { observedGeneration: 1 },
   });
