@@ -50,7 +50,7 @@ The request body fields:
 | `crl.validitySeconds`  | No       | `604800`       | Same as `policy.crlValiditySeconds`; if both are sent they must match                                                                      |
 | `displayName`          | No       | none           | Up to 128 characters                                                                                                                       |
 
-Unknown fields are refused with `unknown_field`. A DNS or URI base is a host with an optional leading dot. An IP base is a CIDR with zeroed host bits.
+Unknown fields are refused with `unknown_field`. On update, an omitted `displayName` keeps the stored one and `null` clears it. A DNS or URI base is a host with an optional leading dot. An IP base is a CIDR with zeroed host bits.
 
 The policy fields (all optional; the update route keeps the stored value for omitted ones):
 

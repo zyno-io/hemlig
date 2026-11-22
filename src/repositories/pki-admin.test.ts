@@ -273,6 +273,27 @@ describe("admin transaction builders", () => {
     );
   });
 
+  it("keeps, sets or removes the display name on update", () => {
+    const build = (displayName?: string | null) =>
+      buildUpdateCaPolicyTransaction("control", {
+        ...mutation,
+        policy: {} as CaRecord["policy"],
+        maxIssueLifetimeEverSeconds: 10,
+        ...(displayName === undefined ? {} : { displayName }),
+      })[1]!.item.Update!;
+    const keep = build();
+    expect(keep.UpdateExpression).not.toContain("displayName");
+    expect(keep.ExpressionAttributeNames).not.toHaveProperty("#displayName");
+    expect(build("New").UpdateExpression).toContain(
+      "#displayName = :displayName",
+    );
+    const cleared = build(null);
+    expect(cleared.UpdateExpression).toContain("REMOVE #displayName");
+    expect(cleared.ExpressionAttributeValues).not.toHaveProperty(
+      ":displayName",
+    );
+  });
+
   it("builds the lease, allocate and commit variants", () => {
     const lease = buildAcquireCrlLeaseUpdate(
       "control",
@@ -393,6 +414,15 @@ describe("PkiRepository executors", () => {
       }),
     ).resolves.toEqual({ kind: "committed" });
     expect(token(send.mock.calls[0]!)).toHaveLength(36);
+  });
+
+  it("derives a different token for each call, even with the same label and key", async () => {
+    const send = jest.fn().mockResolvedValue({});
+    const { repository } = setup(send);
+    const who = { principal: "human:a", idempotencyKey: "same-key-0001" };
+    await repository.transact("activate-ca", items, who);
+    await repository.transact("activate-ca", items, who);
+    expect(token(send.mock.calls[0]!)).not.toBe(token(send.mock.calls[1]!));
   });
 
   it("retries conflicts with a new token each time, then gives up with 503", async () => {
@@ -539,7 +569,7 @@ describe("PkiRepository executors", () => {
     await expect(repository.allocateCrlNumber(caId, "o")).resolves.toBe("lost");
   });
 
-  it("commits a CRL pointer alone or with the idempotency record", async () => {
+  it("commits a CRL pointer with a profile check, alone or with the idempotency record", async () => {
     const send = jest.fn().mockResolvedValue({});
     const { repository } = setup(send);
     const base = {
@@ -553,25 +583,49 @@ describe("PkiRepository executors", () => {
     await expect(repository.commitCrlPublication(base)).resolves.toBe(
       "committed",
     );
-    expect(send.mock.calls[0]![0].constructor.name).toBe("UpdateCommand");
+    const alone = send.mock.calls[0]![0];
+    expect(alone.constructor.name).toBe("TransactWriteCommand");
+    expect(alone.input.TransactItems).toHaveLength(2);
+    expect(alone.input.TransactItems[1].ConditionCheck).toMatchObject({
+      Key: { pk: `PKI_CA#${caId}`, sk: "PROFILE" },
+      ConditionExpression:
+        "#key.#state = :active AND (#status = :active OR #status = :retired)",
+    });
     await expect(
       repository.commitCrlPublication({ ...base, idempotency }),
     ).resolves.toBe("committed");
-    expect(send.mock.calls[1]![0].constructor.name).toBe(
-      "TransactWriteCommand",
-    );
-    const replay = jest
-      .fn()
-      .mockRejectedValue(canceled("ConditionalCheckFailed", "None"));
+    expect(
+      send.mock.calls[1]![0].input.TransactItems.map(
+        (item: Record<string, unknown>) => Object.keys(item)[0],
+      ),
+    ).toEqual(["Put", "Update", "ConditionCheck"]);
+  });
+
+  it("classifies a canceled CRL commit", async () => {
+    const base = {
+      caId,
+      owner: "o",
+      number: 3,
+      startRevision: 1,
+      published,
+      clearDirty: true,
+    };
+    const outcome = (...codes: string[]) =>
+      setup(
+        jest.fn().mockRejectedValue(canceled(...codes)),
+      ).repository.commitCrlPublication({ ...base, idempotency });
     await expect(
-      setup(replay).repository.commitCrlPublication({ ...base, idempotency }),
+      outcome("ConditionalCheckFailed", "None", "None"),
     ).resolves.toBe("replay");
-    const lost = jest
-      .fn()
-      .mockRejectedValue(canceled("None", "ConditionalCheckFailed"));
     await expect(
-      setup(lost).repository.commitCrlPublication({ ...base, idempotency }),
+      outcome("None", "ConditionalCheckFailed", "None"),
     ).resolves.toBe("conditionFailed");
+    await expect(
+      outcome("None", "None", "ConditionalCheckFailed"),
+    ).resolves.toBe("inactive");
+    await expect(
+      outcome("None", "ConditionalCheckFailed", "ConditionalCheckFailed"),
+    ).resolves.toBe("inactive");
   });
 
   it("gives expired carried revocations a TTL and ignores entries that already have one", async () => {

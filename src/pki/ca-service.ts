@@ -760,7 +760,7 @@ export class CaService {
     const digest = requestDigest("pki.ca.update", {
       caId,
       ifMatch,
-      displayName: input.displayName ?? null,
+      displayName: input.displayName === undefined ? "keep" : input.displayName,
       policy: input.policy,
     });
     const stored = await this.prior(actor, key, "pki.ca.update", digest);

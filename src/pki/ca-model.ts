@@ -608,7 +608,8 @@ export const parseCreateCaRequest = (body: unknown): CreateCaInput => {
 };
 
 export interface UpdateCaInput {
-  displayName?: string;
+  /** Omitted keeps the stored name; null clears it. */
+  displayName?: string | null;
   policy: CaPolicyInput;
 }
 
@@ -622,7 +623,12 @@ export const parseUpdateCaRequest = (body: unknown): UpdateCaInput => {
     policy: parsePolicyInput(input.policy),
     ...(input.displayName === undefined
       ? {}
-      : { displayName: parseDisplayName(input.displayName) }),
+      : {
+          displayName:
+            input.displayName === null
+              ? null
+              : parseDisplayName(input.displayName),
+        }),
   };
 };
 

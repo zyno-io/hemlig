@@ -1055,7 +1055,8 @@ export interface CaMutationTransaction {
 export interface UpdateCaPolicyTransaction extends CaMutationTransaction {
   readonly policy: CaRecord["policy"];
   readonly maxIssueLifetimeEverSeconds: number;
-  readonly displayName?: string;
+  /** Undefined keeps the stored name; null removes it. */
+  readonly displayName?: string | null;
 }
 
 const profileSlot = (
@@ -1091,16 +1092,21 @@ export const buildUpdateCaPolicyTransaction = (
     slot: "profile",
     item: profileSlot(tableName, input.caId, {
       expression:
-        input.displayName === undefined
-          ? "SET #policy = :policy, #maxIssueLifetimeEverSeconds = :max, #version = :v REMOVE #displayName"
-          : "SET #policy = :policy, #maxIssueLifetimeEverSeconds = :max, #version = :v, #displayName = :displayName",
+        "SET #policy = :policy, #maxIssueLifetimeEverSeconds = :max, #version = :v" +
+        (input.displayName === undefined
+          ? ""
+          : input.displayName === null
+            ? " REMOVE #displayName"
+            : ", #displayName = :displayName"),
       condition:
         "#version = :ifMatch AND (#status = :pending OR #status = :active) AND #maxIssueLifetimeEverSeconds <= :max",
       names: {
         "#policy": "policy",
         "#maxIssueLifetimeEverSeconds": "maxIssueLifetimeEverSeconds",
         "#version": "version",
-        "#displayName": "displayName",
+        ...(input.displayName === undefined
+          ? {}
+          : { "#displayName": "displayName" }),
         "#status": "status",
       },
       values: {
@@ -1110,9 +1116,9 @@ export const buildUpdateCaPolicyTransaction = (
         ":ifMatch": input.loadedVersion,
         ":pending": "PENDING_CERTIFICATE",
         ":active": "ACTIVE",
-        ...(input.displayName === undefined
-          ? {}
-          : { ":displayName": input.displayName }),
+        ...(typeof input.displayName === "string"
+          ? { ":displayName": input.displayName }
+          : {}),
       },
     }),
   },
@@ -1431,6 +1437,25 @@ export const buildCommitCrlUpdate = (
   },
 });
 
+/** The CA must still be able to sign when the pointer commits. */
+export const buildCrlProfileCheck = (
+  tableName: string,
+  caId: string,
+): TransactItem => ({
+  ConditionCheck: {
+    TableName: tableName,
+    Key: { ...pkiKeys.caProfile(caId) },
+    ConditionExpression:
+      "#key.#state = :active AND (#status = :active OR #status = :retired)",
+    ExpressionAttributeNames: {
+      "#key": "key",
+      "#state": "state",
+      "#status": "status",
+    },
+    ExpressionAttributeValues: { ":active": "ACTIVE", ":retired": "RETIRED" },
+  },
+});
+
 export interface ExternalCrlCommit {
   readonly extId: string;
   readonly loadedVersion: string;
@@ -1705,7 +1730,9 @@ export class PkiRepository {
     items: readonly NamedItem[],
     token: { principal: string; idempotencyKey?: string },
   ): Promise<TransactOutcome> {
-    const nonce = token.idempotencyKey ?? newId();
+    // One nonce per call: it only has to cover the ambiguous-failure resend below. A service-level retry builds
+    // different items, so it must not reuse a token; cross-call idempotency is the slot-0 record.
+    const nonce = newId();
     const input = (generation: number): TransactWriteCommandInput => ({
       TransactItems: items.map((entry) => entry.item),
       ClientRequestToken: sha256Hex(
@@ -2245,27 +2272,46 @@ export class PkiRepository {
     };
   }
 
-  /** Commits the pointer. With `idempotency` the human record is written in the same transaction. */
+  /**
+   * Commits the pointer in a transaction that also checks the CA can still sign (ACTIVE or RETIRED with an ACTIVE
+   * key). With `idempotency` the human record is written in the same transaction. `inactive` means the CA was
+   * revoked, retired past use or had its key disabled since the CRL was built.
+   */
   public async commitCrlPublication(
     commit: CrlCommit & { idempotency?: HumanIdempotencyWrite },
-  ): Promise<"committed" | "conditionFailed" | "replay"> {
-    const update = buildCommitCrlUpdate(this.tableName, commit);
-    if (commit.idempotency === undefined) {
-      const result = await this.updateWithRetry(update);
-      return result.kind === "updated" ? "committed" : "conditionFailed";
-    }
-    const outcome = await this.commitHuman("publish-crl", commit.idempotency, [
+  ): Promise<"committed" | "conditionFailed" | "replay" | "inactive"> {
+    const items: NamedItem[] = [
+      ...(commit.idempotency === undefined
+        ? []
+        : [
+            {
+              slot: "idempotency",
+              item: buildHumanIdempotencyPut(this.tableName, commit.idempotency),
+            },
+          ]),
       {
-        slot: "idempotency",
-        item: buildHumanIdempotencyPut(this.tableName, commit.idempotency),
+        slot: "crl",
+        item: { Update: buildCommitCrlUpdate(this.tableName, commit) },
       },
-      { slot: "crl", item: { Update: update } },
-    ]);
+      {
+        slot: "profile",
+        item: buildCrlProfileCheck(this.tableName, commit.caId),
+      },
+    ];
+    const outcome = await this.transact("publish-crl", items, {
+      principal:
+        commit.idempotency === undefined
+          ? `crl:${commit.owner}`
+          : `human:${commit.idempotency.actor.id}`,
+    });
     if (outcome.kind === "committed") {
       return "committed";
     }
     if (outcome.failed.includes("idempotency")) {
       return "replay";
+    }
+    if (outcome.failed.includes("profile")) {
+      return "inactive";
     }
     if (outcome.failed.includes("crl")) {
       return "conditionFailed";

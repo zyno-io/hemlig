@@ -205,6 +205,16 @@ describe("policy", () => {
       capacity: 5,
     });
     expect(() => parseUpdateCaRequest({})).toThrow();
+    expect(parseUpdateCaRequest({ policy: {} })).not.toHaveProperty(
+      "displayName",
+    );
+    expect(parseUpdateCaRequest({ policy: {}, displayName: null })).toEqual({
+      policy: {},
+      displayName: null,
+    });
+    expect(() =>
+      parseUpdateCaRequest({ policy: {}, displayName: "" }),
+    ).toThrow();
   });
 });
 

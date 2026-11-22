@@ -330,6 +330,16 @@ export class CrlService {
       }
       await this.wait(500);
     }
+    // Re-read under the lease: the caller's record may be stale (revoked, key disabled) since it was loaded.
+    const current = await pki.getCa(ca.caId);
+    if (
+      current === undefined ||
+      (current.status !== "ACTIVE" && current.status !== "RETIRED") ||
+      current.key.state !== "ACTIVE"
+    ) {
+      return { kind: "superseded" };
+    }
+    ca = current;
     const allocation = await pki.allocateCrlNumber(ca.caId, owner);
     if (allocation === "lost") {
       return { kind: "superseded" };
@@ -388,12 +398,15 @@ export class CrlService {
       }
       // A revocation landed mid-generation: keep `dirtySince` so the next pass republishes.
       outcome = await pki.commitCrlPublication({ ...base, clearDirty: false });
-      if (outcome === "conditionFailed") {
+      if (outcome === "conditionFailed" || outcome === "inactive") {
         return { kind: "superseded" };
       }
     }
     if (outcome === "replay") {
       return { kind: "replay" };
+    }
+    if (outcome === "inactive") {
+      return { kind: "superseded" };
     }
     try {
       await pki.expireCarriedRevocations(

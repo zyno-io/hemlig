@@ -101,6 +101,8 @@ const corpora: [string, (body: unknown) => unknown, [string, unknown][]][] = [
       ["empty policy", { policy: {} }],
       ["missing policy", {}],
       ["unknown key", { policy: {}, extra: 1 }],
+      ["null display name", { policy: {}, displayName: null }],
+      ["empty display name", { policy: {}, displayName: "" }],
       ["bad bound", { policy: { issuancePerHour: 0 } }],
     ],
   ],

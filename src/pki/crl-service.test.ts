@@ -280,6 +280,7 @@ describe("CrlService.publish", () => {
   const owner = expect.stringMatching(/^crl-/);
   const caRecord = {
     caId: "ca-test-one",
+    status: "ACTIVE",
     key: { state: "ACTIVE" },
     policy: { crlValiditySeconds: 3600 },
     environment: "prod",
@@ -296,6 +297,7 @@ describe("CrlService.publish", () => {
       certificatePem: cert.pem,
     } as CaRecord;
     const pki = {
+      getCa: jest.fn(async () => full),
       acquireCrlLease: jest.fn(async () => "acquired"),
       allocateCrlNumber: jest.fn(async () => ({ number: 5, startRevision: 2 })),
       listRevocationsSince: jest.fn(async () => []),
@@ -460,5 +462,58 @@ describe("CrlService.publish", () => {
       );
       expect(emit).toHaveBeenCalledWith("test", { [metric]: 1 });
     }
+  });
+
+  it("re-reads the CA under the lease and refuses a stale record", async () => {
+    for (const changed of [
+      { status: "REVOKED" },
+      { key: { state: "DISABLED" } },
+      undefined,
+    ]) {
+      const { service, pki, ca, putImmutableOrGet } = await setup({});
+      (pki.getCa as jest.Mock).mockResolvedValue(
+        changed === undefined ? undefined : { ...ca, ...changed },
+      );
+      const result = await service.publish(ca, { trigger: "maintenance" });
+      expect(result.kind).toBe("superseded");
+      expect(pki.allocateCrlNumber).not.toHaveBeenCalled();
+      expect(putImmutableOrGet).not.toHaveBeenCalled();
+    }
+  });
+
+  it("signs with the re-read record", async () => {
+    const { service, pki, ca } = await setup({});
+    const signerFor = jest.fn(() => ({
+      algorithm: "ECDSA_P256" as const,
+      sign: async () => {
+        throw new Error("stop");
+      },
+    }));
+    const fresh = { ...ca, version: "fresh" } as CaRecord;
+    (pki.getCa as jest.Mock).mockResolvedValue(fresh);
+    const custom = new CrlService(
+      {
+        pki,
+        objects: { putImmutableOrGet: jest.fn() },
+        signerFor,
+        config: { pkiBucketName: "pki", environmentName: "test" },
+        now: () => new Date(),
+        emit: jest.fn(),
+      } as never,
+      async () => undefined,
+    );
+    await expect(custom.publish(ca, { trigger: "force" })).rejects.toThrow(
+      "stop",
+    );
+    expect(signerFor).toHaveBeenCalledWith(fresh);
+  });
+
+  it("is superseded when the commit finds the CA inactive", async () => {
+    const { service, ca } = await setup({
+      commitCrlPublication: jest.fn(async () => "inactive"),
+    });
+    expect((await service.publish(ca, { trigger: "force" })).kind).toBe(
+      "superseded",
+    );
   });
 });

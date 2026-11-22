@@ -653,6 +653,25 @@ describe("CaService update, abandon, retire, destroy-key", () => {
     ).toBe(9000);
   });
 
+  it("update keeps the display name when omitted and clears it on null", async () => {
+    const h = harness(active({ displayName: "Old" }));
+    await h.service.update(actor, "idem-key-0001", "ca-test-one", "pkv-1", {
+      policy: { capacity: 50 },
+    });
+    await h.service.update(actor, "idem-key-0002", "ca-test-one", "pkv-1", {
+      displayName: null,
+      policy: { capacity: 50 },
+    });
+    const [kept, cleared] = h.pki.updateCaPolicy.mock.calls.map(
+      (call: any[]) => call[0],
+    );
+    expect(kept).not.toHaveProperty("displayName");
+    expect(cleared.displayName).toBeNull();
+    expect(kept.idempotency.requestDigest).not.toBe(
+      cleared.idempotency.requestDigest,
+    );
+  });
+
   it("update refuses an over-budget policy and reports a lost race as 412", async () => {
     const h = harness(active());
     expect(

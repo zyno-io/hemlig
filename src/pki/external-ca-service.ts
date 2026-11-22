@@ -154,6 +154,8 @@ export class ExternalCaService {
       return this.replay(stored);
     };
 
+    // Across loops: a CA flipped in one loop is skipped (already REVOKED) in the next but still belongs in the result.
+    const revokedByUpload = new Set<string>();
     for (let loop = 0; loop < maxUploadLoops; loop += 1) {
       const ext = await this.load(extId);
       const now = this.deps.now();
@@ -215,18 +217,20 @@ export class ExternalCaService {
       );
 
       // Flip every dependent the CRL revokes before the pointer commits, so a visible CRL implies the flips.
-      const revokedCaIds: string[] = [];
       const dependents = [...ext.dependents].sort();
       for (let index = 0; index < dependents.length; index += flipChunk) {
         const chunk = dependents.slice(index, index + flipChunk);
         const flipped = await Promise.all(
           chunk.map((caId) => this.flip(caId, extId, verified)),
         );
-        revokedCaIds.push(
-          ...flipped.filter((id): id is string => id !== undefined),
-        );
+        for (const id of flipped) {
+          if (id !== undefined) {
+            revokedByUpload.add(id);
+          }
+        }
       }
 
+      const revokedCaIds = [...revokedByUpload].sort();
       const pointer: NonNullable<ExternalCaRecord["crl"]> = {
         numberHex: verified.numberHex,
         thisUpdate: verified.thisUpdate.toISOString(),
@@ -284,6 +288,14 @@ export class ExternalCaService {
   ): Promise<string | undefined> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const ca = await this.deps.pki.getCa(caId);
+      // Already revoked by this very CRL (an earlier loop, or an upload that crashed before its pointer commit).
+      if (
+        ca?.status === "REVOKED" &&
+        ca.revocationSource === "EXTERNAL" &&
+        ca.revocationEvidence === `crl:${verified.numberHex}`
+      ) {
+        return caId;
+      }
       if (
         ca === undefined ||
         (ca.status !== "ACTIVE" && ca.status !== "RETIRED") ||

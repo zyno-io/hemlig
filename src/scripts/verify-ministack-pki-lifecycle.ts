@@ -901,6 +901,56 @@ export const verifyPkiLifecycleOnMiniStack = async (
     done("maintenance finishes a sweep interrupted after the commit");
   }
 
+  // ---- A CA revoked while a publication is in flight --------------------------------------
+  {
+    const disable = (caId: string): Promise<unknown> =>
+      doc.send(
+        new UpdateCommand({
+          TableName: table,
+          Key: { ...pkiKeys.caProfile(caId) },
+          UpdateExpression: "SET #status = :revoked, #key.#state = :disabled",
+          ExpressionAttributeNames: {
+            "#status": "status",
+            "#key": "key",
+            "#state": "state",
+          },
+          ExpressionAttributeValues: {
+            ":revoked": "REVOKED",
+            ":disabled": "DISABLED",
+          },
+        }),
+      );
+    // Stale record handed to publish: caught by the re-read under the lease.
+    const { ca: stale } = await activeCa("stale-record", rootL);
+    await disable(stale.caId);
+    const before = await crlOf(stale.caId);
+    const refused = await svc.crls.publish(stale, { trigger: "maintenance" });
+    check(
+      refused.kind === "superseded" &&
+        (await crlOf(stale.caId)).published?.number ===
+          before.published?.number,
+      "a publication with a stale CA record must be superseded without signing",
+    );
+    // A change after the re-read: caught by the profile check in the commit.
+    const { ca: racing } = await activeCa("racing-record", rootL);
+    const raced = build({
+      pki: hooked(pki, {
+        listRevocationsSince: async () => {
+          await disable(racing.caId);
+        },
+      }),
+    });
+    const outcome = await raced.crls.publish(racing, { trigger: "force" });
+    const racedState = await crlOf(racing.caId);
+    check(
+      outcome.kind === "superseded" && racedState.published?.number === 1,
+      "a CA revoked mid-generation must not get a new pointer",
+    );
+  }
+  done(
+    "a CA revoked before or during a publication never gets a new CRL pointer",
+  );
+
   // ---- Retention across an outage ------------------------------------------------------
   {
     const { ca } = await activeCa("retention", rootL);

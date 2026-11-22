@@ -310,4 +310,59 @@ describe("ExternalCaService.uploadCrl", () => {
       details: { reason: "external_ca_not_found" },
     });
   });
+
+  it("keeps a CA flipped in an earlier loop in the committed result", async () => {
+    const live = ca("ca-a");
+    let record = ext({ dependents: new Set(["ca-a"]) });
+    const cas: Record<string, CaRecord> = { "ca-a": live };
+    const { service, pki } = setup(() => record, cas, {
+      revokeCaExternally: jest.fn(async () => {
+        cas["ca-a"] = ca("ca-a", {
+          status: "REVOKED",
+          revocationSource: "EXTERNAL",
+          revocationEvidence: `crl:${(3).toString(16).padStart(40, "0")}`,
+        });
+        return "revoked";
+      }),
+    });
+    pki
+      .commitExternalCrl!.mockImplementationOnce(async () => {
+        record = ext({ dependents: new Set(["ca-a"]), version: "pkv-2" });
+        return "externalChanged";
+      })
+      .mockResolvedValueOnce("committed");
+    const result = await service.uploadCrl(actor, "idem-key-0010", extId, {
+      crl: crl(3n, [{ serialHex: child.cert.serialHex }]),
+    });
+    expect(result.body.revokedCaIds).toEqual(["ca-a"]);
+    expect(result.auditTarget.revokedCaIds).toBe("ca-a");
+    const committed = pki.commitExternalCrl!.mock.calls[1]![0];
+    expect(committed.idempotency.result.revokedCaIds).toEqual(["ca-a"]);
+    expect(pki.revokeCaExternally).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts a CA this CRL already revoked before an earlier crash, but not another CRL's", async () => {
+    const number = (3).toString(16).padStart(40, "0");
+    const cas = {
+      "ca-crashed": ca("ca-crashed", {
+        status: "REVOKED",
+        revocationSource: "EXTERNAL",
+        revocationEvidence: `crl:${number}`,
+      }),
+      "ca-older": ca("ca-older", {
+        status: "REVOKED",
+        revocationSource: "EXTERNAL",
+        revocationEvidence: `crl:${(2).toString(16).padStart(40, "0")}`,
+      }),
+    };
+    const { service, pki } = setup(
+      ext({ dependents: new Set(["ca-crashed", "ca-older"]) }),
+      cas,
+    );
+    const result = await service.uploadCrl(actor, "idem-key-0011", extId, {
+      crl: crl(3n, [{ serialHex: child.cert.serialHex }]),
+    });
+    expect(result.body.revokedCaIds).toEqual(["ca-crashed"]);
+    expect(pki.revokeCaExternally).not.toHaveBeenCalled();
+  });
 });
