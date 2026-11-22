@@ -34,6 +34,12 @@ export interface AppConfig {
   readonly adminJwtRole?: string;
   readonly adminActorTenantClaim?: string;
   readonly adminExpectedTenantId?: string;
+  /** Present on the PKI Lambdas only. */
+  readonly pkiDirectoryIndex?: string;
+  readonly pkiBucketName?: string;
+  /** Optional IdP roles additionally required by PKI admin operations (Phase 3). */
+  readonly adminPkiCaRole?: string;
+  readonly adminPkiOperatorRole?: string;
   readonly maxPayloadBytes: number;
   readonly awsEndpointUrl?: string;
 }
@@ -91,10 +97,27 @@ export const loadConfig = (
     adminJwtRole: optional(environment, "ADMIN_JWT_ROLE"),
     adminActorTenantClaim: optional(environment, "ADMIN_ACTOR_TENANT_CLAIM"),
     adminExpectedTenantId: optional(environment, "ADMIN_EXPECTED_TENANT_ID"),
+    pkiDirectoryIndex: optional(environment, "PKI_DIRECTORY_INDEX"),
+    pkiBucketName: optional(environment, "PKI_BUCKET_NAME"),
+    adminPkiCaRole: optional(environment, "ADMIN_PKI_CA_ROLE"),
+    adminPkiOperatorRole: optional(environment, "ADMIN_PKI_OPERATOR_ROLE"),
     maxPayloadBytes,
     awsEndpointUrl: optional(environment, "AWS_ENDPOINT_URL"),
   };
 };
+
+export interface PkiConfig extends AppConfig {
+  readonly pkiDirectoryIndex: string;
+  readonly pkiBucketName: string;
+}
+
+export const loadPkiConfig = (
+  environment: NodeJS.ProcessEnv = process.env,
+): PkiConfig => ({
+  ...loadConfig(environment),
+  pkiDirectoryIndex: required(environment, "PKI_DIRECTORY_INDEX"),
+  pkiBucketName: required(environment, "PKI_BUCKET_NAME"),
+});
 
 const required = (environment: NodeJS.ProcessEnv, name: string): string => {
   const value = environment[name];

@@ -1,16 +1,33 @@
 import type { Actor } from './types';
 
+export interface ApiErrorOptions {
+    /** Safe, non-secret fields echoed in `error.details`. */
+    readonly details?: Readonly<Record<string, string | number | boolean>>;
+    /** Extra response headers, for example `{ "retry-after": "120" }`. */
+    readonly headers?: Readonly<Record<string, string>>;
+}
+
 export class ApiError extends Error {
     public readonly statusCode: number;
     public readonly code: string;
     public readonly safeReason?: string;
+    public readonly details?: Readonly<Record<string, string | number | boolean>>;
+    public readonly headers?: Readonly<Record<string, string>>;
 
-    public constructor(statusCode: number, code: string, message: string, safeReason?: string) {
+    public constructor(
+        statusCode: number,
+        code: string,
+        message: string,
+        safeReason?: string,
+        options: ApiErrorOptions = {},
+    ) {
         super(message);
         this.name = 'ApiError';
         this.statusCode = statusCode;
         this.code = code;
         this.safeReason = safeReason;
+        this.details = options.details;
+        this.headers = options.headers;
     }
 }
 
