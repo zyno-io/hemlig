@@ -156,6 +156,49 @@ describe("parseCsr", () => {
     ).toBe(expected);
   });
 
+  it("verifies RSA-PSS with a salt longer than the digest", () => {
+    const key = leafKey({ type: "rsa", bits: 2048 });
+    for (const pssSalt of [0, 20, 64, 190]) {
+      expect(
+        parseCsr(csrPem(makeCsrDer({ key, pss: true, pssSalt }))).keyAlgorithm,
+      ).toBe("RSA_2048");
+    }
+  });
+
+  it("accepts sha256WithRSAEncryption with absent or DER NULL parameters", () => {
+    const key = leafKey({ type: "rsa", bits: 2048 });
+    const absent = seq(oid(OID.sha256WithRsa));
+    expect(
+      parseCsr(csrPem(makeCsrDer({ key, signatureAlgorithm: absent })))
+        .keyAlgorithm,
+    ).toBe("RSA_2048");
+    expect(
+      parseCsr(
+        csrPem(
+          makeCsrDer({
+            key,
+            signatureAlgorithm: seq(oid(OID.sha256WithRsa), derNull()),
+          }),
+        ),
+      ).keyAlgorithm,
+    ).toBe("RSA_2048");
+    // A "NULL" with content, or other parameters, is refused.
+    for (const parameters of [tlv(0x05, Buffer.from([0])), seq()]) {
+      expect(
+        failure(() =>
+          parseCsr(
+            csrPem(
+              makeCsrDer({
+                key,
+                signatureAlgorithm: seq(oid(OID.sha256WithRsa), parameters),
+              }),
+            ),
+          ),
+        ),
+      ).toMatchObject({ reason: "bad_signature" });
+    }
+  });
+
   it("verifies RSA-PSS signatures", () => {
     const key = leafKey({ type: "rsa", bits: 2048 });
     expect(parseCsr(csrPem(makeCsrDer({ key, pss: true }))).keyAlgorithm).toBe(

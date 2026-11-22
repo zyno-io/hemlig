@@ -249,6 +249,9 @@ export const verifyActivationChain = (
   if (root.version !== 2 || root.basicConstraints?.ca !== true) {
     throw chainInvalid("root_not_ca");
   }
+  if (!root.basicConstraints.critical) {
+    throw chainInvalid("root_basic_constraints_not_critical");
+  }
   if (
     root.keyUsage === undefined ||
     !root.keyUsage.includes("keyCertSign") ||
@@ -285,6 +288,33 @@ export const verifyActivationChain = (
   if (!certificate.authorityKeyIdentifier.equals(root.subjectKeyIdentifier)) {
     throw chainInvalid("aki_mismatch");
   }
+  // authorityCertIssuer and authorityCertSerialNumber, when present, must name the root certificate.
+  if (
+    certificate.authorityCertSerialHex !== undefined &&
+    certificate.authorityCertSerialHex !== root.serialHex
+  ) {
+    throw chainInvalid("aki_mismatch");
+  }
+  if (certificate.authorityCertIssuer !== undefined) {
+    const names = certificate.authorityCertIssuer;
+    const matches =
+      names.length > 0 &&
+      names.every((name) => {
+        if (name.tag !== 0xa4) {
+          return false;
+        }
+        try {
+          return (
+            parseRestrictedName(name.value, "external").key === rootSubject.key
+          );
+        } catch {
+          return false;
+        }
+      });
+    if (!matches) {
+      throw chainInvalid("aki_mismatch");
+    }
+  }
   if (!certificate.spkiDer.equals(Buffer.from(input.caSpkiDer))) {
     throw chainInvalid("spki_mismatch");
   }
@@ -320,6 +350,9 @@ export const verifyActivationChain = (
   );
   if (certificateSubject.key !== input.requestedSubjectKey) {
     throw chainInvalid("subject_mismatch");
+  }
+  if (certificate.nameConstraintsUnsupported) {
+    throw chainInvalid("unsupported_name_constraint");
   }
   const broader =
     certificate.basicConstraints.pathLen === undefined ||

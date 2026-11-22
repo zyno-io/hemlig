@@ -191,13 +191,18 @@ export const unwrapCaKey = async (
   let update: Buffer | undefined;
   let last: Buffer | undefined;
   try {
+    const tag = Buffer.from(wrapped.tag, "base64");
+    if (tag.length !== 16) {
+      throw new Error("The GCM tag must be 16 bytes.");
+    }
     const decipher = createDecipheriv(
       "aes-256-gcm",
       key,
       Buffer.from(wrapped.iv, "base64"),
+      { authTagLength: 16 },
     );
     decipher.setAAD(aad(binding));
-    decipher.setAuthTag(Buffer.from(wrapped.tag, "base64"));
+    decipher.setAuthTag(tag);
     update = decipher.update(Buffer.from(wrapped.ciphertext, "base64"));
     last = decipher.final();
     return Buffer.concat([update, last]);

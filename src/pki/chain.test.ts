@@ -679,6 +679,106 @@ describe("verifyActivationChain", () => {
       ).toBe("missing_aki");
     });
 
+    it("refuses a root with non-critical BasicConstraints", async () => {
+      const s = await setup();
+      const root = await makeRoot({
+        extensions: (key) => [
+          extension(EXT.basicConstraints, false, basicConstraintsValue(true)),
+          extension(
+            EXT.keyUsage,
+            true,
+            keyUsageValue(["keyCertSign", "cRLSign"]),
+          ),
+          skiExtension(key),
+        ],
+      });
+      const ca = await makeIntermediate(root, { key: s.key, subject });
+      expect(
+        reasonOf(() =>
+          verifyActivationChain({
+            ...s.input,
+            chainPem: root.pem,
+            certificatePem: ca.pem,
+          }),
+        ),
+      ).toBe("root_basic_constraints_not_critical");
+    });
+
+    it.each([
+      ["directoryName", tlv(0xa4, subjectDer({ O: "Payments", CN: "x" }))],
+      ["rfc822Name", tlv(0x81, Buffer.from("example.com"))],
+    ])("refuses a %s name constraint it cannot enforce", async (_, base) => {
+      const s = await setup();
+      const ca = customCa(s.root, s.key, {
+        extensions: [
+          extension(EXT.nameConstraints, true, seq(tlv(0xa0, seq(seq(base))))),
+        ],
+      });
+      expect(
+        reasonOf(() =>
+          verifyActivationChain({ ...s.input, certificatePem: ca.pem }),
+        ),
+      ).toBe("unsupported_name_constraint");
+      // Also when mixed with enforceable subtrees, and as an exclusion.
+      const mixed = customCa(s.root, s.key, {
+        extensions: [
+          extension(
+            EXT.nameConstraints,
+            true,
+            seq(
+              tlv(0xa0, seq(seq(tlv(0x82, Buffer.from("example.com"))))),
+              tlv(0xa1, seq(seq(base))),
+            ),
+          ),
+        ],
+      });
+      expect(
+        reasonOf(() =>
+          verifyActivationChain({ ...s.input, certificatePem: mixed.pem }),
+        ),
+      ).toBe("unsupported_name_constraint");
+    });
+
+    it("checks authorityCertIssuer and authorityCertSerialNumber against the root", async () => {
+      const s = await setup();
+      const withAki = (
+        issuer: Buffer | undefined,
+        serial: Buffer | undefined,
+      ) =>
+        customCa(s.root, s.key, {
+          replace: [EXT.authorityKeyIdentifier],
+          extensions: [
+            extension(
+              EXT.authorityKeyIdentifier,
+              false,
+              seq(
+                tlv(0x80, s.root.cert.subjectKeyIdentifier ?? Buffer.alloc(0)),
+                ...(issuer === undefined ? [] : [tlv(0xa1, issuer)]),
+                ...(serial === undefined ? [] : [tlv(0x82, serial)]),
+              ),
+            ),
+          ],
+        });
+      const rootName = tlv(0xa4, s.root.cert.subjectDer);
+      const rootSerial = Buffer.from(s.root.cert.serialHex, "hex");
+      const run = (ca: TestCert) =>
+        reasonOf(() =>
+          verifyActivationChain({ ...s.input, certificatePem: ca.pem }),
+        );
+      expect(run(withAki(rootName, rootSerial))).toBeUndefined();
+      expect(run(withAki(undefined, rootSerial))).toBeUndefined();
+      expect(run(withAki(rootName, undefined))).toBeUndefined();
+      expect(run(withAki(rootName, Buffer.from([2])))).toBe("aki_mismatch");
+      expect(
+        run(withAki(undefined, Buffer.from([0, ...rootSerial]))),
+      ).toBeUndefined();
+      const otherName = tlv(0xa4, subjectDer({ O: "Other", CN: "Other Root" }));
+      expect(run(withAki(otherName, rootSerial))).toBe("aki_mismatch");
+      expect(run(withAki(tlv(0x82, Buffer.from("x")), rootSerial))).toBe(
+        "aki_mismatch",
+      );
+    });
+
     it("requires BasicConstraints to be critical", async () => {
       const s = await setup();
       const ca = customCa(s.root, s.key, {

@@ -153,6 +153,8 @@ export interface ParsedCrl {
   readonly extensions: readonly RawExtension[];
   /** Unsigned CRLNumber content octets (up to 20 are valid per RFC 5280). */
   readonly crlNumber?: Buffer;
+  /** INTEGER content length of the CRLNumber, sign octet included (RFC 5280 allows at most 20). */
+  readonly crlNumberOctets?: number;
   readonly authorityKeyIdentifier?: Buffer;
 }
 
@@ -264,6 +266,8 @@ export const parseCrl = (input: Uint8Array): ParsedCrl => {
         number === undefined
           ? undefined
           : decodeUnsignedInteger(parseDer(number.value)),
+      crlNumberOctets:
+        number === undefined ? undefined : parseDer(number.value).value.length,
       authorityKeyIdentifier:
         aki === undefined
           ? undefined

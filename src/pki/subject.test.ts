@@ -91,6 +91,16 @@ describe("restricted subject form", () => {
     );
   });
 
+  it("refuses a leading byte order mark instead of dropping it", () => {
+    const bom = name({
+      oid: SUBJECT_OID.CN,
+      value: "\ufeffIssuing CA",
+      tag: TAG.utf8String,
+    });
+    expect(reason(bom)).toBe("non_ascii");
+    expect(reason(bom, "hemlig")).toBe("non_ascii");
+  });
+
   it("refuses non-ASCII values", () => {
     expect(
       reason(

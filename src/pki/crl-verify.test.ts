@@ -82,8 +82,15 @@ describe("verifyRootCrl", () => {
   });
 
   it("parses a 20-octet CRL number into its canonical 40-digit form", () => {
-    const high = Buffer.alloc(20, 0xff);
-    expect(verify({ number: high }).numberHex).toBe("ff".repeat(20));
+    // Twenty 0xff octets need a sign octet in DER: 21 content octets, larger than any conforming number.
+    expect(reasonOf(() => verify({ number: Buffer.alloc(20, 0xff) }))).toBe(
+      "crl_number_too_large",
+    );
+    const largest = Buffer.concat([
+      Buffer.from([0x7f]),
+      Buffer.alloc(19, 0xff),
+    ]);
+    expect(verify({ number: largest }).numberHex).toBe("7f" + "ff".repeat(19));
     expect(verify({ number: Buffer.from([0x7f]) }).numberHex).toBe(
       "7f".padStart(40, "0"),
     );
@@ -332,5 +339,22 @@ describe("verifyRootCrl", () => {
         ),
       ).toBe("issuer_cannot_sign_crl");
     });
+  });
+
+  it("accepts a PEM CRL near the size limit, whose line breaks push the text past the base64 length", () => {
+    const padding = extension(
+      "1.2.3.4.5",
+      false,
+      tlv(0x04, Buffer.alloc(maximumUploadedCrlBytes - 1024 * 2, 1)),
+    );
+    const der = makeCrl({ ca: root, extraExtensions: [padding] });
+    expect(der.length).toBeLessThan(maximumUploadedCrlBytes);
+    expect(der.length).toBeGreaterThan(maximumUploadedCrlBytes - 4096);
+    const pem = crlPem(der);
+    expect(pem.length).toBeGreaterThan(
+      Math.ceil((maximumUploadedCrlBytes * 4) / 3) + 256,
+    );
+    expect(verify({ text: pem }).der.equals(der)).toBe(true);
+    expect(verify({ text: der.toString("base64") }).der.equals(der)).toBe(true);
   });
 });

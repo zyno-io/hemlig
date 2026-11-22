@@ -10,6 +10,7 @@ import {
 import type { KeyUsageName, RevocationReason } from "../types";
 import {
   boolTrue,
+  canonicalSerialHex,
   children,
   decodeOid,
   DerError,
@@ -227,9 +228,36 @@ export const decodeKeyIdentifier = (value: Uint8Array): Buffer => {
 
 export const decodeAuthorityKeyIdentifier = (
   value: Uint8Array,
-): { keyIdentifier?: Buffer } => {
+): AuthorityKeyIdentifierParts => {
   const root = parseDer(value);
   expectTag(root, TAG.sequence, "an AuthorityKeyIdentifier");
-  const keyId = children(root).find((field) => field.tag === 0x80);
-  return { keyIdentifier: keyId?.value };
+  const fields = children(root);
+  const keyId = fields.find((field) => field.tag === 0x80);
+  const issuer = fields.find((field) => field.tag === 0xa1);
+  const serial = fields.find((field) => field.tag === 0x82);
+  if (serial !== undefined && serial.value.length === 0) {
+    throw new DerError("Empty authorityCertSerialNumber.");
+  }
+  return {
+    keyIdentifier: keyId?.value,
+    authorityCertIssuer:
+      issuer === undefined
+        ? undefined
+        : children(issuer).map((name) => ({
+            tag: name.tag,
+            value: name.value,
+          })),
+    authorityCertSerialHex:
+      serial === undefined
+        ? undefined
+        : canonicalSerialHex(serial.value.toString("hex")),
+  };
 };
+
+export interface AuthorityKeyIdentifierParts {
+  keyIdentifier?: Buffer;
+  /** GeneralNames of authorityCertIssuer; a directoryName's `value` is the Name DER. */
+  authorityCertIssuer?: { tag: number; value: Buffer }[];
+  /** Canonical serial hex of authorityCertSerialNumber. */
+  authorityCertSerialHex?: string;
+}

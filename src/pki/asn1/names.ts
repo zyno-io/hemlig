@@ -33,7 +33,11 @@ const stringTags: Record<number, DirectoryStringKind> = {
   [TAG.ia5String]: "ia5",
 };
 
-const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const utf8Decoder = new TextDecoder("utf-8", {
+  fatal: true,
+  // Keep a leading U+FEFF so the printable-ASCII validator rejects it instead of it being silently dropped.
+  ignoreBOM: true,
+});
 
 /** Splits a DER Name into RDNs of attributes. Throws DerError on malformed structure. */
 export const decodeName = (der: Uint8Array): NameAttribute[][] => {
@@ -331,7 +335,10 @@ export const encodeNameConstraints = (constraints: NameConstraintSet): Buffer =>
       : []),
   );
 
-const decodeSubtrees = (container: Tlv): NameConstraintEntry[] => {
+const decodeSubtrees = (
+  container: Tlv,
+  state: { unsupported: boolean },
+): NameConstraintEntry[] => {
   const entries: NameConstraintEntry[] = [];
   for (const item of children(container)) {
     expectTag(item, TAG.sequence, "a GeneralSubtree");
@@ -370,26 +377,34 @@ const decodeSubtrees = (container: Tlv): NameConstraintEntry[] => {
         type: "ip",
         value: formatCidr(parseCidr(`${ipFromBytes(address)}/${prefix}`)),
       });
+    } else {
+      // rfc822Name, directoryName, ...: Hemlig does not enforce these, so the caller must refuse them.
+      state.unsupported = true;
     }
-    // Other subtree types (rfc822Name, directoryName, ...) never match the names Hemlig issues.
   }
   return entries;
 };
 
 export const decodeNameConstraints = (
   valueDer: Uint8Array,
-): NameConstraintSet => {
+): NameConstraintSet => decodeNameConstraintsDetailed(valueDer).constraints;
+
+/** `unsupported` is true when any subtree has a GeneralName form other than dNSName, iPAddress or URI. */
+export const decodeNameConstraintsDetailed = (
+  valueDer: Uint8Array,
+): { constraints: NameConstraintSet; unsupported: boolean } => {
+  const state = { unsupported: false };
   const root = parseDer(valueDer);
   expectTag(root, TAG.sequence, "NameConstraints");
   const result: NameConstraintSet = { permitted: [], excluded: [] };
   for (const field of children(root)) {
     if (field.tag === 0xa0) {
-      result.permitted = decodeSubtrees(field);
+      result.permitted = decodeSubtrees(field, state);
     } else if (field.tag === 0xa1) {
-      result.excluded = decodeSubtrees(field);
+      result.excluded = decodeSubtrees(field, state);
     } else {
       throw new DerError("Malformed NameConstraints.");
     }
   }
-  return result;
+  return { constraints: result, unsupported: state.unsupported };
 };

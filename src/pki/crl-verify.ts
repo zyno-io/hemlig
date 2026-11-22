@@ -36,19 +36,23 @@ export interface VerifiedRootCrl {
   readonly entries: readonly ParsedCrlEntry[];
 }
 
+/**
+ * The longest accepted text: the base64 of a maximum-size CRL, a CRLF per 64-column line, and the PEM delimiters.
+ * The decoded size is still limited to `maximumUploadedCrlBytes`.
+ */
+const base64Length = Math.ceil(maximumUploadedCrlBytes / 3) * 4;
+const maximumCrlTextLength =
+  base64Length + Math.ceil(base64Length / 64) * 2 + 256;
+
 const decodeInput = (text: string): Buffer => {
   const trimmed = text.trim();
-  if (trimmed.length > Math.ceil((maximumUploadedCrlBytes * 4) / 3) + 256) {
+  if (trimmed.length > maximumCrlTextLength) {
     throw crlInvalid("too_large");
   }
   let der: Buffer;
   if (trimmed.startsWith("-----BEGIN")) {
     try {
-      der = fromPem(
-        trimmed,
-        "X509 CRL",
-        Math.ceil((maximumUploadedCrlBytes * 4) / 3) + 256,
-      );
+      der = fromPem(trimmed, "X509 CRL", maximumCrlTextLength);
     } catch (error) {
       if (error instanceof PemError) {
         throw crlInvalid(
@@ -88,7 +92,7 @@ export const verifyRootCrl = (input: VerifyRootCrlInput): VerifiedRootCrl => {
   if (crl.crlNumber === undefined) {
     throw crlInvalid("missing_crl_number");
   }
-  if (crl.crlNumber.length > 20) {
+  if ((crl.crlNumberOctets ?? 0) > 20) {
     throw crlInvalid("crl_number_too_large");
   }
 

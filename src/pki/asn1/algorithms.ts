@@ -152,8 +152,6 @@ const hashOids: Record<string, "sha256" | "sha384" | "sha512"> = {
   [OID.sha512]: "sha512",
 };
 
-const hashLength = { sha256: 32, sha384: 48, sha512: 64 } as const;
-
 const pssParameters = (
   parameters: Tlv | undefined,
 ): { digest: "sha256" | "sha384" | "sha512"; saltLength: number } => {
@@ -177,18 +175,17 @@ const pssParameters = (
       }
       mgfDigest = hashOids[parseAlgorithmIdentifier(mgf.parameters).oid];
     } else if (field.tag === 0xa2) {
-      saltLength = Number(
-        BigInt("0x" + decodeUnsignedInteger(inner).toString("hex")),
-      );
+      const salt = BigInt("0x" + decodeUnsignedInteger(inner).toString("hex"));
+      if (salt > 0x7fffffffn) {
+        throw new Error("Unsupported RSASSA-PSS salt length.");
+      }
+      saltLength = Number(salt);
     } else if (field.tag !== 0xa3) {
       throw new Error("Malformed RSASSA-PSS parameters.");
     }
   }
-  if (
-    digest === undefined ||
-    mgfDigest !== digest ||
-    saltLength > hashLength[digest]
-  ) {
+  // Any declared salt length is passed to the verifier, which enforces the RSA encoding limit.
+  if (digest === undefined || mgfDigest !== digest) {
     throw new Error("Unsupported RSASSA-PSS parameters.");
   }
   return { digest, saltLength };
@@ -223,9 +220,11 @@ export const verifySignature = (
       return false;
     }
     if (known.nullParameters) {
+      // RFC 4055 section 5: absent parameters and a DER NULL (zero content) are both accepted.
       if (
-        algorithm.parameters === undefined ||
-        algorithm.parameters.tag !== TAG.null
+        algorithm.parameters !== undefined &&
+        (algorithm.parameters.tag !== TAG.null ||
+          algorithm.parameters.value.length !== 0)
       ) {
         return false;
       }

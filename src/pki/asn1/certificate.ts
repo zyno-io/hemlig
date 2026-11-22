@@ -45,7 +45,7 @@ import {
   type RawExtension,
 } from "./extensions";
 import {
-  decodeNameConstraints,
+  decodeNameConstraintsDetailed,
   encodeNameConstraints,
   encodeSubjectAltName,
   type SubjectAltNameInput,
@@ -95,6 +95,10 @@ export interface ParsedCertificate {
   readonly extendedKeyUsage?: string[];
   readonly subjectKeyIdentifier?: Buffer;
   readonly authorityKeyIdentifier?: Buffer;
+  readonly authorityCertIssuer?: { tag: number; value: Buffer }[];
+  readonly authorityCertSerialHex?: string;
+  /** NameConstraints carry a GeneralName form Hemlig does not enforce (directoryName, rfc822Name, ...). */
+  readonly nameConstraintsUnsupported: boolean;
   readonly nameConstraints?: NameConstraintSet;
   readonly fingerprint: string;
   readonly spkiSha256: string;
@@ -190,6 +194,10 @@ export const parseCertificate = (input: Uint8Array): ParsedCertificate => {
     const ski = find(EXT.subjectKeyIdentifier);
     const aki = find(EXT.authorityKeyIdentifier);
     const nc = find(EXT.nameConstraints);
+    const akiParts =
+      aki === undefined ? undefined : decodeAuthorityKeyIdentifier(aki.value);
+    const ncParts =
+      nc === undefined ? undefined : decodeNameConstraintsDetailed(nc.value);
     return {
       der,
       tbsDer: tbs.raw,
@@ -214,12 +222,11 @@ export const parseCertificate = (input: Uint8Array): ParsedCertificate => {
         eku === undefined ? undefined : decodeExtendedKeyUsage(eku.value),
       subjectKeyIdentifier:
         ski === undefined ? undefined : decodeKeyIdentifier(ski.value),
-      authorityKeyIdentifier:
-        aki === undefined
-          ? undefined
-          : decodeAuthorityKeyIdentifier(aki.value).keyIdentifier,
-      nameConstraints:
-        nc === undefined ? undefined : decodeNameConstraints(nc.value),
+      authorityKeyIdentifier: akiParts?.keyIdentifier,
+      authorityCertIssuer: akiParts?.authorityCertIssuer,
+      authorityCertSerialHex: akiParts?.authorityCertSerialHex,
+      nameConstraints: ncParts?.constraints,
+      nameConstraintsUnsupported: ncParts?.unsupported ?? false,
       fingerprint: sha256Hex(der),
       spkiSha256: sha256Hex(spki.raw),
       unrecognizedCritical: extensions

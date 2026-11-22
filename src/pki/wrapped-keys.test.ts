@@ -111,6 +111,21 @@ describe("wrapped CA keys", () => {
         },
       );
     }
+    // A truncated GCM tag must not authenticate.
+    for (const length of [0, 4, 12, 15, 17]) {
+      const tag = Buffer.concat([
+        Buffer.from(wrapped.tag, "base64"),
+        Buffer.alloc(2),
+      ]).subarray(0, length);
+      await expect(
+        unwrapCaKey(
+          kms,
+          "k",
+          { ...wrapped, tag: tag.toString("base64") },
+          binding,
+        ),
+      ).rejects.toMatchObject({ statusCode: 409, code: "ca_key_unavailable" });
+    }
     const tampered = {
       ...wrapped,
       ciphertext: Buffer.alloc(8).toString("base64"),

@@ -375,14 +375,14 @@ export const leafKey = (spec: LeafKeySpec): LeafKey => {
 
 const sha256Params = (): Buffer => seq(oid(OID.sha256), derNull());
 
-/** RSASSA-PSS-params for SHA-256, MGF1-SHA-256 and a 32-byte salt. */
-const pssAlgorithm = (): Buffer =>
+/** RSASSA-PSS-params for SHA-256, MGF1-SHA-256 and the given salt length. */
+const pssAlgorithm = (salt: number): Buffer =>
   seq(
     oid(OID.rsaPss),
     seq(
       explicit(0, sha256Params()),
       explicit(1, seq(oid(OID.mgf1), sha256Params())),
-      explicit(2, smallInteger(32)),
+      explicit(2, smallInteger(salt)),
     ),
   );
 
@@ -398,6 +398,8 @@ export interface CsrSpec {
   /** Overrides the SPKI (for hand-crafted keys). */
   readonly spkiDer?: Buffer;
   readonly pss?: boolean;
+  /** RSASSA-PSS salt length (default 32). */
+  readonly pssSalt?: number;
   /** AlgorithmIdentifier override; the signature is still made with the key's natural algorithm. */
   readonly signatureAlgorithm?: Buffer;
   readonly corruptSignature?: boolean;
@@ -444,11 +446,11 @@ export const makeCsrDer = (spec: CsrSpec): Buffer => {
       dsaEncoding: "der",
     });
   } else if (signer.spec.type === "rsa" && spec.pss === true) {
-    algorithm = pssAlgorithm();
+    algorithm = pssAlgorithm(spec.pssSalt ?? 32);
     signature = sign("sha256", info, {
       key: signer.privateKey,
       padding: constants.RSA_PKCS1_PSS_PADDING,
-      saltLength: 32,
+      saltLength: spec.pssSalt ?? 32,
     });
   } else if (signer.spec.type === "rsa") {
     algorithm = seq(oid(OID.sha256WithRsa), derNull());
