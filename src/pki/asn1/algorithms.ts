@@ -257,12 +257,19 @@ const curves: Record<string, "P-256" | "P-384" | "P-521"> = {
   [OID.secp521r1]: "P-521",
 };
 
+const uncompressedPointLength: Record<"P-256" | "P-384" | "P-521", number> = {
+  "P-256": 65,
+  "P-384": 97,
+  "P-521": 133,
+};
+
 const base64UrlToBigInt = (value: string): bigint =>
   BigInt("0x" + Buffer.from(value, "base64url").toString("hex"));
 
 /** Classifies a SubjectPublicKeyInfo. Explicit EC parameters, unknown curves and unknown algorithms are refused. */
 export const describePublicKey = (spkiDer: Uint8Array): PublicKeyInfo => {
   let algorithm: AlgorithmIdentifierParts;
+  let keyBits: Buffer;
   try {
     const spki = parseDer(spkiDer);
     const [algorithmElement, bits, ...extra] = children(spki);
@@ -275,6 +282,7 @@ export const describePublicKey = (spkiDer: Uint8Array): PublicKeyInfo => {
       throw new PublicKeyError("malformed_public_key");
     }
     algorithm = parseAlgorithmIdentifier(algorithmElement);
+    keyBits = bits.value;
   } catch (error) {
     throw error instanceof PublicKeyError
       ? error
@@ -323,6 +331,16 @@ export const describePublicKey = (spkiDer: Uint8Array): PublicKeyInfo => {
       const curve = curves[decodeOid(parameters)];
       if (curve === undefined) {
         throw new PublicKeyError("unsupported_curve");
+      }
+      // Uncompressed points only: Go's x509 parser rejects compressed SPKIs,
+      // and one encoding per key keeps spkiSha256 a key identity.
+      const point = keyBits.subarray(1);
+      if (
+        keyBits[0] !== 0 ||
+        point[0] !== 0x04 ||
+        point.length !== uncompressedPointLength[curve]
+      ) {
+        throw new PublicKeyError("malformed_public_key");
       }
       load();
       return { kind: "ec", curve };

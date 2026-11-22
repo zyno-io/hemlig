@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, ECDH, generateKeyPairSync } from "node:crypto";
 import { ApiError } from "./../domain/errors";
 import {
   csrPem,
@@ -415,6 +415,30 @@ describe("parseCsr", () => {
           parseCsr(csrPem(makeCsrDer({ key: p256, spkiDer: nullKey }))),
         ),
       ).toMatchObject({
+        reason: "malformed_public_key",
+      });
+    });
+
+    it("compressed EC points", () => {
+      // SPKI = SEQ{ algId, BIT STRING{ 00 04 x y } }; take the 65-byte point.
+      const uncompressed = p256.spkiDer.subarray(p256.spkiDer.length - 65);
+      const compressed = ECDH.convertKey(
+        uncompressed,
+        "prime256v1",
+        undefined,
+        undefined,
+        "compressed",
+      ) as Buffer;
+      const compressedSpki = seq(
+        seq(oid(OID.ecPublicKey), oid(OID.prime256v1)),
+        bitString(compressed),
+      );
+      expect(
+        failure(() =>
+          parseCsr(csrPem(makeCsrDer({ key: p256, spkiDer: compressedSpki }))),
+        ),
+      ).toMatchObject({
+        code: "invalid_csr",
         reason: "malformed_public_key",
       });
     });
