@@ -13,7 +13,7 @@ export const maximumBodyBytes = 1024 * 1024;
 
 /** The JSON object body, decoded when API Gateway base64-encoded it. Over 1 MiB is `400 body_too_large`. */
 export const parseObjectBody = (
-  event: Pick<APIGatewayProxyEventV2, "body" | "isBase64Encoded">,
+  event: Partial<Pick<APIGatewayProxyEventV2, "body" | "isBase64Encoded">>,
 ): Record<string, unknown> => {
   if (event.body === undefined || event.body.length === 0) {
     return {};
