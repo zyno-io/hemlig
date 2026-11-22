@@ -917,6 +917,13 @@ const compile = (
       }
     }
   }
+  if (keyAlgorithms.length === 0) {
+    out.error(
+      "key_algorithm_not_in_ca_policy",
+      "policy.keyAlgorithms",
+      "no key algorithm is allowed by both the grant and the CA leaf policy",
+    );
+  }
 
   // EKU
   const { allow, default: defaults } = policy.extendedKeyUsages;

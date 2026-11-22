@@ -550,6 +550,15 @@ describe("external review regressions", () => {
     expect(result.compiled?.keyAlgorithms).toEqual(["ECDSA_P256"]);
   });
 
+  it("rejects a grant whose resolved keyAlgorithms is empty", () => {
+    const policy = validPolicy();
+    delete policy.keyAlgorithms;
+    const result = validateGrantPolicy(policy, {
+      ca: ca({ leafKeyAlgorithms: ["ED25519"] }),
+    });
+    expect(result.ok).toBe(false);
+  });
+
   it("uses attribute-specific subject length limits", () => {
     const policy = validPolicy();
     policy.forced.subject = {
