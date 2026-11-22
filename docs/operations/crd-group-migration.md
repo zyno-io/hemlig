@@ -50,6 +50,19 @@ flowchart LR
   verify --> cleanup["9. Delete old group"]
 ```
 
+## Clusters managed by Flux
+
+When Flux owns the controller and your Hemlig resources, the steps stay the same, with these changes. Every Flux-managed cluster that watches the same branch must be converted before you push, because one push changes all of them.
+
+| Step      | Change                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1         | Suspend every Kustomization, root first, and the controller HelmRelease plus every HelmRelease that renders Hemlig resources. Releases that own a resource carry `meta.helm.sh/release-name`.                                                                                                                                                                                                                                    |
+| 5         | Create Kustomization-owned copies with `kubectl create --field-manager=kustomize-controller`, so Flux takes real ownership. Add `helm.sh/resource-policy: keep` to Helm-owned copies, so a failed-upgrade rollback cannot delete them.                                                                                                                                                                                           |
+| 7         | Rewrite every Hemlig `apiVersion` in Git, and pin the new chart and image together. Bump the version of each chart that renders Hemlig resources under `reconcileStrategy: ChartVersion`, or its release never re-renders. Push only after step 6 on every affected cluster. Resume the root Kustomization, then the one that owns the controller HelmRelease, then the controller HelmRelease. Verify before resuming the rest. |
+| 8         | Imports and exports reuse restored state, so the fresh consumer `Ready` and the log check are the proof. After resuming the rest, Flux prunes the old-group resources and Helm releases drop them. Remove the `keep` annotations after each release upgrades.                                                                                                                                                                    |
+| Roll back | Once Flux has resumed, it has already deleted the old-group resources, so always recreate them from the backup. Revert the Git change after the cluster is restored and Flux is suspended again.                                                                                                                                                                                                                                 |
+| 9         | Run the reference check below. Any repository whose pipeline writes manifests or charts into your Flux repository must use the new `apiVersion` too, or its next deploy reverts the change.                                                                                                                                                                                                                                      |
+
 Old and new CRDs exist side by side from step 4 to step 9. Both claim the short names `hmlconsumer`, `hmlimport`, `hmlexport` and `hmlprovider`, so every command below uses full names such as `hemligconsumers.v1beta1.hemlig.io`.
 
 ## Set up
@@ -359,6 +372,21 @@ Expected output: `0`. Imports and exports above reuse restored state, so this ch
 ## 9. Delete the old group
 
 Do this only after step 8 is clean. Until then the old resources are your rollback path.
+
+First confirm that no Flux inventory and no Helm release still references the old kinds. A Helm release whose stored manifest names a kind with no CRD can no longer be upgraded. `helm list` hides pending and failed releases unless you ask for them.
+
+```sh
+kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A -o json \
+  | jq -r '.items[] | select([.status.inventory.entries[]?.id | select(test("_hemlig\\.io_"))] | length > 0) | .metadata.name'
+helm list -A --deployed --failed --pending -o json | jq -r '.[] | "\(.namespace) \(.name) \(.revision) \(.status)"' |
+while read -r ns name rev status; do
+  [ "$status" = deployed ] || echo "$ns/$name: $status"
+  m=$(helm -n "$ns" get manifest "$name" --revision "$rev" 2>/dev/null) || { echo "$ns/$name: manifest unreadable"; continue; }
+  grep -q '^apiVersion: hemlig\.io/' <<<"$m" && echo "$ns/$name: renders hemlig.io"
+done
+```
+
+Expected output: nothing. Without Flux or Helm, both commands print nothing anyway. If anything prints, fix that owner first and leave the old CRDs in place until it reconciles. A pending or failed release counts even when its manifest cannot be read, because its next upgrade or rollback may still use the old kinds.
 
 Delete the old resources one kind at a time, then the old CRDs. With no finalizers, nothing hangs. With no ownerReferences, no Secret is garbage-collected, and the new controller does not watch the old group.
 
