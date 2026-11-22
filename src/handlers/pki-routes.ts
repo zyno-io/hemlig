@@ -3,12 +3,17 @@ import { notFound } from "../domain/errors";
 
 export type PkiRouteMethod = "GET" | "POST" | "PUT" | "DELETE";
 
+/** `read` needs only the administrator JWT; `ca-admin` and `operator` map to the configured IdP roles. */
+export type PkiRole = "read" | "ca-admin" | "operator";
+
 export interface PkiRoute<Context> {
   readonly method: PkiRouteMethod;
   /** Anchored; matched against the raw path. Capture groups become `params`. */
   readonly pattern: RegExp;
   /** The audit operation name, for example `pki.ca.create`. */
   readonly operation: string;
+  /** Defaults to `read`. */
+  readonly role?: PkiRole;
   readonly handle: (
     context: Context,
     params: string[],

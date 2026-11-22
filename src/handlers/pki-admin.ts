@@ -6,7 +6,9 @@ import type {
 import { humanActorFromEvent } from "../auth/actors";
 import type { Actor } from "../domain/types";
 import type { PkiApplication } from "../pki/app";
-import { getPkiApplication, withPkiErrorResponse } from "./pki-shared";
+import { withPkiErrorResponse } from "./pki-shared";
+import { pkiAdminRoutes } from "./pki-admin-routes";
+import { assertPkiRole } from "./pki-http";
 import {
   matchPkiRoute,
   pkiRouteNotAvailable,
@@ -18,13 +20,14 @@ export interface PkiAdminContext {
   readonly event: APIGatewayProxyEventV2;
   readonly app: PkiApplication;
   readonly actor: Actor;
+  readonly operation: string;
   readonly correlationId: string;
   readonly setAuditContext: (context: RequestAuditContext) => void;
 }
 
 export type PkiAdminRoute = PkiRoute<PkiAdminContext>;
 
-// Routes arrive in later phases; until then every path authenticates and returns a distinctive 404.
+// Every path authenticates first; an unrouted path returns a distinctive 404 and is never audited.
 export const createPkiAdminHandler =
   (
     routes: readonly PkiAdminRoute[],
@@ -50,15 +53,37 @@ export const createPkiAdminHandler =
       if (matched === undefined) {
         throw pkiRouteNotAvailable();
       }
+      const subject = matched.params[0];
       setAuditContext({
         actor,
         operation: matched.route.operation,
         sourceIp: event.requestContext.http.sourceIp,
+        ...(subject === undefined
+          ? {}
+          : {
+              target: subject.startsWith("ext-")
+                ? { extId: subject }
+                : { caId: subject },
+            }),
       });
+      // After the audit context is set, so a missing role is an audited failure with reason `pki_role_required`.
+      assertPkiRole(
+        (event as APIGatewayProxyEventV2WithJWTAuthorizer).requestContext
+          .authorizer?.jwt?.claims,
+        app.config,
+        matched.route.role ?? "read",
+      );
       return matched.route.handle(
-        { event, app, actor, correlationId, setAuditContext },
+        {
+          event,
+          app,
+          actor,
+          operation: matched.route.operation,
+          correlationId,
+          setAuditContext,
+        },
         matched.params,
       );
     });
 
-export const handler = createPkiAdminHandler([]);
+export const handler = createPkiAdminHandler(pkiAdminRoutes);
