@@ -75,7 +75,14 @@ const parseReason = (
       typeof body.invalidityDate === "string"
         ? new Date(body.invalidityDate)
         : new Date(Number.NaN);
-    if (Number.isNaN(parsed.getTime()) || parsed.getTime() > now.getTime()) {
+    // CRL times are GeneralizedTime with a four-digit year; the CA's own history starts no earlier than 1950.
+    const year = parsed.getUTCFullYear();
+    if (
+      Number.isNaN(parsed.getTime()) ||
+      parsed.getTime() > now.getTime() ||
+      year < 1950 ||
+      year > 9999
+    ) {
       throw pkiBadRequest(
         "invalid_invalidity_date",
         "invalidityDate must be a time that is not in the future.",
@@ -117,9 +124,20 @@ export const parseBulkRevokeRequest = (
     "issuanceGrantUid",
   ]);
   const fields = parseReason(raw, now);
+  const patterns = {
+    issuanceGrant: /^[a-z][a-z0-9-]{2,63}$/,
+    issuanceGrantUid: /^pkg-[a-z0-9-]{1,76}$/,
+  } as const;
   for (const field of ["issuanceGrant", "issuanceGrantUid"] as const) {
-    if (raw[field] !== undefined && typeof raw[field] !== "string") {
-      throw pkiBadRequest("invalid_filter", `${field} must be a string.`);
+    const value = raw[field];
+    if (
+      value !== undefined &&
+      (typeof value !== "string" || !patterns[field].test(value))
+    ) {
+      throw pkiBadRequest(
+        "invalid_filter",
+        `${field} is not a valid identifier.`,
+      );
     }
   }
   return {

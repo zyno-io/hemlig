@@ -499,6 +499,26 @@ describe("commit outcomes", () => {
     expect(result.body.serial).toBe(h.state.commits[0]!.certificate.serial);
   });
 
+  it("re-checks the stored result when the commit succeeded after an ambiguous send", async () => {
+    const h = await issuanceHarness();
+    const original = h.pki.commitIssuance.getMockImplementation()!;
+    h.pki.commitIssuance.mockImplementationOnce(async (commit) => {
+      await original(commit);
+      // An operator revokes the certificate before the resend lands.
+      const stored = h.state.certificates.get(commit.certificate.serial)!;
+      h.state.certificates.set(stored.serial, { ...stored, status: "REVOKED" });
+      return { kind: "committed", ambiguous: true };
+    });
+    expect(await errorOf(issue(h, { idempotencyKey: "key-ambig-0002" }))).toMatchObject({
+      statusCode: 409,
+      code: "issuance_revoked",
+    });
+    // A plain commit returns without re-reading.
+    const h2 = await issuanceHarness();
+    await issue(h2);
+    expect(h2.pki.getCertificate).not.toHaveBeenCalled();
+  });
+
   it("refuses to commit a result that is about to expire", async () => {
     const h = await issuanceHarness();
     const real = h.deps.signerFor;
@@ -663,6 +683,31 @@ describe("engine", () => {
     },
     300_000,
   );
+});
+
+describe("denied names", () => {
+  it("drops a denied value that carries PEM or control characters", async () => {
+    const { issuanceDenied } = await import("./errors");
+    const pem = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----";
+    for (const value of [pem, "bad\u0007name", "caf\u00e9"]) {
+      const error = issuanceDenied("name_not_permitted", undefined, { type: "subject", value });
+      expect(error.details).toEqual({ reason: "name_not_permitted" });
+    }
+    expect(
+      issuanceDenied("name_not_permitted", undefined, { type: "dns", value: "evil.test" }).details,
+    ).toMatchObject({ deniedName: "evil.test" });
+  });
+
+  it("drops it from evaluate responses too", async () => {
+    const h = await issuanceHarness();
+    const result = await h.issuance.evaluate(consumerId, "web", {
+      keyAlgorithm: "ECDSA_P256",
+      sans: { dns: ["web.example.com"] },
+      subject: { organization: "-----BEGIN PRIVATE KEY-----" },
+    });
+    expect(JSON.stringify(result)).not.toContain("deniedName\":\"-----");
+    expect((result.denial as Record<string, unknown>).deniedName).toBeUndefined();
+  });
 });
 
 describe("evaluate", () => {

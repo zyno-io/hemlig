@@ -303,6 +303,36 @@ describe("leaf construction and self-check", () => {
     }
   });
 
+  it("requires the emitted policy OIDs to equal the plan, including the largest accepted arc", async () => {
+    const { ca, key, plan } = await setup();
+    const withPolicies = { ...plan, certificatePolicies: ["1.3.4294967295", "2.5.29.32.0"] };
+    const built = buildLeafToSign(withPolicies, ca.cert, key.spkiDer);
+    const der = assembleLeaf(built, ca.key.sign(built.tbs));
+    expect(
+      assertLeafMatchesPlan(der, { built, plan: withPolicies, caCert: ca.cert, spkiDer: key.spkiDer })
+        .serialHex,
+    ).toBe(built.serialHex);
+    const spy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      for (const other of [
+        ["2.5.29.32.0", "1.3.4294967295"],
+        ["1.3.4294967295", "2.5.29.32.1"],
+        ["1.3.4294967295"],
+      ]) {
+        expect(() =>
+          assertLeafMatchesPlan(der, {
+            built,
+            plan: { ...withPolicies, certificatePolicies: other },
+            caCert: ca.cert,
+            spkiDer: key.spkiDer,
+          }),
+        ).toThrow(expect.objectContaining({ statusCode: 503 }));
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("fails on a signature by another key and on garbage", async () => {
     const { ca, key, plan, built } = await setup();
     const forged = assembleLeaf(built, (await newKey("ECDSA_P256")).sign(built.tbs));

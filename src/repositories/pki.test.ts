@@ -739,6 +739,7 @@ describe("PkiRepository", () => {
     const { repository } = setup(send);
     await expect(repository.commitIssuance(consumerCommit())).resolves.toEqual({
       kind: "committed",
+      ambiguous: true,
     });
     expect(inputOf(send.mock.calls[1] as unknown[])).toBe(
       inputOf(send.mock.calls[0] as unknown[]),
@@ -765,6 +766,7 @@ describe("PkiRepository", () => {
     const { repository } = setup(send);
     await expect(repository.commitIssuance(consumerCommit())).resolves.toEqual({
       kind: "committed",
+      ambiguous: true,
     });
   });
 
@@ -995,6 +997,94 @@ describe("grant transactions", () => {
       "SET #status = :deleted, #version = :v, #deletedAt = :now, #deletedBy = :actor, #updatedAt = :now, #updatedBy = :actor REMOVE #pkiDirectoryPk, #pkiDirectorySk",
     );
     expect(update.ConditionExpression).toBe("#version = :ifMatch AND #status <> :deleted");
+  });
+});
+
+/** DynamoDB rejects an expression attribute name or value that no expression references. */
+const expectNoUnusedPlaceholders = (
+  items: readonly { item: { [kind: string]: unknown } }[],
+): void => {
+  for (const { item } of items) {
+    const op = (item.Update ?? item.Put ?? item.ConditionCheck ?? item.Delete) as Record<string, unknown>;
+    const text = [op.UpdateExpression, op.ConditionExpression].filter(Boolean).join(" ");
+    for (const name of Object.keys((op.ExpressionAttributeNames ?? {}) as object)) {
+      expect({ name, used: new RegExp(`${name}(?![A-Za-z0-9_])`).test(text) }).toEqual({ name, used: true });
+    }
+    for (const value of Object.keys((op.ExpressionAttributeValues ?? {}) as object)) {
+      expect({ value, used: new RegExp(`${value}(?![A-Za-z0-9_])`).test(text) }).toEqual({ value, used: true });
+    }
+  }
+};
+
+describe("unused expression placeholders", () => {
+  const base = {
+    idempotency,
+    caId: "ca-prod-one",
+    serial: "0a1b",
+    notAfter,
+    now: now.toISOString(),
+    reason: "keyCompromise" as const,
+    invalidityDate: "2026-11-01T00:00:00.000Z",
+    by: actor,
+  };
+
+  it.each([
+    ["entry", { mode: "entry" as const }],
+    ["expired inventory", { mode: "inventory" as const, expired: true }],
+    ["revoked-CA inventory", { mode: "inventory" as const, expired: false }],
+    ["upgrade without an entry", { mode: "upgrade" as const, entryLive: false }],
+    ["upgrade with an entry", { mode: "upgrade" as const, entryLive: true }],
+  ])("revoke %s binds only what it uses", (_label, extra) => {
+    expectNoUnusedPlaceholders(buildRevokeTransaction("control", { ...base, ...extra }));
+  });
+
+  it("bulk batches, with and without entries, and grant builders bind only what they use", () => {
+    for (const withEntries of [true, false]) {
+      expectNoUnusedPlaceholders(
+        buildBulkRevokeBatch("control", {
+          caId: "ca-prod-one",
+          items: [{ serial: "0a1b", notAfter }],
+          withEntries,
+          now: now.toISOString(),
+          actor,
+          reason: "superseded",
+        }),
+      );
+    }
+    expectNoUnusedPlaceholders(buildCreateGrantTransaction("control", { idempotency, grant: grant(), caVersion: "cv" }));
+    expectNoUnusedPlaceholders(
+      buildUpdateGrantTransaction("control", { idempotency, grant: grant({ displayName: "x" }), ifMatch: "v", caVersion: "cv" }),
+    );
+    expectNoUnusedPlaceholders(
+      buildDeleteGrantTransaction("control", {
+        idempotency, consumerId: "payments", name: "web", ifMatch: "v", newVersion: "n", now: now.toISOString(), actor,
+      }),
+    );
+  });
+
+  it("the revoked-CA inventory update carries no #notAfter or :now", () => {
+    const update = buildRevokeTransaction("control", { ...base, mode: "inventory", expired: false })[1]!.item.Update!;
+    expect(update.ExpressionAttributeNames).not.toHaveProperty("#notAfter");
+    expect(update.ExpressionAttributeValues).not.toHaveProperty(":now");
+  });
+});
+
+describe("ambiguous issuance commits", () => {
+  it("flags a commit that succeeded after an ambiguous send", async () => {
+    const send = jest
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("timeout"), { name: "TimeoutError" }))
+      .mockResolvedValueOnce({});
+    const repository = new PkiRepository({ send } as unknown as DynamoDBDocumentClient, {
+      tableName: "control",
+      directoryIndex: "pki-directory",
+      sleep: async () => undefined,
+      random: () => 0,
+    });
+    await expect(repository.commitIssuance(consumerCommit())).resolves.toEqual({
+      kind: "committed",
+      ambiguous: true,
+    });
   });
 });
 

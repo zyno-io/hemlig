@@ -27,6 +27,17 @@ export interface DeniedNameDetails {
   readonly value: string;
 }
 
+/**
+ * The denied name for an error or audit target. Caller text is dropped when it could carry key material or control
+ * characters: anything with `-----` or outside printable ASCII.
+ */
+export const deniedNameFields = (
+  denied: DeniedNameDetails,
+): { deniedNameType: string; deniedName: string } | Record<string, never> =>
+  denied.value.includes("-----") || /[^\x20-\x7e]/.test(denied.value)
+    ? {}
+    : { deniedNameType: denied.type, deniedName: denied.value.slice(0, 253) };
+
 export const issuanceDenied = (
   reason: string,
   message?: string,
@@ -40,12 +51,7 @@ export const issuanceDenied = (
     {
       details: {
         reason,
-        ...(denied === undefined
-          ? {}
-          : {
-              deniedNameType: denied.type,
-              deniedName: denied.value.slice(0, 253),
-            }),
+        ...(denied === undefined ? {} : deniedNameFields(denied)),
       },
     },
   );

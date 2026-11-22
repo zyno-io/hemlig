@@ -741,7 +741,8 @@ export type Classified =
   | { readonly kind: "retry" };
 
 export type IssuanceCommitOutcome =
-  | { readonly kind: "committed" }
+  /** `ambiguous`: an earlier send of this commit had an unknown outcome, so the result must be checked again. */
+  | { readonly kind: "committed"; readonly ambiguous?: boolean }
   | Exclude<Classified, { readonly kind: "retry" }>
   | { readonly kind: "conflict" }
   | { readonly kind: "ambiguous" };
@@ -1793,16 +1794,17 @@ const revokeCertificateUpdate = (
     Key: { ...pkiKeys.certificate(input.caId, input.serial) },
     UpdateExpression: "SET #status = :revoked, #revocation = :rev",
     ConditionExpression: condition,
+    // DynamoDB rejects placeholders no expression uses.
     ExpressionAttributeNames: {
       "#status": "status",
       "#revocation": "revocation",
-      "#notAfter": "notAfter",
+      ...(condition.includes("#notAfter") ? { "#notAfter": "notAfter" } : {}),
     },
     ExpressionAttributeValues: {
       ":revoked": "REVOKED",
       ":issued": "ISSUED",
       ":rev": revocationOf(input),
-      ":now": input.now,
+      ...(condition.includes(":now") ? { ":now": input.now } : {}),
     },
   },
 });
@@ -2223,7 +2225,9 @@ export class PkiRepository {
     for (;;) {
       try {
         await this.dynamo.send(new TransactWriteCommand(built.input));
-        return { kind: "committed" };
+        return ambiguous > 0
+          ? { kind: "committed", ambiguous: true }
+          : { kind: "committed" };
       } catch (error) {
         const name = errorName(error);
         if (name === "TransactionCanceledException") {

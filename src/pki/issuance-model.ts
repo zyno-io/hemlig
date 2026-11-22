@@ -9,7 +9,12 @@ import {
   verifyCertificateSignature,
   type ParsedCertificate,
 } from "./asn1/certificate";
-import { EKU, EXT, keyIdentifierFromSpki } from "./asn1/extensions";
+import {
+  decodeCertificatePolicies,
+  EKU,
+  EXT,
+  keyIdentifierFromSpki,
+} from "./asn1/extensions";
 import { decodeSubjectAltName, encodeName } from "./asn1/names";
 import { fromPem, PemError } from "./asn1/pem";
 import { ekuNamesToOids, requestDigest } from "./ca-model";
@@ -711,10 +716,22 @@ export const assertLeafMatchesPlan = (
   ) {
     selfCheckFailed("authorityKeyIdentifier");
   }
-  const hasPolicies = leaf.extensions.some(
+  const policyExtension = leaf.extensions.find(
     (extension) => extension.oid === EXT.certificatePolicies,
   );
-  if (hasPolicies !== plan.certificatePolicies.length > 0) {
+  let emitted: string[] = [];
+  if (policyExtension !== undefined) {
+    try {
+      emitted = decodeCertificatePolicies(policyExtension.value);
+    } catch {
+      return selfCheckFailed("certificatePolicies");
+    }
+  }
+  if (
+    (policyExtension !== undefined) !== plan.certificatePolicies.length > 0 ||
+    emitted.length !== plan.certificatePolicies.length ||
+    emitted.some((oid, index) => oid !== plan.certificatePolicies[index])
+  ) {
     selfCheckFailed("certificatePolicies");
   }
   if (leaf.unrecognizedCritical.length > 0) {

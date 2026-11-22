@@ -368,17 +368,18 @@ export class GrantService {
     consumerId: string,
     body: unknown,
   ): Promise<MutationResult> {
+    // A committed request replays before the future-expiry rule can reject its identical retry.
+    const digest = grantCreateDigest(consumerId, body);
+    const stored = await this.prior(actor, key, "pki.grant.create", digest);
+    if (stored !== undefined) {
+      return this.replayResult(stored, 201);
+    }
     const { envelope, policyFields } = parseGrantRequest(
       body,
       "create",
       this.now(),
     );
     const name = envelope.name as string;
-    const digest = grantCreateDigest(consumerId, body);
-    const stored = await this.prior(actor, key, "pki.grant.create", digest);
-    if (stored !== undefined) {
-      return this.replayResult(stored, 201);
-    }
     for (let attempt = 0; attempt < maxCaRetries; attempt += 1) {
       const v = await this.validateFor(consumerId, envelope.caId, policyFields);
       const policy = this.validated(v);
@@ -492,17 +493,17 @@ export class GrantService {
     ifMatch: string,
     body: unknown,
   ): Promise<MutationResult> {
+    const digest = grantUpdateDigest(consumerId, name, ifMatch, body);
+    const stored = await this.prior(actor, key, "pki.grant.update", digest);
+    if (stored !== undefined) {
+      return this.replayResult(stored, 200);
+    }
     const { envelope, policyFields } = parseGrantRequest(
       body,
       "update",
       this.now(),
       name,
     );
-    const digest = grantUpdateDigest(consumerId, name, ifMatch, body);
-    const stored = await this.prior(actor, key, "pki.grant.update", digest);
-    if (stored !== undefined) {
-      return this.replayResult(stored, 200);
-    }
     for (let attempt = 0; attempt < maxCaRetries; attempt += 1) {
       const current = await this.load(consumerId, name);
       if (current.version !== ifMatch) {

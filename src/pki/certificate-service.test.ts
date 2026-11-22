@@ -173,6 +173,8 @@ describe("CertificateService.revoke", () => {
     ["a date without keyCompromise", { reason: "superseded", invalidityDate: "2026-01-01T00:00:00Z" }, "invalidity_date_requires_key_compromise"],
     ["a future date", { reason: "keyCompromise", invalidityDate: "2999-01-01T00:00:00Z" }, "invalid_invalidity_date"],
     ["an unknown field", { other: 1 }, "unknown_field"],
+    ["a year before 1950", { reason: "keyCompromise", invalidityDate: "1949-12-31T23:59:59Z" }, "invalid_invalidity_date"],
+    ["a negative year", { reason: "keyCompromise", invalidityDate: "-000001-01-01T00:00:00Z" }, "invalid_invalidity_date"],
   ])("rejects %s", async (_label, request, reason) => {
     const { h, service } = await setup();
     seed(h, certificate(h, "0a1b"));
@@ -401,6 +403,20 @@ describe("CertificateService.bulkRevoke", () => {
       expect.objectContaining({ mode: "inventory", expired: true }),
     );
     expect(result.body).toMatchObject({ revoked: 2 });
+  });
+
+  it.each([
+    ["PEM text", "-----BEGIN PRIVATE KEY-----"],
+    ["an uppercase name", "Web"],
+    ["a long name", "a".repeat(80)],
+  ])("rejects %s as the issuanceGrant filter and audits nothing of it", async (_label, value) => {
+    const { service } = await setup();
+    expect(
+      await errorOf(service.bulkRevoke(admin, "key-bulk-00010", "consumer-one", { issuanceGrant: value })),
+    ).toMatchObject({ statusCode: 400, safeReason: "invalid_filter" });
+    expect(
+      await errorOf(service.bulkRevoke(admin, "key-bulk-00011", "consumer-one", { issuanceGrantUid: value })),
+    ).toMatchObject({ statusCode: 400, safeReason: "invalid_filter" });
   });
 
   it("replays a completed run from its record", async () => {

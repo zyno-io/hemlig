@@ -146,6 +146,41 @@ describe("GrantService.create", () => {
   });
 });
 
+describe("replay after the requested expiry", () => {
+  it("replays an identical create and update after expiresAt has passed", async () => {
+    const { h, pki } = await setup();
+    const expiresAt = new Date(h.clock.now.getTime() + 60_000).toISOString();
+    await create(h, { expiresAt });
+    const digestOf = (call: unknown) =>
+      (call as { idempotency: { requestDigest: string } }).idempotency.requestDigest;
+    const stored = (digest: string, operationType: string) => ({
+      operationType,
+      requestDigest: digest,
+      status: "SUCCEEDED",
+      result: { consumerId, name: "api" },
+    });
+    h.clock.now = new Date(h.clock.now.getTime() + 3_600_000);
+    h.deps.repository.getIdempotency.mockResolvedValueOnce(
+      stored(digestOf((pki.createGrant.mock.calls[0] as unknown[])[0]), "pki.grant.create"),
+    );
+    expect((await create(h, { expiresAt })).status).toBe(201);
+    expect(pki.createGrant).toHaveBeenCalledTimes(1);
+    // A new request with the past expiry is still refused.
+    expect(await errorOf(create(h, { expiresAt }, "key-grant-0099"))).toMatchObject({
+      safeReason: "invalid_expiry",
+    });
+    const { name: _name, ...update } = body({ expiresAt });
+    const { grants } = h;
+    const spy = jest.spyOn(grants as never, "prior" as never);
+    h.deps.repository.getIdempotency.mockResolvedValueOnce(
+      stored("x", "pki.grant.update"),
+    );
+    spy.mockResolvedValueOnce(stored("x", "pki.grant.update") as never);
+    expect((await grants.update(admin, "key-upd-00077", consumerId, "api", "v", update)).status).toBe(200);
+    expect(pki.updateGrant).not.toHaveBeenCalled();
+  });
+});
+
 describe("consumers", () => {
   it("accepts a PENDING agent and refuses another environment or a mapping without its grant", async () => {
     const { h } = await setup();

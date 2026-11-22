@@ -30,6 +30,7 @@ import {
   caKeyUnavailable,
   caNotActive,
   idempotencyKeyReused,
+  deniedNameFields,
   issuanceDenied,
   issuanceExpired,
   issuanceGrantInactive,
@@ -426,6 +427,10 @@ export class IssuanceService {
       const outcome = await this.pki.commitIssuance(args.commit(record));
       switch (outcome.kind) {
         case "committed":
+          // An earlier send had an unknown outcome: the certificate may have been revoked since.
+          if (outcome.ambiguous === true) {
+            return replayOr503();
+          }
           return { kind: "issued", record };
         case "replayExists":
           // The local certificate is discarded and not charged.
@@ -971,8 +976,7 @@ export class IssuanceService {
               ...(denial.denied === undefined
                 ? {}
                 : {
-                    deniedNameType: denial.denied.type,
-                    deniedName: denial.denied.value.slice(0, 253),
+                    ...deniedNameFields(denial.denied),
                   }),
             },
           }),
