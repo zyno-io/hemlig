@@ -1,0 +1,96 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: hemligissuers.hemlig.zyno.io
+spec:
+  group: hemlig.zyno.io
+  scope: Namespaced
+  names:
+    plural: hemligissuers
+    singular: hemligissuer
+    kind: HemligIssuer
+    shortNames: [hmlissuer]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources: { status: {} }
+      additionalPrinterColumns:
+        - { name: Ready, type: string, jsonPath: '.status.conditions[?(@.type=="Ready")].status' }
+        - { name: Reason, type: string, jsonPath: '.status.conditions[?(@.type=="Ready")].reason' }
+        - { name: CA, type: string, jsonPath: ".status.caId" }
+        - { name: Grant, type: string, jsonPath: ".spec.issuanceGrant" }
+        - { name: Age, type: date, jsonPath: ".metadata.creationTimestamp" }
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [consumerRef, issuanceGrant]
+              properties:
+                consumerRef: { type: string, maxLength: 253, pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" }
+                consumerNamespace: { type: string, maxLength: 63, pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" }
+                issuanceGrant: { type: string, maxLength: 64, pattern: "^[a-z][a-z0-9-]{2,63}$" }
+              x-kubernetes-validations:
+                - rule: "self.consumerRef == oldSelf.consumerRef && has(self.consumerNamespace) == has(oldSelf.consumerNamespace) && (!has(self.consumerNamespace) || self.consumerNamespace == oldSelf.consumerNamespace)"
+                  message: spec is immutable except issuanceGrant
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: hemligclusterissuers.hemlig.zyno.io
+spec:
+  group: hemlig.zyno.io
+  scope: Cluster
+  names:
+    plural: hemligclusterissuers
+    singular: hemligclusterissuer
+    kind: HemligClusterIssuer
+    shortNames: [hmlclusterissuer]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources: { status: {} }
+      additionalPrinterColumns:
+        - { name: Ready, type: string, jsonPath: '.status.conditions[?(@.type=="Ready")].status' }
+        - { name: Reason, type: string, jsonPath: '.status.conditions[?(@.type=="Ready")].reason' }
+        - { name: CA, type: string, jsonPath: ".status.caId" }
+        - { name: Grant, type: string, jsonPath: ".spec.issuanceGrant" }
+        - { name: Age, type: date, jsonPath: ".metadata.creationTimestamp" }
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [consumerRef, issuanceGrant]
+              properties:
+                consumerRef:
+                  type: object
+                  required: [name, namespace]
+                  properties:
+                    name: { type: string, maxLength: 253, pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" }
+                    namespace: { type: string, maxLength: 63, pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" }
+                issuanceGrant: { type: string, maxLength: 64, pattern: "^[a-z][a-z0-9-]{2,63}$" }
+                allowedNamespaces:
+                  type: object
+                  required: [matchLabels]
+                  properties:
+                    matchLabels:
+                      type: object
+                      minProperties: 1
+                      maxProperties: 16 # bounds the CEL cost estimate of the map comparison
+                      additionalProperties: { type: string, maxLength: 63 }
+              x-kubernetes-validations:
+                - rule: "self.consumerRef == oldSelf.consumerRef && has(self.allowedNamespaces) == has(oldSelf.allowedNamespaces) && (!has(self.allowedNamespaces) || self.allowedNamespaces == oldSelf.allowedNamespaces)"
+                  message: spec is immutable except issuanceGrant
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

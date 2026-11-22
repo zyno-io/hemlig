@@ -1,17 +1,23 @@
 ---
 title: Kubernetes CRD reference
-description: Every field, status field, annotation and status reason of the HemligProvider, HemligConsumer, HemligSecretImport and HemligSecretExport resources.
+description: Every field, status field, annotation and status reason of the HemligProvider, HemligConsumer, HemligSecretImport, HemligSecretExport, HemligIssuer and HemligClusterIssuer resources.
 pageType: reference
 ---
 
 # Kubernetes CRD reference
 
-Field-by-field reference for the four Hemlig custom resources, plus every status reason the controller reports.
+Field-by-field reference for the six Hemlig custom resources, plus every status reason the controller reports.
 
 Group `hemlig.zyno.io`, version `v1beta1` (the CRDs also serve `v1alpha1` for imports
-and exports during migration; it is not extended). The schemas live in
-[`chart/hemlig-controller/crds/hemlig.zyno.io.yaml`](https://github.com/zyno-io/hemlig/blob/main/packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io.yaml).
-For usage see the [controller guide](../guide/kubernetes.md).
+and exports during migration; it is not extended).
+
+`HemligIssuer` and `HemligClusterIssuer` are `v1alpha1` and may change before beta.
+
+The schemas live in
+[`chart/hemlig-controller/crds/hemlig.zyno.io.yaml`](https://github.com/zyno-io/hemlig/blob/main/packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io.yaml)
+and [`hemlig.zyno.io-pki.yaml`](https://github.com/zyno-io/hemlig/blob/main/packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io-pki.yaml).
+
+For usage see the [controller guide](../guide/kubernetes.md) and [Issue certificates with cert-manager](../guide/cert-manager.md).
 
 ## HemligProvider (cluster-scoped)
 
@@ -34,7 +40,8 @@ Short name `hmlconsumer`. Has a `status` subresource.
 | `spec.bootstrapTokenRef.key`           | string  | yes      | Key within that Secret                                                                                       |
 | `spec.identity.secretName`             | string  | yes      | Name of the identity Secret the controller creates and owns (`tls.crt`, `tls.key`)                           |
 | `spec.identity.rotateBefore`           | string  | no       | Duration `^[0-9]+[smhd]$`: how long before certificate expiry to rotate automatically. Default `720h`; `0s`/`0h` disables; the effective window is capped at half the certificate lifetime. <Badge type="tip" text="v0.3.0+" /> Controllers before v0.3.0 accept the field but ignore it (see [Identity rotation](../operations/identity-rotation.md)) |
-| `spec.allowCrossNamespaceReferences`   | boolean | no       | Lets imports and exports in other namespaces use this consumer (they must set `consumerNamespace`)           |
+| `spec.allowCrossNamespaceReferences`   | boolean | no       | Lets imports, exports and `HemligIssuer`s in other namespaces use this consumer (they must set `consumerNamespace`) |
+| `spec.allowClusterIssuers`             | boolean | no       | Lets a `HemligClusterIssuer` use this consumer from any namespace. Separate from `allowCrossNamespaceReferences`; default false |
 
 ### Status
 
@@ -92,6 +99,45 @@ Short name `hmlexport`.
 
 Status adds `sourceChecksum`.
 
+## HemligIssuer (namespaced)
+
+Short name `hmlissuer`, version `v1alpha1`. Has a `status` subresource. A cert-manager `Certificate` names it in `issuerRef`. See [Issue certificates with cert-manager](../guide/cert-manager.md).
+
+| Field                    | Type   | Required | Description                                                                                   |
+| ------------------------ | ------ | -------- | --------------------------------------------------------------------------------------------- |
+| `spec.consumerRef`       | string | yes      | `HemligConsumer` name                                                                         |
+| `spec.consumerNamespace` | string | no       | Defaults to the issuer's namespace; another namespace requires the consumer's `allowCrossNamespaceReferences` |
+| `spec.issuanceGrant`     | string | yes      | Name of an issuance grant held by the consumer (`^[a-z][a-z0-9-]{2,63}$`)                     |
+
+`spec` is immutable except `issuanceGrant`: create a new issuer to point at another consumer.
+
+## HemligClusterIssuer (cluster-scoped)
+
+Short name `hmlclusterissuer`, version `v1alpha1`. Has a `status` subresource.
+
+| Field                                  | Type              | Required | Description                                                                                     |
+| -------------------------------------- | ----------------- | -------- | ----------------------------------------------------------------------------------------------- |
+| `spec.consumerRef.name`                | string            | yes      | `HemligConsumer` name                                                                           |
+| `spec.consumerRef.namespace`           | string            | yes      | The consumer's namespace. The consumer must set `allowClusterIssuers: true`                     |
+| `spec.issuanceGrant`                   | string            | yes      | Name of an issuance grant held by the consumer                                                  |
+| `spec.allowedNamespaces.matchLabels`   | map[string]string | no       | One to 16 labels. Only requests from namespaces carrying all of them are issued. Default: every namespace |
+
+`spec` is immutable except `issuanceGrant`.
+
+### Issuer status
+
+| Field                  | Description                                                              |
+| ---------------------- | ------------------------------------------------------------------------ |
+| `observedGeneration`   | Last reconciled generation. A request waits until it equals `metadata.generation` |
+| `consumerId`, `environment` | From the resolved consumer                                          |
+| `caId`, `caFingerprint`, `caNotAfter` | The CA that the grant issues from                             |
+| `issuanceGrantVersion`, `grantUid` | The grant's current version and identity                         |
+| `conditions`           | `Ready`. Reasons are in [Status reasons](#hemligissuer-and-hemligclusterissuer-condition-ready)   |
+
+### Printer columns
+
+`kubectl get hmlissuer` and `kubectl get hmlclusterissuer` show `Ready`, `Reason`, `CA`, `Grant` and `Age`.
+
 ## Annotations and labels
 
 | Key                              | On               | Meaning                                                              |
@@ -122,6 +168,21 @@ The reasons below come from [`v1beta.ts`](https://github.com/zyno-io/hemlig/blob
 | `IdentityOwnershipConflict` | False | The identity Secret exists but this consumer does not own it, or the owned Secret is missing a key | Pick another `identity.secretName`, or delete the foreign Secret |
 | `AuthenticationFailed` | False | Hemlig rejected the client certificate (expired, revoked or untrusted) <Badge type="tip" text="v0.3.0+" /> | The controller cannot repair this. See [expired certificate](../operations/identity-rotation.md#if-the-certificate-already-expired) |
 | `ReconcileFailed` | False | Any other error, for example Hemlig answered 403, 409 or 503 | Read the controller logs. See [Troubleshooting](../operations/troubleshooting.md#controller) |
+
+### HemligIssuer and HemligClusterIssuer, condition `Ready`
+
+| Reason | Status | Meaning | Action |
+| --- | --- | --- | --- |
+| `Ready` | True | The consumer is usable and the grant and its CA are active | None |
+| `ConsumerNotFound` | False | `consumerRef` names no `HemligConsumer` | Fix `consumerRef` or create the consumer |
+| `ConsumerNotReady` | False | The consumer is not ready, or Hemlig rejected its identity | Fix the consumer first |
+| `ConsumerReferenceNotPermitted` | False | The consumer does not allow references from this namespace | Set `allowCrossNamespaceReferences: true` on the consumer, or use a consumer in the issuer's namespace |
+| `ClusterIssuerNotPermitted` | False | The consumer does not set `allowClusterIssuers: true` | Set it on the consumer. `allowCrossNamespaceReferences` is not enough |
+| `ProviderNotPermitted` | False | The namespace labels do not match the provider's `allowedNamespaces` (the issuer's namespace, or the consumer's for a cluster issuer) | Label the namespace |
+| `IssuanceGrantNotFound` | False | The consumer holds no grant with this name | Create the grant, or fix `issuanceGrant` |
+| `IssuanceGrantInactive` | False | The grant is `DISABLED` or has expired | Enable or replace the grant |
+| `CaNotActive` | False | The grant's CA is not `ACTIVE` | Activate the CA, or move the grant to an active one |
+| `RemoteError` | False | Hemlig could not be asked, or answered unexpectedly. A transient error keeps an already `Ready` issuer `Ready` | None for transient errors. Check the controller logs |
 
 ### HemligSecretImport, condition `Ready`
 

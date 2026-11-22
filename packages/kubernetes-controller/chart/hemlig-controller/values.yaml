@@ -46,6 +46,16 @@ controller:
   reconcileIntervalMilliseconds: 600000
   sourceDebounceMilliseconds: 250
 
+certManager:
+  # Concurrent Hemlig PKI calls across all issuers (at most 2 per consumer); sets HEMLIG_PKI_CONCURRENCY.
+  maxConcurrentRequests: 4
+  approval:
+    # Gives cert-manager's ServiceAccount `approve` on the Hemlig signers, so its built-in approver approves
+    # every request that references a Hemlig issuer. Set false to gate requests with approver-policy.
+    grantDefaultApprover: true
+    serviceAccount: cert-manager
+    namespace: cert-manager
+
 resources: {}
 nodeSelector: {}
 tolerations: []

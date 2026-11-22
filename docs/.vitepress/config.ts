@@ -137,6 +137,10 @@ export default withMermaid(
                 text: "PKI: certificate authorities and CRLs",
                 link: "/guide/pki",
               },
+              {
+                text: "Issue certificates with cert-manager",
+                link: "/guide/cert-manager",
+              },
             ],
           },
           {

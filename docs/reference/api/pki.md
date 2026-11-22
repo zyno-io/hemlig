@@ -161,7 +161,7 @@ API Gateway also throttles `POST /v1/pki/{proxy+}` (`pkiIssuanceRateLimit` and `
 
 ## Errors
 
-Every error carries `error.details.reason`. The code list is in [Errors](errors.md). The Controller column says how the cert-manager issuer (a later release) treats the failure: `Failed` is terminal for the CertificateRequest, `Pending` is retried.
+Every error carries `error.details.reason`. The code list is in [Errors](errors.md). The Controller column says how the [cert-manager issuer](../../guide/cert-manager.md) treats the failure: `Failed` is terminal for the CertificateRequest, `Pending` is retried.
 
 | Code | Status | `details.reason` | Controller |
 | --- | --- | --- | --- |
