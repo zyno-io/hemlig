@@ -869,6 +869,7 @@ const classify = (
  */
 const toCidrs = (
   values: string[] | undefined,
+  kind: "permitted" | "excluded",
 ): { cidrs: Cidr[]; total: number; invalid: boolean } => {
   const cidrs: Cidr[] = [];
   let invalid = false;
@@ -876,6 +877,15 @@ const toCidrs = (
     const parsed = parseCidr(value, { strict: false, convertMapped: false });
     if (parsed.ok) {
       cidrs.push(parsed.value);
+      // An IPv4-mapped excluded range also excludes its IPv4 form, so a
+      // mapped exclusion never lets the equivalent 4-byte address through.
+      // Permitted ranges stay IPv6-only (validators compare address lengths).
+      if (kind === "excluded") {
+        const converted = parseCidr(value, { strict: false });
+        if (converted.ok && converted.value.family !== parsed.value.family) {
+          cidrs.push(converted.value);
+        }
+      }
     } else {
       invalid = true;
     }
@@ -908,8 +918,8 @@ export const classifyCidr = (
   cidr: Cidr,
   constraints: NameConstraintSet | undefined,
 ): RuleOverlap => {
-  const permitted = toCidrs(constraints?.permitted?.ip);
-  const excluded = toCidrs(constraints?.excluded?.ip);
+  const permitted = toCidrs(constraints?.permitted?.ip, "permitted");
+  const excluded = toCidrs(constraints?.excluded?.ip, "excluded");
   return classify(
     permitted.total > 0,
     permitted.cidrs.some((p) => cidrSubset(cidr, p)),

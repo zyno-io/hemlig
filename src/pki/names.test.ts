@@ -846,6 +846,12 @@ describe("review regressions: URI length, constraints, globs", () => {
     expect(checkNameConstraints("ip", "::ffff:10.1.1.1", nc).ok).toBe(false); // normalizes to 4 bytes
   });
 
+  it("lets a mapped-form excluded constraint also exclude the IPv4 range", () => {
+    const nc = { excluded: { ip: ["::ffff:10.0.0.0/104"] } };
+    expect(checkNameConstraints("ip", "10.1.2.3", nc).ok).toBe(false);
+    expect(checkNameConstraints("ip", "192.168.1.1", nc).ok).toBe(true);
+  });
+
   it("denies IP-literal URI hosts when the CA has URI constraints", () => {
     expect(
       checkNameConstraints("uri", "spiffe://10.0.0.1/x", {
