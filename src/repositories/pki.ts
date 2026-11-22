@@ -759,19 +759,58 @@ export class PkiRepository {
     this.random = options.random ?? Math.random;
   }
 
+  /**
+   * Reads one `pki-directory` partition. Defence in depth: an item whose `pk` does not start with `PKI_` is ignored
+   * even if it carries the index attributes, and paging continues until `limit` valid items are found. Phase 3 and 4
+   * readers use this rather than querying the index directly.
+   */
+  public async queryDirectory(
+    partition: string,
+    options: { limit?: number; sortPrefix?: string } = {},
+  ): Promise<Record<string, unknown>[]> {
+    const limit = options.limit ?? Number.POSITIVE_INFINITY;
+    const found: Record<string, unknown>[] = [];
+    let start: Record<string, unknown> | undefined;
+    do {
+      const response = await this.dynamo.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          IndexName: this.directoryIndex,
+          KeyConditionExpression:
+            options.sortPrefix === undefined
+              ? "#pk = :pk"
+              : "#pk = :pk AND begins_with(#sk, :prefix)",
+          ExpressionAttributeNames: {
+            "#pk": "pkiDirectoryPk",
+            ...(options.sortPrefix === undefined
+              ? {}
+              : { "#sk": "pkiDirectorySk" }),
+          },
+          ExpressionAttributeValues: {
+            ":pk": partition,
+            ...(options.sortPrefix === undefined
+              ? {}
+              : { ":prefix": options.sortPrefix }),
+          },
+          ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+        }),
+      );
+      for (const item of response.Items ?? []) {
+        if (typeof item.pk === "string" && item.pk.startsWith("PKI_")) {
+          found.push(item);
+          if (found.length >= limit) {
+            return found;
+          }
+        }
+      }
+      start = response.LastEvaluatedKey;
+    } while (start !== undefined);
+    return found;
+  }
+
   /** The directory index is eventually consistent; this answers "has any CA ever been created". */
   public async hasAnyCa(): Promise<boolean> {
-    const response = await this.dynamo.send(
-      new QueryCommand({
-        TableName: this.tableName,
-        IndexName: this.directoryIndex,
-        KeyConditionExpression: "#pk = :pk",
-        ExpressionAttributeNames: { "#pk": "pkiDirectoryPk" },
-        ExpressionAttributeValues: { ":pk": "PKI_CAS" },
-        Limit: 1,
-      }),
-    );
-    return (response.Items?.length ?? 0) > 0;
+    return (await this.queryDirectory("PKI_CAS", { limit: 1 })).length > 0;
   }
 
   public async getReplayRecord(

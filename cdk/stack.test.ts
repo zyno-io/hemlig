@@ -2,7 +2,7 @@ import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import { PKI_METRICS } from "../src/pki/metrics";
-import { HemligStack } from "./stack";
+import { existingIndexKeyAttributes, HemligStack } from "./stack";
 
 const defaultCsp =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
@@ -882,6 +882,14 @@ describe("HemligStack", () => {
       Effect: "Deny",
       Resource: tableArn,
     });
+    const attributeDeny = (attributes: string[]): Statement => ({
+      Action: ["dynamodb:PutItem", "dynamodb:UpdateItem"],
+      Condition: {
+        "ForAnyValue:StringEquals": { "dynamodb:Attributes": attributes },
+      },
+      Effect: "Deny",
+      Resource: tableArn,
+    });
     const kmsStatement = (actions: string[]): Statement => ({
       Action: actions.length === 1 ? actions[0] : actions,
       Condition: {
@@ -925,6 +933,7 @@ describe("HemligStack", () => {
       allow(["dynamodb:PutItem", "dynamodb:UpdateItem"], [tableArn], writes),
       allow(["dynamodb:ConditionCheckItem"], [tableArn], checks),
       identityDeny(),
+      attributeDeny(existingIndexKeyAttributes),
     ];
     const sorted = (statements: Statement[]): string[] =>
       statements.map((statement) => JSON.stringify(statement)).sort();
@@ -947,6 +956,22 @@ describe("HemligStack", () => {
           { AttributeName: "pkiDirectorySk", AttributeType: "S" },
         ]),
       });
+    });
+
+    it("denies PKI roles the key attributes of every existing index", () => {
+      const table = template.toJSON().Resources[tableId] as {
+        Properties: {
+          GlobalSecondaryIndexes: {
+            IndexName: string;
+            KeySchema: { AttributeName: string }[];
+          }[];
+        };
+      };
+      const actual = table.Properties.GlobalSecondaryIndexes.filter(
+        (index) => index.IndexName !== "pki-directory",
+      ).flatMap((index) => index.KeySchema.map((key) => key.AttributeName));
+      expect(actual).toHaveLength(12);
+      expect([...existingIndexKeyAttributes].sort()).toEqual(actual.sort());
     });
 
     it("creates the three PKI Lambdas with PKI-only environment", () => {
@@ -1363,6 +1388,7 @@ describe("HemligStack", () => {
               Effect: "Deny",
               Resource: tableArn,
             },
+            attributeDeny(["pkiDirectoryPk", "pkiDirectorySk"]),
           ]),
         );
         const json = JSON.stringify(statements);

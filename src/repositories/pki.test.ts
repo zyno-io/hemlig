@@ -792,11 +792,15 @@ describe("PkiRepository", () => {
     log.mockRestore();
   });
 
-  it("queries the directory index for any CA", async () => {
+  it("queries the directory index for any CA, ignoring non-PKI items", async () => {
     const send = jest
       .fn()
-      .mockResolvedValueOnce({ Items: [{}] })
-      .mockResolvedValueOnce({ Items: [] });
+      .mockResolvedValueOnce({
+        Items: [{ pk: "WORKFLOW#x" }],
+        LastEvaluatedKey: { pk: "a" },
+      })
+      .mockResolvedValueOnce({ Items: [{ pk: "PKI_CA#ca-prod-one" }] })
+      .mockResolvedValueOnce({ Items: [{ pk: "IDENTITY#x" }] });
     const { repository } = setup(send);
     await expect(repository.hasAnyCa()).resolves.toBe(true);
     await expect(repository.hasAnyCa()).resolves.toBe(false);
@@ -806,7 +810,9 @@ describe("PkiRepository", () => {
       KeyConditionExpression: "#pk = :pk",
       ExpressionAttributeNames: { "#pk": "pkiDirectoryPk" },
       ExpressionAttributeValues: { ":pk": "PKI_CAS" },
-      Limit: 1,
+    });
+    expect(inputOf(send.mock.calls[1] as unknown[])).toMatchObject({
+      ExclusiveStartKey: { pk: "a" },
     });
   });
 

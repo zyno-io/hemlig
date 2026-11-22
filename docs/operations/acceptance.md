@@ -248,6 +248,8 @@ DynamoDB authorizes each `TransactWriteItems` item as its own `PutItem`, `Update
 | `kmsd pki-admin kms:Decrypt pki-ca` and `kmsd pki-admin kms:GenerateDataKey pki-ca` | `allowed` |
 | `kmsd pki-admin kms:Decrypt issuer-ca`, `… secret-payload`, `kmsd pki-admin kms:Decrypt pki-ca extra` | `implicitDeny` |
 | `kmsd pki-issuer kms:GenerateDataKey pki-ca` | `implicitDeny` |
+| `aws iam simulate-principal-policy --policy-source-arn "$(role ROLE)" --action-names dynamodb:PutItem --resource-arns "$TABLE" --context-entries "ContextKeyName=dynamodb:LeadingKeys,ContextKeyValues=PKI_CA#x,ContextKeyType=stringList" "ContextKeyName=dynamodb:Attributes,ContextKeyValues=pk,sk,workflowDuePk,ContextKeyType=stringList" --query 'EvaluationResults[0].EvalDecision' --output text` for each PKI role | `explicitDeny`. A PKI role must not write another index's key attributes |
+| The same simulation for `admin`, `consumer`, `recovery` and the other existing roles, with `LeadingKeys=SECRET#x` and `dynamodb:Attributes=pk,sk,pkiDirectoryPk` | `explicitDeny`. An existing role must not write the PKI directory attributes |
 | `kmsd ROLE kms:Decrypt pki-ca` for `admin`, `consumer`, `bootstrap`, `identity-rotation` | `implicitDeny` |
 
 The simulator evaluates identity policies only. With `existingApplicationKeyArn`, also confirm that the key policy grants these roles nothing directly. Gate PKI-4 proves the `ConditionCheckItem` grants with a real commit.

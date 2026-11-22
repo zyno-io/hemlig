@@ -56,12 +56,11 @@ export const assertPkiIssuanceThrottle = (
   rate: number,
   burst: number,
 ): void => {
-  for (const value of [rate, burst]) {
-    if (!Number.isInteger(value) || value < 1 || value > 5000) {
-      throw new Error(
-        "pkiIssuanceRateLimit must be an integer from 1 to 5000.",
-      );
-    }
+  if (!Number.isInteger(rate) || rate < 1 || rate > 5000) {
+    throw new Error("pkiIssuanceRateLimit must be an integer from 1 to 5000.");
+  }
+  if (!Number.isInteger(burst) || burst < 1 || burst > 5000) {
+    throw new Error("pkiIssuanceBurstLimit must be an integer from 1 to 5000.");
   }
   if (burst < rate) {
     throw new Error(

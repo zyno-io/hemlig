@@ -315,6 +315,18 @@ describe("PKI deployment context", () => {
     ).toThrow("pkiIssuanceRateLimit must be an integer from 1 to 5000.");
   });
 
+  it("names the burst when only the burst is out of range", () => {
+    expect(() =>
+      load({ pkiIssuanceRateLimit: 10, pkiIssuanceBurstLimit: 5001 }),
+    ).toThrow("pkiIssuanceBurstLimit must be an integer from 1 to 5000.");
+  });
+
+  it("names the rate when only the rate is out of range", () => {
+    expect(() =>
+      load({ pkiIssuanceRateLimit: 5001, pkiIssuanceBurstLimit: 10 }),
+    ).toThrow("pkiIssuanceRateLimit must be an integer from 1 to 5000.");
+  });
+
   it("rejects a rate above the default burst", () => {
     expect(() => load({ pkiIssuanceRateLimit: "50" })).toThrow(
       "pkiIssuanceBurstLimit must be at least pkiIssuanceRateLimit.",

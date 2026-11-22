@@ -75,6 +75,26 @@ const identityWritePrefixes = [
   "ENROLLMENT#*",
   "BOOTSTRAP#*",
 ];
+/**
+ * Key attributes of every GSI on the control table except `pki-directory`. IAM restricts
+ * `dynamodb:LeadingKeys` but not attributes, so without a deny on these a PKI role could write a `PKI_*` item that
+ * joins an existing index (and break its consumer). The stack test asserts this list matches the table.
+ */
+export const existingIndexKeyAttributes = [
+  "workflowDuePk",
+  "workflowDueSk",
+  "consumerDirectoryPk",
+  "consumerDirectorySk",
+  "identityConsumerPk",
+  "identityConsumerSk",
+  "revisionPk",
+  "revisionSk",
+  "catalogPk",
+  "catalogSk",
+  "retentionDuePk",
+  "retentionDueSk",
+];
+const pkiDirectoryAttributes = ["pkiDirectoryPk", "pkiDirectorySk"];
 const itemWriteActions = [
   "dynamodb:PutItem",
   "dynamodb:UpdateItem",
@@ -1597,6 +1617,18 @@ const grantPkiTableAccess = (
       conditions: leadingKeys("ForAnyValue:StringLike", identityWritePrefixes),
     }),
   );
+  function_.addToRolePolicy(
+    new iam.PolicyStatement({
+      effect: iam.Effect.DENY,
+      actions: ["dynamodb:PutItem", "dynamodb:UpdateItem"],
+      resources: [table.tableArn],
+      conditions: {
+        "ForAnyValue:StringEquals": {
+          "dynamodb:Attributes": existingIndexKeyAttributes,
+        },
+      },
+    }),
+  );
 };
 
 const denyPkiWrites = (
@@ -1609,6 +1641,19 @@ const denyPkiWrites = (
       actions: itemWriteActions,
       resources: [table.tableArn],
       conditions: leadingKeys("ForAnyValue:StringLike", [pkiItemKeys]),
+    }),
+  );
+  // Existing roles must not write items into the PKI directory index either.
+  function_.addToRolePolicy(
+    new iam.PolicyStatement({
+      effect: iam.Effect.DENY,
+      actions: ["dynamodb:PutItem", "dynamodb:UpdateItem"],
+      resources: [table.tableArn],
+      conditions: {
+        "ForAnyValue:StringEquals": {
+          "dynamodb:Attributes": pkiDirectoryAttributes,
+        },
+      },
     }),
   );
 };
