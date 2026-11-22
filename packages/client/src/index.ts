@@ -362,7 +362,7 @@ export interface PkiCrlView {
   readonly entryCount: number;
   readonly sha256: string;
   readonly revision: number;
-  readonly pendingRevocations: boolean;
+  readonly pendingRevocations: number;
   readonly dirtySince?: string;
   readonly state: PkiCrlState;
 }

@@ -126,7 +126,12 @@ export async function runCli(
     dependencies.stderr ?? ((text: string) => process.stderr.write(text));
   const now = dependencies.now ?? Date.now;
   const configDir = dependencies.configDir ?? defaultConfigDir(env);
-  if (args[0] === "pki") return runPkiCli(args.slice(1), dependencies);
+  const pkiAt = pkiTokenIndex(args);
+  if (pkiAt >= 0)
+    return runPkiCli(
+      [...args.slice(0, pkiAt), ...args.slice(pkiAt + 1)],
+      dependencies,
+    );
   let idempotencyKey: string | undefined;
   let ifMatch: string | undefined;
   let mutationAttempted = false;
@@ -605,4 +610,21 @@ async function readJson(
   } catch {
     return usage("Input is not valid JSON.");
   }
+}
+
+const globalValueFlags = new Set([
+  "--admin-url",
+  "--token-file",
+  "--timeout-ms",
+  "--environment",
+]);
+
+/** Index of a `pki` first positional token, allowing global flags before it; -1 if absent. */
+function pkiTokenIndex(args: readonly string[]): number {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (!arg.startsWith("-")) return arg === "pki" ? index : -1;
+    if (globalValueFlags.has(arg)) index += 1;
+  }
+  return -1;
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -90,13 +91,25 @@ const withDir = async (run: (dir: string) => Promise<void>) => {
 };
 
 test("helpers: subject parsing, durations, ids and rollover increments", () => {
-  assert.deepEqual(parseSubject("CN=Example CA, O=Acme, Inc., C=US"), {
+  assert.deepEqual(parseSubject("cn=Example CA, O=Acme\\, Inc., c=US"), {
     commonName: "Example CA",
     organization: "Acme, Inc.",
     country: "US",
   });
   assert.throws(() => parseSubject("O=Acme"), /CN/);
   assert.throws(() => parseSubject("CN=a,CN=b"), /repeats/);
+  for (const bad of [
+    "CN=Issuing CA 1,o=Example Corp,x",
+    "CN=X,O=Example,DC=example",
+    "CN=X,",
+    "CN=X,O=",
+    "CN=X,O=Acme, Inc.",
+  ])
+    assert.throws(() => parseSubject(bad), bad);
+  assert.deepEqual(parseSubject("CN=X,o=Example"), {
+    commonName: "X",
+    organization: "Example",
+  });
   assert.throws(() => parseSubject("XX=a,CN=b"), /KEY=value/);
   assert.equal(parseDuration("x", "90d"), 7776000);
   assert.equal(parseDuration("x", "2h"), 7200);
@@ -479,9 +492,10 @@ test("delete, retire, destroy-key and crl publish use the right routes", async (
 test("crl get writes the exact bytes (and PEM on request) and reports the receipt", async () => {
   await withDir(async (dir) => {
     const bytes = Uint8Array.from([0x30, 0xff, 0xfe, 0x00, 0x80]);
+    const sha = createHash("sha256").update(bytes).digest("hex");
     const respond: Responder = () => ({
       status: 200,
-      headers: { etag: '"abc"' },
+      headers: { etag: `"${sha}"` },
       bytes,
     });
     const derPath = join(dir, "ca.crl");
@@ -494,7 +508,7 @@ test("crl get writes the exact bytes (and PEM on request) and reports the receip
     assert.equal(result.requests[0]!.responseType, "binary");
     const receipt = JSON.parse(result.stdout).data;
     assert.equal(receipt.bytes, 5);
-    assert.equal(receipt.etag, "abc");
+    assert.equal(receipt.etag, sha);
     assert.equal(receipt.notModified, false);
     assert.match(receipt.sha256, /^[0-9a-f]{64}$/);
     assert.equal(result.stdout.includes("MP"), false);
@@ -672,4 +686,98 @@ test("non-pki error envelopes stay unchanged", async () => {
     },
   );
   assert.equal(result, 5);
+});
+
+test("crl get verifies type and ETag and leaves no file on failure", async () => {
+  await withDir(async (dir) => {
+    const out = join(dir, "x.crl");
+    const bad = await execute(
+      ["pki", "ca", "crl", "get", caId, "--out", out],
+      () => ({
+        status: 200,
+        headers: { etag: '"deadbeef"', "content-type": "application/pkix-crl" },
+        bytes: Uint8Array.from([0x30, 0x00]),
+      }),
+    );
+    assert.equal(bad.exitCode, 7);
+    const html = await execute(
+      ["pki", "ca", "crl", "get", caId, "--out", out],
+      () => ({
+        status: 200,
+        headers: { "content-type": "text/html" },
+        bytes: Buffer.from("<html>"),
+      }),
+    );
+    assert.equal(html.exitCode, 7);
+    await assert.rejects(readFile(out));
+    assert.deepEqual(await readdir(dir), []);
+  });
+});
+
+test("an unrelated invalid HEMLIG_ENVIRONMENT is ignored when not needed", async () => {
+  const bad = { ...env, HEMLIG_ENVIRONMENT: "BAD ENV" };
+  assert.equal(
+    (await execute(["pki", "ca", "get", caId], undefined, bad)).exitCode,
+    0,
+  );
+  assert.equal(
+    (await execute(["pki", "ca", "list"], undefined, bad)).exitCode,
+    2,
+  );
+  assert.equal(
+    (await execute(["pki", "ca", "get", "name"], undefined, bad)).exitCode,
+    2,
+  );
+});
+
+test("global flags may precede pki, and --if-none-match errors name that flag", async () => {
+  const result = await execute([
+    "--admin-url",
+    "https://admin.example.test",
+    "pki",
+    "ca",
+    "get",
+    caId,
+  ]);
+  assert.equal(result.exitCode, 0, result.stderr);
+  await withDir(async (dir) => {
+    const bad = await execute([
+      "pki",
+      "ca",
+      "crl",
+      "get",
+      caId,
+      "--out",
+      join(dir, "o"),
+      "--if-none-match",
+      "W/x",
+    ]);
+    assert.equal(bad.exitCode, 2);
+    assert.match(JSON.parse(bad.stderr).error.message, /--if-none-match/);
+  });
+});
+
+test("a CSR write failure after create says the CA exists", async () => {
+  await withDir(async (dir) => {
+    const csrPath = join(dir, "ca.csr");
+    const result = await execute(
+      [
+        "pki",
+        "ca",
+        "create",
+        "--name",
+        "n",
+        "--key-algorithm",
+        "ECDSA_P256",
+        "--subject",
+        "CN=x",
+        "--csr-out",
+        csrPath,
+      ],
+      // csrPem is not a string, so the write through the handle fails.
+      () => ({ status: 201, headers: {}, body: { ...detail, csrPem: 42 } }),
+    );
+    assert.equal(result.exitCode, 9);
+    assert.match(JSON.parse(result.stderr).error.message, /CA was created/);
+  });
 });

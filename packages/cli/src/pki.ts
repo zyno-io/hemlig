@@ -1,5 +1,12 @@
-import { createHash } from "node:crypto";
-import { open, readFile, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  open,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
 import { parseArgs } from "node:util";
 import {
   HemligClient,
@@ -307,16 +314,17 @@ const subjectKeys: Record<string, keyof PkiCaSubject> = {
 /** Parses `CN=Example CA, O=Example, C=US` into the API subject object. */
 export function parseSubject(text: string): PkiCaSubject {
   const subject: Partial<Record<keyof PkiCaSubject, string>> = {};
-  for (const part of text.split(/,(?=\s*(?:C|ST|L|O|OU|CN)=)/)) {
-    const trimmed = part.trim();
-    const equals = trimmed.indexOf("=");
-    const key = equals < 0 ? "" : trimmed.slice(0, equals).trim();
-    const value = equals < 0 ? "" : trimmed.slice(equals + 1).trim();
+  const hint =
+    "--subject must be comma-separated KEY=value pairs using C, ST, L, O, OU and CN (a literal comma in a value is written \\,).";
+  for (const part of text.split(/(?<!\\),/)) {
+    const match = /^\s*([A-Za-z][A-Za-z0-9.-]*)\s*=(.*)$/s.exec(part);
+    if (!match) return usage(hint);
+    const key = match[1]!.toUpperCase();
+    const value = match[2]!.trim().replace(/\\,/g, ",");
     const field = subjectKeys[key];
-    if (field === undefined || value === "")
-      return usage(
-        "--subject must be comma-separated KEY=value pairs using C, ST, L, O, OU and CN.",
-      );
+    if (field === undefined)
+      return usage(`--subject attribute ${match[1]} is not supported. ${hint}`);
+    if (value === "") return usage(`--subject ${key} has an empty value.`);
     if (subject[field] !== undefined)
       return usage(`--subject repeats the ${key} attribute.`);
     subject[field] = value;
@@ -379,7 +387,7 @@ async function readCrlFile(path: string, what: string): Promise<string> {
   return isPem(bytes) ? bytes.toString("utf8") : bytes.toString("base64");
 }
 
-const strongEtag = (value: string): string => {
+const strongEtag = (value: string, flag = "if-match"): string => {
   const raw =
     value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
   if (
@@ -389,7 +397,7 @@ const strongEtag = (value: string): string => {
     !/^[\x21\x23-\x5b\x5d-\x7e]+$/.test(raw)
   )
     usage(
-      "--if-match must be a strong ETag or current; wildcard and weak ETags are forbidden.",
+      `--${flag} must be a strong ETag${flag === "if-match" ? " or current" : ""}; wildcard and weak ETags are forbidden.`,
     );
   return raw;
 };
@@ -553,14 +561,6 @@ export async function runPkiCli(
         usage("An option is not supported by this command.");
 
     const timeoutMs = parseTimeoutMs(str(values, "timeout-ms"));
-    const requestedEnvironment =
-      str(values, "environment") ?? env.HEMLIG_ENVIRONMENT;
-    if (
-      requestedEnvironment !== undefined &&
-      !ENVIRONMENT_PATTERN.test(requestedEnvironment)
-    )
-      usage("Supply a valid logical --environment or HEMLIG_ENVIRONMENT.");
-    const environment = requestedEnvironment;
     const isExtCommand =
       name === "external-ca get" || name === "external-ca upload-crl";
     const extOperand = isExtCommand ? operands[0] : undefined;
@@ -576,6 +576,22 @@ export async function runPkiCli(
     }
     if (rolloverFrom !== undefined) references.push(rolloverFrom);
     if (forCa !== undefined) references.push(forCa);
+    const flagEnvironment = str(values, "environment");
+    const needsEnvironment =
+      ((name === "ca list" || name === "ca create") &&
+        rolloverFrom === undefined) ||
+      references.some((reference) => !isCaId(reference));
+    if (
+      flagEnvironment !== undefined &&
+      !ENVIRONMENT_PATTERN.test(flagEnvironment)
+    )
+      usage("Supply a valid logical --environment or HEMLIG_ENVIRONMENT.");
+    let environment = flagEnvironment ?? env.HEMLIG_ENVIRONMENT;
+    if (environment !== undefined && !ENVIRONMENT_PATTERN.test(environment)) {
+      if (needsEnvironment)
+        usage("Supply a valid logical --environment or HEMLIG_ENVIRONMENT.");
+      environment = undefined;
+    }
     if (
       (name === "ca list" || name === "ca create") &&
       environment === undefined &&
@@ -654,7 +670,7 @@ export async function runPkiCli(
         usage("--format must be der or pem.");
       crlFormat = format;
       const ifNoneMatch = str(values, "if-none-match");
-      if (ifNoneMatch !== undefined) strongEtag(ifNoneMatch);
+      if (ifNoneMatch !== undefined) strongEtag(ifNoneMatch, "if-none-match");
     }
     const ifMatchFlag = str(values, "if-match");
     if ((name === "ca update" || name === "ca delete") && !ifMatchFlag)
@@ -779,10 +795,11 @@ export async function runPkiCli(
             : { displayName: flags.displayName }),
         };
         const csrOut = str(values, "csr-out");
+        let csrHandle: FileHandle | undefined;
         if (csrOut !== undefined) {
           // Claim the path first so an existing file fails before the CA exists.
           try {
-            await (await open(csrOut, "wx")).close();
+            csrHandle = await open(csrOut, "wx");
             csrPlaceholder = csrOut;
           } catch {
             throw new CliError(
@@ -793,11 +810,13 @@ export async function runPkiCli(
           }
         }
         mutationAttempted = true;
-        const created = await client.createPkiCa(
-          token,
-          request,
-          idempotencyKey!,
-        );
+        let created: Awaited<ReturnType<HemligClient["createPkiCa"]>>;
+        try {
+          created = await client.createPkiCa(token, request, idempotencyKey!);
+        } catch (error) {
+          await csrHandle?.close().catch(() => undefined);
+          throw error;
+        }
         for (const warning of created.warnings ?? [])
           await stderr(`warning: ${warning.message}\n`);
         if (
@@ -811,13 +830,15 @@ export async function runPkiCli(
           );
         if (csrOut === undefined) return receipt(created, created.version);
         try {
-          await writeFile(csrOut, created.csrPem, { flag: "w" });
+          await csrHandle!.writeFile(created.csrPem);
         } catch {
           throw new CliError(
             9,
             "output_io_error",
-            "Cannot write the CSR file.",
+            "The CA was created but the CSR file could not be written. Read the CSR with `hemlig pki ca get`, or replay this command with the same --idempotency-key.",
           );
+        } finally {
+          await csrHandle!.close().catch(() => undefined);
         }
         csrPlaceholder = undefined;
         const { csrPem: _omitted, ...rest } = created;
@@ -899,7 +920,9 @@ export async function runPkiCli(
         const result: BinaryResult = await client.getAdminCrl(
           token,
           issuerId,
-          ifNoneMatch === undefined ? undefined : strongEtag(ifNoneMatch),
+          ifNoneMatch === undefined
+            ? undefined
+            : strongEtag(ifNoneMatch, "if-none-match"),
         );
         if (result.status === 304)
           return receipt({
@@ -908,10 +931,27 @@ export async function runPkiCli(
             path: crlOut,
             notModified: true,
           });
+        const sha256 = createHash("sha256").update(result.bytes).digest("hex");
+        const typeOk = (result.contentType ?? "")
+          .trim()
+          .toLowerCase()
+          .startsWith("application/pkix-crl");
+        if (
+          !(typeOk || result.bytes[0] === 0x30) ||
+          (result.etag !== undefined && result.etag !== sha256)
+        )
+          throw new CliError(
+            7,
+            "invalid_response",
+            "Administrator API returned a CRL that failed verification.",
+          );
         const content = crlFileContent(result.bytes, crlFormat);
+        const temporary = `${crlOut}.tmp-${randomUUID()}`;
         try {
-          await writeFile(crlOut!, content);
+          await writeFile(temporary, content, { flag: "wx" });
+          await rename(temporary, crlOut!);
         } catch {
+          await unlink(temporary).catch(() => undefined);
           throw new CliError(
             9,
             "output_io_error",
@@ -921,7 +961,7 @@ export async function runPkiCli(
         return receipt({
           id: issuerId,
           bytes: Buffer.byteLength(content),
-          sha256: createHash("sha256").update(result.bytes).digest("hex"),
+          sha256,
           etag: result.etag,
           path: crlOut,
           notModified: false,
