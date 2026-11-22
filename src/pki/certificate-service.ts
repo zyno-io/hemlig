@@ -768,8 +768,22 @@ export class CertificateService {
     };
     let complete = true;
 
-    // Read: every unexpired pointer, then its certificate.
-    const byCa = new Map<string, { serial: string; notAfter: string }[]>();
+    // Read page by page and revoke each page's chunks as they are read, so a slow read still makes progress. The
+    // first chunk of a run always runs; later chunks and further pages stop at the deadline.
+    const cas = new Map<string, CaRecord>();
+    const touched = new Set<string>();
+    const loadCa = async (caId: string): Promise<CaRecord> => {
+      let ca = cas.get(caId);
+      if (ca === undefined) {
+        ca = await this.pki.getCa(caId);
+        if (ca === undefined) {
+          throw serviceUnavailable("The CA record is unavailable.");
+        }
+        cas.set(caId, ca);
+      }
+      return ca;
+    };
+    let ranChunk = false;
     let startKey: Record<string, unknown> | undefined;
     const nowIso = new Date(start).toISOString();
     do {
@@ -784,10 +798,12 @@ export class CertificateService {
       const certs = await mapLimit(page.pointers, bulkConcurrency, (pointer) =>
         this.pki.getCertificate(pointer.caId, pointer.serial),
       );
+      const byCa = new Map<string, { serial: string; notAfter: string }[]>();
       for (const cert of certs) {
         if (cert === undefined) {
           continue;
         }
+        touched.add(cert.caId);
         if (cert.status === "REVOKED") {
           progress.alreadyRevoked += 1;
         } else if (Date.parse(cert.notAfter) > start) {
@@ -796,54 +812,48 @@ export class CertificateService {
           byCa.set(cert.caId, list);
         }
       }
-      startKey = page.lastEvaluatedKey;
-      if (startKey !== undefined && this.now().getTime() > deadline) {
-        complete = false;
-        break;
-      }
-    } while (startKey !== undefined);
-
-    // Revoke in batches of 30 per CA.
-    const cas = new Map<string, CaRecord>();
-    for (const [caId, items] of byCa) {
-      if (!complete) {
-        break;
-      }
-      const ca = await this.pki.getCa(caId);
-      if (ca === undefined) {
-        throw serviceUnavailable("The CA record is unavailable.");
-      }
-      cas.set(caId, ca);
-      const withEntries = ca.status !== "REVOKED";
-      for (let offset = 0; offset < items.length; offset += maxBulkRevokeBatch) {
-        if (this.now().getTime() > deadline) {
-          complete = false;
-          break;
-        }
-        const done = await this.revokeChunk(
-          actor,
-          key,
-          {
-            caId,
-            items: items.slice(offset, offset + maxBulkRevokeBatch),
-            withEntries,
-            now: this.now().toISOString(),
+      for (const [caId, items] of byCa) {
+        const ca = await loadCa(caId);
+        const withEntries = ca.status !== "REVOKED";
+        for (
+          let offset = 0;
+          offset < items.length && complete;
+          offset += maxBulkRevokeBatch
+        ) {
+          if (ranChunk && this.now().getTime() > deadline) {
+            complete = false;
+            break;
+          }
+          ranChunk = true;
+          const done = await this.revokeChunk(
             actor,
-            reason: fields.reason,
-            ...(fields.invalidityDate === undefined
-              ? {}
-              : { invalidityDate: fields.invalidityDate }),
-          },
-          progress,
-        );
-        if (done > 0) {
-          progress.caIds.add(caId);
-          if (withEntries) {
-            progress.withEntries.add(caId);
+            key,
+            {
+              caId,
+              items: items.slice(offset, offset + maxBulkRevokeBatch),
+              withEntries,
+              now: this.now().toISOString(),
+              actor,
+              reason: fields.reason,
+              ...(fields.invalidityDate === undefined
+                ? {}
+                : { invalidityDate: fields.invalidityDate }),
+            },
+            progress,
+          );
+          if (done > 0) {
+            progress.caIds.add(caId);
+            if (withEntries) {
+              progress.withEntries.add(caId);
+            }
           }
         }
       }
-    }
+      startKey = page.lastEvaluatedKey;
+      if (complete && startKey !== undefined && this.now().getTime() > deadline) {
+        complete = false;
+      }
+    } while (startKey !== undefined && complete);
 
     const progressBody = (crls: Json[]): Json => ({
       consumerId,
@@ -875,10 +885,26 @@ export class CertificateService {
       };
     }
 
-    // One inline publication per CA that received entries; none starts after 25 seconds.
+    // One inline publication per CA that received entries or still has an unpublished revocation of this consumer's
+    // certificates; none starts after 25 seconds.
+    const toPublish = new Set(progress.withEntries);
+    for (const caId of touched) {
+      if (toPublish.has(caId)) {
+        continue;
+      }
+      const ca = await loadCa(caId);
+      const crl = await this.pki.getCaCrlState(caId);
+      if (
+        ca.status !== "REVOKED" &&
+        crl !== undefined &&
+        crl.revision > (crl.published?.revision ?? 0)
+      ) {
+        toPublish.add(caId);
+      }
+    }
     const crls: Json[] = [];
-    for (const caId of [...progress.withEntries].sort()) {
-      const ca = cas.get(caId) as CaRecord;
+    for (const caId of [...toPublish].sort()) {
+      const ca = await loadCa(caId);
       if (this.now().getTime() - start > bulkPublishBudgetMs) {
         crls.push({ caId, crlPublished: false });
         continue;
@@ -940,7 +966,7 @@ export class CertificateService {
     progress: BulkProgress,
   ): Promise<number> {
     let items = batch.items;
-    const revoked = 0;
+    let revoked = 0;
     for (let attempt = 0; attempt < maxBatchRetries && items.length > 0; attempt += 1) {
       const outcome = await this.pki.revokeBatch({ ...batch, items });
       if (outcome.kind === "committed") {
@@ -965,7 +991,12 @@ export class CertificateService {
         if (cert === undefined || cert.status === "REVOKED") {
           progress.alreadyRevoked += 1;
         } else if (Date.parse(cert.notAfter) <= this.now().getTime()) {
-          await this.revokeExpired(actor, key, batch, item);
+          if (await this.revokeExpired(actor, key, batch, item)) {
+            progress.revoked += 1;
+            revoked += 1;
+          } else {
+            progress.alreadyRevoked += 1;
+          }
         } else {
           remaining.push(item);
         }
@@ -984,13 +1015,13 @@ export class CertificateService {
     key: string,
     batch: BulkRevokeBatch,
     item: { serial: string; notAfter: string },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const derived = `bulk-${createHash("sha256")
       .update(stableJson([key, batch.caId, item.serial]))
       .digest("hex")
       .slice(0, 32)}`;
     const nowIso = this.now().toISOString();
-    await this.pki.revokeCertificate({
+    const outcome = await this.pki.revokeCertificate({
       mode: "inventory",
       idempotency: {
         actor,
@@ -1011,5 +1042,6 @@ export class CertificateService {
       by: actor,
       expired: true,
     });
+    return outcome.kind === "committed";
   }
 }

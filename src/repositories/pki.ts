@@ -8,7 +8,7 @@ import {
   type UpdateCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { assertEnvironmentName } from "../domain/validation";
-import { serviceUnavailable } from "../domain/errors";
+import { ApiError, serviceUnavailable } from "../domain/errors";
 import type { Actor } from "../domain/types";
 import type {
   CaCrlState,
@@ -2057,9 +2057,15 @@ const errorName = (error: unknown): string =>
   error instanceof Error ? error.name : typeof error;
 
 /** The `pki-directory` index exists but cannot be queried yet (still backfilling after an upgrade). */
-export class PkiIndexNotReadyError extends Error {
+export class PkiIndexNotReadyError extends ApiError {
   public constructor() {
-    super("The PKI directory index is not ready.");
+    super(
+      503,
+      "service_unavailable",
+      "The PKI directory index is not ready.",
+      "index_not_ready",
+      { details: { reason: "index_not_ready" }, headers: { "retry-after": "60" } },
+    );
     this.name = "PkiIndexNotReadyError";
   }
 }

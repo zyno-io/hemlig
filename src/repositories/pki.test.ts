@@ -1144,6 +1144,14 @@ describe("Phase 4 repository reads and writes", () => {
     ).rejects.toBeInstanceOf(PkiIndexNotReadyError);
   });
 
+  it("reports a backfilling index as a 503 with the index_not_ready reason", () => {
+    expect(new PkiIndexNotReadyError()).toMatchObject({
+      statusCode: 503,
+      code: "service_unavailable",
+      safeReason: "index_not_ready",
+    });
+  });
+
   it("stores a capacity count monotonically and releases only an owned lease", async () => {
     const send = jest.fn().mockResolvedValue({});
     const repository = setupPhase4(send);

@@ -484,12 +484,15 @@ export class HemligStack extends Stack {
           ? {}
           : { ADMIN_PKI_OPERATOR_ROLE: props.oidcPkiOperatorRole }),
       },
+      // CRL self-verification parses up to 12,000 entries: 512 MB leaves too little headroom.
+      { memorySize: 1024 },
     );
     const pkiIssuerFunction = this.function(
       "PkiIssuerFunction",
       `${prefix}-pki-issuer`,
       "src/handlers/pki-issuer.ts",
       pkiEnvironment,
+      { memorySize: 1024 },
     );
     const pkiMaintenanceFunction = this.function(
       "PkiMaintenanceFunction",
@@ -497,7 +500,7 @@ export class HemligStack extends Stack {
       "src/handlers/pki-maintenance.ts",
       pkiEnvironment,
       // A full pass publishes CRLs through KMS and S3; the pass keeps its own time budget below this.
-      { timeout: Duration.minutes(5) },
+      { timeout: Duration.minutes(5), memorySize: 1024 },
     );
 
     table.grantReadWriteData(adminFunction);
@@ -1487,7 +1490,7 @@ export class HemligStack extends Stack {
     functionName: string,
     entry: string,
     environment: Record<string, string>,
-    options: { timeout?: Duration } = {},
+    options: { timeout?: Duration; memorySize?: number } = {},
   ): NodejsFunction {
     const sourceEntry = path.resolve(__dirname, "..", entry);
     const packagedEntry = path.resolve(__dirname, "..", "..", entry);
@@ -1501,7 +1504,7 @@ export class HemligStack extends Stack {
       entry: existsSync(sourceEntry) ? sourceEntry : packagedEntry,
       runtime: lambda.Runtime.NODEJS_24_X,
       handler: "handler",
-      memorySize: 512,
+      memorySize: options.memorySize ?? 512,
       timeout: options.timeout ?? Duration.seconds(29),
       tracing: this.tracing,
       environment,

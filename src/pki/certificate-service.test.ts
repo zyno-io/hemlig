@@ -340,6 +340,69 @@ describe("CertificateService.bulkRevoke", () => {
     ).toHaveLength(2);
   });
 
+  it("makes progress when each page takes 7 seconds, and a rerun finishes", async () => {
+    const { h, pki, service } = await world({ "ca-aaa-one": 3 });
+    const all = (await pki.listConsumerPointersPage("c", {} as never)).pointers;
+    const pages = all.map((pointer: unknown) => [pointer]);
+    let calls = 0;
+    pki.listConsumerPointersPage.mockImplementation(async () => {
+      h.clock.now = new Date(h.clock.now.getTime() + 7_000);
+      const index = calls++ % pages.length;
+      return {
+        pointers: pages[index],
+        ...(index < pages.length - 1 ? { lastEvaluatedKey: { n: index } } : {}),
+      };
+    });
+    const first = await service.bulkRevoke(admin, "key-bulk-00007", "consumer-one", {});
+    expect(first.complete).toBe(false);
+    expect(first.body.revoked).toBe(2);
+    expect(pki.putHumanIdempotency).not.toHaveBeenCalled();
+    calls = 0;
+    calls = 0;
+    const last = await service.bulkRevoke(admin, "key-bulk-00007", "consumer-one", {});
+    expect(last.complete).toBe(true);
+    expect([...h.state.certificates.values()].every((c) => c.status === "REVOKED")).toBe(true);
+  });
+
+  it("publishes every touched CA with an unpublished revision, and counts expired fallout", async () => {
+    const { h, pki, publish, service } = await world({ "ca-aaa-one": 1, "ca-bbb-two": 1 });
+    // The second CA's certificate is already revoked, but its CRL was never published.
+    const [, second] = [...h.state.certificates.values()];
+    h.state.certificates.set(second!.serial, { ...second!, status: "REVOKED" });
+    (pki.getCaCrlState as jest.Mock).mockImplementation(async (id: string) =>
+      id === "ca-bbb-two"
+        ? { revision: 3, lastNumber: 1, published: { revision: 1, number: 1 } }
+        : { revision: 1, lastNumber: 1, published: { revision: 1, number: 1 } },
+    );
+    const result = await service.bulkRevoke(admin, "key-bulk-00008", "consumer-one", {});
+    const published = (publish.mock.calls as unknown as { caId: string }[][]).map(
+      (call) => call[0]!.caId,
+    );
+    expect(published.sort()).toEqual(["ca-aaa-one", "ca-bbb-two"]);
+    expect(result.body).toMatchObject({ revoked: 1, alreadyRevoked: 1 });
+  });
+
+  it("counts an expired certificate that falls out of a batch", async () => {
+    const { h, pki, service } = await world({ "ca-aaa-one": 2 });
+    const serials = [...h.state.certificates.keys()];
+    pki.revokeBatch.mockResolvedValueOnce({ kind: "canceled", failed: [`cert:${serials[0]}`] });
+    const original = pki.getCertificate.getMockImplementation()!;
+    let calls = 0;
+    pki.getCertificate.mockImplementation(async (caId: string, serial: string) => {
+      const found = await original(caId, serial);
+      // The batch cancellation re-read sees the first certificate expired.
+      if (serial === serials[0] && (calls += 1) === 2) {
+        return { ...found, notAfter: new Date(h.clock.now.getTime() - 1).toISOString() } as IssuedCertificateRecord;
+      }
+      return found;
+    });
+    const result = await service.bulkRevoke(admin, "key-bulk-00009", "consumer-one", {});
+    expect(pki.revokeCertificate).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "inventory", expired: true }),
+    );
+    expect(result.body).toMatchObject({ revoked: 2 });
+  });
+
   it("replays a completed run from its record", async () => {
     const { h, service } = await world({ "ca-aaa-one": 1 });
     const stored = {
