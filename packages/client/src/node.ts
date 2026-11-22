@@ -1,8 +1,9 @@
 import * as https from "node:https";
-import type {
-  HemligTransport,
-  TransportRequest,
-  TransportResponse,
+import {
+  decodeTransportBody,
+  type HemligTransport,
+  type TransportRequest,
+  type TransportResponse,
 } from "./index";
 
 /** Node-only mTLS transport. Import from `@zyno-io/hemlig-client/node`. */
@@ -10,9 +11,13 @@ export class NodeHttpsTransport implements HemligTransport {
   public constructor(private readonly options: https.AgentOptions = {}) {}
 
   public async request(request: TransportRequest): Promise<TransportResponse> {
-    const body = request.body === undefined ? undefined : JSON.stringify(request.body);
+    const body =
+      request.body === undefined ? undefined : JSON.stringify(request.body);
     const headers: Record<string, string> = {
-      accept: "application/json",
+      accept:
+        request.responseType === "binary"
+          ? "application/pkix-crl, application/json"
+          : "application/json",
       ...request.headers,
     };
     if (body !== undefined) {
@@ -28,18 +33,20 @@ export class NodeHttpsTransport implements HemligTransport {
           incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
           incoming.on("error", reject);
           incoming.on("end", () => {
-            const text = Buffer.concat(chunks).toString("utf8");
-            let parsed: unknown;
-            try {
-              parsed = text.length === 0 ? undefined : JSON.parse(text);
-            } catch {
-              parsed = undefined;
-            }
             const responseHeaders: Record<string, string | undefined> = {};
             for (const [name, value] of Object.entries(incoming.headers)) {
-              responseHeaders[name] = Array.isArray(value) ? value.join(",") : value;
+              responseHeaders[name] = Array.isArray(value)
+                ? value.join(",")
+                : value;
             }
-            resolve({ status: incoming.statusCode ?? 500, headers: responseHeaders, body: parsed });
+            const status = incoming.statusCode ?? 500;
+            const decoded = decodeTransportBody(
+              status,
+              responseHeaders,
+              Buffer.concat(chunks),
+              request.responseType,
+            );
+            resolve({ status, headers: responseHeaders, ...decoded });
           });
         },
       );

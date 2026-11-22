@@ -261,18 +261,282 @@ export interface ApiIdentityResult {
   readonly status: "ACTIVE" | "REVOKED";
 }
 
+export type PkiCaStatus =
+  "PENDING_CERTIFICATE" | "ACTIVE" | "RETIRED" | "REVOKED" | "FAILED";
+export type PkiKeyState = "ACTIVE" | "DISABLED" | "DESTROYED";
+export type PkiKeyAlgorithm =
+  "ECDSA_P256" | "ECDSA_P384" | "RSA_3072" | "RSA_4096" | "ED25519";
+export type PkiLeafKeyAlgorithm =
+  | "ECDSA_P256"
+  | "ECDSA_P384"
+  | "ECDSA_P521"
+  | "ED25519"
+  | "RSA_2048"
+  | "RSA_3072"
+  | "RSA_4096"
+  | "RSA_8192";
+export type PkiCrlState = "MISSING" | "CURRENT" | "STALE";
+
+export interface PkiCaSubject {
+  readonly commonName: string;
+  readonly organization?: string;
+  readonly organizationalUnit?: string;
+  readonly country?: string;
+  readonly locality?: string;
+  readonly state?: string;
+}
+
+export interface PkiNameSubtrees {
+  readonly dns?: readonly string[];
+  readonly ip?: readonly string[];
+  readonly uri?: readonly string[];
+}
+
+export interface PkiNameConstraints {
+  readonly permitted?: PkiNameSubtrees;
+  readonly excluded?: PkiNameSubtrees;
+}
+
+export interface PkiRequestedConstraints {
+  readonly nameConstraints?: PkiNameConstraints;
+  readonly extendedKeyUsages?: readonly ("serverAuth" | "clientAuth")[];
+}
+
+export interface PkiCaPolicyInput {
+  readonly maxLeafLifetimeSeconds?: number;
+  readonly leafKeyAlgorithms?: readonly PkiLeafKeyAlgorithm[];
+  readonly capacity?: number;
+  readonly issuancePerHour?: number;
+  readonly crlValiditySeconds?: number;
+}
+
+export interface PkiCaPolicy {
+  readonly maxLeafLifetimeSeconds: number;
+  readonly leafKeyAlgorithms: readonly PkiLeafKeyAlgorithm[];
+  readonly capacity: number;
+  readonly issuancePerHour: number;
+  readonly crlValiditySeconds: number;
+  readonly issueLeaves: boolean;
+  readonly issueSubordinates: boolean;
+}
+
+export interface PkiCreateCaRequest {
+  readonly environment: string;
+  readonly name: string;
+  readonly kind: "EXTERNAL_INTERMEDIATE";
+  readonly keyAlgorithm: PkiKeyAlgorithm;
+  readonly subject: PkiCaSubject;
+  readonly requestedConstraints?: PkiRequestedConstraints;
+  readonly policy?: PkiCaPolicyInput;
+  readonly crl?: { readonly validitySeconds?: number };
+  readonly displayName?: string;
+}
+
+export interface PkiUpdateCaRequest {
+  readonly displayName?: string;
+  readonly policy: PkiCaPolicyInput;
+}
+
+export interface PkiActivateCaRequest {
+  readonly certificatePem: string;
+  readonly chainPem: string;
+  /** PEM or base64 DER. */
+  readonly rootCrl?: string;
+  readonly acceptBroaderConstraints?: boolean;
+}
+
+export interface PkiUploadCrlRequest {
+  /** PEM or base64 DER. */
+  readonly crl: string;
+}
+
+export interface PkiWarning {
+  readonly code: string;
+  readonly message: string;
+}
+
+export interface PkiCrlView {
+  readonly number: number;
+  readonly thisUpdate: string;
+  readonly nextUpdate: string;
+  readonly entryCount: number;
+  readonly sha256: string;
+  readonly revision: number;
+  readonly pendingRevocations: number;
+  readonly dirtySince?: string;
+  readonly state: PkiCrlState;
+}
+
+export interface PkiRootCrlView {
+  readonly extId: string;
+  readonly state: PkiCrlState;
+  readonly numberHex?: string;
+  readonly thisUpdate?: string;
+  readonly nextUpdate?: string;
+}
+
+export interface PkiCaSummary {
+  readonly caId: string;
+  readonly environment: string;
+  readonly name: string;
+  readonly displayName?: string;
+  readonly kind: "EXTERNAL_INTERMEDIATE";
+  readonly status: PkiCaStatus;
+  readonly version: string;
+  readonly keyAlgorithm: PkiKeyAlgorithm;
+  readonly keyState: PkiKeyState;
+  readonly fingerprint?: string;
+  readonly notAfter?: string;
+  readonly createdAt: string;
+}
+
+export interface PkiCaDetail extends PkiCaSummary {
+  readonly key: {
+    readonly custody: string;
+    readonly algorithm: PkiKeyAlgorithm;
+    readonly spkiSha256: string;
+    readonly state: PkiKeyState;
+  };
+  readonly subject: PkiCaSubject;
+  readonly subjectDn: string;
+  readonly requestedConstraints: PkiRequestedConstraints;
+  readonly effectiveConstraints?: PkiRequestedConstraints;
+  readonly acceptBroaderConstraints?: boolean;
+  readonly csrPem?: string;
+  readonly certificatePem?: string;
+  readonly chainPem?: string;
+  readonly serial?: string;
+  readonly notBefore?: string;
+  readonly parent?: { readonly type: string; readonly id: string };
+  readonly crlIssuers: readonly {
+    readonly type: string;
+    readonly id: string;
+  }[];
+  readonly policy: PkiCaPolicy;
+  readonly maxIssueLifetimeEverSeconds: number;
+  readonly createdBy: Record<string, unknown>;
+  readonly activatedAt?: string;
+  readonly retiredAt?: string;
+  readonly revokedAt?: string;
+  readonly revocationReason?: string;
+  readonly revocationSource?: string;
+  readonly revocationEvidence?: string;
+  readonly drained: boolean;
+  readonly drainAt?: string;
+  readonly crl?: PkiCrlView;
+  readonly rootCrl?: PkiRootCrlView;
+  readonly warnings?: readonly PkiWarning[];
+}
+
+export interface PkiCreateCaResponse extends PkiCaDetail {
+  readonly csrPem: string;
+}
+
+export interface PkiCaListPage {
+  readonly cas: readonly PkiCaSummary[];
+  readonly nextCursor?: string;
+  readonly generatedAt: string;
+}
+
+export interface PkiCrlPublishResponse {
+  readonly caId: string;
+  readonly crl: PkiCrlView;
+}
+
+export interface PkiExternalCaCrlPointer {
+  readonly numberHex: string;
+  readonly thisUpdate: string;
+  readonly nextUpdate: string;
+  readonly sha256: string;
+  readonly uploadedAt?: string;
+}
+
+export interface PkiExternalCaSummary {
+  readonly extId: string;
+  readonly fingerprint: string;
+  readonly subjectDn: string;
+  readonly notAfter: string;
+  readonly crlState: PkiCrlState;
+  readonly version: string;
+  readonly createdAt: string;
+}
+
+export interface PkiExternalCaDetail extends PkiExternalCaSummary {
+  readonly certificatePem: string;
+  readonly spkiSha256: string;
+  readonly subjectKeyIdentifier: string;
+  readonly dependents: readonly string[];
+  readonly environments: readonly string[];
+  readonly crl?: PkiExternalCaCrlPointer;
+}
+
+export interface PkiExternalCaListPage {
+  readonly externalCas: readonly PkiExternalCaSummary[];
+  readonly nextCursor?: string;
+  readonly generatedAt: string;
+}
+
+export interface PkiUploadCrlResponse {
+  readonly extId: string;
+  readonly crl: PkiExternalCaCrlPointer;
+  readonly changed: boolean;
+  readonly revokedCaIds: readonly string[];
+}
+
 export interface TransportRequest {
   readonly method: "GET" | "POST" | "PUT" | "DELETE";
   readonly url: URL;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: unknown;
+  /** `binary` keeps a 2xx body as raw bytes; errors are still JSON envelopes. */
+  readonly responseType?: "json" | "binary";
 }
 
 export interface TransportResponse {
   readonly status: number;
   readonly headers: Readonly<Record<string, string | undefined>>;
   readonly body?: unknown;
+  /** Set for a 2xx response when `responseType` was `binary`. */
+  readonly bytes?: Uint8Array;
 }
+
+/**
+ * Decodes a raw response body. A 2xx (except 304) binary response is returned
+ * byte-for-byte and never UTF-8 decoded; every other response is parsed as JSON.
+ */
+export const decodeTransportBody = (
+  status: number,
+  _headers: Readonly<Record<string, string | undefined>>,
+  raw: Uint8Array,
+  responseType: "json" | "binary" = "json",
+): { body?: unknown; bytes?: Uint8Array } => {
+  if (
+    responseType === "binary" &&
+    status >= 200 &&
+    status < 300 &&
+    status !== 304
+  ) {
+    return { bytes: raw };
+  }
+  const text = new TextDecoder().decode(raw);
+  if (text.length === 0) {
+    return {};
+  }
+  try {
+    return { body: JSON.parse(text) as unknown };
+  } catch {
+    return {};
+  }
+};
+
+export type BinaryResult =
+  | {
+      readonly status: 200;
+      readonly bytes: Uint8Array;
+      readonly etag?: string;
+      readonly contentType?: string;
+    }
+  | { readonly status: 304; readonly etag?: string };
 
 export interface HemligTransport {
   request(request: TransportRequest): Promise<TransportResponse>;
@@ -283,6 +547,8 @@ export class HemligError extends Error {
     readonly status: number,
     message: string,
     readonly code?: string,
+    readonly details?: Readonly<Record<string, string | number | boolean>>,
+    readonly retryAfterSeconds?: number,
   ) {
     super(message);
   }
@@ -716,6 +982,202 @@ export class HemligClient {
     );
   }
 
+  public async listPkiCas(
+    token: string,
+    query: { readonly environment: string; readonly cursor?: string },
+  ): Promise<PkiCaListPage> {
+    return this.request("GET", withQuery("/v1/admin/pki/cas", query), token);
+  }
+
+  public async getPkiCa(token: string, caId: string): Promise<PkiCaDetail> {
+    return this.request("GET", pkiCaPath(caId), token);
+  }
+
+  public async createPkiCa(
+    token: string,
+    input: PkiCreateCaRequest,
+    idempotencyKey: string,
+  ): Promise<PkiCreateCaResponse> {
+    return this.request(
+      "POST",
+      "/v1/admin/pki/cas",
+      token,
+      input,
+      idempotencyKey,
+    );
+  }
+
+  public async updatePkiCa(
+    token: string,
+    caId: string,
+    version: string,
+    input: PkiUpdateCaRequest,
+    idempotencyKey: string,
+  ): Promise<PkiCaDetail> {
+    return this.request(
+      "PUT",
+      pkiCaPath(caId),
+      token,
+      input,
+      idempotencyKey,
+      version,
+    );
+  }
+
+  public async deletePkiCa(
+    token: string,
+    caId: string,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<PkiCaDetail> {
+    return this.request(
+      "DELETE",
+      pkiCaPath(caId),
+      token,
+      undefined,
+      idempotencyKey,
+      version,
+    );
+  }
+
+  public async activatePkiCa(
+    token: string,
+    caId: string,
+    input: PkiActivateCaRequest,
+    idempotencyKey: string,
+  ): Promise<PkiCaDetail> {
+    return this.request(
+      "POST",
+      `${pkiCaPath(caId)}/certificate`,
+      token,
+      input,
+      idempotencyKey,
+    );
+  }
+
+  public async retirePkiCa(
+    token: string,
+    caId: string,
+    idempotencyKey: string,
+  ): Promise<PkiCaDetail> {
+    return this.request(
+      "POST",
+      `${pkiCaPath(caId)}/retire`,
+      token,
+      undefined,
+      idempotencyKey,
+    );
+  }
+
+  public async destroyPkiCaKey(
+    token: string,
+    caId: string,
+    idempotencyKey: string,
+  ): Promise<PkiCaDetail> {
+    return this.request(
+      "POST",
+      `${pkiCaPath(caId)}/destroy-key`,
+      token,
+      undefined,
+      idempotencyKey,
+    );
+  }
+
+  public async publishPkiCrl(
+    token: string,
+    caId: string,
+    idempotencyKey: string,
+  ): Promise<PkiCrlPublishResponse> {
+    return this.request(
+      "POST",
+      `${pkiCaPath(caId)}/crl`,
+      token,
+      undefined,
+      idempotencyKey,
+    );
+  }
+
+  /** Downloads the current CRL (DER) for a CA or external CA. */
+  public async getAdminCrl(
+    token: string,
+    issuerId: string,
+    ifNoneMatch?: string,
+  ): Promise<BinaryResult> {
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${token}`,
+    };
+    if (ifNoneMatch !== undefined) {
+      headers["if-none-match"] = `"${ifNoneMatch}"`;
+    }
+    const response = await this.transport.request({
+      method: "GET",
+      url: new URL(
+        `/v1/admin/pki/crls/${encodeURIComponent(issuerId)}`,
+        this.baseUrl,
+      ),
+      headers,
+      responseType: "binary",
+    });
+    const etag = unquoteEtag(response.headers.etag);
+    if (response.status === 304) {
+      return etag === undefined ? { status: 304 } : { status: 304, etag };
+    }
+    if (response.status < 200 || response.status >= 300) {
+      return this.responseBody<never>(response);
+    }
+    if (response.bytes === undefined) {
+      throw new HemligError(
+        response.status,
+        "The transport did not return binary data.",
+        "transport_binary_unsupported",
+      );
+    }
+    const contentType = response.headers["content-type"];
+    return {
+      status: 200,
+      bytes: response.bytes,
+      ...(etag === undefined ? {} : { etag }),
+      ...(contentType === undefined ? {} : { contentType }),
+    };
+  }
+
+  public async listExternalCas(
+    token: string,
+    query: { readonly cursor?: string } = {},
+  ): Promise<PkiExternalCaListPage> {
+    return this.request(
+      "GET",
+      withQuery("/v1/admin/pki/external-cas", query),
+      token,
+    );
+  }
+
+  public async getExternalCa(
+    token: string,
+    extId: string,
+  ): Promise<PkiExternalCaDetail> {
+    return this.request(
+      "GET",
+      `/v1/admin/pki/external-cas/${encodeURIComponent(extId)}`,
+      token,
+    );
+  }
+
+  public async uploadExternalCaCrl(
+    token: string,
+    extId: string,
+    crl: string,
+    idempotencyKey: string,
+  ): Promise<PkiUploadCrlResponse> {
+    return this.request(
+      "POST",
+      `/v1/admin/pki/external-cas/${encodeURIComponent(extId)}/crl`,
+      token,
+      { crl },
+      idempotencyKey,
+    );
+  }
+
   private request<T>(
     method: TransportRequest["method"],
     path: string,
@@ -774,12 +1236,24 @@ export class HemligClient {
   private responseBody<T>(response: TransportResponse): T {
     if (response.status < 200 || response.status >= 300) {
       const error = response.body as
-        { error?: { code?: string; message?: string } } | undefined;
+        | {
+            error?: {
+              code?: string;
+              message?: string;
+              details?: Readonly<Record<string, string | number | boolean>>;
+            };
+          }
+        | undefined;
+      const retryAfter = response.headers["retry-after"];
       throw new HemligError(
         response.status,
         error?.error?.message ??
           `Hemlig request failed with status ${response.status}.`,
         error?.error?.code,
+        error?.error?.details,
+        retryAfter !== undefined && /^\d+$/.test(retryAfter.trim())
+          ? Number(retryAfter.trim())
+          : undefined,
       );
     }
     return response.body as T;
@@ -795,8 +1269,11 @@ export class FetchTransport implements HemligTransport {
   public async request(request: TransportRequest): Promise<TransportResponse> {
     const body =
       request.body === undefined ? undefined : JSON.stringify(request.body);
+    const binary = request.responseType === "binary";
     const headers: Record<string, string> = {
-      accept: "application/json",
+      accept: binary
+        ? "application/pkix-crl, application/json"
+        : "application/json",
       ...request.headers,
     };
     if (body !== undefined) {
@@ -807,18 +1284,18 @@ export class FetchTransport implements HemligTransport {
       headers,
       body,
     });
-    const text = await response.text();
-    let parsed: unknown;
-    try {
-      parsed = text.length === 0 ? undefined : JSON.parse(text);
-    } catch {
-      parsed = undefined;
-    }
+    const raw = new Uint8Array(await response.arrayBuffer());
     const responseHeaders: Record<string, string | undefined> = {};
     response.headers.forEach((value, name) => {
       responseHeaders[name] = value;
     });
-    return { status: response.status, headers: responseHeaders, body: parsed };
+    const decoded = decodeTransportBody(
+      response.status,
+      responseHeaders,
+      raw,
+      request.responseType,
+    );
+    return { status: response.status, headers: responseHeaders, ...decoded };
   }
 }
 
@@ -833,4 +1310,15 @@ const withQuery = (
         `${encodeURIComponent(key)}=${encodeURIComponent(value)}`,
     );
   return pairs.length === 0 ? path : `${path}?${pairs.join("&")}`;
+};
+
+const pkiCaPath = (caId: string): string =>
+  `/v1/admin/pki/cas/${encodeURIComponent(caId)}`;
+
+const unquoteEtag = (value: string | undefined): string | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim().replace(/^W\//, "");
+  return trimmed.replace(/^"(.*)"$/, "$1");
 };
