@@ -117,9 +117,13 @@ cert-manager's built-in approver approves only its own issuer types, so a reques
 
 For the raw manifests, apply [`config/cert-manager-approval.yaml`](https://github.com/zyno-io/hemlig/blob/main/packages/kubernetes-controller/config/cert-manager-approval.yaml) for the default option. Its subject is `cert-manager/cert-manager`; change it if cert-manager runs as another ServiceAccount.
 
+A Helm list replaces the chart default. Keep cert-manager's own two signer patterns in the list, or its built-in issuers stop being approved cluster-wide.
+
 ```yaml
-# cert-manager Helm values
+# cert-manager Helm values: this list replaces the default
 approveSignerNames:
+  - issuers.cert-manager.io/*
+  - clusterissuers.cert-manager.io/*
   - hemligissuers.hemlig.zyno.io/*
   - hemligclusterissuers.hemlig.zyno.io/*
 ```
@@ -131,10 +135,22 @@ kind: CertificateRequestPolicy
 metadata:
   name: hemlig
 spec:
+  allowed:
+    # Without `allowed`, approver-policy denies requests that carry names.
+    # These values admit everything; narrow them. The grant stays the boundary.
+    commonName:
+      value: "*"
+    dnsNames:
+      values: ["*"]
+    usages:
+      - digital signature
+      - key encipherment
+      - server auth
+      - client auth
   selector:
     issuerRef:
       group: hemlig.zyno.io
-      kind: HemligIssuer
+      kind: "*"
       name: "*"
 ```
 
@@ -146,24 +162,26 @@ The Hemlig controller's own ServiceAccount never has `approve`.
 
 The `Ready` condition on a CertificateRequest uses only the reasons `Pending`, `Failed`, `Issued` and `Denied`, because cert-manager keys on them. The detail is a prefix in `message`. Look at it with `kubectl describe certificaterequest`.
 
-| Reason    | Message prefix                                                                                       | Meaning                                                                                           | Action                                                                                                        |
-| --------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `Issued`  | `Issued by <caId>, serial <serial>`                                                                  | The certificate was written to `status.certificate` and `status.ca`                               | None                                                                                                          |
-| `Denied`  | `The CertificateRequest was denied.`                                                                 | An approver denied it                                                                             | None                                                                                                          |
-| `Pending` | `Waiting for approval`                                                                               | Nothing approved it                                                                               | Approve it, or fix [approval](#approval)                                                                      |
-| `Pending` | `IssuerNotFound`                                                                                     | The issuer does not exist                                                                         | Create it. The request waits                                                                                  |
-| `Pending` | `IssuerNotReady`                                                                                     | The issuer is not `Ready`, or has not reconciled its latest generation                            | Read the issuer's reason in [CRDs](../reference/crds.md#hemligissuer-and-hemligclusterissuer-condition-ready) |
-| `Pending` | `ConsumerNotFound`                                                                                   | The issuer's consumer is gone                                                                     | Fix `consumerRef`                                                                                             |
-| `Pending` | `ConsumerNotReady`                                                                                   | The consumer is not Ready, or Hemlig rejected its identity (`identity_not_active`)                | Fix the consumer                                                                                              |
-| `Pending` | `ConsumerReferenceNotPermitted`                                                                      | The consumer no longer allows this namespace                                                      | Restore `allowCrossNamespaceReferences`                                                                       |
-| `Pending` | `ClusterIssuerNotPermitted`                                                                          | The consumer no longer sets `allowClusterIssuers`                                                 | Restore it                                                                                                    |
-| `Pending` | `ProviderNotPermitted`                                                                               | The namespace no longer matches the provider's selector                                           | Restore the namespace labels                                                                                  |
-| `Pending` | `InvalidResponse`                                                                                    | Hemlig returned an unexpected certificate response                                                | None. Retried; report it if it persists                                                                       |
-| `Pending` | `HemligUnavailable`                                                                                  | A network error, a gateway `429`, or a `5xx`                                                      | None. Retried                                                                                                 |
-| `Pending` | Hemlig code, for example `issuance_rate_limited (grant_hour)` or `ca_not_active`                     | A condition on the Hemlig side that can clear                                                     | Fix it in Hemlig, or wait                                                                                     |
-| `Failed`  | `NamespaceNotPermitted`                                                                              | The cluster issuer's `allowedNamespaces` excludes the namespace                                   | Label the namespace, or use another issuer                                                                    |
-| `Failed`  | `UnsupportedRequest`                                                                                 | `isCA`, an unsupported usage, an invalid duration, an invalid CSR, or an invalid `issuerRef.name` | Fix the Certificate                                                                                           |
-| `Failed`  | Hemlig code, for example `issuance_denied (name_not_permitted)`, `issuance_revoked` or `invalid_csr` | Hemlig refused permanently                                                                        | Change the Certificate or the grant. cert-manager then creates a new request                                  |
+| Reason    | Message prefix                                                                                       | Meaning                                                                                                                                                           | Action                                                                                                        |
+| --------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `Issued`  | `Issued by <caId>, serial <serial>`                                                                  | The certificate was written to `status.certificate` and `status.ca`                                                                                               | None                                                                                                          |
+| `Denied`  | `The CertificateRequest was denied.`                                                                 | An approver denied it                                                                                                                                             | None                                                                                                          |
+| `Pending` | `Waiting for approval`                                                                               | Nothing approved it                                                                                                                                               | Approve it, or fix [approval](#approval)                                                                      |
+| `Pending` | `IssuerNotFound`                                                                                     | The issuer does not exist                                                                                                                                         | Create it. The request waits                                                                                  |
+| `Pending` | `IssuerNotReady`                                                                                     | The issuer is not `Ready`, or has not reconciled its latest generation                                                                                            | Read the issuer's reason in [CRDs](../reference/crds.md#hemligissuer-and-hemligclusterissuer-condition-ready) |
+| `Pending` | `ConsumerNotFound`                                                                                   | The issuer's consumer is gone                                                                                                                                     | Fix `consumerRef`                                                                                             |
+| `Pending` | `ConsumerNotReady`                                                                                   | The consumer is not Ready (not in the controller's registry, or changed since it was published)                                                                   | Fix the consumer                                                                                              |
+| `Pending` | `identity_not_active: Hemlig rejected the consumer identity`                                         | Hemlig rejected the consumer's identity on the issue call. On the issuer this is `ConsumerNotReady`, so a request may show `IssuerNotReady: … (ConsumerNotReady)` | Fix the consumer's identity                                                                                   |
+| `Pending` | `ConsumerReferenceNotPermitted`                                                                      | The consumer no longer allows this namespace                                                                                                                      | Restore `allowCrossNamespaceReferences`                                                                       |
+| `Pending` | `ClusterIssuerNotPermitted`                                                                          | The consumer no longer sets `allowClusterIssuers`                                                                                                                 | Restore it                                                                                                    |
+| `Pending` | `ProviderNotPermitted`                                                                               | The namespace no longer matches the provider's selector                                                                                                           | Restore the namespace labels                                                                                  |
+| `Pending` | `InvalidResponse`                                                                                    | Hemlig returned an unexpected certificate response                                                                                                                | None. Retried; report it if it persists                                                                       |
+| `Pending` | `HemligUnavailable`                                                                                  | A network error, a gateway `429`, or a `5xx`                                                                                                                      | None. Retried                                                                                                 |
+| `Pending` | Hemlig code, for example `issuance_rate_limited (grant_hour)` or `ca_not_active`                     | A condition on the Hemlig side that can clear                                                                                                                     | Fix it in Hemlig, or wait                                                                                     |
+| `Pending` | `HemligError (<status> <code>)`                                                                      | Any other Hemlig response, for example `404 not_found` or `403 forbidden`. Retried with slow backoff                                                              | Check the Hemlig service and the grant                                                                        |
+| `Failed`  | `NamespaceNotPermitted`                                                                              | The cluster issuer's `allowedNamespaces` excludes the namespace                                                                                                   | Label the namespace, or use another issuer                                                                    |
+| `Failed`  | `UnsupportedRequest`                                                                                 | `isCA`, an unsupported usage, an invalid duration, an invalid CSR, or an invalid `issuerRef.name`                                                                 | Fix the Certificate                                                                                           |
+| `Failed`  | Hemlig code, for example `issuance_denied (name_not_permitted)`, `issuance_revoked` or `invalid_csr` | Hemlig refused permanently                                                                                                                                        | Change the Certificate or the grant. cert-manager then creates a new request                                  |
 
 A `Pending` request keeps its place and retries by itself. A `Failed` request is final; cert-manager creates a new one after its own backoff.
 
@@ -185,6 +203,8 @@ The controller reuses the idempotency key `hml-cr-<metadata.uid>` for every atte
 - Default approval approves every request that names a Hemlig issuer. The grant limits what is issued.
 - Mutually untrusted namespaces need separate consumers and grants. Hemlig cannot see namespaces, and a cluster issuer's grant is the union of everything its namespaces may ask for.
 - Pointing an issuer at another consumer means a new issuer, so every Certificate on it issues one extra certificate.
+- Changing a HemligIssuer's `spec.issuanceGrant` while a request is mid-retry makes that request's replay fail with `409 conflict`, because the grant name is part of the idempotency digest. cert-manager retries with a new request.
+- Tightening a HemligProvider's `allowedNamespaces` applies to issuance after the controller's next full reconcile pass.
 - Trust bundles are not part of this release.
 
 ## Upgrading

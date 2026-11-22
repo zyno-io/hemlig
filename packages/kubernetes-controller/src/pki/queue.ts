@@ -61,8 +61,18 @@ export class KeyedWorkQueue {
     if (options.resetBackoff === true) this.attempts.delete(key);
     switch (state) {
       case "queued":
-      case "parked":
         return;
+      case "parked": {
+        const group = this.parkedGroup.get(key);
+        if (
+          group !== undefined &&
+          (this.groupUsed.get(group) ?? 0) < this.options.groupConcurrency
+        ) {
+          this.unpark(key, group);
+          this.pump();
+        }
+        return;
+      }
       case "processing":
         this.dirty.add(key);
         if (options.resetBackoff === true) this.resetRequested.add(key);
@@ -172,19 +182,37 @@ export class KeyedWorkQueue {
     this.notifyIdle();
   }
 
+  private unpark(key: string, group: string): void {
+    const list = this.parked.get(group) ?? [];
+    const at = list.indexOf(key);
+    if (at !== -1) list.splice(at, 1);
+    if (list.length === 0) this.parked.delete(group);
+    this.parkedGroup.delete(key);
+    this.states.set(key, "queued");
+    this.fifo.push(key);
+  }
+
+  /**
+   * Moves up to the group's free capacity of parked keys to the FIFO. A woken
+   * key may finish without acquiring, so every release and every completion
+   * re-checks instead of waking exactly one key.
+   */
+  private wakeParked(group: string): void {
+    const list = this.parked.get(group);
+    if (list === undefined) return;
+    const free =
+      this.options.groupConcurrency - (this.groupUsed.get(group) ?? 0);
+    for (let i = 0; i < free && list.length > 0; i += 1) {
+      this.unpark(list[0] as string, group);
+    }
+  }
+
   private release(group: string): void {
     const used = (this.groupUsed.get(group) ?? 1) - 1;
     if (used <= 0) this.groupUsed.delete(group);
     else this.groupUsed.set(group, used);
-    const list = this.parked.get(group);
-    const next = list?.shift();
-    if (list !== undefined && list.length === 0) this.parked.delete(group);
-    if (next !== undefined) {
-      this.parkedGroup.delete(next);
-      this.states.set(next, "queued");
-      this.fifo.push(next);
-      this.pump();
-    }
+    this.wakeParked(group);
+    this.pump();
   }
 
   private async run(key: string): Promise<void> {
@@ -215,6 +243,7 @@ export class KeyedWorkQueue {
     for (const release of [...releases]) release();
     this.running -= 1;
     this.complete(key, outcome);
+    for (const group of [...this.parked.keys()]) this.wakeParked(group);
     this.pump();
   }
 

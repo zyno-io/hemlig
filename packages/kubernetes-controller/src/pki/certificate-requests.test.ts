@@ -614,3 +614,31 @@ test("logs never contain CSRs, certificates, tokens or server messages", async (
     assert.ok(!text.includes(forbidden), forbidden);
   }
 });
+
+test("an issuer turning Ready during a run still wakes the waiting request", async () => {
+  const r = setup({ issuer: { ready: false } });
+  r.scheduler.randomValue = 0;
+  const base = r.transport.handler;
+  r.transport.handler = (request) =>
+    request.method === "GET" ? errorResponse(503) : base(request);
+  await r.run(KEY);
+  assert.equal(r.message()?.split(" ")[0], "IssuerNotReady:");
+  // Isolate the wake-up: no issuer retry may heal the issuer on its own.
+  r.queue.forget(ISSUER_KEY);
+  r.transport.handler = base;
+  const readNamespace = r.core.readNamespace.bind(r.core);
+  let hooked = false;
+  r.core.readNamespace = async (input: { name: string }) => {
+    if (!hooked) {
+      hooked = true;
+      // The issuer reconciles to Ready between the CR's issuer read and its wait.
+      await r.issuers.reconcile(ISSUER_KEY, { tryAcquire: () => () => {} });
+    }
+    return readNamespace(input);
+  };
+  await r.scheduler.advance(15_000);
+  await r.queue.whenIdle();
+  assert.equal(hooked, true);
+  assert.equal(r.ready().reason, "Issued");
+  assert.equal(r.scheduler.pendingTimers, 0);
+});

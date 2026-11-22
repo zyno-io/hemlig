@@ -121,6 +121,21 @@ export class CertificateRequestReconciler {
   ) {}
 
   public async reconcile(key: string, context: WorkContext): Promise<Outcome> {
+    const state = { waited: false };
+    try {
+      return await this.process(key, context, state);
+    } finally {
+      // Keep the registration across the run on the paths that wait again, so
+      // an issuer turning Ready mid-run still wakes this request.
+      if (!state.waited) this.issuers.stopWaiting(key);
+    }
+  }
+
+  private async process(
+    key: string,
+    context: WorkContext,
+    state: { waited: boolean },
+  ): Promise<Outcome> {
     const [namespace, name] = key.slice("cr/".length).split("/") as [
       string,
       string,
@@ -142,7 +157,6 @@ export class CertificateRequestReconciler {
     }
     if (!isHemligRequest(cr) || isTerminal(cr)) return this.finished(key);
     this.pending.add(key);
-    this.issuers.stopWaiting(key);
 
     if (isTrue(cr, "Denied")) {
       return this.terminalWrite(
@@ -214,6 +228,7 @@ export class CertificateRequestReconciler {
       ) as AnyIssuer;
     } catch (error) {
       if (!isNotFound(error)) throw error;
+      state.waited = true;
       this.issuers.waitFor(waitKey, key);
       return this.settle(
         key,
@@ -243,6 +258,7 @@ export class CertificateRequestReconciler {
 
     const resolved = await resolveIssuerConsumer(this.deps, issuer);
     if (!resolved.ok) {
+      state.waited = true;
       this.issuers.waitFor(waitKey, key);
       this.issuers.requestRefresh(waitKey);
       return this.settle(
@@ -268,6 +284,7 @@ export class CertificateRequestReconciler {
         ready?.status === "True" || ready?.reason === undefined
           ? "Stale"
           : (safeText(ready.reason, 64) ?? "Stale");
+      state.waited = true;
       this.issuers.waitFor(waitKey, key);
       this.issuers.requestRefresh(waitKey);
       return this.settle(

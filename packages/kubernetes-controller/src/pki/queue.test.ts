@@ -323,3 +323,67 @@ test("stop clears timers and ignores later adds", async () => {
   await flush();
   assert.equal(runs, 1);
 });
+
+test("regression: parked keys that return without acquiring do not strand the rest", async () => {
+  const holders = new Map<string, () => void>();
+  const runs = new Map<string, number>();
+  const acquired: string[] = [];
+  const { queue } = make(async (key, ctx) => {
+    const n = (runs.get(key) ?? 0) + 1;
+    runs.set(key, n);
+    if (key.startsWith("H")) {
+      holders.set(key, ctx.tryAcquire("G")!);
+      return new Promise<Outcome>(() => {});
+    }
+    if (n === 1) {
+      assert.equal(ctx.tryAcquire("G"), undefined);
+      return { kind: "defer", group: "G" };
+    }
+    // K1 and K2 fail before acquiring (for example a Kubernetes GET throws).
+    if (key !== "K3") return { kind: "retry", policy: "fast" };
+    const release = ctx.tryAcquire("G");
+    assert.ok(release);
+    acquired.push(key);
+    release();
+    return done;
+  });
+  queue.add("H1");
+  queue.add("H2");
+  await flush();
+  for (const key of ["K1", "K2", "K3"]) queue.add(key);
+  await flush();
+  holders.get("H1")!();
+  holders.get("H2")!();
+  await flush();
+  assert.deepEqual(acquired, ["K3"]);
+  queue.stop();
+});
+
+test("add on a parked key unparks it when the group has capacity", async () => {
+  let release: (() => void) | undefined;
+  let lateRuns = 0;
+  const { queue } = make(
+    async (key, ctx) => {
+      if (key === "holder") {
+        release = ctx.tryAcquire("G");
+        return new Promise<Outcome>(() => {});
+      }
+      lateRuns += 1;
+      return ctx.tryAcquire("G") === undefined
+        ? { kind: "defer", group: "G" }
+        : done;
+    },
+    { groupConcurrency: 1 },
+  );
+  queue.add("holder");
+  await flush();
+  queue.add("late");
+  await flush();
+  assert.equal(lateRuns, 1);
+  queue.add("late");
+  await flush();
+  assert.equal(lateRuns, 1);
+  release!();
+  await flush();
+  assert.equal(lateRuns, 2);
+});
