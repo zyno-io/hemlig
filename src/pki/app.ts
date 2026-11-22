@@ -7,7 +7,10 @@ import { PkiRepository } from "../repositories/pki";
 import type { AuditingApplication } from "../handlers/request";
 import { AuditWriter } from "../services/audit";
 import { CursorService } from "../services/cursor";
+import { CaService } from "./ca-service";
+import { CrlService } from "./crl-service";
 import { caKeyUnavailable } from "./errors";
+import { ExternalCaService } from "./external-ca-service";
 import { WrappedCaSigner, type CaSigner } from "./signer";
 import type { CaRecord } from "./types";
 
@@ -27,40 +30,72 @@ export interface PkiApplication extends AuditingApplication {
   readonly signerFor: (
     ca: Pick<CaRecord, "caId" | "environment" | "key">,
   ) => CaSigner;
+  /** The clock every PKI service reads; tests inject their own. */
+  readonly now: () => Date;
+  readonly cas: CaService;
+  readonly crls: CrlService;
+  readonly externalCas: ExternalCaService;
 }
 
-export const createPkiApplication = (config: PkiConfig): PkiApplication => {
+export const createPkiApplication = (
+  config: PkiConfig,
+  options: { now?: () => Date } = {},
+): PkiApplication => {
   const clients = createPkiAwsClients(config);
   const objects = new ObjectStore(clients.s3);
+  const now = options.now ?? (() => new Date());
+  const repository = new DynamoRepository(clients.dynamo, config);
+  const pki = new PkiRepository(clients.dynamo, {
+    tableName: config.controlTableName,
+    directoryIndex: config.pkiDirectoryIndex,
+  });
+  const cursors = new CursorService(
+    new DynamoCursorStore(
+      clients.dynamo,
+      config.controlTableName,
+      "PKI_CURSOR#",
+    ),
+  );
+  const signerFor: PkiApplication["signerFor"] = ({
+    caId,
+    environment,
+    key,
+  }) => {
+    if (key.state !== "ACTIVE" || key.wrapped === undefined) {
+      throw caKeyUnavailable();
+    }
+    return new WrappedCaSigner({
+      kms: clients.kms,
+      kmsKeyId: config.payloadKmsKeyArn,
+      caId,
+      environment,
+      algorithm: key.algorithm,
+      wrapped: key.wrapped,
+    });
+  };
+  const deps = {
+    pki,
+    repository,
+    objects,
+    signerFor,
+    kms: clients.kms,
+    cursors,
+    config,
+    now,
+  };
+  const crls = new CrlService(deps);
   return {
     config,
     clients,
-    repository: new DynamoRepository(clients.dynamo, config),
-    pki: new PkiRepository(clients.dynamo, {
-      tableName: config.controlTableName,
-      directoryIndex: config.pkiDirectoryIndex,
-    }),
+    repository,
+    pki,
     objects,
     audit: new AuditWriter(objects, config),
-    cursors: new CursorService(
-      new DynamoCursorStore(
-        clients.dynamo,
-        config.controlTableName,
-        "PKI_CURSOR#",
-      ),
-    ),
-    signerFor: ({ caId, environment, key }) => {
-      if (key.state !== "ACTIVE" || key.wrapped === undefined) {
-        throw caKeyUnavailable();
-      }
-      return new WrappedCaSigner({
-        kms: clients.kms,
-        kmsKeyId: config.payloadKmsKeyArn,
-        caId,
-        environment,
-        algorithm: key.algorithm,
-        wrapped: key.wrapped,
-      });
-    },
+    cursors,
+    signerFor,
+    now,
+    cas: new CaService(deps, crls),
+    crls,
+    externalCas: new ExternalCaService(deps),
   };
 };

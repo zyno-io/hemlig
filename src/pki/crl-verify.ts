@@ -44,7 +44,8 @@ const base64Length = Math.ceil(maximumUploadedCrlBytes / 3) * 4;
 const maximumCrlTextLength =
   base64Length + Math.ceil(base64Length / 64) * 2 + 256;
 
-const decodeInput = (text: string): Buffer => {
+/** Decodes PEM or base64 DER text to DER, enforcing the size limits. Throws `400 crl_invalid`. */
+export const decodeCrlInput = (text: string): Buffer => {
   const trimmed = text.trim();
   if (trimmed.length > maximumCrlTextLength) {
     throw crlInvalid("too_large");
@@ -76,7 +77,7 @@ const decodeInput = (text: string): Buffer => {
 
 /** The checks of "Uploaded root CRLs". Throws `400 crl_invalid` with a `safeReason`. */
 export const verifyRootCrl = (input: VerifyRootCrlInput): VerifiedRootCrl => {
-  const der = decodeInput(input.crl);
+  const der = decodeCrlInput(input.crl);
   let crl: ParsedCrl;
   try {
     crl = parseCrl(der);

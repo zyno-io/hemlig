@@ -52,9 +52,13 @@ describe("createPkiApplication", () => {
     expect(Object.keys(app).sort()).toEqual(
       [
         "audit",
+        "cas",
         "clients",
         "config",
+        "crls",
         "cursors",
+        "externalCas",
+        "now",
         "objects",
         "pki",
         "repository",
