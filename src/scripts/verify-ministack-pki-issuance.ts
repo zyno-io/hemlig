@@ -932,7 +932,8 @@ export const verifyPkiIssuanceOnMiniStack = async (
     );
     const dirty = await crlOf(ca.caId);
     check(dirty.dirtySince !== undefined, "an unpublished revocation is dirty");
-    await pass(() => new Date());
+    // A maintenance pass would publish first and clear dirtySince, so recount directly.
+    await svc.capacity.recount(ca, dirty, new Date());
     const after = await crlOf(ca.caId);
     check(
       after.capacity?.countFrom === dirty.dirtySince,
@@ -1095,7 +1096,14 @@ export const verifyPkiIssuanceOnMiniStack = async (
       };
       mkdirSync(join(dir, "certs"));
       mkdirSync(join(dir, "private"));
-      writeFileSync(file("root-ca.cnf"), rootConfig(dir));
+      // A root subject of its own: the lifecycle suite's recipe root already claims the default one.
+      writeFileSync(
+        file("root-ca.cnf"),
+        rootConfig(dir).replace(
+          "CN = Example Offline Root CA 1",
+          `CN = Example PKI-4 Root CA ${suffix}`,
+        ),
+      );
       writeFileSync(file("index.txt"), "");
       writeFileSync(file("crlnumber"), "01\n");
       writeFileSync(
