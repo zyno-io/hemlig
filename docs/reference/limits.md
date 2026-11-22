@@ -70,7 +70,7 @@ Source paths are relative to the [repository root](https://github.com/zyno-io/he
 | Superseded revision retention | Extended to 91 days from the moment it is superseded | `src/services/secrets.ts:762` |
 | Retention worker schedule | Once a day | `cdk/stack.ts:764-767` |
 | Recovery worker schedule | Every 5 minutes | `cdk/stack.ts:759-762` |
-| Lambda timeout and memory | 29 seconds, 512 MB | `cdk/stack.ts:1169-1170` |
+| Lambda timeout and memory | 29 seconds, 512 MB. The PKI maintenance Lambda runs up to 5 minutes | `cdk/stack.ts:1169-1170` |
 | API Gateway access log retention | 1 year | `cdk/stack.ts:1312` |
 | Lambda function log retention | Not set, so CloudWatch keeps them indefinitely | `cdk/stack.ts` (no `logRetention` on any function) |
 | Application CMK rotation | Automatic key rotation enabled | `cdk/stack.ts:211` |
@@ -80,6 +80,26 @@ Source paths are relative to the [repository root](https://github.com/zyno-io/he
 ::: warning Compliance-mode data cannot be deleted
 Object Lock Compliance retention cannot be shortened by anyone. Revisions and audit events remain until their retention ends, and they block stack teardown.
 :::
+
+## PKI
+
+| Item | Value | Source |
+| --- | --- | --- |
+| CAs per environment | 50 not counting `FAILED` ones; the count reads the directory index, so it can lag | `src/pki/ca-service.ts` |
+| CA validity at activation | At least 30 days remaining | `src/pki/chain.ts` |
+| Name constraint subtrees per CA | 50 in total | `src/pki/ca-model.ts` |
+| CA request or certificate PEM | 32 KiB | `src/pki/ca-model.ts` |
+| Admin request body | 1 MiB | `src/handlers/pki-http.ts` |
+| Generated CRL validity | 1 hour to 30 days, default 7 days | `src/pki/ca-model.ts` |
+| Generated CRL refresh | A third of the validity before `nextUpdate`, at least 45 minutes, at most half of the validity. 1 hour gives 30 minutes, 7 days gives 2.3 days | `src/pki/crl-service.ts` |
+| `pki-generated-crl-stale` threshold | A third of the refresh margin, at most 2 days | `src/pki/crl-service.ts` |
+| Uploaded root CRL | At most 512 KiB; `nextUpdate` at most 400 days after `thisUpdate` | `src/pki/crl-verify.ts` |
+| Root CRL alarm | 30 days before `nextUpdate`; 24 hours with no CRL at all | `src/pki/maintenance.ts` |
+| CA policy defaults | Leaf lifetime 90 days (300 seconds to 397 days), capacity 8,000 (1 to 12,000), 2,000 issuances per hour (1 to 6,000) | `src/pki/ca-model.ts` |
+| Issuance budget | `capacity + 2 x issuancePerHour` at most 12,000 | `src/pki/ca-model.ts` |
+| CRL lease | 60 seconds | `src/repositories/pki.ts` |
+| Maintenance schedule | Every 15 minutes, with a 5-minute timeout; it stops starting CRL publications with less than 30 seconds left | `src/pki/maintenance.ts` |
+| Expired revocation entries | Get a 1-day TTL once a CRL issued after their certificate's `notAfter` has carried them | `src/pki/crl-service.ts` |
 
 ## Controller
 

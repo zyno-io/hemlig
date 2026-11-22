@@ -197,7 +197,7 @@ aws s3api get-public-access-block --bucket "$PKI_BUCKET"
 aws s3api get-bucket-versioning --bucket "$PKI_BUCKET"
 aws lambda invoke --function-name "$DEP-pki-maintenance" /tmp/pki-maintenance.json > /dev/null && cat /tmp/pki-maintenance.json
 aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
-curl -s https://admin.acc.example.com/v1/admin/pki/cas -H "authorization: Bearer $TOKEN"
+curl -s https://admin.acc.example.com/v1/admin/pki/consumers/x/issuance-grants -H "authorization: Bearer $TOKEN"
 curl -s --cert consumer.crt --key consumer.key https://api.acc.example.com/v1/pki/issuance-grants
 aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
 aws cloudwatch describe-alarms --alarm-name-prefix "$DEP-pki-" --query 'MetricAlarms[].[AlarmName,StateValue]' --output text
@@ -211,7 +211,7 @@ aws cloudwatch describe-alarms --alarm-name-prefix "$DEP-pki-" --query 'MetricAl
 | GSI | `ACTIVE`, `pkiDirectoryPk` and `pkiDirectorySk`, `ALL` | |
 | PKI bucket | All four public-access blocks `true`, versioning `Enabled` | |
 | Maintenance | `{"status":"idle"}` | `AccessDeniedException` on `Query`: the role's GSI allowlist is wrong. Read `/aws/lambda/hml-acc-pki-maintenance` |
-| Admin probe | `404`, message `This PKI route is not available.` | Another message: the request reached the admin Lambda, not `pki-admin` |
+| Admin probe | `404`, message `This PKI route is not available.` The probe path stays unrouted until issuance arrives, unlike `/v1/admin/pki/cas`, which answers `400` or `200` | Another message: the request reached the admin Lambda, not `pki-admin` |
 | Consumer probe | `404` with the same message | `403 identity_not_active` with an active certificate: `pki-issuer` cannot read `IDENTITY#` |
 | Audit count | Unchanged across both probes | A PKI 404 wrote evidence |
 | Alarms | Ten `hml-acc-pki-*` alarms, all `OK` or `INSUFFICIENT_DATA`. `pki-maintenance-missed` is `ALARM` until the first scheduled pass and must be `OK` within 15 minutes of deploy | The schedule or its invoke permission is missing |
@@ -253,6 +253,69 @@ DynamoDB authorizes each `TransactWriteItems` item as its own `PutItem`, `Update
 | `kmsd ROLE kms:Decrypt pki-ca` for `admin`, `consumer`, `bootstrap`, `identity-rotation` | `implicitDeny` |
 
 The simulator evaluates identity policies only. With `existingApplicationKeyArn`, also confirm that the key policy grants these roles nothing directly. Gate PKI-4 proves the `ConditionCheckItem` grants with a real commit.
+
+## Gate PKI-2: an offline root activates a Hemlig intermediate
+
+Run after PKI-1 on an offline-capable workstation with OpenSSL 3, the CLI logged in (`hemlig login`), and `HEMLIG_ENVIRONMENT=prod`. Use a throwaway root: this gate is not your production root ceremony.
+
+```sh
+# 1. Recipe root (docs/operations/pki-offline-root.md): root-ca.cnf, then
+mkdir -p acc-root/certs acc-root/private && cd acc-root && chmod 700 private
+touch index.txt && echo 01 > crlnumber && openssl rand -hex 16 > serial
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -pkeyopt ec_param_enc:named_curve -out private/root.key
+openssl req -config root-ca.cnf -new -x509 -key private/root.key -days 3650 -out root.pem
+# 2. Intermediate
+hemlig pki ca create --name acc-issuing-1 --key-algorithm ECDSA_P256 \
+  --subject 'CN=Hemlig Acceptance Issuing CA 1,O=Example Corp' --permit-dns acc.example.com --csr-out issuing.csr
+openssl req -in issuing.csr -noout -text -verify
+openssl ca -config root-ca.cnf -batch -in issuing.csr -out issuing.pem -notext
+openssl ca -config root-ca.cnf -gencrl -out root.crl.pem
+hemlig pki ca activate acc-issuing-1 --certificate issuing.pem --chain root.pem --root-crl root.crl.pem
+CA_ID=$(hemlig pki ca get acc-issuing-1 | jq -r .data.caId)
+EXT_ID=$(hemlig pki ca get acc-issuing-1 | jq -r .data.parent.id)
+# 3. Envelope and CloudTrail (allow up to 15 minutes for delivery)
+aws dynamodb get-item --table-name "$DEP-control" --key "{\"pk\":{\"S\":\"PKI_CA#$CA_ID\"},\"sk\":{\"S\":\"PROFILE\"}}" \
+  --projection-expression '#k.#s, #k.wrapped.#a' --expression-attribute-names '{"#k":"key","#s":"state","#a":"algorithm"}'
+for E in GenerateDataKey Decrypt; do aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=$E \
+  --max-results 50 --query 'Events[].CloudTrailEvent' --output text | tr '\t' '\n' \
+  | jq -c "select(.requestParameters.encryptionContext.caId==\"$CA_ID\") | {e:.eventName, ctx:.requestParameters.encryptionContext, role:.userIdentity.sessionContext.sessionIssuer.userName}"; done
+# 4. OpenSSL acceptance of the CA and its initial CRL
+hemlig pki ca crl get acc-issuing-1 --out issuing.crl
+openssl crl -inform DER -in issuing.crl -out issuing.crl.pem
+cat issuing.pem root.pem > chain-and-root.pem
+openssl verify -x509_strict -CAfile root.pem issuing.pem
+openssl verify -crl_check -CAfile root.pem -CRLfile root.crl.pem issuing.pem
+openssl crl -in issuing.crl.pem -CAfile chain-and-root.pem -noout -verify
+# 5. Root CRL uploads
+openssl ca -config root-ca.cnf -gencrl -out root2.crl.pem
+hemlig pki external-ca upload-crl --for-ca acc-issuing-1 --crl root2.crl.pem
+hemlig pki external-ca upload-crl --for-ca acc-issuing-1 --crl root2.crl.pem      # identical retry
+hemlig pki external-ca upload-crl --for-ca acc-issuing-1 --crl root.crl.pem       # lower number
+openssl crl -in root2.crl.pem -outform DER -out forged.der
+printf '\x00' | dd of=forged.der bs=1 seek=$(( $(wc -c < forged.der) - 1 )) conv=notrunc
+hemlig pki external-ca upload-crl "$EXT_ID" --crl forged.der
+(mkdir -p ../other-root/certs ../other-root/private && cd ../other-root && touch index.txt && echo 10 > crlnumber && openssl rand -hex 16 > serial \
+  && sed 's#^dir *=.*#dir = .#' ../acc-root/root-ca.cnf > root-ca.cnf \
+  && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -out private/root.key \
+  && openssl req -config root-ca.cnf -new -x509 -key private/root.key -days 30 -out root.pem \
+  && openssl ca -config root-ca.cnf -gencrl -out other.crl.pem)
+hemlig pki external-ca upload-crl "$EXT_ID" --crl ../other-root/other.crl.pem
+# 6. Maintenance
+aws lambda invoke --function-name "$DEP-pki-maintenance" /tmp/pki-maintenance.json > /dev/null && cat /tmp/pki-maintenance.json
+```
+
+| Check | Pass | Fail means |
+| --- | --- | --- |
+| Create | Receipt `status: PENDING_CERTIFICATE`; the CSR verifies and shows `CA:TRUE, pathlen:0`, critical `keyCertSign, cRLSign` and the permitted DNS subtree | Hemlig built the wrong CSR profile |
+| Activate | Receipt `status: ACTIVE`, `parent.type: external`, `rootCrl.state: CURRENT`, `crl.number: 1` | `chain_invalid` or `crl_invalid`: read `error.apiDetails.reason` |
+| Envelope | `key.state ACTIVE`, `wrapped.algorithm AES-256-GCM` | |
+| CloudTrail | One `GenerateDataKey` (create) and at least one `Decrypt` (activation) with context exactly `{service: hemlig, purpose: pki-ca, caId: $CA_ID, environment: prod}`, both from the `pki-admin` role | Another role, or a context without `caId` or `environment` |
+| OpenSSL | All three commands print `OK` or `verify OK` | |
+| Upload | First `changed: true`, `revokedCaIds: []`. Identical retry `changed: false` (exit 0). Lower number: exit 5, `apiCode crl_not_newer`. Forged: exit 2, `crl_invalid`, reason `bad_signature`. Other key with the same DN: exit 2, `crl_invalid`, reason `bad_signature` | A forged or rolled-back CRL was accepted |
+| Maintenance | `{"status":"ok",…,"failures":0}`. Within 15 minutes `hml-acc-pki-generated-crl-stale`, `-external-crl-stale` and `-external-crl-missing` show `OK` | `AccessDenied` on S3 or KMS: the role's grants are wrong |
+| Audit | Succeeded events for `pki.ca.create`, `pki.ca.activate`, three `pki.external-ca.upload-crl`, and `pki.crl.get`. Failed events with reason codes `crl_not_newer` and `bad_signature`. No object contains `-----BEGIN` | |
+
+Keep `acc-root` for PKI-4 to PKI-6.
 
 ## Teardown
 

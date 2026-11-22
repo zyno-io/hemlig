@@ -730,7 +730,7 @@ A crash before step 6 leaves an orphaned object and a skipped number, which RFC 
 - `pki-maintenance` every 15 minutes, for any CA that is:
   - dirty (`revision > published.revision`);
   - due for refresh (`now ≥ nextUpdate − margin`, where `margin = min(max(validity/3, 45 min), validity/2)`);
-  - due for a drop (`now > dropDueAt`), so expired revoked entries leave within about one pass;
+  - due for a drop (`now > dropDueAt`). The drop republish still carries the expired entry one last time, because the entry stays until a CRL issued after its `notAfter` has carried it; the entry leaves the CRL on the publication after that;
   - retired past `D` and not yet drained.
 
 Drained, `REVOKED` and key-disabled CAs never sign. With the 7-day default, refresh happens with about 2.3 days left.

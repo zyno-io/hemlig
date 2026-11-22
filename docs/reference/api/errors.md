@@ -37,6 +37,13 @@ Quote the `correlationId` when you report a problem. It finds the request's [aud
 | `identity_already_rotated` | 409 | The calling certificate already has an active successor | Use the successor |
 | `identity_rotation_conflict` | 409 | A concurrent rotation for the consumer committed first | Retry with the same CSR and `Idempotency-Key` |
 | `rotation_replay_inactive` | 409 | A replay names a certificate that is no longer active | Submit a new rotation request |
+| `chain_invalid` | 400 | A CA activation chain failed verification. `error.details.reason` names the check | Read the reason in [Admin: PKI](admin-pki.md#errors) and fix the certificate or chain |
+| `crl_invalid` | 400 | An uploaded or supplied root CRL failed verification. `error.details.reason` names the check | Read the reason in [Admin: PKI](admin-pki.md#errors) |
+| `crl_not_newer` | 409 | The uploaded root CRL is not newer than the stored one | Issue a newer CRL from the root |
+| `ca_not_active` | 409 | The CA is not in a state the operation needs, or its parent revoked it. `details.reason` says which | Read the CA's `status` first |
+| `ca_subject_in_use` | 409 | The CA subject DN is already claimed | Choose a new DN |
+| `ca_key_unavailable` | 409 | The CA key cannot be used to sign | Check the CA's `key.state` and KMS access |
+| `ca_issuance_budget_exceeded` | 409 | `capacity + 2 x issuancePerHour` is over 12,000 | Lower the capacity or the rate |
 | `precondition_failed` | 412 | `If-Match` is not the current control revision | Read the current revision, reconcile, then retry with its ETag. Never retry blindly. |
 | `sync_reset_required` | 410 | The sync token is no longer valid | Discard it and start a new snapshot |
 | `internal_error` | 500 | Unexpected failure; details withheld | Retry later; report the `correlationId` if it persists |
@@ -45,6 +52,8 @@ Quote the `correlationId` when you report a problem. It finds the request's [aud
 | `sync_backfill_incomplete` | 503 | A secret's current control revision was unavailable while the sync index was being backfilled | Re-run the backfill; see [Upgrades](../../operations/upgrades.md) |
 
 `internal_error` is the fallback for any error that is not one of the typed codes. The sync codes are raised by the sync service and backfill rather than the shared error helpers.
+
+PKI administration also uses `bad_request`, `forbidden` (reason `pki_role_required`), `not_found`, `conflict` and `service_unavailable` with a `details.reason`. The full list of reasons is in [Admin: PKI](admin-pki.md#errors).
 
 ## Errors outside the envelope
 

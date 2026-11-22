@@ -64,6 +64,19 @@ Items whose `pk` starts with `PKI_` belong to the PKI and are written only by th
 | `PKI_IDEMPOTENCY#ID` | `REQUEST#KEY` | Consumer replay record. TTL is `notAfter` plus 400 days |
 | `PKI_CURSOR#TOKEN` | `STATE` | Opaque pagination continuation |
 
+### PKI record details
+
+| Record | Fields | Notes |
+| --- | --- | --- |
+| CA `PROFILE` | `status`, `version`, `key` (state, wrapped envelope), `subject`, `subjectKey`, `parent`, `crlIssuers`, `policy`, `maxIssueLifetimeEverSeconds`, `activatedAt`, `retiredAt`, `drainedAt`, `keyDestroyedAt` | `version` is the ETag. `subjectDer` is base64 DER and `subjectKeyIdentifier` is lowercase hex |
+| CA `CRL` | `revision`, `lastNumber`, `dirtySince`, `lease` (owner, expiry), `published`, `sweptThrough` | `published` holds `number`, `objectKey`, `sha256`, `thisUpdate`, `nextUpdate`, `revision`, `entryCount` and `dropDueAt`. `sweptThrough` is the `thisUpdate` whose expired-entry sweep finished |
+| `REVOKED#SERIAL` | `serial`, `revokedAt`, `reason`, `invalidityDate`, `notAfter`, `ttl` | Written when a leaf is revoked. `ttl` is set one day after a CRL issued after `notAfter` has carried the entry |
+| External CA | `extId`, `certificatePem`, `fingerprint`, `spkiSha256`, `subjectDer`, `subjectAttributes`, `subjectKey`, `subjectKeyIdentifier`, `notAfter`, `createdAt`, `dependents`, `environments`, `version`, `crl` | `dependents` and `environments` are DynamoDB string sets. `crl` holds `numberHex` (40 hex digits), `thisUpdate`, `nextUpdate`, `sha256`, `objectKey`, `uploadedAt` and `uploadedBy` |
+| `PKI_SUBJECT#KEY` | `ownerType` (`ca` or `external`), `caId` or `extId`, `spkiSha256`, `claimedAt` | Claims are never released |
+| `PKI_CA_NAME#ENV#NAME` | `caId`, `environment`, `name`, `claimedAt` | Never released |
+
+CRL objects live in the PKI bucket: `crl/CA_ID/NUMBER-SHA16.crl` for a generated CRL and `crl/EXT_ID/NUMBER_HEX-SHA16.crl` for an uploaded root CRL, where `SHA16` is the first 16 hex digits of the DER SHA-256. Objects are immutable; the pointer in the record names the current one.
+
 ## Global secondary indexes
 
 | Index | Partition key | Sort key | Used for |
