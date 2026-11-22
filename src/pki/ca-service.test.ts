@@ -282,6 +282,35 @@ describe("CaService.create", () => {
     }
   });
 
+  it("replays instead of conflicting when the identical create committed after the first check", async () => {
+    const first = setup();
+    await first.service.create(actor, "idem-key-0001", body());
+    const created = first.pki.createCa.mock.calls[0]![0] as {
+      idempotency: { requestDigest: string };
+    };
+    const stored = {
+      operationType: "pki.ca.create",
+      requestDigest: created.idempotency.requestDigest,
+      status: "COMMITTED",
+      result: { caId: first.store.ca!.caId },
+    };
+    // The idempotency slot is empty at the start, then the winner commits: claims exist, the record now does too.
+    const racing = setup({
+      pki: { getCaNameClaim: jest.fn(async () => ({})) },
+      repository: {
+        getIdempotency: jest
+          .fn()
+          .mockResolvedValueOnce(undefined)
+          .mockResolvedValue(stored),
+      },
+    });
+    racing.store.ca = first.store.ca;
+    const result = await racing.service.create(actor, "idem-key-0001", body());
+    expect(result).toMatchObject({ status: 201 });
+    expect(result.body.caId).toBe(first.store.ca!.caId);
+    expect(racing.pki.createCa).not.toHaveBeenCalled();
+  });
+
   it("replays a stored request and rejects a different body under the same key", async () => {
     const first = setup();
     await first.service.create(actor, "idem-key-0001", body());
@@ -670,6 +699,23 @@ describe("CaService update, abandon, retire, destroy-key", () => {
     expect(kept.idempotency.requestDigest).not.toBe(
       cleared.idempotency.requestDigest,
     );
+  });
+
+  it("update digests differ for an omitted and a literal displayName", async () => {
+    const h = harness(active());
+    for (const [key, extra] of [
+      ["idem-key-0001", {}],
+      ["idem-key-0002", { displayName: "keep" }],
+    ] as const) {
+      await h.service.update(actor, key, "ca-test-one", "pkv-1", {
+        policy: { capacity: 50 },
+        ...extra,
+      });
+    }
+    const digests = h.pki.updateCaPolicy.mock.calls.map(
+      (call: any[]) => call[0].idempotency.requestDigest,
+    );
+    expect(digests[0]).not.toBe(digests[1]);
   });
 
   it("update refuses an over-budget policy and reports a lost race as 412", async () => {

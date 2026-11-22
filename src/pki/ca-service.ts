@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { preconditionFailed, serviceUnavailable } from "../domain/errors";
+import {
+  preconditionFailed,
+  serviceUnavailable,
+  type ApiError,
+} from "../domain/errors";
 import type { Actor } from "../domain/types";
 import type { HumanIdempotencyWrite, PkiRepository } from "../repositories/pki";
 import { sha256Hex, stableJson } from "../util/encoding";
@@ -86,6 +90,13 @@ export type CaDetailResponse = {
   readonly body: Record<string, unknown>;
   readonly etag: string;
 };
+
+/** Carries a replayed result out of the fail-fast checks. */
+class ReplayRequested extends Error {
+  public constructor(public readonly result: MutationResult) {
+    super("replay");
+  }
+}
 
 export class CaService {
   private readonly emit: typeof emitPkiMetrics;
@@ -344,14 +355,29 @@ export class CaService {
       throw caSubjectInUse("identity_root_reserved");
     }
     // Fail fast; the transaction's claims are authoritative.
-    if (
-      (await this.pki.getCaNameClaim(input.environment, input.name)) !==
-      undefined
-    ) {
-      throw pkiConflict("name_in_use");
-    }
-    if ((await this.pki.getSubjectClaim(subject.key)) !== undefined) {
-      throw caSubjectInUse("subject_claimed");
+    // An identical request that committed since the first check owns these claims: replay it, don't conflict.
+    const claimed = async (error: ApiError): Promise<never> => {
+      const winner = await this.prior(actor, key, "pki.ca.create", digest);
+      if (winner !== undefined) {
+        throw new ReplayRequested(await this.replayResult(winner, 201));
+      }
+      throw error;
+    };
+    try {
+      if (
+        (await this.pki.getCaNameClaim(input.environment, input.name)) !==
+        undefined
+      ) {
+        await claimed(pkiConflict("name_in_use"));
+      }
+      if ((await this.pki.getSubjectClaim(subject.key)) !== undefined) {
+        await claimed(caSubjectInUse("subject_claimed"));
+      }
+    } catch (error) {
+      if (error instanceof ReplayRequested) {
+        return error.result;
+      }
+      throw error;
     }
     // The GSI lags, so the limit is best effort.
     const existing = await this.pki.queryDirectory("PKI_CAS", {
@@ -760,7 +786,10 @@ export class CaService {
     const digest = requestDigest("pki.ca.update", {
       caId,
       ifMatch,
-      displayName: input.displayName === undefined ? "keep" : input.displayName,
+      // Omitted, null and every string hash differently: an absent field leaves the key out.
+      ...(input.displayName === undefined
+        ? {}
+        : { displayName: input.displayName }),
       policy: input.policy,
     });
     const stored = await this.prior(actor, key, "pki.ca.update", digest);

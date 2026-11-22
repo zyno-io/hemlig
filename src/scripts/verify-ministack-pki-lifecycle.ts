@@ -26,7 +26,14 @@ import { parseRawCsr } from "../pki/asn1/csr";
 import { EXT, extension, keyIdentifierValue } from "../pki/asn1/extensions";
 import { fromPem, toPem } from "../pki/asn1/pem";
 import { CaService } from "../pki/ca-service";
-import { CrlService, evaluateCrl, pkiObjectRead } from "../pki/crl-service";
+import {
+  buildSignedCrl,
+  crlObjectKey,
+  CrlService,
+  evaluateCrl,
+  issuerMaterialOf,
+  pkiObjectRead,
+} from "../pki/crl-service";
 import { ExternalCaService } from "../pki/external-ca-service";
 import { runMaintenancePass } from "../pki/maintenance";
 import type { PkiMetricName } from "../pki/metrics";
@@ -861,36 +868,103 @@ export const verifyPkiLifecycleOnMiniStack = async (
     const allocation = await pki.allocateCrlNumber(ca.caId, owner);
     check(allocation !== "lost", "the crashed generator allocates a number");
     const crashedNumber = allocation === "lost" ? 0 : allocation.number;
+    // The crashed generator signs and writes its object, then dies before the pointer commit.
+    const crashedThisUpdate = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const crashedCrl = await buildSignedCrl(
+      issuerMaterialOf(ca),
+      signerFor(ca),
+      {
+        number: crashedNumber,
+        thisUpdate: crashedThisUpdate,
+        nextUpdate: new Date(crashedThisUpdate.getTime() + days(7)),
+        entries: [],
+      },
+    );
+    const crashedKey = crlObjectKey(
+      ca.caId,
+      String(crashedNumber),
+      crashedCrl.sha256,
+    );
+    await objects.putImmutableOrGet(
+      bucket,
+      crashedKey,
+      crashedCrl.der,
+      "application/pkix-crl",
+    );
+    const beforeNext = await crlOf(ca.caId);
+    check(
+      beforeNext.lastNumber === crashedNumber &&
+        (beforeNext.published?.number ?? 0) < crashedNumber,
+      "the crashed generation must leave the pointer uncommitted",
+    );
     const next = await svc.crls.publish(ca, { trigger: "force" });
     check(
-      next.kind === "published" && next.pointer.number > crashedNumber,
-      "the next publication must use a higher number",
+      next.kind === "published" &&
+        next.pointer.number > crashedNumber &&
+        next.pointer.objectKey !== crashedKey,
+      "the next publication must commit a higher number with its own object",
+    );
+    const nextBytes = await pkiObjectRead(
+      objects,
+      bucket,
+      next.kind === "published" ? next.pointer.objectKey : "",
+    );
+    check(
+      sha256Hex(nextBytes) ===
+        (next.kind === "published" ? next.pointer.sha256 : ""),
+      "the next publication's object must match its pointer",
+    );
+    check(
+      sha256Hex(await pkiObjectRead(objects, bucket, crashedKey)) ===
+        crashedCrl.sha256,
+      "the orphaned object must stay untouched",
     );
     done("a crash after allocation only skips a CRL number");
 
-    // A crash after the commit is finished by maintenance.
-    const sweptEntry = `${randomBytes(6).toString("hex")}`;
-    await seedRevocation(ca.caId, sweptEntry, new Date(Date.now() - days(2)));
+    // A crash after the commit is finished by maintenance: a revocation seeded before expiry is carried by a CRL.
+    const sweptEntry = randomBytes(6).toString("hex");
+    const expiresAt = new Date(Date.now() + hours(1));
+    await seedRevocation(ca.caId, sweptEntry, expiresAt);
+    const crlHolds = async (): Promise<boolean> => {
+      const state = await crlOf(ca.caId);
+      const der = await pkiObjectRead(
+        objects,
+        bucket,
+        state.published?.objectKey ?? "",
+      );
+      return parseCrl(der).entries.some(
+        (entry) => entry.serialHex === sweptEntry,
+      );
+    };
+    await sleep(1100);
+    const carried = await svc.crls.publish(ca, { trigger: "force" });
+    check(
+      carried.kind === "published" && (await crlHolds()),
+      "the committed CRL must contain the revoked serial",
+    );
+    // Past the certificate's expiry the CRL still carries it one last time; the sweep then crashes.
+    const later = () => new Date(expiresAt.getTime() + hours(1));
     const crashing = build({
+      now: later,
       pki: hooked(pki, {
         expireCarriedRevocations: async () => {
           throw new Error("simulated crash");
         },
       }),
     });
-    // `thisUpdate` has one-second resolution: the sweep marker must differ from the previous publication's.
-    await sleep(1100);
     const crashed = await crashing.crls.publish(ca, { trigger: "force" });
     check(
-      crashed.kind === "published",
-      "the publication commits before the sweep",
+      crashed.kind === "published" && (await crlHolds()),
+      "the post-expiry CRL must carry the serial one last time before the sweep",
     );
     const unswept = await crlOf(ca.caId);
     check(
-      unswept.sweptThrough !== unswept.published?.thisUpdate,
+      unswept.sweptThrough !== unswept.published?.thisUpdate &&
+        (await rawGet(pkiKeys.revocation(ca.caId, sweptEntry)))?.ttl ===
+          undefined,
       "the sweep must be left unfinished",
     );
-    await pass(() => new Date());
+    await pass(later);
     const swept = await crlOf(ca.caId);
     const entry = await rawGet(pkiKeys.revocation(ca.caId, sweptEntry));
     check(

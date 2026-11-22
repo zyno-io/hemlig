@@ -612,11 +612,21 @@ async function readJson(
   }
 }
 
+// Every value-taking option of the strict parser below, so an option value is never mistaken for the group.
 const globalValueFlags = new Set([
   "--admin-url",
+  "--console-url",
   "--token-file",
   "--timeout-ms",
   "--environment",
+  "--secret-id",
+  "--secret-uid",
+  "--consumer-id",
+  "--fingerprint",
+  "--cursor",
+  "--input",
+  "--if-match",
+  "--idempotency-key",
 ]);
 
 /** Index of a `pki` first positional token, allowing global flags before it; -1 if absent. */
