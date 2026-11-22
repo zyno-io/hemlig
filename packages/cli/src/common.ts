@@ -309,7 +309,7 @@ export function classifyError(
         4,
         "not_found",
         pki
-          ? "CA, external CA or CRL was not found."
+          ? "CA, external CA, CRL, consumer, issuance grant or certificate was not found."
           : group === "consumer"
             ? "Consumer or API identity was not found."
             : "Secret or active payload was not found.",
@@ -318,14 +318,14 @@ export function classifyError(
         5,
         "conflict",
         pki
-          ? "The CA or operation state conflicts with this request; see apiCode and apiDetails. No retry was made."
+          ? "The CA, grant, certificate or operation state conflicts with this request; see apiCode and apiDetails. No retry was made."
           : "Operation key was already used, or the resource is busy. No retry was made.",
       ],
       412: [
         6,
         "precondition_failed",
         pki
-          ? "CA version changed. Read the current CA and decide on a new operation."
+          ? "CA or grant version changed. Read the current resource and decide on a new operation."
           : "Control revision changed. Read the current metadata and decide on a new operation.",
       ],
     };

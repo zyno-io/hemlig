@@ -431,7 +431,9 @@ export interface PkiCaDetail extends PkiCaSummary {
 
 export interface PkiCaCapacityView {
   readonly capacity: number;
+  readonly issuancePerHour: number;
   readonly count?: number;
+  readonly countFrom?: string;
   readonly countedAt?: string;
 }
 
@@ -505,8 +507,12 @@ export interface PkiGrantNameRules {
   readonly deny?: readonly string[];
 }
 
+export interface PkiGrantDnsRules extends PkiGrantNameRules {
+  readonly allowWildcardNames?: boolean;
+}
+
 export interface PkiGrantNames {
-  readonly dns?: PkiGrantNameRules;
+  readonly dns?: PkiGrantDnsRules;
   readonly ip?: PkiGrantNameRules;
   readonly uri?: PkiGrantNameRules;
   readonly commonName?: Readonly<Record<string, unknown>>;
@@ -766,10 +772,10 @@ export interface PkiConsumerIssuanceGrant {
   readonly quotas: PkiGrantQuotas;
   readonly ca: {
     readonly caId: string;
-    readonly name: string;
+    readonly name?: string;
     readonly fingerprint?: string;
     readonly notAfter?: string;
-    readonly status: PkiCaStatus;
+    readonly status: PkiCaStatus | "UNKNOWN";
   };
 }
 

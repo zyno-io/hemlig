@@ -761,12 +761,24 @@ async function readGrantFile(
 
 /** A PEM CSR is sent as text; DER is wrapped. A private key is never sent. */
 async function readCsrFile(path: string): Promise<string> {
-  const bytes = await readFileBytes(path, MAX_PEM_FILE_BYTES, "CSR");
-  if (!isPem(bytes)) return derToPem(bytes, "CERTIFICATE REQUEST");
-  const text = bytes.toString("utf8");
-  if (/PRIVATE KEY-----/.test(text))
+  let bytes = await readFileBytes(path, MAX_PEM_FILE_BYTES, "CSR");
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+    bytes = bytes.subarray(3);
+  // Scan the whole file: keys may follow "Bag Attributes" or other leading text.
+  if (/PRIVATE KEY-----/.test(bytes.toString("latin1")))
     usage("The --csr file contains a private key; supply a CSR.");
-  return text;
+  if (isPem(bytes)) {
+    const text = bytes.toString("utf8");
+    if (!/-----BEGIN (NEW )?CERTIFICATE REQUEST-----/.test(text))
+      usage("The --csr file is not a certificate request.");
+    return text;
+  }
+  // DER: SEQUENCE { SEQUENCE (certificationRequestInfo), ... }. A key starts with an INTEGER.
+  const lengthBytes =
+    bytes[1] !== undefined && bytes[1] >= 0x80 ? 1 + (bytes[1] & 0x7f) : 1;
+  if (bytes[0] !== 0x30 || bytes[1 + lengthBytes] !== 0x30)
+    usage("The --csr file is not a certificate request.");
+  return derToPem(bytes, "CERTIFICATE REQUEST");
 }
 
 function sansFrom(values: PkiValues): PkiAdminIssueCertificateRequest["sans"] {
@@ -788,9 +800,16 @@ function usagesFrom(values: PkiValues): string[] | undefined {
 }
 
 /** An ISO timestamp, or a duration counted forward from now. */
-function parseWhen(name: string, value: string, nowMs: number): string {
+function parseWhen(
+  name: string,
+  value: string,
+  nowMs: number,
+  direction: 1 | -1 = 1,
+): string {
   if (/^\d+[smhd]?$/.test(value))
-    return new Date(nowMs + parseDuration(name, value) * 1000).toISOString();
+    return new Date(
+      nowMs + direction * parseDuration(name, value) * 1000,
+    ).toISOString();
   const time = Date.parse(value);
   if (!/^\d{4}-\d{2}-\d{2}/.test(value) || Number.isNaN(time))
     return usage(`--${name} must be an ISO 8601 timestamp or a duration.`);
@@ -820,6 +839,7 @@ interface MigrateResult {
   name: string;
   uid?: string;
   outcome: "migrated" | "valid" | "invalid" | "skipped" | "failed";
+  reason?: string;
   errors?: unknown[];
   warnings?: unknown[];
 }
@@ -1186,7 +1206,9 @@ export async function runPkiCli(
           ...(reason === undefined ? {} : { reason }),
           ...(when === undefined
             ? {}
-            : { invalidityDate: parseWhen("invalidity-date", when, now()) }),
+            : {
+                invalidityDate: parseWhen("invalidity-date", when, now(), -1),
+              }),
         };
       }
     } else if (name === "cert issue") {
@@ -1455,6 +1477,12 @@ export async function runPkiCli(
             result.outcome = "skipped";
             continue;
           }
+          if (current.expired === true) {
+            // The server rejects a past expiresAt, so an expired grant cannot move.
+            result.outcome = "skipped";
+            result.reason = "expired";
+            continue;
+          }
           const body = grantPutBody(current, toId);
           try {
             if (dryRun) {
@@ -1512,9 +1540,8 @@ export async function runPkiCli(
           remainingListed: remaining.grants.length,
           remainingTruncated: remaining.more,
         });
-        return results.some(
-          (r) => r.outcome === "invalid" || r.outcome === "failed",
-        )
+        return more ||
+          results.some((r) => r.outcome === "invalid" || r.outcome === "failed")
           ? 5
           : 0;
       }
@@ -1575,17 +1602,30 @@ export async function runPkiCli(
           chain: issued.chainPem,
           ca: issued.caPem,
         };
-        placeholders.length = 0;
+        const outPaths: Record<string, string | undefined> = {
+          certificate: certOut.out,
+          chain: certOut["chain-out"],
+          ca: certOut["ca-out"],
+        };
+        const complete = new Set<string>();
         try {
-          for (const [key, handle] of handles)
+          for (const [key, handle] of handles) {
             await writeClaimed(handle, pems[key as keyof typeof pems]);
+            complete.add(key);
+          }
         } catch {
+          // Never leave a truncated or empty file behind.
+          for (const [key, path] of Object.entries(outPaths))
+            if (path !== undefined && !complete.has(key))
+              await unlink(path).catch(() => undefined);
+          placeholders.length = 0;
           throw new CliError(
             9,
             "output_io_error",
-            "The certificate was issued but an output file could not be written. Read it with `hemlig pki cert get`.",
+            `The certificate was issued (caId ${issued.caId}, serial ${issued.serial}) but an output file could not be written; incomplete files were removed. Rerun the same command with the same --idempotency-key and new output paths to replay it, or read it with \`hemlig pki cert get\`.`,
           );
         }
+        placeholders.length = 0;
         const { certificatePem, chainPem, caPem, ...rest } = issued;
         return receipt({
           ...rest,
@@ -1616,6 +1656,7 @@ export async function runPkiCli(
       case "consumer revoke-certificates": {
         mutationAttempted = true;
         let attempts = 0;
+        let revokedTotal = 0;
         let result;
         do {
           result = await client.revokeConsumerPkiCertificates(
@@ -1625,6 +1666,7 @@ export async function runPkiCli(
             idempotencyKey!,
           );
           attempts += 1;
+          revokedTotal += result.revoked ?? 0;
         } while (result.complete === false && attempts < MAX_REVOKE_ATTEMPTS);
         if (result.complete === false)
           throw new CliError(
@@ -1632,7 +1674,7 @@ export async function runPkiCli(
             "revoke_incomplete",
             `Revocation was still incomplete after ${MAX_REVOKE_ATTEMPTS} attempts; repeat the command with the same --idempotency-key.`,
           );
-        return receipt({ ...result, attempts });
+        return receipt({ ...result, revoked: revokedTotal, attempts });
       }
       case "external-ca list":
         return receipt(await client.listExternalCas(token, { cursor }));
