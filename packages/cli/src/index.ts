@@ -2,30 +2,37 @@ import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { parseArgs } from "node:util";
 import {
-  FetchTransport,
   HemligClient,
-  HemligError,
   type ControlRevision,
-  type HemligTransport,
   type SecretPayload,
 } from "@zyno-io/hemlig-client";
 import {
   DEFAULT_LOGIN_TIMEOUT_MS,
-  JWT_PATTERN,
-  LoginError,
   defaultConfigDir,
-  jwtExpiry,
   loginViaConsole,
   openInBrowser,
-  parseHttpsOrigin,
-  readCachedLogin,
   removeCachedToken,
   writeCachedLogin,
-  type CachedLogin,
 } from "./login";
 import {
+  CliError,
+  adminOrigin,
+  createTransport,
+  httpsOrigin,
+  isObject,
+  loadCachedLogin,
+  parseTimeoutMs,
+  readText,
+  reportFailure,
+  resolveAdminOrigin,
+  resolveAdminToken,
+  resolveIdempotencyKey,
+  usage,
+  type CliDependencies,
+} from "./common";
+import { pkiHelp, runPkiCli } from "./pki";
+import {
   ConsumerInputError,
-  ConsumerProtocolError,
   consumerCommands,
   resolveFingerprint,
   validConsumerId,
@@ -45,7 +52,7 @@ type Command = (typeof commands)[number];
 
 const help = {
   usage:
-    "hemlig secret <command> [options] | hemlig consumer <list|get|identities|revoke-identity> [options] | hemlig login [--console-url <url>] [--no-browser] | hemlig logout | hemlig idempotency-key",
+    "hemlig secret <command> [options] | hemlig pki <ca|external-ca> <command> [options] | hemlig consumer <list|get|identities|revoke-identity> [options] | hemlig login [--console-url <url>] [--no-browser] | hemlig logout | hemlig idempotency-key",
   commands,
   consumerCommands: {
     list: "List consumers in --environment. Optional --cursor from the previous page's nextCursor.",
@@ -55,6 +62,7 @@ const help = {
     "revoke-identity":
       "Revoke one API identity. Needs --consumer-id and --fingerprint; mutation with an idempotency key.",
   },
+  pki: pkiHelp,
   topLevelCommands: {
     login:
       "Authorize via the web console's SSO session and cache a short-lived admin token. Opens a browser; never prompts.",
@@ -103,40 +111,7 @@ const help = {
   },
 };
 
-export interface CliDependencies {
-  readonly env?: NodeJS.ProcessEnv;
-  readonly stdin?: AsyncIterable<string | Uint8Array> & {
-    readonly isTTY?: boolean;
-  };
-  readonly stdout?: (text: string) => void | Promise<void>;
-  readonly stderr?: (text: string) => void | Promise<void>;
-  /** Transport injection is for local tests; the executable always uses HTTPS fetch. */
-  readonly transport?: HemligTransport;
-  /** Browser launcher for `hemlig login`; defaults to open / xdg-open / cmd start. */
-  readonly openBrowser?: (url: string) => void | Promise<void>;
-  /** Directory holding the cached login token; defaults to the XDG/APPDATA hemlig directory. */
-  readonly configDir?: string;
-  /** Clock in epoch milliseconds, for token expiry checks. */
-  readonly now?: () => number;
-  /** Fetch used to read the console's /config.json during login; defaults to global fetch. */
-  readonly fetch?: typeof fetch;
-  /** Login wait limit; defaults to five minutes. */
-  readonly loginTimeoutMs?: number;
-}
-
-class CliError extends Error {
-  constructor(
-    readonly exitCode: number,
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-function usage(message: string): never {
-  throw new CliError(2, "invalid_input", message);
-}
+export type { CliDependencies };
 
 /** Runs one operation. Secret material is emitted only by the explicit payload-read command. */
 export async function runCli(
@@ -151,6 +126,12 @@ export async function runCli(
     dependencies.stderr ?? ((text: string) => process.stderr.write(text));
   const now = dependencies.now ?? Date.now;
   const configDir = dependencies.configDir ?? defaultConfigDir(env);
+  const pkiAt = pkiTokenIndex(args);
+  if (pkiAt >= 0)
+    return runPkiCli(
+      [...args.slice(0, pkiAt), ...args.slice(pkiAt + 1)],
+      dependencies,
+    );
   let idempotencyKey: string | undefined;
   let ifMatch: string | undefined;
   let mutationAttempted = false;
@@ -285,29 +266,8 @@ export async function runCli(
         usage("An option is not supported by this command.");
     }
     const values = parsed.values;
-    // The cached login is only a candidate when no explicit token source exists.
-    const explicitToken =
-      values["token-file"] !== undefined ||
-      env.HEMLIG_ADMIN_TOKEN_FILE !== undefined ||
-      env.HEMLIG_ADMIN_TOKEN !== undefined;
-    let cachedLogin: CachedLogin | undefined;
-    let cacheError: unknown;
-    if (!explicitToken) {
-      try {
-        cachedLogin = await readCachedLogin(configDir);
-      } catch (error) {
-        cacheError =
-          error instanceof LoginError
-            ? error
-            : new CliError(9, "input_io_error", "Cannot read cached login.");
-      }
-    }
-    // The cache is the token source here, so an unusable one is reported first
-    // (exit 3), before a missing admin URL can turn it into a usage error.
-    if (cacheError !== undefined) throw cacheError;
-    const origin = adminOrigin(
-      values["admin-url"] ?? env.HEMLIG_ADMIN_URL ?? cachedLogin?.adminOrigin,
-    );
+    const cachedLogin = await loadCachedLogin(values, env, configDir);
+    const origin = resolveAdminOrigin(values, env, cachedLogin);
     const requestedEnvironment = values.environment ?? env.HEMLIG_ENVIRONMENT;
     const needsEnvironment = !isConsumer || command === "list";
     if (
@@ -348,11 +308,7 @@ export async function runCli(
     ) {
       usage("Supply a valid --secret-id.");
     }
-    const timeoutText = values["timeout-ms"] ?? "30000";
-    const timeoutMs = Number(timeoutText);
-    if (!/^\d+$/.test(timeoutText) || timeoutMs < 1 || timeoutMs > 300000) {
-      usage("--timeout-ms must be an integer from 1 to 300000.");
-    }
+    const timeoutMs = parseTimeoutMs(values["timeout-ms"]);
     if (needsMatch) {
       if (!values["if-match"])
         usage(
@@ -376,64 +332,17 @@ export async function runCli(
     } else if (command === "write-payload") {
       payload = validatePayload(input);
     }
-    const tokenFile = values["token-file"] ?? env.HEMLIG_ADMIN_TOKEN_FILE;
-    let tokenText =
-      tokenFile === undefined
-        ? env.HEMLIG_ADMIN_TOKEN
-        : await readText(
-            createReadStream(tokenFile),
-            16384,
-            "Cannot read administrator token file.",
-          );
-    let cached = false;
-    if (tokenText === undefined) {
-      if (cachedLogin !== undefined) {
-        if (origin.origin !== cachedLogin.adminOrigin) {
-          throw new CliError(
-            3,
-            "login_mismatch",
-            `Cached login is for ${cachedLogin.adminOrigin}; run \`hemlig login\` for this API.`,
-          );
-        }
-        tokenText = cachedLogin.token;
-        cached = true;
-      }
-    }
-    const token = tokenText?.trim();
-    // Syntax screening is not token verification: API Gateway validates issuer, audience, scope and expiry.
-    if (!token || !JWT_PATTERN.test(token)) {
-      usage(
-        "Supply an OIDC bearer JWT via --token-file, HEMLIG_ADMIN_TOKEN_FILE, HEMLIG_ADMIN_TOKEN, or `hemlig login`.",
-      );
-    }
-    if (cached) {
-      // Decoded without verification, only to fail fast with a useful message.
-      const exp = jwtExpiry(token);
-      if (exp !== undefined && exp * 1000 <= now()) {
-        throw new CliError(
-          3,
-          "login_expired",
-          "Login expired; run `hemlig login`.",
-        );
-      }
-    }
+    const token = await resolveAdminToken(
+      values,
+      env,
+      cachedLogin,
+      origin,
+      now,
+    );
     if (mutation) {
-      const key = values["idempotency-key"] ?? randomUUID();
-      if (!/^[\x21-\x7e]{8,128}$/.test(key))
-        usage(
-          "--idempotency-key must be 8–128 printable, non-space ASCII characters.",
-        );
-      idempotencyKey = key;
+      idempotencyKey = resolveIdempotencyKey(values["idempotency-key"]);
     }
-    const transport =
-      dependencies.transport ??
-      new FetchTransport((url, init) => {
-        return globalThis.fetch(url, {
-          ...init,
-          redirect: "error",
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-      });
+    const transport = createTransport(dependencies, timeoutMs);
     const client = new HemligClient(origin, transport);
     if (needsMatch && values["if-match"] === "current") {
       const current = await client.getAdminSecret(
@@ -561,60 +470,12 @@ export async function runCli(
     );
     return 0;
   } catch (error) {
-    const failure = classifyError(error, group);
-    try {
-      await stderr(
-        `${JSON.stringify({
-          error: {
-            ...failure,
-            ...(idempotencyKey === undefined
-              ? {}
-              : {
-                  outcome: !mutationAttempted
-                    ? "not_sent"
-                    : failure.exitCode >= 2 && failure.exitCode <= 6
-                      ? "rejected"
-                      : "unknown",
-                }),
-          },
-          idempotencyKey,
-          ifMatch,
-        })}\n`,
-      );
-    } catch {
-      // A closed stderr cannot carry an envelope, but must not produce an unhandled exception.
-      return 9;
-    }
-    return failure.exitCode;
-  }
-}
-
-function adminOrigin(value: string | undefined): URL {
-  return httpsOrigin(
-    value,
-    "Supply --admin-url or HEMLIG_ADMIN_URL; no production endpoint is assumed.",
-    "Administrator URL",
-  );
-}
-
-function httpsOrigin(
-  value: string | undefined,
-  missing: string,
-  label: string,
-  strictHost = false,
-): URL {
-  if (!value) usage(missing);
-  try {
-    new URL(value);
-  } catch {
-    return usage(`Invalid ${label.toLowerCase().replace(" url", "")} origin.`);
-  }
-  const url = parseHttpsOrigin(value, strictHost);
-  if (url === undefined)
-    return usage(
-      `${label} must be an HTTPS origin (HTTP is allowed only on loopback)${strictHost ? ", with a plain hostname" : ""}.`,
+    return reportFailure(
+      error,
+      { group, idempotencyKey, ifMatch, mutationAttempted },
+      stderr,
     );
-  return url;
+  }
 }
 
 function controlVersion(value: string): string {
@@ -650,10 +511,6 @@ function responseVersion(value: unknown): string {
       "Administrator API returned an invalid revision response.",
     );
   }
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function validateControlInput(
@@ -755,115 +612,29 @@ async function readJson(
   }
 }
 
-async function readText(
-  source: AsyncIterable<string | Uint8Array>,
-  limit: number,
-  message: string,
-): Promise<string> {
-  const chunks: Buffer[] = [];
-  let length = 0;
-  try {
-    for await (const chunk of source) {
-      const bytes = Buffer.from(chunk);
-      length += bytes.length;
-      if (length > limit) usage("Input exceeds the supported byte limit.");
-      chunks.push(bytes);
-    }
-  } catch (error) {
-    if (error instanceof CliError) throw error;
-    throw new CliError(9, "input_io_error", message);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
+// Every value-taking option of the strict parser below, so an option value is never mistaken for the group.
+const globalValueFlags = new Set([
+  "--admin-url",
+  "--console-url",
+  "--token-file",
+  "--timeout-ms",
+  "--environment",
+  "--secret-id",
+  "--secret-uid",
+  "--consumer-id",
+  "--fingerprint",
+  "--cursor",
+  "--input",
+  "--if-match",
+  "--idempotency-key",
+]);
 
-function classifyError(
-  error: unknown,
-  group: string | undefined,
-): {
-  exitCode: number;
-  code: string;
-  message: string;
-  status?: number;
-} {
-  if (error instanceof LoginError)
-    return {
-      exitCode:
-        error.code === "login_timeout"
-          ? 8
-          : error.code === "login_invalid"
-            ? 3
-            : error.code === "config_dir_unsafe"
-              ? 9
-              : error.code === "config_fetch_failed"
-                ? 8
-                : 7,
-      code: error.code,
-      message: error.message,
-    };
-  if (error instanceof ConsumerProtocolError)
-    return { exitCode: 7, code: "invalid_response", message: error.message };
-  if (error instanceof CliError)
-    return {
-      exitCode: error.exitCode,
-      code: error.code,
-      message: error.message,
-    };
-  if (
-    isObject(error) &&
-    ["EPIPE", "EBADF", "EIO", "ENOSPC"].includes(String(error.code))
-  ) {
-    return {
-      exitCode: 9,
-      code: "output_io_error",
-      message: "Cannot write CLI output.",
-    };
+/** Index of a `pki` first positional token, allowing global flags before it; -1 if absent. */
+function pkiTokenIndex(args: readonly string[]): number {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (!arg.startsWith("-")) return arg === "pki" ? index : -1;
+    if (globalValueFlags.has(arg)) index += 1;
   }
-  if (error instanceof HemligError) {
-    // Never echo a remote error message: some API validation messages contain payload entry names.
-    const failures: Record<number, [number, string, string]> = {
-      400: [2, "bad_request", "Administrator API rejected the request."],
-      401: [3, "unauthorized", "Administrator authentication failed."],
-      403: [3, "forbidden", "Administrator authorization failed."],
-      404: [
-        4,
-        "not_found",
-        group === "consumer"
-          ? "Consumer or API identity was not found."
-          : "Secret or active payload was not found.",
-      ],
-      409: [
-        5,
-        "conflict",
-        "Operation key was already used, or the resource is busy. No retry was made.",
-      ],
-      412: [
-        6,
-        "precondition_failed",
-        "Control revision changed. Read the current metadata and decide on a new operation.",
-      ],
-    };
-    const [exitCode, code, message] = failures[error.status] ?? [
-      7,
-      "service_error",
-      "Administrator API failed. A mutation may already have completed; no retry was made.",
-    ];
-    return { exitCode, code, message, status: error.status };
-  }
-  if (
-    error instanceof TypeError ||
-    (error instanceof Error &&
-      ["AbortError", "TimeoutError"].includes(error.name))
-  ) {
-    return {
-      exitCode: 8,
-      code: "transport_error",
-      message:
-        "Network or timeout failure. A mutation may already have completed; no retry was made.",
-    };
-  }
-  return {
-    exitCode: 7,
-    code: "internal_error",
-    message: "CLI failed. No automatic retry was made.",
-  };
+  return -1;
 }

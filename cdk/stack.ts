@@ -496,6 +496,8 @@ export class HemligStack extends Stack {
       `${prefix}-pki-maintenance`,
       "src/handlers/pki-maintenance.ts",
       pkiEnvironment,
+      // A full pass publishes CRLs through KMS and S3; the pass keeps its own time budget below this.
+      { timeout: Duration.minutes(5) },
     );
 
     table.grantReadWriteData(adminFunction);
@@ -823,8 +825,9 @@ export class HemligStack extends Stack {
                 "content-type",
                 "idempotency-key",
                 "if-match",
+                "if-none-match",
               ],
-              exposeHeaders: ["etag"],
+              exposeHeaders: ["etag", "retry-after"],
               allowCredentials: false,
               maxAge: Duration.minutes(10),
             },
@@ -1484,6 +1487,7 @@ export class HemligStack extends Stack {
     functionName: string,
     entry: string,
     environment: Record<string, string>,
+    options: { timeout?: Duration } = {},
   ): NodejsFunction {
     const sourceEntry = path.resolve(__dirname, "..", entry);
     const packagedEntry = path.resolve(__dirname, "..", "..", entry);
@@ -1498,7 +1502,7 @@ export class HemligStack extends Stack {
       runtime: lambda.Runtime.NODEJS_24_X,
       handler: "handler",
       memorySize: 512,
-      timeout: Duration.seconds(29),
+      timeout: options.timeout ?? Duration.seconds(29),
       tracing: this.tracing,
       environment,
       bundling: {

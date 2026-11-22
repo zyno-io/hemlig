@@ -157,6 +157,44 @@ hemlig consumer revoke-identity --consumer-id payments-prod --fingerprint 41ab9c
 
 The receipt holds the identity with status `REVOKED`. Revoke only after the replacement is in place; see [Identity and trust](identity-and-trust.md#revocation).
 
+## PKI
+
+`hemlig pki` manages external intermediate CAs and their CRLs. It uses the same administrator token, endpoint and receipt format as the other commands. Every command takes `--admin-url`, `--token-file` and `--timeout-ms`. Roles and CA states are in the [PKI guide](pki.md).
+
+| Command                                         | Options                                                                           | Client method                      |
+| ----------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- |
+| `pki ca list`                                   | `--environment`, optional `--cursor`                                              | `listPkiCas`                       |
+| `pki ca get <ca>`                               | `--environment` when `<ca>` is a name                                             | `getPkiCa`                         |
+| `pki ca create`                                 | See below                                                                         | `createPkiCa`                      |
+| `pki ca activate <ca>`                          | `--certificate`, `--chain`, optional `--root-crl`, `--accept-broader-constraints` | `activatePkiCa`                    |
+| `pki ca update <ca>`                            | `--if-match ETAG\|current`, policy flags, `--display-name`                        | `getPkiCa`, `updatePkiCa`          |
+| `pki ca retire <ca>`, `pki ca destroy-key <ca>` | optional `--idempotency-key`                                                      | `retirePkiCa`, `destroyPkiCaKey`   |
+| `pki ca delete <ca>`                            | `--if-match ETAG\|current`                                                        | `deletePkiCa`                      |
+| `pki ca crl publish <ca>`                       | optional `--idempotency-key`                                                      | `publishPkiCrl`                    |
+| `pki ca crl get <ca\|ext-id>`                   | `--out FILE`, optional `--format der\|pem`, `--if-none-match`                     | `getAdminCrl`                      |
+| `pki external-ca list`, `get <ext-id>`          | optional `--cursor` (list)                                                        | `listExternalCas`, `getExternalCa` |
+| `pki external-ca upload-crl`                    | `<ext-id>` or `--for-ca <ca>`, and `--crl FILE`                                   | `uploadExternalCaCrl`              |
+
+`<ca>` is a `ca-<uuid>` ID, used as given, or a CA name. A name needs `--environment` or `HEMLIG_ENVIRONMENT` and is matched exactly against the environment's CAs (up to 10 pages). No match exits 4. `--for-ca` resolves the CA and uses its `parent` external CA.
+
+`pki ca create` options:
+
+- `--environment`, `--name`, `--key-algorithm` (`ECDSA_P256`, `ECDSA_P384`, `RSA_3072`, `RSA_4096`, `ED25519`) and `--subject 'CN=Issuing CA 1,O=Example'`. The subject takes `C`, `ST`, `L`, `O`, `OU` and `CN`; `CN` is required and a key may appear once.
+- Repeatable constraint flags: `--permit-dns`, `--exclude-dns`, `--permit-ip`, `--exclude-ip`, `--permit-uri`, `--exclude-uri`, and `--eku serverAuth|clientAuth`.
+- Policy flags: `--max-leaf-lifetime 90d`, repeatable `--leaf-key-algorithm`, `--capacity`, `--issuance-per-hour`, `--crl-validity 7d`, and `--display-name`. A duration is an integer of seconds, or an integer with an `s`, `m`, `h` or `d` suffix. The server enforces the ranges.
+- `--csr-out FILE` writes the CSR to the file and keeps it out of the receipt. The command exits 9 without creating the CA if the file already exists. Without the flag, the CSR is in `data.csrPem`.
+- `--rollover-from <ca>` copies the old CA's environment, key algorithm, constraints, policy and CRL validity, and increments the trailing integer of the name and the CN. If either has none, supply `--name` or `--subject`. Explicit flags override the copied values. See the [CA rollover runbook](../operations/pki-ca-rollover.md).
+
+An Ed25519 key writes a `warning:` line to stderr, and the `warnings` array is in the receipt.
+
+`pki ca update` fetches the CA, overlays the flags on its policy and sends the full policy with the matched version. `--if-match current` uses the version just fetched.
+
+Certificates and chains may be PEM or DER. A file whose text starts with `-----BEGIN` is sent as PEM. A DER file is wrapped as a `CERTIFICATE` PEM. A CRL (`--root-crl`, `--crl`) is sent as PEM, or as base64 DER.
+
+`pki ca crl get` writes the exact CRL bytes to `--out` (PEM uses the `X509 CRL` label) and overwrites an existing file. The receipt has `data.id`, `bytes`, `sha256`, `etag`, `path` and `notModified`; the CRL never goes to stdout. With `--if-none-match` and an unchanged CRL, the file is not written and `notModified` is `true`.
+
+A PKI failure's `error` object also carries `apiCode` and `apiDetails` (for example `{"reason": "ca_not_active"}`), the API's code and machine-readable reason. The message is never copied from the API.
+
 ## ETags and idempotency
 
 Every update, payload write and archive needs `--if-match`. Pass the `etag` field of the last receipt, or a quoted strong ETag. Weak ETags and `*` are rejected.
@@ -179,7 +217,7 @@ After a lost response, read the secret to see what happened. Do not mint a new k
 
 ## Output
 
-Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr. There are no banners, prompts or tables. `--help` also prints JSON.
+Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr, and `hemlig pki ca create`, which prints a `warning:` line for an Ed25519 key. There are no banners, prompts or tables. `--help` also prints JSON.
 
 | Field            | Meaning                                                     |
 | ---------------- | ----------------------------------------------------------- |

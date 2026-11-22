@@ -91,6 +91,28 @@ export class ObjectStore {
     return JSON.parse(Buffer.from(contents).toString("utf8")) as T;
   }
 
+  /** Reads an object's bytes, verifying the S3 SHA-256 checksum when S3 returns one. */
+  public async getBytes(bucket: string, key: string): Promise<Buffer> {
+    const response = await this.s3.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        ChecksumMode: "ENABLED",
+      }),
+    );
+    if (response.Body === undefined) {
+      throw serviceUnavailable("S3 returned an empty object body.");
+    }
+    const bytes = Buffer.from(await response.Body.transformToByteArray());
+    if (
+      response.ChecksumSHA256 !== undefined &&
+      response.ChecksumSHA256 !== sha256Base64(bytes)
+    ) {
+      throw serviceUnavailable("S3 object checksum verification failed.");
+    }
+    return bytes;
+  }
+
   /**
    * Lists only object keys beneath an already-authorized prefix. Callers that
    * need content must still load every returned object through getJson(), so

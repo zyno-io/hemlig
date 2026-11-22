@@ -133,6 +133,10 @@ export default withMermaid(
                 text: "Connect a workload without Kubernetes",
                 link: "/guide/direct-consumers",
               },
+              {
+                text: "PKI: certificate authorities and CRLs",
+                link: "/guide/pki",
+              },
             ],
           },
           {
@@ -172,6 +176,14 @@ export default withMermaid(
               {
                 text: "Roll out controller upgrades with Flux",
                 link: "/operations/flux-rollout",
+              },
+              {
+                text: "PKI: offline root recipe",
+                link: "/operations/pki-offline-root",
+              },
+              {
+                text: "PKI: roll over a CA",
+                link: "/operations/pki-ca-rollover",
               },
             ],
           },
@@ -220,6 +232,10 @@ export default withMermaid(
                   {
                     text: "Admin: consumers, issuer and agent grants",
                     link: "/reference/api/admin-consumers",
+                  },
+                  {
+                    text: "Admin: PKI",
+                    link: "/reference/api/admin-pki",
                   },
                   {
                     text: "Delivery and agent routes",

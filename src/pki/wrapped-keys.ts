@@ -182,6 +182,14 @@ export const unwrapCaKey = async (
     if (error instanceof Error && undecryptable.has(error.name)) {
       throw keyUnavailable();
     }
+    if (error instanceof Error && error.name === "AccessDeniedException") {
+      throw new ApiError(
+        503,
+        "service_unavailable",
+        "KMS could not decrypt the CA key.",
+        "kms_access_denied",
+      );
+    }
     throw serviceUnavailable("KMS could not decrypt the CA key.");
   }
   if (plaintext === undefined) {

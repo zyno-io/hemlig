@@ -832,6 +832,14 @@ test("consumer list sends the environment and cursor; get and identities need no
   assert.equal(get.requests[0]!.url.search, "");
   assert.equal(JSON.parse(get.stdout).idempotencyKey, undefined);
 
+  // An option value that happens to be `pki` is a value, never the command group.
+  const named = await execute(["--consumer-id", "pki", "consumer", "get"], {
+    env: consumerEnv,
+    body: { consumerId: "pki" },
+  });
+  assert.equal(named.exitCode, 0);
+  assert.equal(named.requests[0]!.url.pathname, "/v1/admin/consumers/pki");
+
   const identities = await execute(
     ["consumer", "identities", ...consumerTarget, "--cursor", "c2"],
     { env: consumerEnv, body: identityPage },

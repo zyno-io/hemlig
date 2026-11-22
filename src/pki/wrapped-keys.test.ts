@@ -189,4 +189,23 @@ describe("wrapped CA keys", () => {
       unwrapCaKey(empty, "k", wrapped, binding),
     ).rejects.toMatchObject({ statusCode: 503 });
   });
+
+  it("marks a KMS AccessDenied with the kms_access_denied reason", async () => {
+    const key = await generateCaKeyPair("ECDSA_P256");
+    const { kms } = mockKms();
+    const wrapped = await wrapCaKey(kms, "k", key.privateKeyDer, binding);
+    const denied = {
+      send: jest.fn(async () => {
+        throw Object.assign(new Error("kms"), {
+          name: "AccessDeniedException",
+        });
+      }),
+    } as unknown as PkiKmsClient;
+    await expect(
+      unwrapCaKey(denied, "k", wrapped, binding),
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      safeReason: "kms_access_denied",
+    });
+  });
 });

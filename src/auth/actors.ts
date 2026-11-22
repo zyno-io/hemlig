@@ -126,7 +126,7 @@ const hasRequiredScope = (
     return declared.includes(requiredScope);
 };
 
-const hasRequiredRole = (
+export const hasRequiredRole = (
     claims: Record<string, string | number | boolean | string[]>,
     requiredRole: string | undefined,
 ): boolean => {

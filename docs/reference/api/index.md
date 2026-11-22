@@ -105,5 +105,6 @@ Every failure uses one envelope with a stable `code` and a `correlationId`. All 
 | [Data types](data-types.md) | Shared shapes: IDs, environments, metadata, ACL, payload, control revision |
 | [Administrator: secrets](admin-secrets.md) | Environments, secret catalog, tree, create, update, payload, archive, revisions, archived lookup |
 | [Administrator: consumers, certificates and grants](admin-consumers.md) | Consumers, client certificates, issuing root, AgentGrants, bootstrap |
+| [Administrator: PKI](admin-pki.md) | CA lifecycle, CRL download and publication, root CRL upload |
 | [Delivery and agent routes](delivery.md) | Consumer reads, change snapshots, agent configuration, sync and writes, self-rotation |
 | [Audit](audit.md) | Audit archive browsing and audit behavior |

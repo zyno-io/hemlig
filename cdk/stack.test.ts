@@ -153,10 +153,11 @@ describe("HemligStack", () => {
           "content-type",
           "idempotency-key",
           "if-match",
+          "if-none-match",
         ],
         AllowMethods: ["GET", "POST", "PUT", "DELETE"],
         AllowCredentials: false,
-        ExposeHeaders: ["etag"],
+        ExposeHeaders: ["etag", "retry-after"],
         MaxAge: 600,
       },
     });
@@ -983,7 +984,8 @@ describe("HemligStack", () => {
         const props = lambdaProps(`hml-test-pki-${kind}`);
         expect(props.Runtime).toBe("nodejs24.x");
         expect(props.MemorySize).toBe(512);
-        expect(props.Timeout).toBe(29);
+        // Maintenance publishes CRLs and runs up to five minutes; the request Lambdas stay at 29 s.
+        expect(props.Timeout).toBe(kind === "maintenance" ? 300 : 29);
         const variables = props.Environment.Variables;
         expect(variables.PKI_DIRECTORY_INDEX).toBe("pki-directory");
         expect(variables.PKI_BUCKET_NAME).toEqual({ Ref: pkiBucketId });

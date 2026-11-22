@@ -433,3 +433,53 @@ See: [Revocation and deletion safety](../operations/safety.md).
 The `reason` on a resource's `Ready` or `IdentityRotation` condition. The full list is in the CRD reference.
 
 See: [Status reasons](crds.md#status-reasons).
+
+## PKI
+
+### PKI CA
+
+A certificate authority Hemlig holds the key for. Today it is an external intermediate, signed by your offline root.
+
+See: [PKI](../guide/pki.md).
+
+### CA name
+
+The unique name of a PKI CA within an environment, for example `prod-issuing-1`. Names are never reused.
+
+See: [PKI](../guide/pki.md#create-sign-and-activate).
+
+### External CA
+
+A root or other CA that Hemlig does not hold the key for. Hemlig records its certificate and the latest CRL you upload.
+
+See: [Admin: PKI](api/admin-pki.md).
+
+### Anchor
+
+The self-signed root certificate at the top of a PKI CA's chain.
+
+See: [PKI](../guide/pki.md).
+
+### CRL issuer
+
+The CA that signs a CRL. A PKI CA's leaves are covered by its own CRL and by its root's CRL.
+
+See: [PKI](../guide/pki.md#generated-crls).
+
+### Subject registry
+
+The record of every CA subject DN in a deployment. A DN is claimed forever, so a new CA needs a new DN.
+
+See: [Roll over a CA](../operations/pki-ca-rollover.md).
+
+### Root CRL
+
+The CRL your offline root signs. You upload it, and Hemlig revokes any dependent CA it lists.
+
+See: [Offline root recipe](../operations/pki-offline-root.md#upload-a-fresh-root-crl).
+
+### Drained
+
+A retired CA whose published CRL covers every certificate it could have issued. Hemlig then disables its key.
+
+See: [PKI](../guide/pki.md#ca-states).

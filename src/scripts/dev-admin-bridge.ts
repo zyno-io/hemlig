@@ -129,7 +129,11 @@ const buildServer = () =>
           ...corsHeaders(),
           ...(result.headers as Record<string, string> | undefined),
         });
-        response.end(result.body ?? "");
+        response.end(
+          result.isBase64Encoded === true
+            ? Buffer.from(result.body ?? "", "base64")
+            : (result.body ?? ""),
+        );
         process.stdout.write(`${method} ${url.pathname} -> ${status}\n`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

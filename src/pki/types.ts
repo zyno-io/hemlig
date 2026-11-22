@@ -93,8 +93,8 @@ export interface CaRecord {
   chainPem?: string; // chain: ancestors up to and including the anchor
   serial?: string;
   fingerprint?: string;
-  subjectDer?: string;
-  subjectKeyIdentifier?: string;
+  subjectDer?: string; // base64 DER: the byte-exact copy of the certificate's subject Name used as the CRL issuer
+  subjectKeyIdentifier?: string; // lowercase hex
   notBefore?: string;
   notAfter?: string;
   effective?: {
@@ -118,6 +118,10 @@ export interface CaRecord {
   revocationReason?: string;
   revocationSource?: "EXTERNAL" | "HEMLIG";
   revocationEvidence?: string;
+  activatedAt?: string;
+  failedAt?: string;
+  drainedAt?: string;
+  keyDestroyedAt?: string;
 }
 
 /** `key.wrapped`: the same shape as `IssuerKeyEnvelope`. */
@@ -145,6 +149,8 @@ export interface CaCrlState {
     entryCount: number;
     dropDueAt?: string;
   };
+  /** `published.thisUpdate` whose TTL sweep of expired carried revocations completed. */
+  sweptThrough?: string;
   capacity?: { count: number; countFrom: string; countedAt: string };
 }
 
@@ -154,10 +160,12 @@ export interface ExternalCaRecord {
   certificatePem: string;
   fingerprint: string;
   spkiSha256: string;
-  subjectDer: string;
+  subjectDer: string; // base64 DER
+  subjectAttributes: { oid: string; value: string }[];
   subjectKey: string;
-  subjectKeyIdentifier: string;
+  subjectKeyIdentifier: string; // lowercase hex
   notAfter: string;
+  createdAt: string;
   dependents: Set<string>;
   environments: Set<string>;
   version: string;
@@ -170,6 +178,17 @@ export interface ExternalCaRecord {
     uploadedAt: string;
     uploadedBy: Actor;
   }; // numberHex: 40 hex digits, zero-padded
+}
+
+/** PKI_CA#caId / REVOKED#serial. Written by Phase 4; read by Phase 3. */
+export interface RevocationEntryRecord {
+  caId: string;
+  serial: string;
+  revokedAt: string;
+  reason: RevocationReason;
+  invalidityDate?: string;
+  notAfter: string;
+  ttl?: number;
 }
 
 export interface IssuedCertificateRecord {
