@@ -8,9 +8,13 @@ import type { AuditingApplication } from "../handlers/request";
 import { AuditWriter } from "../services/audit";
 import { CursorService } from "../services/cursor";
 import { CaService } from "./ca-service";
+import { CapacityService } from "./capacity-service";
+import { CertificateService } from "./certificate-service";
 import { CrlService } from "./crl-service";
 import { caKeyUnavailable } from "./errors";
 import { ExternalCaService } from "./external-ca-service";
+import { GrantService } from "./grant-service";
+import { IssuanceService } from "./issuance-service";
 import { WrappedCaSigner, type CaSigner } from "./signer";
 import type { CaRecord } from "./types";
 
@@ -35,6 +39,10 @@ export interface PkiApplication extends AuditingApplication {
   readonly cas: CaService;
   readonly crls: CrlService;
   readonly externalCas: ExternalCaService;
+  readonly grants: GrantService;
+  readonly issuance: IssuanceService;
+  readonly certificates: CertificateService;
+  readonly capacity: CapacityService;
 }
 
 export const createPkiApplication = (
@@ -84,6 +92,7 @@ export const createPkiApplication = (
     now,
   };
   const crls = new CrlService(deps);
+  const capacity = new CapacityService(pki);
   return {
     config,
     clients,
@@ -97,5 +106,9 @@ export const createPkiApplication = (
     cas: new CaService(deps, crls),
     crls,
     externalCas: new ExternalCaService(deps),
+    grants: new GrantService(deps),
+    issuance: new IssuanceService(deps, capacity),
+    certificates: new CertificateService(deps, crls),
+    capacity,
   };
 };

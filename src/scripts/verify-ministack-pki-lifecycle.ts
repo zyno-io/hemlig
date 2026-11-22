@@ -26,6 +26,7 @@ import { parseRawCsr } from "../pki/asn1/csr";
 import { EXT, extension, keyIdentifierValue } from "../pki/asn1/extensions";
 import { fromPem, toPem } from "../pki/asn1/pem";
 import { CaService } from "../pki/ca-service";
+import { CapacityService } from "../pki/capacity-service";
 import {
   buildSignedCrl,
   crlObjectKey,
@@ -396,6 +397,7 @@ export const verifyPkiLifecycleOnMiniStack = async (
         pki,
         cas: build({ now: clock }).cas,
         crls: build({ now: clock }).crls,
+        capacity: new CapacityService(pki),
         audit,
         config,
       },

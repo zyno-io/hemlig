@@ -17,7 +17,7 @@ export const maintenanceActor: Actor = {
 export interface MaintenanceDeps {
   readonly app: Pick<
     PkiApplication,
-    "pki" | "cas" | "crls" | "audit" | "config"
+    "pki" | "cas" | "crls" | "audit" | "config" | "capacity"
   >;
   readonly now: Date;
   readonly remainingMs: () => number;
@@ -30,6 +30,7 @@ export interface MaintenanceSummary {
   status: "ok";
   cas: number;
   published: number;
+  counted: number;
   retired: number;
   drained: number;
   failures: number;
@@ -78,6 +79,7 @@ export const runMaintenancePass = async (
     status: "ok",
     cas: 0,
     published: 0,
+    counted: 0,
     retired: 0,
     drained: 0,
     failures: 0,
@@ -252,7 +254,27 @@ export const runMaintenancePass = async (
     }
   }
 
+  // E2. Recount the capacity of every ACTIVE CA.
+  const counts = new Map<string, number>();
+  for (const state of states.values()) {
+    const { ca, crl } = state;
+    if (ca.status !== "ACTIVE" || crl === undefined) {
+      continue;
+    }
+    if (deps.remainingMs() < minimumRemainingMs) {
+      summary.skipped += 1;
+      continue;
+    }
+    try {
+      counts.set(ca.caId, await app.capacity.recount(ca, crl, now));
+      summary.counted += 1;
+    } catch (error) {
+      fail(ca.caId, "capacity", error);
+    }
+  }
+
   // F. CA metrics.
+  let caCapacityHigh = 0;
   let generatedCrlStale = 0;
   let caExpiring = 0;
   let crlOverCapacity = 0;
@@ -274,6 +296,14 @@ export const runMaintenancePass = async (
           30 * day
     ) {
       caExpiring += 1;
+    }
+    const counted = counts.get(ca.caId);
+    if (
+      ca.status === "ACTIVE" &&
+      counted !== undefined &&
+      counted > 0.8 * ca.policy.capacity
+    ) {
+      caCapacityHigh += 1;
     }
     if (
       evaluation.alarmable &&
@@ -322,6 +352,7 @@ export const runMaintenancePass = async (
     [PKI_METRICS.externalCrlMissing]: externalCrlMissing,
     [PKI_METRICS.caExpiring]: caExpiring,
     [PKI_METRICS.crlOverCapacity]: crlOverCapacity,
+    [PKI_METRICS.caCapacityHigh]: caCapacityHigh,
   });
 
   // I. Finish.
