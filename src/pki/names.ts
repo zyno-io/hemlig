@@ -623,6 +623,9 @@ export const normalizeUri = (input: string): NameResult<NormalizedUri> => {
     return bad(segmentProblem);
   }
   const query = input.includes("?") ? url.search || "?" : "";
+  if (/%(?![0-9A-Fa-f]{2})/.test(query)) {
+    return bad("uri query has a malformed percent escape");
+  }
   const port = url.port;
   // WHATWG percent-encodes some characters (1 -> 3 bytes), so the limit applies to the built value.
   const value = `${scheme}://${host.value}${port ? `:${port}` : ""}${path.value}${query}`;
@@ -669,7 +672,16 @@ export const parseUriRule = (text: string): NameResult<UriRule> => {
   if (hostText.includes(":") || hostText.includes("[")) {
     return bad(`uri rule "${text}": ports and IP literals are not allowed`);
   }
-  const host = parseDnsRule(hostText.toLowerCase());
+  let ruleHost = hostText.toLowerCase();
+  if (!ruleHost.startsWith("*")) {
+    // Same scheme-aware WHATWG host normalization as requested URIs (127.1 == 127.0.0.1).
+    try {
+      ruleHost = new URL(`${scheme}://${ruleHost}/`).hostname.toLowerCase();
+    } catch {
+      return bad(`uri rule "${text}": host does not parse`);
+    }
+  }
+  const host = parseDnsRule(ruleHost);
   if (!host.ok) {
     return bad(`uri rule "${text}": ${host.reason}`);
   }

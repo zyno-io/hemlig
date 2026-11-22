@@ -525,3 +525,46 @@ describe("review regressions", () => {
     expect(codes(result.errors)).toContain("ca_policy_invalid");
   });
 });
+
+describe("external review regressions", () => {
+  it("rejects policy OIDs DER cannot encode", () => {
+    for (const oid of ["1.40.7", "0.40", "3.1"]) {
+      const policy = validPolicy();
+      policy.forced.certificatePolicies = [oid];
+      expect(codes(validateGrantPolicy(policy).errors)).toContain(
+        "invalid_oid",
+      );
+    }
+    const ok = validPolicy();
+    ok.forced.certificatePolicies = ["1.39.7", "2.999.1"];
+    expect(validateGrantPolicy(ok).ok).toBe(true);
+  });
+
+  it("resolves omitted keyAlgorithms against the CA leaf policy", () => {
+    const policy = validPolicy();
+    delete policy.keyAlgorithms;
+    const result = validateGrantPolicy(policy, {
+      ca: ca({ leafKeyAlgorithms: ["ECDSA_P256"] }),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.compiled?.keyAlgorithms).toEqual(["ECDSA_P256"]);
+  });
+
+  it("uses attribute-specific subject length limits", () => {
+    const policy = validPolicy();
+    policy.forced.subject = {
+      locality: "l".repeat(128),
+      state: "s".repeat(128),
+    };
+    expect(validateGrantPolicy(policy).ok).toBe(true);
+    policy.forced.subject = { locality: "l".repeat(129) };
+    expect(validateGrantPolicy(policy).ok).toBe(false);
+    policy.forced.subject = { organization: "o".repeat(65) };
+    expect(validateGrantPolicy(policy).ok).toBe(false);
+    const pattern = validPolicy();
+    pattern.subject = { allow: { locality: ["l".repeat(100)] } };
+    expect(validateGrantPolicy(pattern).ok).toBe(true);
+    pattern.subject = { allow: { organization: ["o".repeat(100)] } };
+    expect(validateGrantPolicy(pattern).ok).toBe(false);
+  });
+});

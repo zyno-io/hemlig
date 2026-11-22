@@ -50,6 +50,15 @@ export const DEFAULT_MIN_LIFETIME_SECONDS = 3600;
 export const ANY_EXTENDED_KEY_USAGE = ["anyExtendedKeyUsage", "2.5.29.37.0"];
 /** X.520 upper bound for O, OU and CN. */
 export const MAX_SUBJECT_VALUE_LENGTH = 64;
+/** RFC 5280 Appendix A.1 upper bounds: CN, O, OU 64; L, ST 128; C exactly 2. */
+export const subjectValueLimit = (
+  type: SubjectAttribute | "commonName",
+): number =>
+  type === "locality" || type === "state"
+    ? 128
+    : type === "country"
+      ? 2
+      : MAX_SUBJECT_VALUE_LENGTH;
 
 export interface GrantIssue {
   code: string;
@@ -151,9 +160,9 @@ export const validSubjectValue = (
       ? undefined
       : "must be a two-letter uppercase country code";
   }
-  return value.length <= MAX_SUBJECT_VALUE_LENGTH
+  return value.length <= subjectValueLimit(type)
     ? undefined
-    : `exceeds ${MAX_SUBJECT_VALUE_LENGTH} characters`;
+    : `exceeds ${subjectValueLimit(type)} characters`;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -413,7 +422,7 @@ const readStructure = (
               for (const pattern of patterns) {
                 if (
                   pattern.length === 0 ||
-                  pattern.length > MAX_SUBJECT_VALUE_LENGTH ||
+                  pattern.length > subjectValueLimit(attribute) ||
                   /[\x00-\x1f\x7f]/.test(pattern)
                 ) {
                   out.error(
@@ -878,7 +887,11 @@ const compile = (
     );
   }
   oids.forEach((oid, index) => {
-    if (!oidPattern.test(oid)) {
+    const arcs = oid.split(".");
+    if (
+      !oidPattern.test(oid) ||
+      (Number(arcs[0]) < 2 && Number(arcs[1]) > 39)
+    ) {
       out.error(
         "invalid_oid",
         `policy.forced.certificatePolicies[${index}]`,
@@ -888,9 +901,11 @@ const compile = (
   });
 
   // Key algorithms against the CA's leaf policy
-  const keyAlgorithms = policy.keyAlgorithms ?? [
-    ...DEFAULT_LEAF_KEY_ALGORITHMS,
-  ];
+  const keyAlgorithms =
+    policy.keyAlgorithms ??
+    DEFAULT_LEAF_KEY_ALGORITHMS.filter(
+      (algorithm) => !ca || ca.leafKeyAlgorithms.includes(algorithm),
+    );
   if (ca && policy.keyAlgorithms) {
     for (const algorithm of policy.keyAlgorithms) {
       if (!ca.leafKeyAlgorithms.includes(algorithm)) {

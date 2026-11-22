@@ -895,3 +895,29 @@ describe("review regressions: URI length, constraints, globs", () => {
     expect(globMatches("a.b", "axb")).toBe(false);
   });
 });
+
+describe("external review regressions", () => {
+  it("normalizes exact URI rule hosts like requested hosts", () => {
+    const deny = parseUriRule("https://127.1/admin");
+    const allow = parseUriRule("https://127.0.0.1/**");
+    expect(deny.ok && allow.ok).toBe(true);
+    if (deny.ok && allow.ok) {
+      const requested = normalizeUri("https://127.1/admin");
+      expect(requested.ok).toBe(true);
+      if (requested.ok) {
+        expect(
+          evaluateUri(requested.value, {
+            allow: [allow.value],
+            deny: [deny.value],
+          }).allowed,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("rejects malformed percent escapes in the query", () => {
+    expect(normalizeUri("https://svc.example/id?x=%GG").ok).toBe(false);
+    expect(normalizeUri("https://svc.example/id?x=%4").ok).toBe(false);
+    expect(normalizeUri("https://svc.example/id?x=%41").ok).toBe(true);
+  });
+});
