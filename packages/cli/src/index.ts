@@ -52,7 +52,7 @@ type Command = (typeof commands)[number];
 
 const help = {
   usage:
-    "hemlig secret <command> [options] | hemlig pki <ca|external-ca> <command> [options] | hemlig consumer <list|get|identities|revoke-identity> [options] | hemlig login [--console-url <url>] [--no-browser] | hemlig logout | hemlig idempotency-key",
+    "hemlig secret <command> [options] | hemlig pki <ca|external-ca|grant|cert|consumer> <command> [options] | hemlig consumer <list|get|identities|revoke-identity> [options] | hemlig login [--console-url <url>] [--no-browser] | hemlig logout | hemlig idempotency-key",
   commands,
   consumerCommands: {
     list: "List consumers in --environment. Optional --cursor from the previous page's nextCursor.",

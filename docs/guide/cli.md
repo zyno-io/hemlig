@@ -159,7 +159,7 @@ The receipt holds the identity with status `REVOKED`. Revoke only after the repl
 
 ## PKI
 
-`hemlig pki` manages external intermediate CAs and their CRLs. It uses the same administrator token, endpoint and receipt format as the other commands. Every command takes `--admin-url`, `--token-file` and `--timeout-ms`. Roles and CA states are in the [PKI guide](pki.md).
+`hemlig pki` manages external intermediate CAs and their CRLs, consumer issuance grants, issued certificates and bulk revocation. It uses the same administrator token, endpoint and receipt format as the other commands. Every command takes `--admin-url`, `--token-file` and `--timeout-ms`. Roles and CA states are in the [PKI guide](pki.md).
 
 | Command                                         | Options                                                                           | Client method                      |
 | ----------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- |
@@ -192,6 +192,35 @@ An Ed25519 key writes a `warning:` line to stderr, and the `warnings` array is i
 Certificates and chains may be PEM or DER. A file whose text starts with `-----BEGIN` is sent as PEM. A DER file is wrapped as a `CERTIFICATE` PEM. A CRL (`--root-crl`, `--crl`) is sent as PEM, or as base64 DER.
 
 `pki ca crl get` writes the exact CRL bytes to `--out` (PEM uses the `X509 CRL` label) and overwrites an existing file. The receipt has `data.id`, `bytes`, `sha256`, `etag`, `path` and `notModified`; the CRL never goes to stdout. With `--if-none-match` and an unchanged CRL, the file is not written and `notModified` is `true`.
+
+### Issuance grants, certificates and revocation
+
+| Command                                       | Options                                                                                                                                            | Client method                                                          |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `pki grant list <consumer>`                   | optional `--include-deleted`, `--cursor`                                                                                                           | `listAdminIssuanceGrants`                                              |
+| `pki grant list --ca <ca>`                    | optional `--cursor`                                                                                                                                | `listCaIssuanceGrants`                                                 |
+| `pki grant get <consumer> <name>`             |                                                                                                                                                    | `getAdminIssuanceGrant`                                                |
+| `pki grant create <consumer> <name>`          | `--file FILE`, `--ca <ca>` unless the file has `caId`, optional `--validate-only`                                                                  | `createIssuanceGrant`, `validateIssuanceGrantCreate`                   |
+| `pki grant update <consumer> <name>`          | `--file FILE`, `--ca`, `--if-match ETAG\|current`, optional `--validate-only`                                                                      | `updateIssuanceGrant`, `validateIssuanceGrantUpdate`                   |
+| `pki grant delete <consumer> <name>`          | `--if-match ETAG\|current`                                                                                                                         | `deleteIssuanceGrant`                                                  |
+| `pki grant evaluate <consumer> <name>`        | `--csr FILE`, or `--key-algorithm A` with `--dns`, `--ip`, `--uri`, `--cn`; optional `--duration`, `--usage`                                       | `evaluateIssuanceGrant`                                                |
+| `pki grant migrate`                           | `--from <ca>`, `--to <ca>`, optional `--dry-run`                                                                                                   | `listCaIssuanceGrants`, `getAdminIssuanceGrant`, `updateIssuanceGrant` |
+| `pki cert list <ca>`                          | optional `--status ISSUED\|REVOKED\|EXPIRED`, `--expiring-before ISO\|duration`, `--cursor`                                                        | `listPkiCertificates`                                                  |
+| `pki cert list --consumer <id>`               | optional `--grant NAME`, `--include-expired`, `--cursor`                                                                                           | `listConsumerPkiCertificates`                                          |
+| `pki cert get <ca> <serial>`                  | optional `--out FILE`                                                                                                                              | `getPkiCertificate`                                                    |
+| `pki cert issue <ca>`                         | `--csr FILE`, and `--use-csr-names` or `--dns`, `--ip`, `--uri`, `--subject`; optional `--duration`, `--usage`, `--out`, `--chain-out`, `--ca-out` | `issuePkiCertificate`                                                  |
+| `pki cert revoke <ca> <serial>`               | optional `--reason`, `--invalidity-date ISO`                                                                                                       | `revokePkiCertificate`                                                 |
+| `pki consumer revoke-certificates <consumer>` | optional `--grant NAME`, `--reason`                                                                                                                | `revokeConsumerPkiCertificates`                                        |
+
+Consumer IDs and grant names match `[a-z][a-z0-9-]{2,63}`. Mutations take an optional `--idempotency-key`. Reads and `--validate-only` do not.
+
+- **Grant file.** `--file` is JSON of at most 64 KiB: the grant policy fields (`names`, `subject`, `keyAlgorithms`, `keyUsages`, `extendedKeyUsages`, `lifetime`, `forced`, `quotas`) plus optional `caId`, `displayName`, `expiresAt` and `status` (`ACTIVE` or `DISABLED`). A `name` in the file must equal the `<name>` operand. `--ca` accepts a CA ID or name; if the file also has a `caId` that resolves to a different CA, the command exits 2. `grant update` replaces the whole grant, so the file must hold every field to keep.
+- **Validation.** `--validate-only` sends `?validateOnly=true`, writes nothing and sends no idempotency key (`grant update` still needs `--if-match`). The receipt holds `valid`, `errors` and `warnings`. It exits 5 when `valid` is `false`.
+- **Evaluate.** `grant evaluate` runs the policy engine without issuing. Pass a CSR, or a key algorithm with names, not both. A `--csr` file that holds a private key is refused and never sent.
+- **Issue.** `cert issue` is administrator issuance. Names come from the CSR with `--use-csr-names`, or from `--dns`, `--ip`, `--uri` and `--subject 'CN=..,O=..'` (the CN is optional here). `--out`, `--chain-out` and `--ca-out` write the leaf, the chain and the anchor to separate files and keep them out of the receipt. Like `--csr-out`, each file is created before the request and the command exits 9 without sending it if the file exists. Without the flags the PEMs are in `data`. The CLI never handles private keys.
+- **Revoke.** `--reason` is one of `unspecified`, `keyCompromise`, `affiliationChanged`, `superseded`, `cessationOfOperation` or `privilegeWithdrawn`. `--invalidity-date` needs `--reason keyCompromise`. `--expiring-before` takes a timestamp or a duration counted from now.
+- **Bulk revoke.** `consumer revoke-certificates` revokes every live certificate of the consumer, or of one grant. A run that hits the server deadline answers `complete: false`. The CLI repeats the call with the same idempotency key until `complete` is `true`, at most 20 times, and then exits 7 with `revoke_incomplete`. Repeat the command with the same `--idempotency-key` to continue. The receipt adds `attempts`.
+- **Migrate.** `grant migrate` moves every grant of one CA to another, step 5 of the [CA rollover runbook](../operations/pki-ca-rollover.md). It lists the old CA's grants (up to 50 pages), reads each grant, skips deleted grants and grants that are no longer on `--from`, and sends a `PUT` with `If-Match` set to the version it read. Each key is `migrate-` plus a hash of the CAs, consumer, grant name and version, so a rerun replays finished moves. `--dry-run` sends `?validateOnly=true` without a key and changes nothing. CA names resolve in `--environment` as usual. The receipt has `results` with `consumerId`, `name`, `uid` and an `outcome` of `migrated`, `valid`, `invalid`, `skipped` or `failed`, with `errors` and `warnings`, and `remainingListed`, the number of grants still listed under `--from`. It exits 5 if any result is `invalid` or `failed`.
 
 A PKI failure's `error` object also carries `apiCode` and `apiDetails` (for example `{"reason": "ca_not_active"}`), the API's code and machine-readable reason. The message is never copied from the API.
 
@@ -252,16 +281,16 @@ For a mutation, `outcome` says what happened:
 
 ## Exit codes
 
-| Exit | Meaning                                                                          |
-| ---- | -------------------------------------------------------------------------------- |
-| 0    | Success                                                                          |
-| 2    | Usage, bad local JSON, header or configuration, or API 400                       |
-| 3    | API 401 or 403, or a cached login that is expired, unreadable or for another API |
-| 4    | API 404 (secret, active payload, consumer or identity missing)                   |
-| 5    | API 409, including a used idempotency key                                        |
-| 6    | API 412, stale control revision                                                  |
-| 7    | Service failure, unexpected status, malformed response or internal error         |
-| 8    | Network, redirect or timeout failure                                             |
-| 9    | Local input, token file, stdin or output I/O failure                             |
+| Exit | Meaning                                                                           |
+| ---- | --------------------------------------------------------------------------------- |
+| 0    | Success                                                                           |
+| 2    | Usage, bad local JSON, header or configuration, or API 400                        |
+| 3    | API 401 or 403, or a cached login that is expired, unreadable or for another API  |
+| 4    | API 404 (secret, active payload, consumer or identity missing)                    |
+| 5    | API 409, including a used idempotency key, or an invalid grant check or migration |
+| 6    | API 412, stale control revision                                                   |
+| 7    | Service failure, unexpected status, malformed response or internal error          |
+| 8    | Network, redirect or timeout failure                                              |
+| 9    | Local input, token file, stdin or output I/O failure                              |
 
 Exit codes map to API statuses. The API's own code names are in [Errors](../reference/api/errors.md).
