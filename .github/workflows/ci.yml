@@ -74,7 +74,7 @@ jobs:
         run: yarn install --immutable
       - name: Start MiniStack
         run: docker compose -f docker-compose.ministack.yml up -d --wait
-      - name: Verify DynamoDB, S3, and KMS integration
+      - name: Verify DynamoDB, S3, KMS and PKI transactions
         run: yarn ministack:verify
       - name: Stop MiniStack
         if: always()

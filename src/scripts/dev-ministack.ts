@@ -1,7 +1,9 @@
 import {
   CreateTableCommand,
   DescribeTableCommand,
+  type DescribeTableCommandOutput,
   DynamoDBClient,
+  UpdateTableCommand,
 } from "@aws-sdk/client-dynamodb";
 import {
   CreateAliasCommand,
@@ -37,6 +39,7 @@ const table = `${prefix}-control`;
 const revisionBucket = `${prefix}-revision`;
 const auditBucket = `${prefix}-audit`;
 const truststoreBucket = `${prefix}-truststore`;
+const pkiBucket = `${prefix}-pki`;
 
 const indexes = [
   ["workflow-due", "workflowDuePk", "workflowDueSk"],
@@ -45,6 +48,7 @@ const indexes = [
   ["consumer-directory", "consumerDirectoryPk", "consumerDirectorySk"],
   ["consumer-identity", "identityConsumerPk", "identityConsumerSk"],
   ["secret-revision", "revisionPk", "revisionSk"],
+  ["pki-directory", "pkiDirectoryPk", "pkiDirectorySk"],
 ] as const;
 
 /**
@@ -97,11 +101,21 @@ const ensureBucket = async (
 };
 
 const ensureTable = async (dynamo: DynamoDBClient): Promise<void> => {
+  let existing: DescribeTableCommandOutput | undefined;
   try {
-    await dynamo.send(new DescribeTableCommand({ TableName: table }));
-    return;
+    existing = await dynamo.send(
+      new DescribeTableCommand({ TableName: table }),
+    );
   } catch {
     // Absent; create it below.
+  }
+  if (existing !== undefined) {
+    await addMissingIndexes(
+      dynamo,
+      existing.Table?.GlobalSecondaryIndexes?.map((index) => index.IndexName) ??
+        [],
+    );
+    return;
   }
   const attributeNames = new Set([
     "pk",
@@ -131,6 +145,47 @@ const ensureTable = async (dynamo: DynamoDBClient): Promise<void> => {
     }),
   );
   process.stdout.write(`created table ${table}\n`);
+};
+
+/** A table from an older checkout lacks later indexes; add them one at a time, as DynamoDB requires. */
+const addMissingIndexes = async (
+  dynamo: DynamoDBClient,
+  present: readonly (string | undefined)[],
+): Promise<void> => {
+  for (const [indexName, pk, sk] of indexes) {
+    if (present.includes(indexName)) {
+      continue;
+    }
+    try {
+      await dynamo.send(
+        new UpdateTableCommand({
+          TableName: table,
+          AttributeDefinitions: [pk, sk].map((name) => ({
+            AttributeName: name,
+            AttributeType: "S" as const,
+          })),
+          GlobalSecondaryIndexUpdates: [
+            {
+              Create: {
+                IndexName: indexName,
+                KeySchema: [
+                  { AttributeName: pk, KeyType: "HASH" as const },
+                  { AttributeName: sk, KeyType: "RANGE" as const },
+                ],
+                Projection: { ProjectionType: "ALL" as const },
+              },
+            },
+          ],
+        }),
+      );
+      process.stdout.write(`added index ${indexName} to ${table}\n`);
+    } catch (error) {
+      process.stderr.write(
+        `Could not add index ${indexName} to the existing table (${error instanceof Error ? error.message : String(error)}). Recreate with \`yarn ministack:down && yarn ministack:up\`.\n`,
+      );
+      process.exit(1);
+    }
+  }
 };
 
 /** Returns the key ARN, which is what the envelope codec addresses. */
@@ -177,6 +232,8 @@ const run = async (): Promise<void> => {
     ensureBucket(s3, auditBucket, true),
     // The truststore bucket is versioned but not locked, matching the stack.
     ensureBucket(s3, truststoreBucket, false),
+    // Versioned, no lock: the PKI CRL objects are written through putImmutable.
+    ensureBucket(s3, pkiBucket, false),
   ]);
   await ensureTable(dynamo);
   const keyArn = await ensureKey(kms);
@@ -201,6 +258,8 @@ const run = async (): Promise<void> => {
     CONSUMER_DIRECTORY_INDEX: "consumer-directory",
     CONSUMER_IDENTITY_INDEX: "consumer-identity",
     SECRET_REVISION_INDEX: "secret-revision",
+    PKI_DIRECTORY_INDEX: "pki-directory",
+    PKI_BUCKET_NAME: pkiBucket,
     REVISION_BUCKET_NAME: revisionBucket,
     TRUSTSTORE_BUCKET_NAME: truststoreBucket,
     TRUSTSTORE_KEY_PREFIX: "truststores",
