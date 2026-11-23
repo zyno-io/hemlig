@@ -5,6 +5,7 @@ import type {
   CoreApi,
   CustomApi,
   HemligConsumer,
+  ObjectMeta,
   RegisteredConsumer,
 } from "../v1beta";
 import {
@@ -58,8 +59,19 @@ export type ResolveResult =
       readonly registered?: RegisteredConsumer;
     };
 
+/** Anything that references a consumer the way a HemligIssuer does, or a cluster issuer. */
+export type ConsumerReferrer =
+  | {
+      readonly metadata: ObjectMeta;
+      readonly spec: {
+        readonly consumerRef: string;
+        readonly consumerNamespace?: string;
+      };
+    }
+  | HemligClusterIssuer;
+
 export const isClusterIssuer = (
-  issuer: AnyIssuer,
+  issuer: ConsumerReferrer,
 ): issuer is HemligClusterIssuer => typeof issuer.spec.consumerRef === "object";
 
 /**
@@ -68,7 +80,7 @@ export const isClusterIssuer = (
  */
 export const resolveIssuerConsumer = async (
   deps: Pick<PkiDeps, "core" | "custom" | "registry">,
-  issuer: AnyIssuer,
+  issuer: ConsumerReferrer,
 ): Promise<ResolveResult> => {
   let consumerNamespace: string;
   let consumerName: string;

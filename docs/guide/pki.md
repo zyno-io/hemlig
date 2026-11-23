@@ -8,7 +8,7 @@ pageType: explanation
 
 Hemlig can hold an intermediate certificate authority (CA) that your offline root signs, and publishes that CA's certificate revocation lists (CRLs).
 
-Consumers get leaf certificates through issuance grants. [cert-manager](cert-manager.md) can request and renew them unattended. Trust bundles arrive in a later release. This page covers the CA lifecycle, grants, issuance, revocation and CRLs.
+Consumers get leaf certificates through issuance grants. [cert-manager](cert-manager.md) can request and renew them unattended. [Trust bundles](trust-bundles.md) deliver CA anchors, intermediates and CRLs to Kubernetes. This page covers the CA lifecycle, grants, issuance, revocation and CRLs.
 
 ## The topology
 
@@ -190,11 +190,11 @@ An upload must be newer than the stored CRL. An identical retry succeeds without
 
 Hemlig signs a full CRL for each CA and stores each one as an immutable object. It refreshes a CRL well before `nextUpdate`: a third of its validity before, within 45 minutes and half of the validity. With the 7-day default that is about 2.3 days. Maintenance runs every 15 minutes, and `hemlig pki ca crl publish` forces a publication. See [Limits](../reference/limits.md#pki).
 
-Download a CRL, for either a CA or a root, with `hemlig pki ca crl get`.
+Download a CRL, for either a CA or a root, with `hemlig pki ca crl get`. A [trust bundle](trust-bundles.md) delivers the generated and root CRLs to your workloads.
 
 ## If the intermediate's key is compromised
 
-Revoke the intermediate at the root (`openssl ca -revoke`), regenerate the root CRL and upload it. Hemlig marks the CA `REVOKED` and disables its key. Then roll over to a new CA; see [Roll over a CA](../operations/pki-ca-rollover.md).
+Revoke the intermediate at the root (`openssl ca -revoke`), regenerate the root CRL and upload it. Hemlig marks the CA `REVOKED` and disables its key. A [trust bundle](trust-bundles.md) picks up the new root CRL on its next refresh, so workloads reject the revoked CA's certificates. Then roll over to a new CA; see [Roll over a CA](../operations/pki-ca-rollover.md).
 
 ## Alarms
 

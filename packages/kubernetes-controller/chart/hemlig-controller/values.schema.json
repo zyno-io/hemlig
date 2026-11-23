@@ -94,11 +94,20 @@
               "maxLength": 63,
               "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
             }
-          },
-          "required": ["grantDefaultApprover", "serviceAccount", "namespace"]
+          }
         }
-      },
-      "required": ["maxConcurrentRequests", "approval"]
+      }
+    },
+    "trustBundles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "refreshIntervalMilliseconds": {
+          "type": "integer",
+          "minimum": 30000,
+          "maximum": 3600000
+        }
+      }
     },
     "resources": { "type": "object" },
     "nodeSelector": {
@@ -121,7 +130,6 @@
     "podSecurityContext",
     "securityContext",
     "controller",
-    "certManager",
     "resources",
     "nodeSelector",
     "tolerations",

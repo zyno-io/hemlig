@@ -36,6 +36,15 @@ rules:
   - apiGroups: ["hemlig.zyno.io"]
     resources: ["hemligissuers/status", "hemligclusterissuers/status"]
     verbs: ["get", "update", "patch"]
+  - apiGroups: ["hemlig.zyno.io"]
+    resources: ["hemligtrustbundles"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["hemlig.zyno.io"]
+    resources: ["hemligtrustbundles/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -1,4 +1,5 @@
-{{- if .Values.certManager.approval.grantDefaultApprover }}
+{{- $approval := include "hemlig-controller.approval" . | fromJson }}
+{{- if $approval.grant }}
 # Lets cert-manager's built-in approver approve requests for Hemlig issuers. The IssuanceGrant is the boundary.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -26,6 +27,6 @@ roleRef:
   name: {{ include "hemlig-controller.fullname" . }}-cert-manager-approver
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.certManager.approval.serviceAccount | quote }}
-    namespace: {{ .Values.certManager.approval.namespace | quote }}
+    name: {{ $approval.serviceAccount | quote }}
+    namespace: {{ $approval.namespace | quote }}
 {{- end }}

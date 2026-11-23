@@ -14,6 +14,7 @@ import {
   parseBulkRevokeRequest,
   parseRevokeRequest,
 } from "./certificate-service";
+import { caBundleView } from "./bundle-model";
 import { parseGrantRequest } from "./grant-model";
 import { validateGrantPolicy } from "./grant-policy";
 import {
@@ -21,6 +22,7 @@ import {
   parseConsumerIssueRequest,
 } from "./issuance-model";
 import { parseEvaluateRequest } from "./issuance-service";
+import type { CaRecord } from "./types";
 
 const document = parse(
   readFileSync(join(__dirname, "../../openapi/consumer-secrets.yaml"), "utf8"),
@@ -312,6 +314,30 @@ describe("PKI admin OpenAPI contract", () => {
       expect({ path, entry: entry !== undefined }).toEqual({ path, entry: true });
       expect(entry?.[route.method.toLowerCase()]).toBeDefined();
     }
+  });
+
+  it("PkiCaBundle matches caBundleView", () => {
+    const validate = schema("PkiCaBundle");
+    const view = caBundleView(
+      {
+        caId: "ca-0a1b",
+        name: "prod-issuing-1",
+        status: "ACTIVE",
+        crlIssuers: [
+          { type: "ca", id: "ca-0a1b" },
+          { type: "external", id: `ext-${"a".repeat(40)}` },
+        ],
+        certificatePem:
+          "-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----\n",
+        chainPem:
+          "-----BEGIN CERTIFICATE-----\nBB\n-----END CERTIFICATE-----\n",
+        fingerprint: "ab".repeat(32),
+        notAfter: "2028-01-01T00:00:00.000Z",
+      } as unknown as CaRecord,
+      undefined,
+    );
+    expect(validate(JSON.parse(JSON.stringify(view)))).toBe(true);
+    expect(validate({ ...view, extra: 1 })).toBe(false);
   });
 
   it("lists every PKI error code", () => {

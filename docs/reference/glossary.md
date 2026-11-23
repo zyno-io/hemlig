@@ -290,6 +290,12 @@ The PEM bundle of the issuing root, kept in a versioned S3 bucket and pinned by 
 
 See: [Identity and trust](../guide/identity-and-trust.md).
 
+### Trust bundle
+
+A `HemligTrustBundle`: the anchors, intermediates and CRLs of a set of CAs, written to ConfigMaps in one namespace for workloads to mount.
+
+See: [Distribute trust bundles](../guide/trust-bundles.md).
+
 ### Enrollment
 
 Issuing a client certificate and activating it once truststore publication is confirmed.

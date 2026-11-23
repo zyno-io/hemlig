@@ -13,9 +13,15 @@ cert-manager issuer: the controller issues certificates for cert-manager
 CertificateRequests that reference a HemligIssuer or HemligClusterIssuer. It
 starts working once cert-manager and the crds/hemlig.zyno.io-pki.yaml CRDs are
 present.
-{{- if .Values.certManager.approval.grantDefaultApprover }}
 
-ServiceAccount {{ .Values.certManager.approval.namespace }}/{{ .Values.certManager.approval.serviceAccount }} may approve CertificateRequests for the
+trust bundles: a HemligTrustBundle writes the anchors, intermediates and CRLs of
+the CAs it lists to ConfigMaps in its namespace. It refreshes every
+{{ include "hemlig-controller.bundleIntervalMs" . }} ms, needs the crds/hemlig.zyno.io-pki.yaml CRDs, and works
+without cert-manager.
+{{- $approval := include "hemlig-controller.approval" . | fromJson }}
+{{- if $approval.grant }}
+
+ServiceAccount {{ $approval.namespace }}/{{ $approval.serviceAccount }} may approve CertificateRequests for the
 hemligissuers.hemlig.zyno.io/* and hemligclusterissuers.hemlig.zyno.io/* signers. Every
 request that references a Hemlig issuer is therefore approved, and the Hemlig
 IssuanceGrant is the authorization boundary. Set

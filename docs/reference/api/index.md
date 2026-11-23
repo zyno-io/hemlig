@@ -59,8 +59,8 @@ See [Administrator consumer and grant routes](admin-consumers.md#post-v1-bootstr
 | `Authorization` | Bootstrap redemption | `Bootstrap` one-use token |
 | `Idempotency-Key` | Selected mutations (see [Idempotency](#idempotency)) | 8 to 128 characters, one per intended operation |
 | `If-Match` | Secret updates, payload writes, archive, agent writes | Current control-revision ETag |
-| `If-None-Match` | Consumer and agent secret reads | Optional ETag; a match returns `304` |
-| `ETag` | Control-revision and secret responses, `304` | Current control-revision ID |
+| `If-None-Match` | Consumer and agent secret reads, PKI CRL downloads | Optional ETag; a match returns `304` |
+| `ETag` | Control-revision and secret responses, PKI CRL downloads, `304` | Current control-revision ID, or the CRL's SHA-256 |
 
 Quotes around an ETag are accepted and stripped. Every response carries `Cache-Control: no-store`. Never log a payload or put it in an HTTP cache.
 
@@ -108,6 +108,6 @@ Every failure uses one envelope with a stable `code` and a `correlationId`. All 
 | [Administrator: secrets](admin-secrets.md) | Environments, secret catalog, tree, create, update, payload, archive, revisions, archived lookup |
 | [Administrator: consumers, certificates and grants](admin-consumers.md) | Consumers, client certificates, issuing root, AgentGrants, bootstrap |
 | [Administrator: PKI](admin-pki.md) | CA lifecycle, CRLs, issuance grants, administrator issuance, certificate inventory, revocation |
-| [PKI consumer routes](pki.md) | Issuance grants and certificate issuance for consumers and agents |
+| [PKI consumer routes](pki.md) | Issuance grants, certificate issuance, CA bundles and CRLs for consumers and agents |
 | [Delivery and agent routes](delivery.md) | Consumer reads, change snapshots, agent configuration, sync and writes, self-rotation |
 | [Audit](audit.md) | Audit archive browsing and audit behavior |

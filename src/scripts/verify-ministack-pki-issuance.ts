@@ -1,5 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  X509Certificate,
+} from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -16,27 +21,34 @@ import {
   TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { ApiError } from "../domain/errors";
 import type { Actor } from "../domain/types";
 import { parseCrl } from "../pki/asn1/crl";
 import { parseRawCsr } from "../pki/asn1/csr";
 import { fromPem } from "../pki/asn1/pem";
+import type { PkiApplication } from "../pki/app";
 import { CaService } from "../pki/ca-service";
 import { CapacityService } from "../pki/capacity-service";
 import { CertificateService } from "../pki/certificate-service";
 import { CrlService } from "../pki/crl-service";
+import { ExternalCaService } from "../pki/external-ca-service";
 import { GrantService } from "../pki/grant-service";
 import { IssuanceService } from "../pki/issuance-service";
 import { runMaintenancePass } from "../pki/maintenance";
 import type { PkiServiceDeps } from "../pki/service-types";
 import { WrappedCaSigner } from "../pki/signer";
 import type { CaRecord, IssuanceGrantRecord } from "../pki/types";
+import { createPkiIssuerHandler } from "../handlers/pki-issuer";
+import { pkiIssuerRoutes } from "../handlers/pki-issuer-routes";
+import { createErrorResponder } from "../handlers/request";
 import { DynamoCursorStore } from "../repositories/cursor-store";
 import { DynamoRepository } from "../repositories/dynamo";
 import { ObjectStore } from "../repositories/object-store";
 import { pkiKeys, PkiRepository, quotaWindows } from "../repositories/pki";
 import { CursorService } from "../services/cursor";
 import {
+  makeCrl,
   makeIntermediate,
   makeLeafCsr,
   makeRoot,
@@ -213,6 +225,7 @@ export const verifyPkiIssuanceOnMiniStack = async (
       crls,
       capacity,
       cas: new CaService(deps, crls),
+      externalCas: new ExternalCaService(deps),
       grants: new GrantService(deps),
       issuance: new IssuanceService(deps, capacity),
       certificates: new CertificateService(
@@ -267,10 +280,12 @@ export const verifyPkiIssuanceOnMiniStack = async (
   const createActiveCa = async (
     label: string,
     policy: Record<string, unknown> = {},
+    options: { root?: TestCert; environment?: string } = {},
   ): Promise<CaRecord> => {
     const name = uniqueName(label);
+    const issuer = options.root ?? root;
     const created = await svc.cas.create(admin, idem(), {
-      environment,
+      environment: options.environment ?? environment,
       name,
       kind: "EXTERNAL_INTERMEDIATE",
       keyAlgorithm: "ECDSA_P256",
@@ -281,14 +296,14 @@ export const verifyPkiIssuanceOnMiniStack = async (
     const spki = parseRawCsr(
       fromPem(ca.csrPem ?? "", "CERTIFICATE REQUEST"),
     ).spkiDer;
-    const cert = await makeIntermediate(root, {
+    const cert = await makeIntermediate(issuer, {
       key: { spkiDer: spki } as unknown as TestKey,
       subject: ca.subject,
       serial: Buffer.from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, nextSerial++ & 0xff, nextSerial & 0xff]),
     });
     await svc.cas.activate(admin, idem(), ca.caId, {
       certificatePem: cert.pem,
-      chainPem: root.pem,
+      chainPem: issuer.pem,
     });
     return reload(ca.caId);
   };
@@ -1047,6 +1062,215 @@ export const verifyPkiIssuanceOnMiniStack = async (
   }
   done("revocation: keyCompromise CRL, expired inventory-only, bulk revoke");
 
+  // ---- Phase 6: consumer bundle and CRL routes ------------------------------------------------------
+  const p6App = {
+    repository,
+    pki,
+    crls: svc.crls,
+    audit,
+    now: () => new Date(),
+  } as unknown as PkiApplication;
+  const p6Handler = createPkiIssuerHandler(
+    pkiIssuerRoutes,
+    createErrorResponder(() => p6App),
+  );
+  const putIdentity = async (
+    consumerId: string,
+    fingerprint: string,
+    env: string,
+  ): Promise<void> => {
+    const now = new Date();
+    await doc.send(
+      new PutCommand({
+        TableName: table,
+        Item: {
+          pk: `IDENTITY#${fingerprint}`,
+          sk: "PROFILE",
+          fingerprint,
+          consumerId,
+          environment: env,
+          kind: "api",
+          status: "ACTIVE",
+          notBefore: new Date(now.getTime() - 3_600_000).toISOString(),
+          notAfter: new Date(now.getTime() + 86_400_000).toISOString(),
+        },
+      }),
+    );
+  };
+  interface P6Client {
+    readonly pem: string;
+  }
+  let p6Clients = 0;
+  const newP6Client = async (
+    consumerId: string,
+    env: string,
+  ): Promise<P6Client> => {
+    p6Clients += 1;
+    const cert = await makeRoot({
+      subject: { CN: `consumer ${suffix}-${p6Clients}` },
+    });
+    const fingerprint = createHash("sha256")
+      .update(new X509Certificate(cert.pem).raw)
+      .digest("hex");
+    await putIdentity(consumerId, fingerprint, env);
+    return { pem: cert.pem };
+  };
+  const p6Get = async (
+    client: P6Client,
+    path: string,
+    headers: Record<string, string> = {},
+  ) => {
+    const result = await p6Handler({
+      rawPath: path,
+      headers,
+      requestContext: {
+        requestId: randomUUID(),
+        http: { method: "GET", sourceIp: "203.0.113.9" },
+        authentication: { clientCert: { clientCertPem: client.pem } },
+      },
+    } as unknown as APIGatewayProxyEventV2);
+    const header = (name: string): string | undefined =>
+      (result.headers as Record<string, string> | undefined)?.[name];
+    return {
+      status: result.statusCode ?? 0,
+      header,
+      der:
+        result.isBase64Encoded === true
+          ? Buffer.from(result.body ?? "", "base64")
+          : undefined,
+      json: (): Record<string, any> =>
+        JSON.parse(result.body ?? "{}") as Record<string, any>,
+    };
+  };
+  const p6Reason = (response: { json: () => Record<string, any> }): unknown =>
+    response.json().error?.details?.reason;
+  const countEvents = (operation: string, outcome: string): number =>
+    (auditEvents as { operation?: string; outcome?: string }[]).filter(
+      (event) => event.operation === operation && event.outcome === outcome,
+    ).length;
+  const pemDer = (pem: string): Buffer => fromPem(pem, "CERTIFICATE");
+  {
+    const otherEnvironment = "ministack-p6-other";
+    const bundleRoot = await makeRoot({
+      subject: { O: "Ministack Corp", CN: `Ministack P6 Root ${suffix}` },
+    });
+    const bundleExt = `ext-${bundleRoot.cert.spkiSha256.slice(0, 40)}`;
+    const ca1 = await createActiveCa("p6", {}, { root: bundleRoot });
+    const client = await newP6Client(`p6-consumer-${suffix}`, environment);
+
+    const bundle = await p6Get(client, `/v1/pki/cas/${ca1.caId}/bundle`);
+    check(bundle.status === 200, `bundle 200, got ${bundle.status}`);
+    check(bundle.header("etag") === undefined, "the bundle has no ETag");
+    const bundleBody = bundle.json();
+    check(
+      pemDer(bundleBody.anchorPem).equals(pemDer(bundleRoot.pem)),
+      "the bundle anchor is the root",
+    );
+    check(
+      pemDer(bundleBody.chainPem.split("-----END CERTIFICATE-----")[0] + "-----END CERTIFICATE-----\n").equals(
+        pemDer(ca1.certificatePem as string),
+      ),
+      "the first chain block is the CA certificate",
+    );
+    check(
+      JSON.stringify(bundleBody.crlIssuers) ===
+        JSON.stringify([
+          { id: ca1.caId, source: "GENERATED" },
+          { id: bundleExt, source: "UPLOADED" },
+        ]),
+      `crlIssuers: ${JSON.stringify(bundleBody.crlIssuers)}`,
+    );
+    done("Phase 6: the bundle route returns the anchor, chain and CRL issuers");
+
+    const published = (await crlOf(ca1.caId)).published;
+    check(published !== undefined, "CA1 has a published CRL");
+    const caCrl = await p6Get(client, `/v1/pki/crls/${ca1.caId}`);
+    check(caCrl.status === 200, `CA CRL 200, got ${caCrl.status}`);
+    const stored = await objects.getBytes(bucket, published!.objectKey);
+    check(caCrl.der?.equals(stored) === true, "the CRL bytes are the stored object");
+    check(caCrl.header("etag") === published!.sha256, "the ETag is the sha256");
+    check(caCrl.header("hemlig-crl-number") === "1", "the CRL number header");
+    const notModified = await p6Get(client, `/v1/pki/crls/${ca1.caId}`, {
+      "if-none-match": `"${published!.sha256}"`,
+    });
+    check(notModified.status === 304, `CA CRL 304, got ${notModified.status}`);
+    done("Phase 6: the CA CRL route serves the stored bytes and a 304");
+
+    const missingBefore = countEvents("pki.crl.get", "failed");
+    const missing = await p6Get(client, `/v1/pki/crls/${bundleExt}`);
+    check(
+      missing.status === 404 && p6Reason(missing) === "crl_missing",
+      "the external CRL is missing before an upload",
+    );
+    check(
+      countEvents("pki.crl.get", "failed") === missingBefore + 1,
+      "one failed event",
+    );
+    await p6Get(client, `/v1/pki/crls/${bundleExt}`);
+    check(
+      countEvents("pki.crl.get", "failed") === missingBefore + 1,
+      "the identical failure is suppressed",
+    );
+    done("Phase 6: a missing CRL audits once and is suppressed on repeat");
+
+    const rootCrlDer = makeCrl({ ca: bundleRoot });
+    await svc.externalCas.uploadCrl(admin, idem(), bundleExt, {
+      crl: rootCrlDer.toString("base64"),
+    });
+    const extCrl = await p6Get(client, `/v1/pki/crls/${bundleExt}`);
+    check(
+      extCrl.status === 200 && extCrl.der?.equals(rootCrlDer) === true,
+      "the external CRL equals the uploaded DER",
+    );
+    done("Phase 6: the external root CRL is served after an upload");
+
+    await doc.send(
+      new PutCommand({
+        TableName: table,
+        Item: {
+          pk: "SYSTEM#ENVIRONMENTS",
+          sk: `ENVIRONMENT#${otherEnvironment}`,
+          name: otherEnvironment,
+          createdAt: new Date().toISOString(),
+          createdBy: { type: "system", id: "ministack-verify" },
+        },
+      }),
+    );
+    const other = await newP6Client(`p6-other-${suffix}`, otherEnvironment);
+    const foreignBundle = await p6Get(other, `/v1/pki/cas/${ca1.caId}/bundle`);
+    check(
+      foreignBundle.status === 404 && p6Reason(foreignBundle) === "ca_not_found",
+      "a foreign environment cannot read the bundle",
+    );
+    check(
+      (await p6Get(other, `/v1/pki/crls/${ca1.caId}`)).status === 404,
+      "a foreign environment cannot read the CA CRL",
+    );
+    const foreignExt = await p6Get(other, `/v1/pki/crls/${bundleExt}`);
+    check(
+      foreignExt.status === 404 && p6Reason(foreignExt) === "external_ca_not_found",
+      "a foreign environment cannot read the external CRL",
+    );
+    await createActiveCa("p6o", {}, { root: bundleRoot, environment: otherEnvironment });
+    const otherExt = await p6Get(other, `/v1/pki/crls/${bundleExt}`);
+    check(
+      otherExt.status === 200 && otherExt.der?.equals(rootCrlDer) === true,
+      "the root CRL is served once the root serves the other environment",
+    );
+    check(
+      (await p6Get(other, `/v1/pki/cas/${ca1.caId}/bundle`)).status === 404,
+      "CA1 stays invisible to the other environment",
+    );
+    done("Phase 6: environment scoping answers foreign and unknown alike");
+
+    check(
+      countEvents("pki.bundle.get", "succeeded") === 0 &&
+        countEvents("pki.crl.get", "succeeded") === 0,
+      "reads write no succeeded event",
+    );
+    done("Phase 6: consumers without grants read and write no success event");
+  }
+
   // ---- Audit hygiene ----------------------------------------------------------------------------
   check(
     !JSON.stringify(auditEvents).includes("-----BEGIN"),
@@ -1259,6 +1483,91 @@ export const verifyPkiIssuanceOnMiniStack = async (
       check(
         revoked.output.includes("certificate revoked"),
         `openssl must report the leaf revoked: ${revoked.output}`,
+      );
+      // ---- Phase 6 equivalent: a consumer builds its trust from the bundle and CRL routes -------------
+      const p6Client = await newP6Client(consumer.consumerId, environment);
+      const bundleResponse = await p6Get(p6Client, `/v1/pki/cas/${caId}/bundle`);
+      check(bundleResponse.status === 200, "the PKI-6 bundle reads");
+      const bundleJson = bundleResponse.json();
+      const rootExtId = (bundleJson.crlIssuers as { id: string }[])[1]?.id ?? "";
+      writeFileSync(file("p6-ca.crt"), bundleJson.anchorPem as string);
+      writeFileSync(file("p6-chain.crt"), bundleJson.chainPem as string);
+      const fetchCrl = async (id: string, name: string, etag?: string) => {
+        const response = await p6Get(
+          p6Client,
+          `/v1/pki/crls/${id}`,
+          etag === undefined ? {} : { "if-none-match": `"${etag}"` },
+        );
+        if (response.status === 200 && response.der !== undefined) {
+          writeFileSync(file(`${name}.der`), response.der);
+          openssl(["crl", "-inform", "DER", "-in", `${name}.der`, "-out", `${name}.pem`]);
+        }
+        return response;
+      };
+      await fetchCrl(caId, "p6-issuing");
+      const rootCrl1 = await fetchCrl(rootExtId, "p6-root");
+      check(rootCrl1.status === 200, "the PKI-6 root CRL reads");
+      openssl([
+        "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+        "-nodes", "-keyout", "leaf2.key", "-subj", "/CN=web2.acc.example.com",
+        "-addext", "subjectAltName=DNS:web2.acc.example.com", "-out", "leaf2.csr",
+      ]);
+      const leaf2Key = idem();
+      const leaf2Usages = {
+        usages: ["digital signature", "key encipherment", "server auth"],
+      };
+      const issued2 = await issueFor(consumer, "acc-web", leaf2Key, text("leaf2.csr"), leaf2Usages);
+      writeFileSync(file("leaf2.pem"), issued2.body.certificatePem as string);
+      const verifyLeaf2 = (): { status: number; output: string } =>
+        openssl(
+          [
+            "verify", "-crl_check_all", "-CAfile", "p6-ca.crt", "-untrusted", "p6-chain.crt",
+            "-CRLfile", "p6-issuing.pem", "-CRLfile", "p6-root.pem", "leaf2.pem",
+          ],
+          true,
+        );
+      const good = verifyLeaf2();
+      check(good.output.includes("OK"), `leaf2 verifies with the bundle: ${good.output}`);
+
+      openssl([
+        "ca", "-config", "root-ca.cnf", "-revoke", "issuing.pem", "-crl_reason", "keyCompromise",
+      ]);
+      openssl(["ca", "-config", "root-ca.cnf", "-gencrl", "-out", "root2.crl.pem"]);
+      const upload = await svc.externalCas.uploadCrl(admin, idem(), rootExtId, {
+        crl: text("root2.crl.pem"),
+      });
+      check(
+        (upload.body.revokedCaIds as string[]).includes(caId),
+        "the root CRL revokes the issuing CA",
+      );
+      const rootCrl2 = await fetchCrl(rootExtId, "p6-root", rootCrl1.header("etag"));
+      check(
+        rootCrl2.status === 200 &&
+          rootCrl2.der?.equals(rootCrl1.der as Buffer) === false,
+        "the changed root CRL replaces the old ETag with new bytes",
+      );
+      const revokedBundle = await p6Get(p6Client, `/v1/pki/cas/${caId}/bundle`);
+      check(
+        revokedBundle.status === 200 &&
+          revokedBundle.json().status === "REVOKED" &&
+          revokedBundle.json().anchorPem === bundleJson.anchorPem,
+        "the REVOKED CA still has its bundle and anchor",
+      );
+      const afterRevoke = verifyLeaf2();
+      check(
+        afterRevoke.output.includes("certificate revoked") &&
+          /at 1 depth/.test(afterRevoke.output),
+        `leaf2 is revoked at depth 1: ${afterRevoke.output}`,
+      );
+      await expectApi(
+        () => issueFor(consumer, "acc-web", idem(), newCsr("web3.acc.example.com")),
+        { status: 409, code: "ca_not_active", reason: "revoked" },
+        "issuing under the revoked CA",
+      );
+      await expectApi(
+        () => issueFor(consumer, "acc-web", leaf2Key, text("leaf2.csr"), leaf2Usages),
+        { status: 409, code: "issuance_revoked", reason: "ca_revoked" },
+        "replaying leaf2 under the revoked CA",
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

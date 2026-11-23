@@ -1,3 +1,4 @@
+import { sha256Hex } from "../util/encoding";
 import { parseCrl } from "./asn1/crl";
 import {
   buildSignedCrl,
@@ -551,5 +552,101 @@ describe("CrlService.publish", () => {
     expect((await service.publish(ca, { trigger: "force" })).kind).toBe(
       "superseded",
     );
+  });
+});
+
+describe("CrlService.download", () => {
+  const der = Buffer.from("crl-bytes");
+  const sha = sha256Hex(der);
+  const pointer = {
+    objectKey: "crl/x",
+    sha256: sha,
+    thisUpdate: "2026-11-01T00:00:00.000Z",
+    nextUpdate: "2026-11-08T00:00:00.000Z",
+  };
+  const ext = {
+    environments: new Set(["prod"]),
+    crl: { ...pointer, numberHex: "0".repeat(39) + "7" },
+  };
+  const setup = (getBytes = jest.fn(async () => der)) => {
+    const pki = {
+      getCa: jest.fn(async (id: string) =>
+        id === "ca-known" ? { environment: "prod" } : undefined,
+      ),
+      getCaCrlState: jest.fn(async () => ({
+        published: { ...pointer, number: 4 },
+      })),
+      getExternalCa: jest.fn(async (id: string) =>
+        id === "ext-known" ? ext : undefined,
+      ),
+    };
+    const service = new CrlService({
+      pki,
+      objects: { getBytes },
+      config: { pkiBucketName: "pki" },
+    } as never);
+    return { service, getBytes };
+  };
+
+  it("scopes a CA to the environment and returns its metadata", async () => {
+    const { service } = setup();
+    await expect(
+      service.download("ca-known", [], { environment: "other" }),
+    ).rejects.toMatchObject({ details: { reason: "ca_not_found" } });
+    await expect(
+      service.download("ca-unknown", [], { environment: "prod" }),
+    ).rejects.toMatchObject({ details: { reason: "ca_not_found" } });
+    await expect(
+      service.download("ca-known", [], { environment: "prod" }),
+    ).resolves.toEqual({
+      kind: "bytes",
+      der,
+      sha256: sha,
+      numberText: "4",
+      thisUpdate: pointer.thisUpdate,
+      nextUpdate: pointer.nextUpdate,
+    });
+  });
+
+  it("scopes an external root to its environments", async () => {
+    const { service } = setup();
+    await expect(
+      service.download("ext-known", [], { environment: "other" }),
+    ).rejects.toMatchObject({ details: { reason: "external_ca_not_found" } });
+    await expect(
+      service.download("ext-known", [], { environment: "prod" }),
+    ).resolves.toMatchObject({ kind: "bytes", numberText: "0".repeat(39) + "7" });
+  });
+
+  it("applies no scope for the admin", async () => {
+    const { service } = setup();
+    await expect(service.download("ca-known")).resolves.toMatchObject({
+      kind: "bytes",
+    });
+    await expect(service.download("ext-known")).resolves.toMatchObject({
+      kind: "bytes",
+    });
+  });
+
+  it("returns the metadata on a 304 without reading the object", async () => {
+    const { service, getBytes } = setup();
+    await expect(
+      service.download("ca-known", [sha], { environment: "prod" }),
+    ).resolves.toEqual({
+      kind: "notModified",
+      sha256: sha,
+      numberText: "4",
+      thisUpdate: pointer.thisUpdate,
+      nextUpdate: pointer.nextUpdate,
+    });
+    await service.download("ca-known", ["*"], { environment: "prod" });
+    expect(getBytes).not.toHaveBeenCalled();
+  });
+
+  it("is a 503 on an integrity mismatch", async () => {
+    const { service } = setup(jest.fn(async () => Buffer.from("tampered")));
+    await expect(
+      service.download("ca-known", [], { environment: "prod" }),
+    ).rejects.toMatchObject({ statusCode: 503 });
   });
 });

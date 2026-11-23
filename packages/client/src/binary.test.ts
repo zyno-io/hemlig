@@ -166,3 +166,65 @@ test("PKI mutations send If-Match and idempotency headers", async () => {
   assert.deepEqual(requests[2]?.body, { crl: "CRL" });
   assert.match(requests[2]?.url.pathname ?? "", /\/external-cas\/ext-a+\/crl$/);
 });
+
+test("getCrl sends no authorization, a quoted If-None-Match and reads metadata", async () => {
+  const { client, requests } = clientFor((request) => ({
+    status: request.headers?.["if-none-match"] === '"same"' ? 304 : 200,
+    headers: {
+      etag: "abc",
+      "content-type": "application/pkix-crl",
+      "hemlig-crl-number": "17",
+      "hemlig-crl-this-update": "2026-01-01T00:00:00.000Z",
+      "hemlig-crl-next-update": "2026-01-08T00:00:00.000Z",
+    },
+    bytes: Uint8Array.from([0x30, 0x01]),
+  }));
+  const meta = {
+    number: "17",
+    thisUpdate: "2026-01-01T00:00:00.000Z",
+    nextUpdate: "2026-01-08T00:00:00.000Z",
+  };
+  const ok = await client.getCrl("ext-" + "a".repeat(40), "old");
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.crl, meta);
+  assert.equal(ok.etag, "abc");
+  if (ok.status === 200) assert.deepEqual(Array.from(ok.bytes), [0x30, 0x01]);
+  assert.equal(requests[0]?.headers?.authorization, undefined);
+  assert.equal(requests[0]?.headers?.["if-none-match"], '"old"');
+  assert.equal(requests[0]?.responseType, "binary");
+  assert.equal(requests[0]?.url.pathname, `/v1/pki/crls/ext-${"a".repeat(40)}`);
+  const notModified = await client.getCrl("ca-1234", "same");
+  assert.deepEqual(notModified, { status: 304, etag: "abc", crl: meta });
+});
+
+test("getCrl turns the error envelope into a HemligError with a reason", async () => {
+  const { client } = clientFor(() => ({
+    status: 404,
+    headers: {},
+    body: {
+      error: {
+        code: "not_found",
+        message: "SECRET",
+        details: { reason: "crl_missing" },
+      },
+    },
+  }));
+  await assert.rejects(client.getCrl("ca-1234"), (error: unknown) => {
+    assert.ok(error instanceof HemligError);
+    assert.equal(error.status, 404);
+    assert.deepEqual(error.details, { reason: "crl_missing" });
+    return true;
+  });
+});
+
+test("getCaBundle requests the bundle path", async () => {
+  const { client, requests } = clientFor(() => ({
+    status: 200,
+    headers: {},
+    body: { caId: "ca-1234" },
+  }));
+  const bundle = await client.getCaBundle("ca-1234");
+  assert.equal(bundle.caId, "ca-1234");
+  assert.equal(requests[0]?.url.pathname, "/v1/pki/cas/ca-1234/bundle");
+  assert.equal(requests[0]?.method, "GET");
+});

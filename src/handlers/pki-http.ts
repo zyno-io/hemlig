@@ -65,10 +65,26 @@ export const parseIfNoneMatch = (value: string | undefined): string[] =>
         .map(stripEntityTag)
         .filter((tag) => tag.length > 0);
 
+export interface CrlHeaderMetadata {
+  readonly number: string;
+  readonly thisUpdate: string;
+  readonly nextUpdate: string;
+}
+
+const crlHeaders = (crl?: CrlHeaderMetadata): Record<string, string> =>
+  crl === undefined
+    ? {}
+    : {
+        "hemlig-crl-number": crl.number,
+        "hemlig-crl-this-update": crl.thisUpdate,
+        "hemlig-crl-next-update": crl.nextUpdate,
+      };
+
 export const binaryResponse = (
   der: Buffer,
   fileName: string,
   sha256: string,
+  crl?: CrlHeaderMetadata,
 ): APIGatewayProxyStructuredResultV2 => ({
   statusCode: 200,
   isBase64Encoded: true,
@@ -78,12 +94,15 @@ export const binaryResponse = (
     "cache-control": "no-store",
     etag: sha256,
     "content-disposition": `attachment; filename="${fileName}"`,
+    ...crlHeaders(crl),
   },
 });
 
 export const notModified = (
   sha256: string,
-): APIGatewayProxyStructuredResultV2 => empty(304, { etag: sha256 });
+  crl?: CrlHeaderMetadata,
+): APIGatewayProxyStructuredResultV2 =>
+  empty(304, { etag: sha256, ...crlHeaders(crl) });
 
 /** `read` needs only the administrator JWT; the other roles map to the optional configured role claims. */
 export const assertPkiRole = (

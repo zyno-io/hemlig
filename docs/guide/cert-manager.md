@@ -205,7 +205,7 @@ The controller reuses the idempotency key `hml-cr-<metadata.uid>` for every atte
 - Pointing an issuer at another consumer means a new issuer, so every Certificate on it issues one extra certificate.
 - Changing a HemligIssuer's `spec.issuanceGrant` while a request is mid-retry makes that request's replay fail with `409 conflict`, because the grant name is part of the idempotency digest. cert-manager retries with a new request.
 - Tightening a HemligProvider's `allowedNamespaces` applies to issuance after the controller's next full reconcile pass.
-- Trust bundles are not part of this release.
+- Verifying peers needs the CA chain and CRLs. A [trust bundle](trust-bundles.md) delivers them to ConfigMaps.
 
 ## Upgrading
 

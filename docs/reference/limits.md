@@ -130,4 +130,8 @@ Object Lock Compliance retention cannot be shortened by anyone. Revisions and au
 | cert-manager issuer resync | Every 5 minutes (jittered), over requests already known to be pending | `packages/kubernetes-controller/src/pki/module.ts` |
 | cert-manager issuer remote timeout | 60 seconds per Hemlig call | `packages/kubernetes-controller/src/pki/types.ts` |
 | cert-manager issuer relist page | 500 objects, at startup, after `410 Gone` and when a CRD appears | `packages/kubernetes-controller/src/pki/module.ts` |
+| Trust bundle refresh | 300,000 ms (5 minutes), 30,000 to 3,600,000; `HEMLIG_PKI_BUNDLE_INTERVAL_MS`, `trustBundles.refreshIntervalMilliseconds`. Jittered by 10% either way | `packages/kubernetes-controller/src/pki/types.ts`, `packages/kubernetes-controller/src/pki/module.ts` |
+| Trust bundle CAs | 50 per bundle | `packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io-pki.yaml` |
+| Trust bundle ConfigMap | 1,048,576 bytes of payload (the decoded size of `binaryData`). A DER CRL is at most 1,000,000 bytes by the CA capacity bound; PEM adds about a third | `packages/kubernetes-controller/src/pki/types.ts` |
+| Trust bundle target name | 165 characters, so `<target>-crl-<issuerId>` stays within 253 | `packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io-pki.yaml` |
 | Default replicas | 1 | `packages/kubernetes-controller/chart/hemlig-controller/values.yaml:6` |

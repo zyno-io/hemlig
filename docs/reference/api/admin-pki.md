@@ -336,7 +336,7 @@ Lifecycle `POST` routes take no `If-Match`: they act on the version they loaded 
 
 ## Download a CRL
 
-`GET /v1/admin/pki/crls/{id}` returns the DER CRL (`application/pkix-crl`) with the SHA-256 as `ETag` and `Cache-Control: no-store`. Send `If-None-Match` to get `304` when it is unchanged. A CA or root with no CRL yet is `404`.
+`GET /v1/admin/pki/crls/{id}` returns the DER CRL (`application/pkix-crl`) with the SHA-256 as `ETag` and `Cache-Control: no-store`. Send `If-None-Match` to get `304` when it is unchanged. A CA or root with no CRL yet is `404`. The response also carries `Hemlig-Crl-Number`, `Hemlig-Crl-This-Update` and `Hemlig-Crl-Next-Update`, as on the [consumer CRL route](pki.md#crls).
 
 ## Upload a root CRL
 

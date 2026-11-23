@@ -1,6 +1,7 @@
 import {
   assertPkiRole,
   binaryResponse,
+  notModified,
   parseIfNoneMatch,
   parseObjectBody,
   requireIdempotencyKey,
@@ -54,6 +55,26 @@ describe("pki-http", () => {
         "content-disposition": 'attachment; filename="ca-x-1.crl"',
       },
     });
+  });
+
+  it("adds the CRL metadata headers only when given", () => {
+    const crl = {
+      number: "7",
+      thisUpdate: "2026-11-01T00:00:00.000Z",
+      nextUpdate: "2026-11-08T00:00:00.000Z",
+    };
+    const expected = {
+      "hemlig-crl-number": "7",
+      "hemlig-crl-this-update": crl.thisUpdate,
+      "hemlig-crl-next-update": crl.nextUpdate,
+    };
+    expect(binaryResponse(Buffer.alloc(1), "f.crl", "abc", crl).headers).toMatchObject(expected);
+    expect(notModified("abc", crl)).toMatchObject({
+      statusCode: 304,
+      headers: { etag: "abc", ...expected },
+    });
+    expect(binaryResponse(Buffer.alloc(1), "f.crl", "abc").headers).not.toHaveProperty("hemlig-crl-number");
+    expect(notModified("abc").headers).not.toHaveProperty("hemlig-crl-number");
   });
 
   it("falls back to the administrator when no role is configured", () => {
