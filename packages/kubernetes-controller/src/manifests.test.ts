@@ -133,3 +133,17 @@ test("both deployments set HEMLIG_PKI_BUNDLE_INTERVAL_MS", () => {
     /HEMLIG_PKI_BUNDLE_INTERVAL_MS\s*\n\s*value: \{\{ include "hemlig-controller\.bundleIntervalMs" \. \| quote \}\}/,
   );
 });
+
+test("the chart renders controller intervals as integers, not floats", () => {
+  // Helm parses YAML numbers as float64, so `quote` alone renders 3600000 as "3.6e+06".
+  const deployment = read(`${chart}/templates/deployment.yaml`);
+  for (const key of [
+    "reconcileIntervalMilliseconds",
+    "sourceDebounceMilliseconds",
+  ]) {
+    assert.match(
+      deployment,
+      new RegExp(`\\.Values\\.controller\\.${key} \\| int64 \\| quote`),
+    );
+  }
+});
