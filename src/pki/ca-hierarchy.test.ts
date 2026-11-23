@@ -811,6 +811,22 @@ describe("CA revoke of an INTERMEDIATE", () => {
     expect(second.h.pki.revokeIntermediateCa).toHaveBeenCalledTimes(3);
   });
 
+  it("reruns once when the root's CRL revision moved, and records the new revision", async () => {
+    const { h, root, child } = await setup();
+    h.pki.revokeIntermediateCa.mockImplementationOnce(async () => {
+      const crl = h.state.crls.get(root.caId)!;
+      h.state.crls.set(root.caId, { ...crl, revision: crl.revision + 3 });
+      return { kind: "canceled" as const, failed: ["crl"] };
+    });
+    const key = h.key();
+    await h.service.revoke(admin, key, child.caId, {});
+    const calls = h.pki.revokeIntermediateCa.mock.calls.map((call) => call[0]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({ expectCrlRevision: 0 });
+    expect(calls[1]).toMatchObject({ expectCrlRevision: 3 });
+    expect(calls[1]!.idempotency.result).toMatchObject({ crlRevision: 4 });
+  });
+
   it("replays with the same body and recomputes crlPublished", async () => {
     const { h, child } = await setup();
     const key = h.key();

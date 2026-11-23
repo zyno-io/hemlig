@@ -816,6 +816,8 @@ export class TrustBundleReconciler {
           (view.status === "REVOKED" || view.drained)
         );
       }
+      // An accepted CA with no view this pass (its fetch failed) may depend on any root: keep every root slot.
+      if (accepted.some((id) => !views.has(id))) return true;
       // A Hemlig root slot named by listed children: needed while one of them can still validate.
       const dependents = accepted
         .map((id) => views.get(id))

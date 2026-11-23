@@ -1607,6 +1607,38 @@ describe("Phase 7 hierarchy transactions", () => {
       expectNoUnusedPlaceholders(items);
     });
 
+    it("conditions the revision bump on the revision that was read", () => {
+      const items = buildRevokeIntermediateTransaction("control", {
+        idempotency,
+        ca: caRecord(),
+        newVersion: "pkv-new",
+        now: now.toISOString(),
+        reason: "caCompromise",
+        by: actor,
+        evidence: "parent:ca-root-one",
+        expectCrlRevision: 4,
+        row: { mode: "entry", notAfter },
+      });
+      expect(items[4]!.item.Update).toMatchObject({
+        ConditionExpression: "attribute_exists(pk) AND #revision = :expect",
+        ExpressionAttributeValues: { ":expect": 4 },
+      });
+      expectNoUnusedPlaceholders(items);
+      const leaf = buildRevokeTransaction("control", {
+        idempotency,
+        caId: "ca-prod-one",
+        serial: "0a1b",
+        notAfter,
+        now: now.toISOString(),
+        reason: "superseded",
+        by: actor,
+        mode: "entry",
+        expectCrlRevision: 0,
+      });
+      expect(leaf[3]!.item.Update!.ExpressionAttributeValues).toMatchObject({ ":expect": 0 });
+      expectNoUnusedPlaceholders(leaf);
+    });
+
     it("expired mode has three items and no entry or revision bump", () => {
       const items = revoke({ mode: "expired", notAfter });
       expect(items.map((item) => item.slot)).toEqual(["idempotency", "profile", "certificate"]);

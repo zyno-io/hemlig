@@ -506,10 +506,13 @@ export class CertificateService {
       (flags.crlEntry &&
         crl?.published !== undefined &&
         cert.revocation !== undefined &&
-        // `thisUpdate` is floored to the second and `at` is not.
-        crl.published.thisUpdate >= `${cert.revocation.at.slice(0, 19)}.000Z` &&
-        (flags.crlRevision === undefined ||
-          crl.published.revision >= flags.crlRevision));
+        (flags.crlRevision === undefined
+          ? // A receipt from before the recorded revision keeps its original full-precision comparison.
+            crl.published.thisUpdate >= cert.revocation.at
+          : // `thisUpdate` is floored to the second and `at` is not.
+            crl.published.thisUpdate >=
+              `${cert.revocation.at.slice(0, 19)}.000Z` &&
+            crl.published.revision >= flags.crlRevision));
     const crlNumber =
       flags.crlNumber ??
       (crlPublished === true ? crl?.published?.number : undefined);
@@ -688,6 +691,9 @@ export class CertificateService {
           by: actor,
           expired,
           entryLive,
+          ...(crlRevision === undefined
+            ? {}
+            : { expectCrlRevision: crlRevision - 1 }),
         });
       }
       if (outcome.kind === "canceled") {

@@ -62,7 +62,7 @@ The request body fields:
 | `parentCaId` | `INTERMEDIATE` | | `ca-` ID of an `ACTIVE` `ROOT` in the same environment. Refused for other kinds (`parent_not_allowed`), and required for an intermediate (`parent_required`) |
 | `validitySeconds` | No | 315,360,000 (`ROOT`), 31,536,000 (`INTERMEDIATE`) | `ROOT` 7,776,000 to 630,720,000; `INTERMEDIATE` 2,592,000 to 630,720,000. Refused for the external kind (`validity_not_allowed`). An intermediate's is clamped to its root's remaining validity |
 | `keyAlgorithm`         | Yes      |                | `ECDSA_P256`, `ECDSA_P384`, `RSA_3072`, `RSA_4096` or `ED25519`                                                                            |
-| `subject`              | Yes      |                | `commonName` (required), `organization`, `organizationalUnit`, `country`, `locality`, `state`. Printable ASCII only                        |
+| `subject`              | Yes      |                | `commonName` (required), `organization`, `organizationalUnit`, `country`, `locality`, `state`. Printable ASCII only. `country` must be exactly two letters for `ROOT` and `INTERMEDIATE` (`400 bad_request`) |
 | `requestedConstraints` | No       | none           | `nameConstraints` (`permitted` and `excluded`, each with `dns`, `ip` and `uri` lists) and `extendedKeyUsages` (`serverAuth`, `clientAuth`) |
 | `policy`               | No       | defaults below | See the policy table                                                                                                                       |
 | `crl.validitySeconds`  | No       | `604800`       | Same as `policy.crlValiditySeconds`; if both are sent they must match                                                                      |

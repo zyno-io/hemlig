@@ -1763,6 +1763,9 @@ export class CaService {
       ...(invalidityDate === undefined ? {} : { invalidityDate }),
       by: actor,
       evidence: `parent:${parentCaId}`,
+      ...(crlRevision === undefined
+        ? {}
+        : { expectCrlRevision: crlRevision - 1 }),
       ...(mode === undefined || row === undefined
         ? {}
         : { row: { mode, notAfter: row.notAfter } }),
@@ -1867,16 +1870,18 @@ export class CaService {
       ca.revokedAt !== undefined
     ) {
       const parentCrl = await this.pki.getCaCrlState(ca.parentCaId);
-      // `thisUpdate` is floored to the second and `revokedAt` is not: compare against the floored time.
-      const revokedSecond = `${ca.revokedAt.slice(0, 19)}.000Z`;
+      // With a recorded revision `thisUpdate` (floored to the second) is compared against the floored `revokedAt`;
+      // without one the original full-precision comparison stands.
+      const published = parentCrl?.published;
       if (
-        parentCrl?.published !== undefined &&
-        parentCrl.published.thisUpdate >= revokedSecond &&
-        (flags.crlRevision === undefined ||
-          parentCrl.published.revision >= flags.crlRevision)
+        published !== undefined &&
+        (flags.crlRevision === undefined
+          ? published.thisUpdate >= ca.revokedAt
+          : published.thisUpdate >= `${ca.revokedAt.slice(0, 19)}.000Z` &&
+            published.revision >= flags.crlRevision)
       ) {
         crlPublished = true;
-        crlNumber = parentCrl.published.number;
+        crlNumber = published.number;
       }
     }
     return this.revokeResult(

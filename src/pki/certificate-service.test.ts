@@ -536,3 +536,69 @@ describe("CertificateService.revoke replay", () => {
     expect(stale.body.crlNumber).toBeUndefined();
   });
 });
+
+describe("CertificateService.revoke CRL revision race", () => {
+  it("reruns once when the CRL revision moved, then conditions on the revision it read", async () => {
+    const { h, pki, service } = await setup();
+    const cert = seed(h, certificate(h, "0a1b"));
+    h.state.crl = { revision: 4, lastNumber: 6 };
+    pki.revokeCertificate.mockImplementationOnce(async () => {
+      h.state.crl = { revision: 6, lastNumber: 6 };
+      return { kind: "canceled", failed: ["crl"] };
+    });
+    await service.revoke(admin, "key-rev-race001", "ca-test-one", cert.serial, {});
+    const calls = pki.revokeCertificate.mock.calls.map((call) => call[0] as any);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({ expectCrlRevision: 4 });
+    expect(calls[0].idempotency.result.crlRevision).toBe(5);
+    expect(calls[1]).toMatchObject({ expectCrlRevision: 6 });
+    expect(calls[1].idempotency.result.crlRevision).toBe(7);
+  });
+});
+
+describe("CertificateService.revoke legacy receipts", () => {
+  it("keeps the full-precision comparison when the receipt has no revision", async () => {
+    const { h, pki, service } = await setup();
+    h.clock.now = new Date("2026-11-22T12:00:00.789Z");
+    const cert = seed(
+      h,
+      certificate(h, "0a1b", {
+        status: "REVOKED",
+        revocation: { at: "2026-11-22T12:00:00.789Z", reason: "superseded", by: admin },
+      }),
+    );
+    h.state.human.set("key-rev-legacy1", {
+      operationType: "pki.certificate.revoke",
+      requestDigest: "x",
+      status: "SUCCEEDED",
+      result: { caId: "ca-test-one", serial: cert.serial, crlEntry: true, changed: true },
+    });
+    const published = {
+      revision: 9,
+      lastNumber: 7,
+      published: {
+        number: 7,
+        objectKey: "k",
+        sha256: "s",
+        thisUpdate: "2026-11-22T12:00:00.000Z",
+        nextUpdate: "2026-11-29T12:00:00.000Z",
+        revision: 9,
+        entryCount: 1,
+      },
+    };
+    h.state.crl = published;
+    // A CRL published before the revocation instant, within the same second, does not count for a legacy receipt.
+    const replay = (service as any).replayRevoke(h.state.human.get("key-rev-legacy1"));
+    const result = await replay;
+    expect(result.body.crlPublished).toBe(false);
+    h.state.crl = {
+      ...published,
+      published: { ...published.published, thisUpdate: "2026-11-22T12:00:01.000Z" },
+    };
+    expect((await (service as any).replayRevoke(h.state.human.get("key-rev-legacy1"))).body).toMatchObject({
+      crlPublished: true,
+      crlNumber: 7,
+    });
+    void pki;
+  });
+});

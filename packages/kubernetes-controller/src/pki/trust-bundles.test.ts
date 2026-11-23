@@ -1320,3 +1320,22 @@ test("the root CRL is required only while a listed child can still validate", as
   assert.equal(crlEntry(drained, ROOT_ID).state, "Stale");
   assert.equal(drained.ready()?.reason, "CaDrained");
 });
+
+test("a root CRL stays required while an accepted child's view is missing", async () => {
+  const stalePast = "2026-06-08T00:00:00.000Z";
+  const r = hemligSetup(
+    ["ca-hem1", "ca-hem2"],
+    {
+      "ca-hem1": childView("ca-hem1", { drained: true }),
+      "ca-hem2": childView("ca-hem2"),
+    },
+    stalePast,
+  );
+  await r.run();
+  // The live child's bundle fetch now fails; the drained child alone would make the root CRL optional.
+  r.server.views.set("ca-hem2", fault(503, "service_unavailable"));
+  await r.scheduler.advance(8 * 86_400_000);
+  await r.run();
+  assert.equal(crlEntry(r, ROOT_ID).state, "Stale");
+  assert.notEqual(r.ready()?.status, "True");
+});

@@ -181,6 +181,32 @@ export const verifyPkiHierarchyOnMiniStack = async (
   const otherEnvironment = "ministack-p7-other";
   const admin: Actor = { type: "human", id: `hierarchy-admin-${suffix}` };
   const auditEvents: Record<string, unknown>[] = [];
+  // The audit targets human CA create and revoke return: the admin handler would write them, this suite calls the
+  // service directly, so they are collected here and scanned with the events.
+  const humanTargets: { operation: string; target: unknown }[] = [];
+  const recordTargets = (cas: CaService): CaService =>
+    new Proxy(cas, {
+      get(object, property) {
+        const value = Reflect.get(object, property, object) as unknown;
+        if (typeof value !== "function") {
+          return value;
+        }
+        if (property === "create" || property === "revoke") {
+          return async (...args: unknown[]) => {
+            const result = (await (
+              value as (...a: unknown[]) => Promise<{ auditTarget: unknown }>
+            ).apply(object, args)) as { auditTarget: unknown };
+            humanTargets.push({
+              operation:
+                property === "create" ? "pki.ca.create" : "pki.ca.revoke",
+              target: result.auditTarget,
+            });
+            return result;
+          };
+        }
+        return (value as (...a: unknown[]) => unknown).bind(object);
+      },
+    });
   const audit = {
     write: async (event: Record<string, unknown>) => {
       auditEvents.push(event);
@@ -240,7 +266,7 @@ export const verifyPkiHierarchyOnMiniStack = async (
       deps,
       crls,
       capacity,
-      cas: new CaService(deps, crls),
+      cas: recordTargets(new CaService(deps, crls)),
       externalCas: new ExternalCaService(deps),
       grants: new GrantService(deps),
       issuance: new IssuanceService(deps, capacity),
@@ -584,7 +610,8 @@ export const verifyPkiHierarchyOnMiniStack = async (
         row.status === "ISSUED",
       "the root's inventory row records the child",
     );
-    const { hourSk } = quotaWindows(new Date());
+    // The window the commit charged: the child's stored creation time, not the clock now.
+    const { hourSk } = quotaWindows(new Date(childA.createdAt));
     check(
       (await pki.getQuotaCount(pkiKeys.adminQuota(rootA.caId, hourSk))) === 1 &&
         (await pki.getQuotaCount(pkiKeys.caQuota(rootA.caId, hourSk))) === 1,
@@ -684,7 +711,10 @@ export const verifyPkiHierarchyOnMiniStack = async (
     );
     check(
       (await pki.getQuotaCount(
-        pkiKeys.caQuota(root.caId, quotaWindows(new Date()).hourSk),
+        pkiKeys.caQuota(
+          root.caId,
+          quotaWindows(new Date(child.createdAt)).hourSk,
+        ),
       )) === 1,
       "the CA counter was charged once",
     );
@@ -1188,8 +1218,13 @@ export const verifyPkiHierarchyOnMiniStack = async (
 
   // ---- 9. Audit hygiene --------------------------------------------------------------------------
   check(
-    !JSON.stringify(auditEvents).includes("-----BEGIN"),
-    "no audit event contains PEM",
+    humanTargets.some((entry) => entry.operation === "pki.ca.create") &&
+      humanTargets.some((entry) => entry.operation === "pki.ca.revoke"),
+    "a human create and a human revoke target were scanned",
+  );
+  check(
+    !JSON.stringify([auditEvents, humanTargets]).includes("-----BEGIN"),
+    "no audit event or human audit target contains PEM",
   );
   done("no audit event contains PEM");
 

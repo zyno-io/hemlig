@@ -1897,24 +1897,35 @@ export interface RevokeTransaction {
   readonly expired?: boolean;
   /** `upgrade`: the live (TTL-less) revocation entry exists. */
   readonly entryLive?: boolean;
+  /** The CRL revision read before the commit: the bump fails, and the caller reruns, if it moved. */
+  readonly expectCrlRevision?: number;
 }
 
 const crlRevisionBump = (
   tableName: string,
   id: string,
   now: string,
+  expectRevision?: number,
 ): TransactItem => ({
   Update: {
     TableName: tableName,
     Key: { ...pkiKeys.caCrl(id) },
     UpdateExpression:
       "SET #revision = #revision + :one, #dirtySince = if_not_exists(#dirtySince, :now)",
-    ConditionExpression: "attribute_exists(pk)",
+    // With `expectRevision` the bump is conditioned on the revision the caller read, so a receipt records its own.
+    ConditionExpression:
+      expectRevision === undefined
+        ? "attribute_exists(pk)"
+        : "attribute_exists(pk) AND #revision = :expect",
     ExpressionAttributeNames: {
       "#revision": "revision",
       "#dirtySince": "dirtySince",
     },
-    ExpressionAttributeValues: { ":one": 1, ":now": now },
+    ExpressionAttributeValues: {
+      ":one": 1,
+      ":now": now,
+      ...(expectRevision === undefined ? {} : { ":expect": expectRevision }),
+    },
   },
 });
 
@@ -2069,7 +2080,12 @@ export const buildRevokeTransaction = (
       });
       items.push({
         slot: "crl",
-        item: crlRevisionBump(tableName, input.caId, input.now),
+        item: crlRevisionBump(
+          tableName,
+          input.caId,
+          input.now,
+          input.expectCrlRevision,
+        ),
       });
     }
     return items;
@@ -2086,7 +2102,12 @@ export const buildRevokeTransaction = (
     items.push({ slot: "entry", item: revocationEntryPut(tableName, input) });
     items.push({
       slot: "crl",
-      item: crlRevisionBump(tableName, input.caId, input.now),
+      item: crlRevisionBump(
+          tableName,
+          input.caId,
+          input.now,
+          input.expectCrlRevision,
+        ),
     });
     return items;
   }
@@ -2115,6 +2136,8 @@ export interface RevokeIntermediateTransaction {
   readonly invalidityDate?: string;
   readonly by: Actor;
   readonly evidence: string;
+  /** The root's CRL revision read before the commit (entry mode): the bump fails if it moved. */
+  readonly expectCrlRevision?: number;
   /** Absent when the parent's row is TTL'd or already REVOKED. */
   readonly row?: {
     readonly mode: "entry" | "expired" | "inventory";
@@ -2224,7 +2247,12 @@ export const buildRevokeIntermediateTransaction = (
       });
       items.push({
         slot: "crl",
-        item: crlRevisionBump(tableName, ca.parentCaId, input.now),
+        item: crlRevisionBump(
+          tableName,
+          ca.parentCaId,
+          input.now,
+          input.expectCrlRevision,
+        ),
       });
     }
   }

@@ -512,6 +512,24 @@ describe("ROOT and INTERMEDIATE creation", () => {
     ).toBe(3600);
   });
 
+  it("requires a two-letter country for the Hemlig kinds only", () => {
+    const withCountry = (extra: Record<string, unknown>, country: string) => ({
+      ...extra,
+      subject: { ...base.subject, country },
+    });
+    for (const extra of [root, intermediate]) {
+      expect(parseCreateCaRequest(withCountry(extra, "US")).subject.C).toBe(
+        "US",
+      );
+      for (const bad of ["USA", "U", "1A", ""]) {
+        expect(() => parseCreateCaRequest(withCountry(extra, bad))).toThrow();
+      }
+    }
+    expect(parseCreateCaRequest(withCountry(base, "USA")).subject.C).toBe(
+      "USA",
+    );
+  });
+
   it("names the three kinds when refusing another", () => {
     try {
       parseCreateCaRequest({ ...base, kind: "BOGUS" });

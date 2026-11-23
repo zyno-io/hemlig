@@ -669,6 +669,14 @@ export const parseCreateCaRequest = (body: unknown): CreateCaInput => {
     throw badRequest("keyAlgorithm is not supported.");
   }
   const subject = parseSubject(input.subject);
+  // countryName is a two-letter PrintableString in a certificate Hemlig signs itself.
+  if (
+    kind !== "EXTERNAL_INTERMEDIATE" &&
+    subject.C !== undefined &&
+    !/^[A-Za-z]{2}$/.test(subject.C)
+  ) {
+    throw badRequest("subject.country must be exactly two letters.");
+  }
   const requested =
     input.requestedConstraints === undefined
       ? ({ pathLen: 0 } as CaRecord["requested"])
