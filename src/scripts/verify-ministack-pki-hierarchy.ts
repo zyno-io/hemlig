@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  X509Certificate,
+} from "node:crypto";
+import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +33,10 @@ import { WrappedCaSigner } from "../pki/signer";
 import { buildCaSubject } from "../pki/subject";
 import type { CaRecord, IssuanceGrantRecord } from "../pki/types";
 import { parseRawCsr } from "../pki/asn1/csr";
+import { createPkiIssuerHandler } from "../handlers/pki-issuer";
+import { pkiIssuerRoutes } from "../handlers/pki-issuer-routes";
+import { createErrorResponder } from "../handlers/request";
+import type { PkiApplication } from "../pki/app";
 import { DynamoCursorStore } from "../repositories/cursor-store";
 import { DynamoRepository } from "../repositories/dynamo";
 import { ObjectStore } from "../repositories/object-store";
@@ -1069,6 +1079,111 @@ export const verifyPkiHierarchyOnMiniStack = async (
       "activating an external CA under a root with a Hemlig ROOT's subject",
     );
     done("an external root cannot take a Hemlig ROOT's subject");
+  }
+
+  // ---- 10. The consumer bundle route --------------------------------------------------------------
+  {
+    const app = {
+      repository,
+      pki,
+      crls: svc.crls,
+      audit,
+      now: () => new Date(),
+    } as unknown as PkiApplication;
+    const handler = createPkiIssuerHandler(
+      pkiIssuerRoutes,
+      createErrorResponder(() => app),
+    );
+    const consumer = await makeRoot({
+      subject: { CN: `p7 consumer ${suffix}` },
+    });
+    const fingerprint = createHash("sha256")
+      .update(new X509Certificate(consumer.pem).raw)
+      .digest("hex");
+    await doc.send(
+      new PutCommand({
+        TableName: table,
+        Item: {
+          pk: `IDENTITY#${fingerprint}`,
+          sk: "PROFILE",
+          fingerprint,
+          consumerId: `p7-bundle-${suffix}`,
+          environment,
+          kind: "api",
+          status: "ACTIVE",
+          notBefore: new Date(Date.now() - 3_600_000).toISOString(),
+          notAfter: new Date(Date.now() + 86_400_000).toISOString(),
+        },
+      }),
+    );
+    const bundleOf = async (caId: string): Promise<Record<string, any>> => {
+      const result = await handler({
+        rawPath: `/v1/pki/cas/${caId}/bundle`,
+        headers: {},
+        requestContext: {
+          requestId: randomUUID(),
+          http: { method: "GET", sourceIp: "203.0.113.9" },
+          authentication: { clientCert: { clientCertPem: consumer.pem } },
+        },
+      } as unknown as APIGatewayProxyEventV2);
+      check(
+        result.statusCode === 200,
+        `bundle of ${caId}: ${result.statusCode}`,
+      );
+      return JSON.parse(result.body ?? "{}") as Record<string, any>;
+    };
+    const der = (pem: string): Buffer => fromPem(pem, "CERTIFICATE");
+    const root = await createRoot("p7-bundle-root");
+    const child = await createChild(root, "p7-bundle-child");
+    const childBundle = await bundleOf(child.caId);
+    const rootBundle = await bundleOf(root.caId);
+    check(
+      der(childBundle.anchorPem).equals(der(root.certificatePem ?? "")),
+      "the child's anchor is the root certificate",
+    );
+    check(
+      der(
+        `${childBundle.chainPem.split("-----END CERTIFICATE-----")[0]}-----END CERTIFICATE-----\n`,
+      ).equals(der(child.certificatePem ?? "")),
+      "the first chain block is the child",
+    );
+    check(
+      JSON.stringify(childBundle.crlIssuers) ===
+        JSON.stringify([
+          { id: child.caId, source: "GENERATED" },
+          { id: root.caId, source: "GENERATED" },
+        ]) && childBundle.anchorTrusted === true,
+      `the child's CRL issuers and trust: ${JSON.stringify(childBundle.crlIssuers)}`,
+    );
+    check(
+      rootBundle.chainPem === "" &&
+        rootBundle.anchorTrusted === true &&
+        der(rootBundle.anchorPem).equals(der(root.certificatePem ?? "")) &&
+        JSON.stringify(rootBundle.crlIssuers) ===
+          JSON.stringify([{ id: root.caId, source: "GENERATED" }]),
+      "the ROOT's own bundle has an empty chain",
+    );
+    // A distrust whose walk is missed: both bundles already show the anchor as untrusted.
+    const missed = build({
+      pki: stubFirst(pki, "queryDirectory", async () => []),
+    });
+    await missed.cas.revoke(admin, idem(), root.caId, {});
+    check(
+      (await reload(child.caId)).status === "ACTIVE",
+      "the child is still ACTIVE",
+    );
+    const childAfter = await bundleOf(child.caId);
+    const rootAfter = await bundleOf(root.caId);
+    check(
+      childAfter.anchorTrusted === false &&
+        rootAfter.anchorTrusted === false &&
+        childAfter.status === "ACTIVE" &&
+        rootAfter.status === "REVOKED",
+      "both bundles show the anchor as untrusted",
+    );
+    done(
+      "the bundle route for a ROOT and an INTERMEDIATE, before and after a missed distrust walk",
+    );
   }
 
   // ---- 9. Audit hygiene --------------------------------------------------------------------------

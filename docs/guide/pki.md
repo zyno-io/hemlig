@@ -237,7 +237,7 @@ A root refuses the leaf policy fields `--max-leaf-lifetime` and `--leaf-key-algo
 
 Creating an intermediate checks the parent first:
 
-- The parent is an `ACTIVE` `ROOT` in the same environment, with a usable key and a validity that still has at least 30 days to run.
+- The parent is an `ACTIVE` `ROOT` in the same environment, with a usable key, and an end date that leaves the intermediate at least 30 days of validity.
 - The intermediate's name constraints and extended key usages are no broader than the root's. When you omit them it inherits the root's.
 - It is a subordinate of a root only: an intermediate cannot sign another CA.
 
