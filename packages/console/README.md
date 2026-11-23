@@ -53,16 +53,37 @@ before sign-in, and in OIDC mode there is no session yet to authenticate the
 call with.
 
 **Metadata refreshes normally.** Routine control-plane reads do not create
-audit evidence, so `main.ts` revalidates metadata on focus, mount, and
+audit evidence (PKI is the exception: see "PKI reads are audited" below), so `main.ts` revalidates metadata on focus, mount, and
 reconnect. Polling stays off, and list views still render from their page
 response rather than adding an N+1 of detail requests.
+
+**PKI reads are audited.** Every PKI `GET` and `evaluate` writes an Object Lock
+read event, so the PKI views must not refetch freely:
+
+- Every PKI query spreads `PKI_QUERY_OPTIONS` (`src/api/pki-query.ts`): a
+  60 s `staleTime`, and no refetch on window focus or reconnect. Keys come from
+  `pkiKeys`, all prefixed `["pki", ...]`.
+- No N+1. A list never fetches details row by row; the overview never calls
+  `getPkiCa`.
+- Validate and evaluate run only on an explicit action (a click or Enter), never
+  on typing or mount.
+- The consumer "Certificate grants" tab mounts with `v-if` only while it is
+  selected, so opening a consumer does not read PKI state.
+- The console mirrors the client's PKI methods in `src/api/client.ts` and does
+  not import `@zyno-io/hemlig-client`, even as types: the client is
+  CommonJS-only, and `yarn build:cdk` type-checks the console before any other
+  workspace has been built.
 
 **Idempotency is asymmetric.** Secret create, update, and payload routes
 hard-conflict on a reused key and never replay the original response, so an
 ambiguous outcome must be resolved by re-reading and comparing
 `controlVersionId` — never by retrying. Consumer enroll, rotate, and revoke do
-replay by key, so retrying the same key is correct there.
-`useGuardedMutation` encodes both halves; pick the right `family`.
+replay by key, so retrying the same key is correct there. The `pki` family
+replays too, but narrower: only a network failure, `internal_error` or
+`service_unavailable` is ambiguous (retry with the same key). Every other
+error, including each PKI `409` (`name_in_use`, `key_not_disabled`,
+`grant_exists`...), is a definitive refusal and a plain failure; a `412` is
+`stale`. `useGuardedMutation` encodes all three; pick the right `family`.
 
 **A `412` is never retried automatically.** It means someone else advanced the
 control revision. The draft is preserved and the decision handed to the

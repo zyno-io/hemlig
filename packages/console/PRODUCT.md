@@ -39,9 +39,18 @@ change confidently and see exactly what state a secret or identity is in.
   ACLs, write payloads, view revisions, archive.
 - Consumers: list, enroll (with an optional in-browser CSR generator), rotate
   and revoke API identities, revoke a secret from an agent grant.
+- PKI: list CAs and offline roots; create an external, root or intermediate
+  CA (with the external-root recommendation); activate a pending external CA;
+  download certificates and CRLs; upload a root CRL; retire, abandon and
+  destroy the key of a CA; edit issuance grants with validate and a tester for
+  the saved grant; revoke a certificate; revoke a consumer's certificates in
+  bulk. PKI reads are audited, so these views do not refetch on focus.
 - Environments, audit log, truststore status, about.
 - Creating agent grants and issuing bootstrap capabilities are not in the
   console.
+- Not in the console, by decision: CA policy edit, CA revoke and local
+  distrust, admin certificate issuance, and bulk grant migration. Use the CLI
+  or Pulumi.
 - Behaviour and tests in `src/**/*.test.ts` are the contract; visual work must
   not change them.
 

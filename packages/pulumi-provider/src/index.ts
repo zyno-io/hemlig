@@ -11,6 +11,14 @@ import {
   type SecretPayload,
 } from "@zyno-io/hemlig-client";
 import { NodeHttpsTransport } from "@zyno-io/hemlig-client/node";
+import {
+  HemligCertificateAuthority,
+  HemligIssuanceGrant,
+  type HemligCertificateAuthorityArgs,
+  type HemligIssuanceGrantArgs,
+} from "./pki";
+
+export * from "./pki";
 
 export interface HemligProviderArgs {
   /** Admin custom-domain URL, for example https://admin.example.com. */
@@ -48,6 +56,28 @@ export class Provider extends pulumi.ComponentResource {
     opts?: pulumi.CustomResourceOptions,
   ): HemligAgentGrant {
     return new HemligAgentGrant(name, args, this.adminUrl, opts);
+  }
+
+  /**
+   * Declares a PKI certificate authority. A CA is never replaced: immutable
+   * changes fail at preview with the rollover procedure, and destroying the
+   * resource retires an ACTIVE CA but never destroys its key.
+   */
+  public certificateAuthority(
+    name: string,
+    args: HemligCertificateAuthorityArgs,
+    opts?: pulumi.CustomResourceOptions,
+  ): HemligCertificateAuthority {
+    return new HemligCertificateAuthority(name, args, this.adminUrl, opts);
+  }
+
+  /** Declares a PKI issuance grant for one consumer and CA. */
+  public issuanceGrant(
+    name: string,
+    args: HemligIssuanceGrantArgs,
+    opts?: pulumi.CustomResourceOptions,
+  ): HemligIssuanceGrant {
+    return new HemligIssuanceGrant(name, args, this.adminUrl, opts);
   }
 }
 

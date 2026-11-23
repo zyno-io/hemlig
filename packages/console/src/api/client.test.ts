@@ -340,3 +340,162 @@ describe("HemligApi transport", () => {
     expect(JSON.parse(String(calls[0]?.body))).toEqual({ name: "staging" });
   });
 });
+
+describe("HemligApi PKI transport", () => {
+  const actor = { type: "human", id: "a" };
+  const grantBody = {
+    consumerId: "c/1",
+    environment: "prod",
+    name: "web",
+    uid: "pkg-1",
+    caId: "ca-abc",
+    status: "ACTIVE",
+    expired: false,
+    policy: {},
+    policyDigest: "d",
+    quotas: { perHour: 1, perDay: 2 },
+    version: "v7",
+    createdAt: "2026-01-01T00:00:00Z",
+    createdBy: actor,
+    updatedAt: "2026-01-01T00:00:00Z",
+    updatedBy: actor,
+  };
+  const caBody = {
+    caId: "ca-abc",
+    environment: "prod",
+    name: "prod-issuing-1",
+    kind: "EXTERNAL_INTERMEDIATE",
+    status: "ACTIVE",
+    version: "v3",
+    keyAlgorithm: "ECDSA_P256",
+    keyState: "ACTIVE",
+    createdAt: "2026-01-01T00:00:00Z",
+    key: { custody: "KMS", algorithm: "ECDSA_P256", spkiSha256: "x", state: "ACTIVE" },
+    subject: { commonName: "x" },
+    subjectDn: "CN=x",
+    requestedConstraints: {},
+    crlIssuers: [],
+    policy: {
+      issueLeaves: true,
+      issueSubordinates: false,
+      maxLeafLifetimeSeconds: 300,
+      leafKeyAlgorithms: [],
+      capacity: 1,
+      issuancePerHour: 1,
+      crlValiditySeconds: 3600,
+    },
+    maxIssueLifetimeEverSeconds: 1,
+    createdBy: actor,
+    drained: false,
+  };
+
+  const capture = (body: unknown) => {
+    const calls: { url: URL; init: RequestInit }[] = [];
+    const fetchImpl = vi.fn(async (url: unknown, init?: RequestInit) => {
+      calls.push({ url: url as URL, init: init ?? {} });
+      return jsonOk(body);
+    }) as unknown as typeof fetch;
+    return { calls, api: new HemligApi(config, tokens, fetchImpl) };
+  };
+  const header = (init: RequestInit, name: string): string | undefined =>
+    (init.headers as Record<string, string>)[name];
+
+  it("encodes every PKI path segment", async () => {
+    const { calls, api } = capture(grantBody);
+    await api.getAdminIssuanceGrant("c/1", "we b");
+    expect(calls[0]?.url.pathname).toBe(
+      "/v1/admin/pki/consumers/c%2F1/issuance-grants/we%20b",
+    );
+  });
+
+  it("quotes If-Match on grant PUT, grant DELETE and CA DELETE, with a key", async () => {
+    const grant = capture(grantBody);
+    await grant.api.updateIssuanceGrant(
+      "c1",
+      "web",
+      "v7",
+      { caId: "ca-abc" } as never,
+      "key-0001-aaaa",
+    );
+    await grant.api.deleteIssuanceGrant("c1", "web", "v7", "key-0002-aaaa");
+    expect(grant.calls.map((c) => c.init.method)).toEqual(["PUT", "DELETE"]);
+    expect(header(grant.calls[0]!.init, "if-match")).toBe('"v7"');
+    expect(header(grant.calls[1]!.init, "if-match")).toBe('"v7"');
+    expect(header(grant.calls[0]!.init, "idempotency-key")).toBe("key-0001-aaaa");
+    expect(header(grant.calls[1]!.init, "idempotency-key")).toBe("key-0002-aaaa");
+
+    const ca = capture(caBody);
+    await ca.api.deletePkiCa("ca-abc", "v3", "key-0003-aaaa");
+    expect(ca.calls[0]?.init.method).toBe("DELETE");
+    expect(header(ca.calls[0]!.init, "if-match")).toBe('"v3"');
+    expect(header(ca.calls[0]!.init, "idempotency-key")).toBe("key-0003-aaaa");
+  });
+
+  it("sends validateOnly with no idempotency key", async () => {
+    const result = { valid: true, errors: [], warnings: [] };
+    const { calls, api } = capture(result);
+    await api.validateIssuanceGrantCreate("c1", { name: "web" } as never);
+    await api.validateIssuanceGrantUpdate("c1", "web", "v7", {} as never);
+    for (const call of calls) {
+      expect(call.url.searchParams.get("validateOnly")).toBe("true");
+      expect(header(call.init, "idempotency-key")).toBeUndefined();
+    }
+    expect(header(calls[0]!.init, "if-match")).toBeUndefined();
+    expect(header(calls[1]!.init, "if-match")).toBe('"v7"');
+  });
+
+  it("sends an idempotency key on every PKI mutation", async () => {
+    const { calls, api } = capture(caBody);
+    await api.createPkiCa({} as never, "key-aaaa-0001");
+    await api.activatePkiCa("ca-abc", {} as never, "key-aaaa-0002");
+    await api.retirePkiCa("ca-abc", "key-aaaa-0003");
+    await api.destroyPkiCaKey("ca-abc", "key-aaaa-0004");
+    expect(calls.map((c) => header(c.init, "idempotency-key"))).toEqual([
+      "key-aaaa-0001",
+      "key-aaaa-0002",
+      "key-aaaa-0003",
+      "key-aaaa-0004",
+    ]);
+    expect(calls[2]?.init.body).toBeUndefined();
+  });
+
+  it("passes the environment to listPkiCas", async () => {
+    const { calls, api } = capture({ cas: [], generatedAt: "2026-01-01T00:00:00Z" });
+    await api.listPkiCas({ environment: "prod", cursor: "c1" });
+    expect(calls[0]?.url.searchParams.get("environment")).toBe("prod");
+    expect(calls[0]?.url.searchParams.get("cursor")).toBe("c1");
+  });
+
+  it("returns exact CRL bytes and asks for DER", async () => {
+    const der = new Uint8Array([0x30, 0xff, 0x00]);
+    const calls: RequestInit[] = [];
+    const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      calls.push(init ?? {});
+      return new Response(der, {
+        status: 200,
+        headers: { "content-type": "application/pkix-crl", etag: '"abc"' },
+      });
+    }) as unknown as typeof fetch;
+    const api = new HemligApi(config, tokens, fetchImpl);
+
+    const result = await api.getAdminCrl("ca-abc");
+
+    expect(Array.from(result.bytes)).toEqual([0x30, 0xff, 0x00]);
+    expect(result.etag).toBe('"abc"');
+    expect(header(calls[0]!, "accept")).toBe("application/pkix-crl, application/json");
+    expect(header(calls[0]!, "if-none-match")).toBeUndefined();
+  });
+
+  it("never puts the bearer token in a transport failure", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+    const api = new HemligApi(config, tokens, fetchImpl);
+    const error = await api.getPkiCa("ca-abc").catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "network" });
+    const apiError = error as { message: string; transportDetail?: string };
+    expect(apiError.message).not.toContain("Bearer");
+    expect(apiError.transportDetail ?? "").not.toContain("Bearer");
+    expect(apiError.transportDetail ?? "").not.toContain("token");
+  });
+});

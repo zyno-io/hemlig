@@ -15,13 +15,31 @@ export type ApiErrorCode =
   | "precondition_failed"
   | "internal_error"
   | "service_unavailable"
-  | "network";
+  | "network"
+  // PKI administration and issuance (openapi 0.8.0).
+  | "ca_not_active"
+  | "ca_subject_in_use"
+  | "ca_issuance_budget_exceeded"
+  | "ca_key_unavailable"
+  | "ca_capacity_exceeded"
+  | "chain_invalid"
+  | "crl_invalid"
+  | "crl_not_newer"
+  | "issuance_denied"
+  | "issuance_rate_limited"
+  | "issuance_revoked"
+  | "issuance_expired"
+  | "issuance_grant_not_found"
+  | "issuance_grant_inactive";
 
 const envelope = z.object({
   error: z.object({
     code: z.string(),
     message: z.string(),
     correlationId: z.string(),
+    details: z
+      .record(z.union([z.string(), z.number(), z.boolean()]))
+      .optional(),
   }),
 });
 
@@ -33,9 +51,18 @@ export class ApiError extends Error {
     public readonly correlationId?: string,
     /** Underlying transport failure, when there is no server response. */
     public readonly cause?: unknown,
+    /** Machine-readable detail from the envelope, such as `reason`. */
+    public readonly details?: Readonly<Record<string, string | number | boolean>>,
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = "ApiError";
+  }
+
+  /** `details.reason`, the stable sub-code PKI errors carry. */
+  public get reason(): string | undefined {
+    const value = this.details?.reason;
+    return typeof value === "string" ? value : undefined;
   }
 
   /** Transport detail for a `network` failure, which has no correlation ID. */
@@ -89,6 +116,28 @@ export const errorFromResponse = async (response: Response): Promise<ApiError> =
       `The request failed with status ${response.status}.`,
     );
   }
-  const { code, message, correlationId } = parsed.data.error;
-  return new ApiError(response.status, code as ApiErrorCode, message, correlationId);
+  const { code, message, correlationId, details } = parsed.data.error;
+  return new ApiError(
+    response.status,
+    code as ApiErrorCode,
+    message,
+    correlationId,
+    undefined,
+    details,
+    retryAfter(response.headers.get("retry-after"), details),
+  );
+};
+
+/** The `retry-after` header wins over `details.retryAfterSeconds`. */
+const retryAfter = (
+  header: string | null,
+  details: Readonly<Record<string, string | number | boolean>> | undefined,
+): number | undefined => {
+  const fromHeader = header === null || header.trim() === "" ? Number.NaN : Number(header);
+  if (Number.isFinite(fromHeader) && fromHeader >= 0) {
+    return fromHeader;
+  }
+  const raw = details?.retryAfterSeconds;
+  const fromDetails = typeof raw === "number" ? raw : Number.NaN;
+  return Number.isFinite(fromDetails) && fromDetails >= 0 ? fromDetails : undefined;
 };

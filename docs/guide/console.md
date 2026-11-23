@@ -93,7 +93,22 @@ A fresh deployment has no environments. The console prompts you to create the fi
 | Environments | List and create | Delete |
 | Consumers | Enroll with an optional in-browser CSR generator, rotate or revoke client certificates, see truststore status | |
 | Agent grants | Revoke a secret from an existing grant | Create a grant or issue a bootstrap token. Use the API, the [Pulumi provider](pulumi.md) or curl |
+| PKI | List CAs and offline roots. Create a CA (external two-phase, `ROOT` or `INTERMEDIATE`), activate it, download certificates and CRLs, upload a root CRL, retire, abandon or destroy the key. Edit grants with validate and evaluate. Revoke a certificate, or a consumer's certificates in bulk | Edit a CA's policy, revoke or distrust a CA, issue as an administrator, or migrate grants in bulk. Use the [CLI](cli.md) or [Pulumi](pulumi-pki.md) |
 | Audit | Browse the audit archive | |
+
+## PKI
+
+The PKI tab lists the environment's certificate authorities and the offline roots they chain to. Create a CA there, or roll one over: "Roll over" pre-fills the old CA's settings with an incremented name and common name, and blocks Create while the subject DN equals the old one, because a DN is never reused. See [Roll over a CA](../operations/pki-ca-rollover.md).
+
+Selecting `ROOT` shows the server's recommendation to use an external offline root, and asks you to acknowledge it before Create. An external CA shows its CSR after creation. Sign it offline, then paste the certificate and the root chain into the CA's activation panel. A root CRL is optional at activation. Without one, the root CRL state is `MISSING` until you upload it.
+
+Retiring a CA asks for the CA name when grants still reference it. Abandoning a pending CA and destroying a disabled key always ask you to type the CA name. A grant's editor validates against the server and tests the saved grant with a dry-run evaluation. An unsaved draft is not tested.
+
+A consumer's "Certificate grants" tab lists its grants and the certificates they issued, and creates new grants. Deleting a grant does not revoke its certificates. Revoke them from the same tab, which asks you to type the consumer ID and can limit the revocation to one grant, or to one generation of a deleted grant.
+
+::: warning PKI reads are audited
+Every PKI read and evaluation writes an audit event, unlike routine secret metadata. The console therefore never refetches PKI data on focus or reconnect, loads details only when you open them, and runs validate and evaluate only when you ask. Reload deliberately.
+:::
 
 ## CLI authorization
 

@@ -111,10 +111,72 @@ const routes: RouteRecordRaw[] = [
     component: () => import("../views/ConsumerEnroll.vue"),
     props: true,
   },
+  // `tab` is a query param, like `path` on secret-new above.
   {
     path: "/e/:env/consumers/:consumerId",
     name: "consumer",
     component: () => import("../views/ConsumerDetail.vue"),
+    props: (route) => ({
+      env: route.params.env,
+      consumerId: route.params.consumerId,
+      tab: oneOf(route.query.tab, CONSUMER_TABS),
+    }),
+  },
+  // A separate path rather than `/issuance-grants/new`: "new" matches the
+  // grant name pattern, so a grant called "new" would be unreachable.
+  {
+    path: "/e/:env/consumers/:consumerId/new-issuance-grant",
+    name: "consumer-pki-grant-new",
+    component: () => import("../views/IssuanceGrantEditor.vue"),
+    props: (route) => ({
+      env: route.params.env,
+      consumerId: route.params.consumerId,
+      caId: firstQueryValue(route.query.caId),
+    }),
+  },
+  {
+    path: "/e/:env/consumers/:consumerId/issuance-grants/:name",
+    name: "consumer-pki-grant",
+    component: () => import("../views/IssuanceGrantEditor.vue"),
+    props: true,
+  },
+  {
+    path: "/e/:env/pki",
+    name: "pki",
+    component: () => import("../views/PkiOverview.vue"),
+    props: true,
+  },
+  // Static `cas/new` outranks the dynamic `cas/:caId` regardless of order.
+  {
+    path: "/e/:env/pki/cas/new",
+    name: "pki-ca-new",
+    component: () => import("../views/CaCreate.vue"),
+    props: (route) => {
+      const rolloverFrom = firstQueryValue(route.query.rolloverFrom);
+      return {
+        env: route.params.env,
+        rolloverFrom:
+          rolloverFrom !== undefined && /^ca-/.test(rolloverFrom)
+            ? rolloverFrom
+            : undefined,
+        kind: oneOf(route.query.kind, CA_KINDS),
+      };
+    },
+  },
+  {
+    path: "/e/:env/pki/cas/:caId",
+    name: "pki-ca",
+    component: () => import("../views/CaDetail.vue"),
+    props: (route) => ({
+      env: route.params.env,
+      caId: route.params.caId,
+      tab: oneOf(route.query.tab, CA_TABS),
+    }),
+  },
+  {
+    path: "/e/:env/pki/cas/:caId/certificates/:serial",
+    name: "pki-certificate",
+    component: () => import("../views/CertificateDetail.vue"),
     props: true,
   },
   {
@@ -149,3 +211,16 @@ const firstQueryValue = (
   value: string | null | (string | null)[] | undefined,
 ): string | undefined =>
   typeof value === "string" && value.length > 0 ? value : undefined;
+
+const CONSUMER_TABS = ["certificate-grants"] as const;
+const CA_TABS = ["overview", "certificates", "grants"] as const;
+const CA_KINDS = ["EXTERNAL_INTERMEDIATE", "INTERMEDIATE", "ROOT"] as const;
+
+/** A single query value that is one of `allowed`; anything else is undefined. */
+const oneOf = <T extends string>(
+  value: string | null | (string | null)[] | undefined,
+  allowed: readonly T[],
+): T | undefined => {
+  const single = firstQueryValue(value);
+  return allowed.find((candidate) => candidate === single);
+};

@@ -56,6 +56,11 @@ const tabs = computed(() => {
         label: "Consumers",
         to: { name: "consumers", params: { env: currentEnv.value } },
       },
+      {
+        name: "pki",
+        label: "PKI",
+        to: { name: "pki", params: { env: currentEnv.value } },
+      },
     );
   }
   items.push(

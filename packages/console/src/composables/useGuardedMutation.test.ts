@@ -8,6 +8,27 @@ const stale = new ApiError(412, "precondition_failed", "not current", "corr-3");
 const network = new ApiError(0, "network", "unreachable");
 
 describe("useGuardedMutation", () => {
+  it("retries a no-input mutation with the same key", async () => {
+    const keys: string[] = [];
+    let calls = 0;
+    const mutation = useGuardedMutation<undefined, string>({
+      family: "pki",
+      mutate: async (_input, key) => {
+        keys.push(key);
+        calls += 1;
+        if (calls === 1) {
+          throw unavailable;
+        }
+        return "ok";
+      },
+    });
+    await mutation.submit(undefined);
+    expect(mutation.canRetry.value).toBe(true);
+    expect(await mutation.retry()).toBe("ok");
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+  });
+
   it("uses one key per submit intent and the same key on retry", async () => {
     const keys: string[] = [];
     const mutate = vi.fn(async (_input: string, key: string) => {
@@ -100,5 +121,76 @@ describe("useGuardedMutation", () => {
 
     expect(mutation.phase.value.kind).toBe("failed");
     expect(mutation.canRetry.value).toBe(false);
+  });
+
+  describe("pki family", () => {
+    it("treats a network error as unknown and retries with the same key", async () => {
+      const keys: string[] = [];
+      const mutation = useGuardedMutation<string, string>({
+        family: "pki",
+        mutate: async (_input, key) => {
+          keys.push(key);
+          throw network;
+        },
+      });
+
+      await mutation.submit("a");
+      expect(mutation.phase.value.kind).toBe("unknown");
+      expect(mutation.canRetry.value).toBe(true);
+      await mutation.retry();
+
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).toBe(keys[1]);
+    });
+
+    it("treats a 503 as unknown and retryable", async () => {
+      const mutation = useGuardedMutation<string, string>({
+        family: "pki",
+        mutate: async () => {
+          throw unavailable;
+        },
+      });
+      await mutation.submit("a");
+      expect(mutation.phase.value.kind).toBe("unknown");
+      expect(mutation.canRetry.value).toBe(true);
+    });
+
+    it("treats a definitive 409 as a plain failure", async () => {
+      const nameInUse = new ApiError(409, "conflict", "taken", "c", undefined, {
+        reason: "name_in_use",
+      });
+      const mutation = useGuardedMutation<string, string>({
+        family: "pki",
+        mutate: async () => {
+          throw nameInUse;
+        },
+      });
+      await mutation.submit("a");
+      expect(mutation.phase.value.kind).toBe("failed");
+      expect(mutation.canRetry.value).toBe(false);
+    });
+
+    it("moves a 412 to stale", async () => {
+      const mutation = useGuardedMutation<string, string>({
+        family: "pki",
+        mutate: async () => {
+          throw stale;
+        },
+      });
+      await mutation.submit("a");
+      expect(mutation.phase.value.kind).toBe("stale");
+    });
+
+    it("leaves the secret and consumer branches unchanged", async () => {
+      const consumer = useGuardedMutation<string, string>({
+        family: "consumer",
+        mutate: async () => {
+          throw conflict;
+        },
+      });
+      await consumer.submit("a");
+      expect(consumer.phase.value.kind).toBe("unknown");
+      expect(consumer.canRetry.value).toBe(true);
+    });
   });
 });

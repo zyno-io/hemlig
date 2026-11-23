@@ -1,7 +1,7 @@
 import { ref, type Ref } from "vue";
 import { ApiError } from "../api/errors";
 
-export type MutationFamily = "secret" | "consumer";
+export type MutationFamily = "secret" | "consumer" | "pki";
 
 export type MutationPhase =
   | { readonly kind: "idle" }
@@ -58,6 +58,8 @@ export const useGuardedMutation = <TInput, TResult>(
   const canRetry = ref(false);
   let pendingKey: string | undefined;
   let pendingInput: TInput | undefined;
+  // Explicit, because a no-input mutation's pending input is `undefined`.
+  let hasPending = false;
 
   const run = async (input: TInput, key: string): Promise<TResult | undefined> => {
     phase.value = { kind: "submitting" };
@@ -68,6 +70,7 @@ export const useGuardedMutation = <TInput, TResult>(
       phase.value = { kind: "succeeded" };
       pendingKey = undefined;
       pendingInput = undefined;
+      hasPending = false;
       return value;
     } catch (caught) {
       const error =
@@ -80,6 +83,19 @@ export const useGuardedMutation = <TInput, TResult>(
         // resubmitting silently would defeat optimistic concurrency, so the
         // draft is preserved and the decision handed to the administrator.
         phase.value = { kind: "stale", error };
+        return undefined;
+      }
+
+      if (options.family === "pki") {
+        // PKI routes replay by key. Only a transport failure, 500 or 503 is
+        // ambiguous; every other error, including each 409 (`name_in_use`,
+        // `key_not_disabled`, `grant_exists`...), is a definitive refusal.
+        if (error.outcomeUnknown) {
+          phase.value = { kind: "unknown", error, reconciling: false };
+          canRetry.value = true;
+        } else {
+          phase.value = { kind: "failed", error };
+        }
         return undefined;
       }
 
@@ -126,15 +142,16 @@ export const useGuardedMutation = <TInput, TResult>(
     async submit(input) {
       pendingKey = (options.newKey ?? defaultKey)();
       pendingInput = input;
+      hasPending = true;
       return run(input, pendingKey);
     },
     async retry() {
-      if (pendingKey === undefined || pendingInput === undefined) {
+      if (pendingKey === undefined || !hasPending) {
         return undefined;
       }
       // Deliberately the same key: this path exists only for the route family
       // that replays it.
-      return run(pendingInput, pendingKey);
+      return run(pendingInput as TInput, pendingKey);
     },
     reset() {
       phase.value = { kind: "idle" };
@@ -142,6 +159,7 @@ export const useGuardedMutation = <TInput, TResult>(
       canRetry.value = false;
       pendingKey = undefined;
       pendingInput = undefined;
+      hasPending = false;
     },
   };
 };
