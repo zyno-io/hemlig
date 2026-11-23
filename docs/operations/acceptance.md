@@ -699,6 +699,33 @@ kubectl -n pki5 get hemligtrustbundle acc-htrust -o jsonpath='{.status}' | jq '{
 | CloudTrail | One `GenerateDataKey` per new CA with its own `caId`; `Decrypt` with `caId=$ROOT_ID` only from `pki-admin` (signing the intermediates and the revoke's CRL) or `pki-maintenance`, never from `pki-issuer` | The root key signed a leaf |
 | Audit | Succeeded: three `pki.ca.create` (`kind` `ROOT` and `INTERMEDIATE`) and two `pki.ca.revoke`. Failed: `pki.ca.create` with `name_constraints_broader_than_parent`, `pki.certificate.revoke` with `use_ca_revoke`, and `pki.certificate.issue` with `revoked` and with `ca_revoked` or `ancestor_revoked`. No object contains `-----BEGIN` | |
 
+## Gate PKI-8: console and Pulumi drive the PKI
+
+Run after gate PKI-7. You need the gate 2 `$TOKEN`, the PKI-2 recipe root, the console from gate 3, a Pulumi project with the provider and a stack for this deployment, and the `hemlig` CLI. Steps 1 to 6 are in the console. Step 7 is in Pulumi. Steps 8 and 9 read the results.
+
+```sh
+aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
+curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS https://admin.acc.example.com/v1/admin/pki/consumers/acc-h2/issuance-grants/web \
+  -H 'origin: https://console.acc.example.com' -H 'access-control-request-method: PUT' \
+  -H 'access-control-request-headers: authorization,if-match,idempotency-key,content-type'
+aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
+openssl crl -inform DER -in downloaded.crl -noout -text | head -5
+hemlig pki ca get acc-console-1 | jq -r '.data | [.status, .key.state] | @tsv'
+pulumi stack export | grep -c -e "$HEMLIG_ADMIN_TOKEN" -e 'PRIVATE KEY'
+```
+
+| Step | Do | Pass | Fail means |
+| --- | --- | --- | --- |
+| 1. Preflight | The `OPTIONS` request above, between the two audit counts | `204`, and the two audit counts are equal | The PKI routes lack the CORS headers, or a preflight wrote evidence |
+| 2. Create and activate | In the console, create an external CA `acc-console-1`, sign the CSR with the PKI-2 recipe root, and activate it. Download its CRL in the browser. Upload the root CRL from the offline roots card | The CA is `ACTIVE`. `openssl crl -inform DER` parses the download, which proves binary responses over CORS. The upload reports a change | A binary body was decoded as text, or `Access-Control-Expose-Headers` is wrong |
+| 3. Rollover pre-fill | Choose "Roll over" on the CA | The name and common name are incremented. Setting the common name back to the old one disables Create and shows the reuse message | The console allows a DN the server will refuse |
+| 4. Grant editor | Create a grant with a DNS allow rule. Validate it, then evaluate an allowed name and a denied one. Save from two tabs | Validate lists no errors. Evaluate returns `allow` with a plan, then `deny` with `name_not_permitted`. The second save shows the stale panel with the draft intact | The editor retried a `412`, or lost the draft |
+| 5. Revoke | Revoke a certificate from its detail page, then open it again | The CRL number rises within 60 seconds, and the second view offers only the key compromise upgrade | A second revoke is offered, or the CRL was not published |
+| 6. Destroy the key | Retire the CA, wait for the key to be `DISABLED`, then destroy the key and type the CA name | The button needs the exact name. The key becomes `DESTROYED` and the CA record remains | Destroy ran without confirmation, or deleted the record |
+| 7. Pulumi | Apply the [two-phase CA](../guide/pulumi-pki.md), then create a grant. Edit the grant in the console, change it in Pulumi and apply. Run `pulumi destroy` with `protect`, then unprotect and destroy | The first apply gives `PENDING_CERTIFICATE` and `csrPem`. After the config is set, `ACTIVE`. The grant update succeeds. A protected destroy is refused. After unprotecting, the grant is a tombstone, the CA is `RETIRED` with its key still `ACTIVE`, and nothing is revoked | The provider replaced or revoked something, or destroyed the key |
+| 8. State | The `pulumi stack export` count | `0` | The token or a private key reached state |
+| 9. Audit volume | Load one CA detail page, then count audit objects and search them for `-----BEGIN` | A bounded number of read events and no `-----BEGIN` | The console refetches PKI reads, or evidence carries PEM |
+
 ## Teardown
 
 ::: danger Compliance retention cannot be shortened by anyone

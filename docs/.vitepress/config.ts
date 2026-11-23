@@ -153,6 +153,7 @@ export default withMermaid(
               { text: "Console", link: "/guide/console" },
               { text: "CLI", link: "/guide/cli" },
               { text: "Pulumi provider", link: "/guide/pulumi" },
+              { text: "Manage PKI with Pulumi", link: "/guide/pulumi-pki" },
             ],
           },
           {

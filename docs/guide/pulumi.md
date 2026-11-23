@@ -1,6 +1,6 @@
 ---
 title: Pulumi provider
-description: Declare Hemlig secrets and AgentGrants in Pulumi and hand the bootstrap token to a Kubernetes namespace.
+description: Declare Hemlig secrets, AgentGrants, PKI authorities and issuance grants in Pulumi, and hand the bootstrap token to a Kubernetes namespace.
 pageType: how-to
 ---
 
@@ -8,7 +8,7 @@ pageType: how-to
 
 Declare a secret, an [AgentGrant](../reference/glossary.md#agentgrant) for it and the Kubernetes Secret that carries its bootstrap token, all in one Pulumi program.
 
-`@zyno-io/hemlig-pulumi-provider` is a dynamic Pulumi provider for the [administrator API](../reference/glossary.md#administrator-api). It does not create AWS infrastructure; the [CDK construct](deploying.md) owns that. It is MIT licensed and needs Node.js 24 or later.
+`@zyno-io/hemlig-pulumi-provider` is a dynamic Pulumi provider for the [administrator API](../reference/glossary.md#administrator-api). It also declares PKI certificate authorities and issuance grants; see [Manage PKI with Pulumi](pulumi-pki.md). It does not create AWS infrastructure; the [CDK construct](deploying.md) owns that. It is MIT licensed and needs Node.js 24 or later.
 
 **Before you start**
 
@@ -114,11 +114,14 @@ Expected output: JSON with `"state": "ACTIVE"`. The grant stays `PENDING` until 
 | Grant policy | `capabilities`, `secretGrants` and `displayName` update in place |
 | `bootstrapGeneration` | Bump it only while the grant is still `PENDING`, to replace an expired token. Each bump issues a new 30-minute token. |
 | `protect: true` | Used in the example so Pulumi refuses to replace or remove the grant until you unprotect it |
+| `certificateAuthority` | Never replaced: an immutable change fails at preview with the rollover procedure. Destroy retires an `ACTIVE` CA after a live-grant check and never destroys its key. |
+| `issuanceGrant` | Updates in place with `If-Match`, retrying a `412` after a re-read. Destroy leaves a tombstone and revokes nothing. |
 
 Payload values are stored in Pulumi state, encrypted when marked secret. Treat your state backend accordingly.
 
 ## Next steps
 
 - [Manage secrets](managing-secrets.md)
+- [Manage PKI with Pulumi](pulumi-pki.md)
 - [Agent grants](agent-grants.md)
 - [Install the controller](kubernetes.md)
