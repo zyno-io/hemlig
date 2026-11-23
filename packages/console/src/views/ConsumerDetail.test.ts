@@ -95,6 +95,16 @@ const buildRouter = (): Router =>
         component: { template: "<div/>" },
       },
       {
+        path: "/e/:env/consumers/:consumerId/new-issuance-grant",
+        name: "consumer-pki-grant-new",
+        component: { template: "<div/>" },
+      },
+      {
+        path: "/e/:env/consumers/:consumerId/issuance-grants/:name",
+        name: "consumer-pki-grant",
+        component: { template: "<div/>" },
+      },
+      {
         path: "/e/:env/secrets/:secretId",
         name: "secret",
         component: { template: "<div/>" },
@@ -103,7 +113,8 @@ const buildRouter = (): Router =>
   });
 
 const mountView = async (
-  api: FakeApi,
+  api: FakeApi & Record<string, unknown>,
+  tab?: "certificate-grants",
 ): Promise<{ wrapper: ReturnType<typeof mount> }> => {
   const pinia = createPinia();
   setActivePinia(pinia);
@@ -119,7 +130,7 @@ const mountView = async (
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   const wrapper = mount(ConsumerDetail, {
-    props: { env: "prod", consumerId: "prod-east" },
+    props: { env: "prod", consumerId: "prod-east", ...(tab === undefined ? {} : { tab }) },
     global: {
       plugins: [pinia, router, [VueQueryPlugin, { queryClient }]],
       stubs: { RouterLink: false },
@@ -237,3 +248,69 @@ describe("ConsumerDetail secret access", () => {
     });
   });
 });
+
+describe("ConsumerDetail certificate grants tab", () => {
+  const baseApi = () => ({
+    getConsumer: async () => consumer(),
+    listApiIdentities: async () => ({
+      consumerId: "prod-east",
+      environment: "prod",
+      apiIdentities: [] as [],
+      generatedAt: "2026-08-25T00:00:00.000Z",
+    }),
+    listConsumerSecretGrants: async () => ({
+      consumerId: "prod-east",
+      environment: "prod",
+      grants: [],
+      generatedAt: "2026-08-25T00:00:00.000Z",
+    }),
+    revokeConsumerSecretGrant: async () => revision(),
+    updateAgentGrant: async () => agentGrant(),
+  });
+
+  it("makes no PKI calls on the default tab and mounts the tab on selection", async () => {
+    const listAdminIssuanceGrants = vi.fn(async () => ({ grants: [], generatedAt: "now" }));
+    const listConsumerPkiCertificates = vi.fn(async () => ({
+      certificates: [],
+      generatedAt: "now",
+    }));
+    const { wrapper } = await mountView({
+      ...baseApi(),
+      listAdminIssuanceGrants,
+      listConsumerPkiCertificates,
+    });
+    expect(listAdminIssuanceGrants).not.toHaveBeenCalled();
+    expect(listConsumerPkiCertificates).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("API identities");
+
+    const tabs = wrapper.findAll('[role="tab"]');
+    expect(tabs.map((tab) => tab.text())).toEqual([
+      "Identities and secrets",
+      "Certificate grants",
+    ]);
+    await tabs[1]?.trigger("click");
+    await flushPromises();
+    expect(listAdminIssuanceGrants).toHaveBeenCalledTimes(1);
+    expect(listConsumerPkiCertificates).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("Issuance grants");
+
+    await wrapper.findAll('[role="tab"]')[0]?.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("Issuance grants");
+  });
+
+  it("opens on the tab named by the route prop", async () => {
+    const listAdminIssuanceGrants = vi.fn(async () => ({ grants: [], generatedAt: "now" }));
+    const { wrapper } = await mountView(
+      {
+        ...baseApi(),
+        listAdminIssuanceGrants,
+        listConsumerPkiCertificates: async () => ({ certificates: [], generatedAt: "now" }),
+      },
+      "certificate-grants",
+    );
+    expect(listAdminIssuanceGrants).toHaveBeenCalledTimes(1);
+    expect(wrapper.get('[aria-selected="true"]').text()).toBe("Certificate grants");
+  });
+});
+
