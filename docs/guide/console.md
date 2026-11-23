@@ -104,6 +104,8 @@ Selecting `ROOT` shows the server's recommendation to use an external offline ro
 
 Retiring a CA asks for the CA name when grants still reference it. Abandoning a pending CA and destroying a disabled key always ask you to type the CA name. A grant's editor validates against the server and tests the saved grant with a dry-run evaluation. An unsaved draft is not tested.
 
+A consumer's "Certificate grants" tab lists its grants and the certificates they issued, and creates new grants. Deleting a grant does not revoke its certificates. Revoke them from the same tab, which asks you to type the consumer ID and can limit the revocation to one grant, or to one generation of a deleted grant.
+
 ::: warning PKI reads are audited
 Every PKI read and evaluation writes an audit event, unlike routine secret metadata. The console therefore never refetches PKI data on focus or reconnect, loads details only when you open them, and runs validate and evaluate only when you ask. Reload deliberately.
 :::
