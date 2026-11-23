@@ -25,6 +25,15 @@ const controllerRules = [
   `  - apiGroups: ["hemlig.zyno.io"]
     resources: ["hemligissuers/status", "hemligclusterissuers/status"]
     verbs: ["get", "update", "patch"]`,
+  `  - apiGroups: ["hemlig.zyno.io"]
+    resources: ["hemligtrustbundles"]
+    verbs: ["get", "list", "watch"]`,
+  `  - apiGroups: ["hemlig.zyno.io"]
+    resources: ["hemligtrustbundles/status"]
+    verbs: ["get", "update", "patch"]`,
+  `  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "delete"]`,
 ];
 
 test("both deployments use a zero-surge rolling update", () => {
@@ -84,10 +93,15 @@ test("the PKI CRDs define both issuers with immutable specs", () => {
     "subresources: { status: {} }",
     "message: spec is immutable except issuanceGrant",
     "maxProperties: 16",
+    "shortNames: [hmltrustbundle]",
+    "kind: HemligTrustBundle",
+    "message: consumerRef, consumerNamespace and target are immutable",
+    "x-kubernetes-list-type: set",
+    "maxItems: 50",
   ]) {
     assert.ok(text.includes(needle), needle);
   }
-  assert.equal(text.match(/x-kubernetes-validations:/g)?.length, 2);
+  assert.equal(text.match(/x-kubernetes-validations:/g)?.length, 3);
   assert.equal(text.match(/name: CA, type: string/g)?.length, 2);
 });
 
@@ -107,5 +121,16 @@ test("both deployments set HEMLIG_PKI_CONCURRENCY", () => {
   assert.match(
     read(`${chart}/templates/deployment.yaml`),
     /HEMLIG_PKI_CONCURRENCY\s*\n\s*value: \{\{ \.Values\.certManager\.maxConcurrentRequests \| quote \}\}/,
+  );
+});
+
+test("both deployments set HEMLIG_PKI_BUNDLE_INTERVAL_MS", () => {
+  assert.match(
+    read("config/manager.yaml"),
+    /HEMLIG_PKI_BUNDLE_INTERVAL_MS\s*\n\s*value: "300000"/,
+  );
+  assert.match(
+    read(`${chart}/templates/deployment.yaml`),
+    /HEMLIG_PKI_BUNDLE_INTERVAL_MS\s*\n\s*value: \{\{ \.Values\.trustBundles\.refreshIntervalMilliseconds \| int64 \| quote \}\}/,
   );
 });
