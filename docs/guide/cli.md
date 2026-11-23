@@ -159,7 +159,7 @@ The receipt holds the identity with status `REVOKED`. Revoke only after the repl
 
 ## PKI
 
-`hemlig pki` manages external intermediate CAs and their CRLs, consumer issuance grants, issued certificates and bulk revocation. It uses the same administrator token, endpoint and receipt format as the other commands. Every command takes `--admin-url`, `--token-file` and `--timeout-ms`. Roles and CA states are in the [PKI guide](pki.md).
+`hemlig pki` manages external and Hemlig-held CAs and their CRLs, consumer issuance grants, issued certificates and bulk revocation. It uses the same administrator token, endpoint and receipt format as the other commands. Every command takes `--admin-url`, `--token-file` and `--timeout-ms`. Roles and CA states are in the [PKI guide](pki.md).
 
 | Command                                         | Options                                                                           | Client method                      |
 | ----------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- |
@@ -169,6 +169,7 @@ The receipt holds the identity with status `REVOKED`. Revoke only after the repl
 | `pki ca activate <ca>`                          | `--certificate`, `--chain`, optional `--root-crl`, `--accept-broader-constraints` | `activatePkiCa`                    |
 | `pki ca update <ca>`                            | `--if-match ETAG\|current`, policy flags, `--display-name`                        | `getPkiCa`, `updatePkiCa`          |
 | `pki ca retire <ca>`, `pki ca destroy-key <ca>` | optional `--idempotency-key`                                                      | `retirePkiCa`, `destroyPkiCaKey`   |
+| `pki ca revoke <ca>`                            | optional `--reason`, `--invalidity-date ISO`                                      | `revokePkiCa`                      |
 | `pki ca delete <ca>`                            | `--if-match ETAG\|current`                                                        | `deletePkiCa`                      |
 | `pki ca crl publish <ca>`                       | optional `--idempotency-key`                                                      | `publishPkiCrl`                    |
 | `pki ca crl get <ca\|ext-id>`                   | `--out FILE`, optional `--format der\|pem`, `--if-none-match`                     | `getAdminCrl`                      |
@@ -183,9 +184,12 @@ The receipt holds the identity with status `REVOKED`. Revoke only after the repl
 - Repeatable constraint flags: `--permit-dns`, `--exclude-dns`, `--permit-ip`, `--exclude-ip`, `--permit-uri`, `--exclude-uri`, and `--eku serverAuth|clientAuth`.
 - Policy flags: `--max-leaf-lifetime 90d`, repeatable `--leaf-key-algorithm`, `--capacity`, `--issuance-per-hour`, `--crl-validity 7d`, and `--display-name`. A duration is an integer of seconds, or an integer with an `s`, `m`, `h` or `d` suffix. The server enforces the ranges.
 - `--csr-out FILE` writes the CSR to the file and keeps it out of the receipt. The command exits 9 without creating the CA if the file already exists. Without the flag, the CSR is in `data.csrPem`.
+- `--kind EXTERNAL_INTERMEDIATE|ROOT|INTERMEDIATE` (default `EXTERNAL_INTERMEDIATE`). A `ROOT` or `INTERMEDIATE` is `ACTIVE` at once and has no CSR. `--parent <ca>` is required for an `INTERMEDIATE` and refused otherwise. `--validity 365d` sets the certificate validity of a `ROOT` or `INTERMEDIATE`. `--csr-out` is only for the external kind, and a `ROOT` refuses `--max-leaf-lifetime` and `--leaf-key-algorithm`. All of these exit 2 before any request.
 - `--rollover-from <ca>` copies the old CA's environment, key algorithm, constraints, policy and CRL validity, and increments the trailing integer of the name and the CN. If either has none, supply `--name` or `--subject`. Explicit flags override the copied values. See the [CA rollover runbook](../operations/pki-ca-rollover.md).
 
-An Ed25519 key writes a `warning:` line to stderr, and the `warnings` array is in the receipt.
+An Ed25519 key writes a `warning:` line to stderr, and the `warnings` array is in the receipt. Creating a `ROOT` also writes the `external_root_recommended` warning to stderr, from the server's warning or, if it is missing, a built-in copy of the same text.
+
+`pki ca revoke` sends `--reason` (`unspecified` by default, `caCompromise`, `affiliationChanged`, `superseded`, `cessationOfOperation` or `privilegeWithdrawn`; not `keyCompromise`). `--invalidity-date` needs `--reason caCompromise`. An `INTERMEDIATE` goes on its root's CRL, and a `ROOT` is distrusted locally with its children. The receipt has `revokedCaIds` and `complete`. `pki ca update` on a `ROOT` refuses the leaf policy flags.
 
 `pki ca update` fetches the CA, overlays the flags on its policy and sends the full policy with the matched version. `--if-match current` uses the version just fetched.
 
@@ -246,7 +250,7 @@ After a lost response, read the secret to see what happened. Do not mint a new k
 
 ## Output
 
-Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr, and `hemlig pki ca create`, which prints a `warning:` line for an Ed25519 key. There are no banners, prompts or tables. `--help` also prints JSON.
+Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr, and `hemlig pki ca create`, which prints a `warning:` line for an Ed25519 key or a `ROOT`. There are no banners, prompts or tables. `--help` also prints JSON.
 
 | Field            | Meaning                                                     |
 | ---------------- | ----------------------------------------------------------- |

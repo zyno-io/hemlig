@@ -13,7 +13,10 @@ import {
   HemligError,
   type BinaryResult,
   type PkiCaDetail,
+  type PkiCaKind,
   type PkiCaPolicyInput,
+  type PkiCaRevocationReason,
+  type PkiRevokeCaRequest,
   type PkiCaSubject,
   type PkiAdminIssueCertificateRequest,
   type PkiCertificateStatus,
@@ -77,6 +80,17 @@ const REVOCATION_REASONS = [
   "cessationOfOperation",
   "privilegeWithdrawn",
 ] as const;
+const CA_REVOCATION_REASONS = [
+  "unspecified",
+  "caCompromise",
+  "affiliationChanged",
+  "superseded",
+  "cessationOfOperation",
+  "privilegeWithdrawn",
+] as const;
+const CA_KINDS = ["EXTERNAL_INTERMEDIATE", "ROOT", "INTERMEDIATE"] as const;
+const EXTERNAL_ROOT_WARNING =
+  "An external offline root is strongly recommended: this ROOT's key is WRAPPED and online, so a compromised PKI role can copy it, and local distrust only reaches relying parties that use Hemlig trust bundles.";
 const CERTIFICATE_STATUSES = ["ISSUED", "REVOKED", "EXPIRED"] as const;
 
 const POLICY_FLAGS = [
@@ -122,7 +136,15 @@ const commandSpecs: Record<string, CommandSpec> = {
       "display-name",
       "rollover-from",
       "csr-out",
+      "kind",
+      "parent",
+      "validity",
     ],
+  },
+  "ca revoke": {
+    positionals: [1, 1],
+    mutation: true,
+    flags: ["environment", "reason", "invalidity-date"],
   },
   "ca activate": {
     positionals: [1, 1],
@@ -266,17 +288,19 @@ const commandSpecs: Record<string, CommandSpec> = {
 
 export const pkiHelp = {
   usage:
-    "hemlig pki ca <list|get|create|activate|update|retire|destroy-key|delete> | hemlig pki ca crl <publish|get> | hemlig pki external-ca <list|get|upload-crl> | hemlig pki grant <list|get|create|update|delete|evaluate|migrate> | hemlig pki cert <list|get|issue|revoke> | hemlig pki consumer revoke-certificates",
+    "hemlig pki ca <list|get|create|activate|update|retire|revoke|destroy-key|delete> | hemlig pki ca crl <publish|get> | hemlig pki external-ca <list|get|upload-crl> | hemlig pki grant <list|get|create|update|delete|evaluate|migrate> | hemlig pki cert <list|get|issue|revoke> | hemlig pki consumer revoke-certificates",
   commands: {
     "ca list": "--environment [--cursor]",
     "ca get <ca>": "[--environment] (needed only when <ca> is a name)",
     "ca create":
-      "--environment --name --key-algorithm --subject 'CN=..,O=..' [--permit-dns|--exclude-dns|--permit-ip|--exclude-ip|--permit-uri|--exclude-uri]... [--eku serverAuth|clientAuth]... [--max-leaf-lifetime 90d] [--leaf-key-algorithm A]... [--capacity N] [--issuance-per-hour N] [--crl-validity 7d] [--display-name S] [--rollover-from <ca>] [--csr-out FILE] [--idempotency-key]",
+      "--environment --name --key-algorithm --subject 'CN=..,O=..' [--permit-dns|--exclude-dns|--permit-ip|--exclude-ip|--permit-uri|--exclude-uri]... [--eku serverAuth|clientAuth]... [--max-leaf-lifetime 90d] [--leaf-key-algorithm A]... [--capacity N] [--issuance-per-hour N] [--crl-validity 7d] [--display-name S] [--rollover-from <ca>] [--csr-out FILE] [--kind EXTERNAL_INTERMEDIATE|ROOT|INTERMEDIATE] [--parent <ca>] [--validity 365d] [--idempotency-key]",
     "ca activate <ca>":
       "--certificate FILE --chain FILE [--root-crl FILE] [--accept-broader-constraints]",
     "ca update <ca>":
       "--if-match ETAG|current, policy flags and/or --display-name",
     "ca retire <ca>": "[--idempotency-key]",
+    "ca revoke <ca>":
+      "[--reason R] [--invalidity-date ISO] [--idempotency-key]; an INTERMEDIATE goes on its root's CRL; a ROOT is distrusted locally with its children",
     "ca destroy-key <ca>": "[--idempotency-key]",
     "ca delete <ca>": "--if-match ETAG|current",
     "ca crl publish <ca>": "[--idempotency-key]",
@@ -345,6 +369,9 @@ const stringFlags = [
   "display-name",
   "rollover-from",
   "csr-out",
+  "kind",
+  "parent",
+  "validity",
   "idempotency-key",
   "certificate",
   "chain",
@@ -629,8 +656,13 @@ function policyFrom(values: PkiValues): PkiCaPolicyInput {
 }
 
 const policyOf = (ca: PkiCaDetail): PkiCaPolicyInput => ({
-  maxLeafLifetimeSeconds: ca.policy.maxLeafLifetimeSeconds,
-  leafKeyAlgorithms: ca.policy.leafKeyAlgorithms,
+  // A ROOT issues no leaves, and the server refuses leaf fields on it.
+  ...(ca.kind === "ROOT"
+    ? {}
+    : {
+        maxLeafLifetimeSeconds: ca.policy.maxLeafLifetimeSeconds,
+        leafKeyAlgorithms: ca.policy.leafKeyAlgorithms,
+      }),
   capacity: ca.policy.capacity,
   issuancePerHour: ca.policy.issuancePerHour,
   crlValiditySeconds: ca.policy.crlValiditySeconds,
@@ -737,6 +769,50 @@ function reasonFlag(
   if (invalidityDate !== undefined && reason !== "keyCompromise")
     usage("--invalidity-date requires --reason keyCompromise.");
   return reason as PkiRevocationReason | undefined;
+}
+
+function caReasonFlag(
+  values: PkiValues,
+  invalidityDate: string | undefined,
+): PkiCaRevocationReason | undefined {
+  const reason = str(values, "reason");
+  if (
+    reason !== undefined &&
+    !(CA_REVOCATION_REASONS as readonly string[]).includes(reason)
+  )
+    usage(`--reason must be one of ${CA_REVOCATION_REASONS.join(", ")}.`);
+  if (invalidityDate !== undefined && reason !== "caCompromise")
+    usage("--invalidity-date requires --reason caCompromise.");
+  return reason as PkiCaRevocationReason | undefined;
+}
+
+/** Local kind rules shared by `ca create`, checked again once a rollover base supplies the kind. */
+function checkCreateKind(
+  kind: PkiCaKind,
+  flags: {
+    readonly parent: string | undefined;
+    readonly validity: string | undefined;
+    readonly csrOut: string | undefined;
+    readonly policy: PkiCaPolicyInput;
+  },
+  parentKnown: boolean,
+): void {
+  if (kind !== "INTERMEDIATE" && flags.parent !== undefined)
+    usage("--parent is only valid with --kind INTERMEDIATE.");
+  if (kind === "INTERMEDIATE" && !parentKnown)
+    usage("An INTERMEDIATE CA needs --parent <root>.");
+  if (kind === "EXTERNAL_INTERMEDIATE" && flags.validity !== undefined)
+    usage("--validity is only valid with --kind ROOT or INTERMEDIATE.");
+  if (kind !== "EXTERNAL_INTERMEDIATE" && flags.csrOut !== undefined)
+    usage("--csr-out is only valid with --kind EXTERNAL_INTERMEDIATE.");
+  if (
+    kind === "ROOT" &&
+    (flags.policy.maxLeafLifetimeSeconds !== undefined ||
+      flags.policy.leafKeyAlgorithms !== undefined)
+  )
+    usage(
+      "A ROOT CA issues no leaves; omit --max-leaf-lifetime and --leaf-key-algorithm.",
+    );
 }
 
 /** Reads the grant JSON file: policy fields plus optional caId, displayName, expiresAt, status and name. */
@@ -966,6 +1042,8 @@ export async function runPkiCli(
       if (!isExtTarget) references.push(operands[0]);
     }
     if (rolloverFrom !== undefined) references.push(rolloverFrom);
+    const parentFlag = name === "ca create" ? str(values, "parent") : undefined;
+    if (parentFlag !== undefined) references.push(parentFlag);
     if (forCa !== undefined) references.push(forCa);
     const caFlag = str(values, "ca");
     const fromFlag = str(values, "from");
@@ -1017,6 +1095,9 @@ export async function runPkiCli(
       displayName: str(values, "display-name"),
     });
     let create: ReturnType<typeof createFlags> | undefined;
+    let createKind: PkiCaKind | undefined;
+    let createValiditySeconds: number | undefined;
+    let caRevokeBody: PkiRevokeCaRequest = {};
     let certificatePem: string | undefined;
     let chainPem: string | undefined;
     let rootCrl: string | undefined;
@@ -1031,11 +1112,42 @@ export async function runPkiCli(
         !(CA_KEY_ALGORITHMS as readonly string[]).includes(create.keyAlgorithm)
       )
         usage("--key-algorithm is not a supported CA key algorithm.");
+      const kindFlag = str(values, "kind");
+      if (
+        kindFlag !== undefined &&
+        !(CA_KINDS as readonly string[]).includes(kindFlag)
+      )
+        usage(`--kind must be one of ${CA_KINDS.join(", ")}.`);
+      createKind = kindFlag as PkiCaKind | undefined;
+      const validityFlag = str(values, "validity");
+      if (validityFlag !== undefined)
+        createValiditySeconds = parseDuration("validity", validityFlag);
+      // With --rollover-from and no --kind the kind comes from the base CA, checked after reading it.
+      if (createKind !== undefined || rolloverFrom === undefined)
+        checkCreateKind(
+          createKind ?? "EXTERNAL_INTERMEDIATE",
+          {
+            parent: parentFlag,
+            validity: validityFlag,
+            csrOut: str(values, "csr-out"),
+            policy: create.policy,
+          },
+          parentFlag !== undefined || rolloverFrom !== undefined,
+        );
       if (rolloverFrom === undefined) {
         if (!create.name) usage("Supply --name.");
         if (!create.keyAlgorithm) usage("Supply --key-algorithm.");
         if (!create.subjectParsed) usage("Supply --subject.");
       }
+    } else if (name === "ca revoke") {
+      const when = str(values, "invalidity-date");
+      const reason = caReasonFlag(values, when);
+      caRevokeBody = {
+        ...(reason === undefined ? {} : { reason }),
+        ...(when === undefined
+          ? {}
+          : { invalidityDate: parseWhen("invalidity-date", when, now(), -1) }),
+      };
     } else if (name === "ca activate") {
       const certificate = str(values, "certificate");
       const chain = str(values, "chain");
@@ -1704,10 +1816,41 @@ export async function runPkiCli(
             subject = { ...base.subject, commonName: next };
           }
         }
+        const kind: PkiCaKind =
+          createKind ?? base?.kind ?? "EXTERNAL_INTERMEDIATE";
+        const parentCaId =
+          parentFlag !== undefined
+            ? await ca(parentFlag)
+            : kind === "INTERMEDIATE"
+              ? base?.parentCaId
+              : undefined;
+        if (createKind === undefined && base !== undefined)
+          checkCreateKind(
+            kind,
+            {
+              parent: parentFlag,
+              validity: str(values, "validity"),
+              csrOut: str(values, "csr-out"),
+              policy: flags.policy,
+            },
+            parentCaId !== undefined,
+          );
         const keyAlgorithm = (flags.keyAlgorithm ??
           base?.key.algorithm) as PkiKeyAlgorithm;
-        const policy = {
-          ...(base === undefined ? {} : policyOf(base)),
+        const { maxLeafLifetimeSeconds, leafKeyAlgorithms, ...baseNoLeaf } =
+          base === undefined ? ({} as PkiCaPolicyInput) : policyOf(base);
+        const policy: PkiCaPolicyInput = {
+          ...baseNoLeaf,
+          ...(kind === "ROOT"
+            ? {}
+            : {
+                ...(maxLeafLifetimeSeconds === undefined
+                  ? {}
+                  : { maxLeafLifetimeSeconds }),
+                ...(leafKeyAlgorithms === undefined
+                  ? {}
+                  : { leafKeyAlgorithms }),
+              }),
           ...flags.policy,
         };
         const constraints =
@@ -1734,7 +1877,11 @@ export async function runPkiCli(
           environment:
             str(values, "environment") ?? base?.environment ?? environment!,
           name: requestName!,
-          kind: "EXTERNAL_INTERMEDIATE",
+          kind,
+          ...(parentCaId === undefined ? {} : { parentCaId }),
+          ...(createValiditySeconds === undefined
+            ? {}
+            : { validitySeconds: createValiditySeconds }),
           keyAlgorithm,
           subject: subject!,
           ...(constraints === undefined || Object.keys(constraints).length === 0
@@ -1779,8 +1926,17 @@ export async function runPkiCli(
           await stderr(
             "warning: Ed25519 CA keys are not supported by every TLS stack; verify client compatibility.\n",
           );
+        if (
+          kind === "ROOT" &&
+          !(created.warnings ?? []).some(
+            (warning) => warning.code === "external_root_recommended",
+          )
+        )
+          await stderr(`warning: ${EXTERNAL_ROOT_WARNING}\n`);
         if (csrOut === undefined) return receipt(created, created.version);
         try {
+          if (created.csrPem === undefined)
+            throw new Error("The server returned no CSR.");
           await csrHandle!.writeFile(created.csrPem);
         } catch {
           throw new CliError(
@@ -1818,6 +1974,14 @@ export async function runPkiCli(
         const current = await client.getPkiCa(token, caId);
         if (ifMatchFlag === "current") ifMatch = versionOf(current);
         const flags = updateFlags!;
+        if (
+          current.kind === "ROOT" &&
+          (flags.policy.maxLeafLifetimeSeconds !== undefined ||
+            flags.policy.leafKeyAlgorithms !== undefined)
+        )
+          usage(
+            "A ROOT CA issues no leaves; omit --max-leaf-lifetime and --leaf-key-algorithm.",
+          );
         const displayName = flags.displayName ?? current.displayName;
         mutationAttempted = true;
         const detail = await client.updatePkiCa(
@@ -1831,6 +1995,17 @@ export async function runPkiCli(
           idempotencyKey!,
         );
         return receipt(detail, detail.version);
+      }
+      case "ca revoke": {
+        const caId = await ca(operands[0]!);
+        mutationAttempted = true;
+        const result = await client.revokePkiCa(
+          token,
+          caId,
+          caRevokeBody,
+          idempotencyKey!,
+        );
+        return receipt(result, result.ca.version);
       }
       case "ca delete": {
         const caId = await ca(operands[0]!);

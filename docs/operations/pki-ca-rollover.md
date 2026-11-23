@@ -64,6 +64,18 @@ hemlig pki ca get prod-issuing-1
 
 Expected output: `status` is `RETIRED`, and `drained` becomes `true` after the drain point (`drainAt`).
 
+## Hemlig hierarchy
+
+For a Hemlig `INTERMEDIATE`, roll it under the same root with `--rollover-from`. It copies the kind and the parent, so the new intermediate needs no CSR and is `ACTIVE` at once. It shares the root's hourly counters and capacity.
+
+```sh
+hemlig pki ca create --rollover-from prod-int-1 --validity 365d
+```
+
+Then follow steps 3 to 6 above: add the new `caId` to the bundles, migrate the grants and retire the old intermediate. A bundle that already lists the root needs only the new intermediate.
+
+A new Hemlig root needs a new DN and new intermediates under it. List both hierarchies in the bundles during the cutover, move the grants, then retire the old root. A retired root keeps signing its CRL and drains after its longest intermediate lifetime has passed. An external offline root is still strongly recommended for production.
+
 ## Next steps
 
 - [PKI](../guide/pki.md)

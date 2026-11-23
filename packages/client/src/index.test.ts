@@ -353,3 +353,79 @@ test("agent identity rotation surfaces the server error code", async () => {
       error.code === "identity_limit_reached",
   );
 });
+
+test("PKI CA revoke posts the body with the idempotency key", async () => {
+  const requests: TransportRequest[] = [];
+  const transport: HemligTransport = {
+    request: async (request) => {
+      requests.push(request);
+      return {
+        status: 200,
+        headers: {},
+        body: {
+          ca: { caId: "ca-root-1", kind: "ROOT", status: "REVOKED" },
+          changed: true,
+          crlEntry: false,
+          crlPublished: false,
+          revokedCaIds: ["ca-int-1"],
+          complete: true,
+        },
+      };
+    },
+  };
+  const client = new HemligClient(
+    new URL("https://admin.example.com"),
+    transport,
+  );
+  const result = await client.revokePkiCa(
+    "token",
+    "ca-root-1",
+    { reason: "caCompromise", invalidityDate: "2026-01-01T00:00:00.000Z" },
+    "idem-key-1",
+  );
+  assert.equal(requests[0]?.method, "POST");
+  assert.equal(requests[0]?.url.pathname, "/v1/admin/pki/cas/ca-root-1/revoke");
+  assert.equal(requests[0]?.headers?.["idempotency-key"], "idem-key-1");
+  assert.deepEqual(requests[0]?.body, {
+    reason: "caCompromise",
+    invalidityDate: "2026-01-01T00:00:00.000Z",
+  });
+  assert.deepEqual(result.revokedCaIds, ["ca-int-1"]);
+  assert.equal(result.complete, true);
+});
+
+test("PKI ROOT create serializes and the response needs no csrPem", async () => {
+  const requests: TransportRequest[] = [];
+  const transport: HemligTransport = {
+    request: async (request) => {
+      requests.push(request);
+      return {
+        status: 201,
+        headers: {},
+        body: { caId: "ca-root-1", kind: "ROOT", status: "ACTIVE" },
+      };
+    },
+  };
+  const client = new HemligClient(
+    new URL("https://admin.example.com"),
+    transport,
+  );
+  const created = await client.createPkiCa(
+    "token",
+    {
+      environment: "prod",
+      name: "root-1",
+      kind: "ROOT",
+      keyAlgorithm: "ECDSA_P384",
+      subject: { commonName: "Root" },
+      validitySeconds: 31536000,
+    },
+    "idem-key-2",
+  );
+  assert.equal(requests[0]?.url.pathname, "/v1/admin/pki/cas");
+  assert.equal(
+    (requests[0]?.body as { kind: string; validitySeconds: number }).kind,
+    "ROOT",
+  );
+  assert.equal(created.csrPem, undefined);
+});

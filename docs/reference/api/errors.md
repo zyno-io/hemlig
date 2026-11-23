@@ -40,7 +40,7 @@ Quote the `correlationId` when you report a problem. It finds the request's [aud
 | `chain_invalid` | 400 | A CA activation chain failed verification. `error.details.reason` names the check | Read the reason in [Admin: PKI](admin-pki.md#errors) and fix the certificate or chain |
 | `crl_invalid` | 400 | An uploaded or supplied root CRL failed verification. `error.details.reason` names the check | Read the reason in [Admin: PKI](admin-pki.md#errors) |
 | `crl_not_newer` | 409 | The uploaded root CRL is not newer than the stored one | Issue a newer CRL from the root |
-| `ca_not_active` | 409 | The CA is not in a state the operation needs, or its parent revoked it. `details.reason` says which | Read the CA's `status` first |
+| `ca_not_active` | 409 | The CA is not in a state the operation needs, or its parent or an ancestor revoked it (`revoked_by_parent`, `ancestor_revoked`). On an intermediate create it describes the parent root (`subordinates_not_permitted`, `retired`, `revoked`, `expired`, `not_yet_valid`). `details.reason` says which | Read the CA's `status` first |
 | `ca_subject_in_use` | 409 | The CA subject DN is already claimed | Choose a new DN |
 | `ca_key_unavailable` | 409 | The CA key cannot be used to sign | Check the CA's `key.state` and KMS access |
 | `ca_issuance_budget_exceeded` | 409 | `capacity + 2 x issuancePerHour` is over 12,000 | Lower the capacity or the rate |
@@ -48,7 +48,7 @@ Quote the `correlationId` when you report a problem. It finds the request's [aud
 | `issuance_grant_not_found` | 404 | The grant does not exist, is deleted or is in another environment | Check the name with `GET /v1/pki/issuance-grants` |
 | `issuance_grant_inactive` | 403 | The grant is disabled or expired (`grant_disabled`, `grant_expired`) | Ask an administrator to enable or renew it |
 | `ca_capacity_exceeded` | 409 | The CA already holds its configured number of certificates | Wait for expiry, or ask an administrator to raise `capacity` or use another CA |
-| `issuance_revoked` | 409 | A replayed issuance was revoked, or its CA was (`certificate_revoked`, `ca_revoked`). Terminal | Issue a new certificate with a new key |
+| `issuance_revoked` | 409 | A replayed issuance was revoked, or its CA or its root was (`certificate_revoked`, `ca_revoked`, `ancestor_revoked`). Terminal | Issue a new certificate with a new key |
 | `issuance_expired` | 409 | A replayed result expires within 60 seconds, or its record is over 90 days past expiry. Terminal | Issue a new certificate with a new key |
 | `issuance_rate_limited` | 429 | A grant, administrator or CA quota is used up (`grant_hour`, `grant_day`, `admin_hour`, `ca_hour`). Has `Retry-After` | Wait `Retry-After` seconds, then retry with the same key |
 | `precondition_failed` | 412 | `If-Match` is not the current control revision | Read the current revision, reconcile, then retry with its ETag. Never retry blindly. |
@@ -60,7 +60,9 @@ Quote the `correlationId` when you report a problem. It finds the request's [aud
 
 `internal_error` is the fallback for any error that is not one of the typed codes. The sync codes are raised by the sync service and backfill rather than the shared error helpers.
 
-PKI administration also uses `bad_request`, `forbidden` (reason `pki_role_required`), `not_found`, `conflict` and `service_unavailable` with a `details.reason`. The full list of reasons is in [Admin: PKI](admin-pki.md#errors), and the consumer issuance errors are in [PKI consumer routes](pki.md#errors).
+PKI administration also uses `bad_request`, `forbidden` (reason `pki_role_required`), `not_found`, `conflict` and `service_unavailable` with a `details.reason`.
+
+Creating a Hemlig root or intermediate adds the reasons `parent_required`, `parent_not_allowed`, `validity_not_allowed`, `invalid_validity`, `parent_not_found`, `parent_environment_mismatch` and `parent_validity_insufficient`, and the CA revoke route adds `revoke_at_root`. The full list of reasons is in [Admin: PKI](admin-pki.md#errors), and the consumer issuance errors are in [PKI consumer routes](pki.md#errors).
 
 A `429` from Hemlig always has this envelope, a `Retry-After` header and `error.details.retryAfterSeconds`. A throttled request from API Gateway has no envelope.
 
