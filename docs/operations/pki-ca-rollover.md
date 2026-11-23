@@ -20,6 +20,8 @@ Replace `prod-issuing-1` with `prod-issuing-2` while the old CA drains.
 
 2. Have the root sign it, then activate it as in [Offline root recipe](pki-offline-root.md#sign-a-hemlig-csr).
 
+In the console, "Roll over" on the CA pre-fills the same settings. It increments the trailing number of the name and common name, and disables Create while the subject DN equals the old CA's. In Pulumi, add a second `certificateAuthority` resource with a new name and DN: never rename or replace the old one, because the provider refuses immutable changes. See [Manage PKI with Pulumi](../guide/pulumi-pki.md#roll-over-a-ca).
+
 ## Move trust and grants
 
 3. Add the new `caId` to every [trust bundle](../guide/trust-bundles.md)'s `spec.caIds`, then wait for `Ready`. Check that `status.crls` lists `<target>-crl-<newCaId>` as `Current`, and read the CRL.

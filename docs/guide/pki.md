@@ -59,6 +59,8 @@ Activation checks the chain, the CA certificate, its constraints and the root CR
 
 Hemlig CA names and subject DNs are claimed permanently, so a new CA, even after a failed one, needs a new DN.
 
+You can also do these steps in the [console](console.md#pki), which shows the CSR and takes the pasted certificate and chain, or declare the CA in [Pulumi](pulumi-pki.md), which activates it on the second apply.
+
 ## CA states
 
 | State                 | Meaning                                                                                           |
@@ -102,6 +104,8 @@ Before you rely on a grant, dry-run a request against it. `evaluate` returns the
 hemlig pki grant evaluate payments-prod web --dns api.payments.example.com --key-algorithm ECDSA_P256
 ```
 
+The console grant editor runs the same validation and evaluation; the evaluation tests the saved grant, not an unsaved draft. You can also declare grants in [Pulumi](pulumi-pki.md).
+
 A consumer can hold up to 20 grants. A delete leaves a tombstone, and creating the name again makes a new grant identity, so old certificates never point at a different policy. Disable a grant by updating its `status` to `DISABLED`.
 
 ## Issue and renew
@@ -143,6 +147,8 @@ Revocation is one transaction that marks the certificate, writes its CRL entry a
 A consumer-wide revoke commits in batches and stops after about 20 seconds. The CLI repeats the call with the same idempotency key until it reports `complete`. Revoking a consumer's leaves does not revoke its client certificate: do that too if the consumer itself is compromised.
 
 `hemlig pki cert revoke` refuses a row that is a CA certificate with `409 use_ca_revoke`. Revoke an intermediate with `hemlig pki ca revoke`, which puts it on its root's CRL; see [A Hemlig root and intermediates](#a-hemlig-root-and-intermediates).
+
+The console revokes one certificate from its detail page, and a consumer's certificates in bulk from the consumer's Certificate grants tab. Deleting a grant or removing it in Pulumi never revokes.
 
 List what a CA or consumer holds with `hemlig pki cert list`, and read one certificate with `hemlig pki cert get`.
 
@@ -188,7 +194,7 @@ openssl ca -config root-ca.cnf -gencrl -out root.crl.pem
 hemlig pki external-ca upload-crl --for-ca prod-issuing-1 --crl root.crl.pem
 ```
 
-An upload must be newer than the stored CRL. An identical retry succeeds without changes. Maintenance alarms 30 days before the stored CRL's `nextUpdate`, and when a CA has had no root CRL for 24 hours. This is the one recurring offline step.
+An upload must be newer than the stored CRL. An identical retry succeeds without changes. Maintenance alarms 30 days before the stored CRL's `nextUpdate`, and when a CA has had no root CRL for 24 hours. This is the one recurring offline step. Upload it with the CLI or from the console's offline roots card; Pulumi never uploads a root CRL.
 
 ## Generated CRLs
 

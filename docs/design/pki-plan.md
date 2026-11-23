@@ -1420,6 +1420,11 @@ Everything in "Designed for later", in roughly this order: KMS custody, public h
 | The chart approves Hemlig requests by default                                                                                        | Otherwise requests sit pending forever. The grant is the boundary                                                                                         |
 | Lifetimes are clamped and reported; the leaf ceiling is 397 days                                                                     | Matches cert-manager                                                                                                                                      |
 | Admin renewal was dropped                                                                                                            | Re-issue from the same CSR                                                                                                                                |
+| The console mirrors the client's PKI methods and imports nothing from `@zyno-io/hemlig-client`, not even types | The client is CommonJS with a require-only export map, and the documented fresh-clone build compiles the console before any other workspace. It keeps its own fetch and zod layer |
+| Pulumi never replaces a CA | Names and DNs are never reused, so a replacement cannot succeed, and it would retire an `ACTIVE` CA before its successor is signed. Immutable changes fail in `check` with the rollover procedure |
+| Pulumi idempotency keys are random per mutation, reused only to retry an ambiguous failure | PKI replay records have no TTL and a replay returns the current resource, so a content-derived key would later replay a create against a deleted grant |
+| Pulumi grant updates read, write with `If-Match`, and retry a `412` up to three times behind a drift guard | State is declarative, so the provider re-reads and retries, but it refuses to undo an out-of-band `DISABLED` status or `caId` change. The console never retries a `412` |
+| A pending CA is left in place on delete | A pending CA keeps its key, so an accidental removal can be undone with `import`. Abandoning it is a human action, and the provider cannot call it |
 
 ## Accepted limitations
 

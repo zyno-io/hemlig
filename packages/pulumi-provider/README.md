@@ -61,3 +61,39 @@ replaces the resource. Exact per-secret permissions are updated in place and
 automatically reconcile read delivery access. `bootstrapGeneration` may be
 bumped only while its grant is still pending, to replace an expired unredeemed
 capability; each bump creates one fresh 30-minute capability.
+
+## PKI
+
+`hemlig.certificateAuthority` and `hemlig.issuanceGrant` declare PKI
+certificate authorities and issuance grants. An external CA is created in two
+applies: the first outputs `csrPem` while the CA is `PENDING_CERTIFICATE`; after
+the offline root signs it, set `signedCertificatePem` and `chainPem` and apply
+again to activate it. Pulumi never sends or uploads a root CRL.
+
+```ts
+const issuing = hemlig.certificateAuthority(
+  "prod-issuing-1",
+  {
+    environment: "prod",
+    name: "prod-issuing-1",
+    kind: "EXTERNAL_INTERMEDIATE",
+    keyAlgorithm: "ECDSA_P256",
+    subject: { commonName: "Example Prod Issuing CA 1" },
+    signedCertificatePem: config.get("issuing1Certificate"),
+    chainPem: config.get("issuing1Chain"),
+  },
+  { protect: true },
+);
+export const csrPem = issuing.csrPem;
+```
+
+A CA is never replaced. Its name, kind, key algorithm, subject, parent and
+constraints are immutable, and changing one fails at preview with the rollover
+procedure. Policy and display name update in place.
+
+**Delete means retire.** Destroying a CA resource retires an `ACTIVE` CA, but
+only after every grant that references it has been deleted or migrated. For any
+other status it makes no remote call. The provider can never destroy a key,
+abandon or revoke a CA, or revoke certificates, and destroying a grant leaves a
+tombstone. Use `protect: true`. See
+[Manage PKI with Pulumi](https://zyno-io.github.io/hemlig/guide/pulumi-pki.html).
