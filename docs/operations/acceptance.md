@@ -468,7 +468,7 @@ kubectl -n pki5 get certificaterequest -o json | jq '.items[] | select(.metadata
 
 ## Gate PKI-6: mounted full-chain revocation
 
-Run after PKI-5 in the same cluster and namespace `pki5`, with `acc-root`, `$CA_ID` and `$EXT_ID` from PKI-2 and the PKI-4 shell (`consumer.crt`, the `issue` function, `api2.json`). Run it last: it revokes `acc-issuing-1` at the root. Before applying the CRD, run `helm upgrade --reuse-values --set trustBundles.refreshIntervalMilliseconds=60000`. The verifying pod needs OpenSSL 3; the example installs it in `alpine:3.20`, which needs package egress.
+Run after PKI-5 in the same cluster and namespace `pki5`, with `acc-root`, `$CA_ID` and `$EXT_ID` from PKI-2 and the PKI-4 shell (`consumer.crt`, the `issue` function, `api2.json`). It revokes `acc-issuing-1` at the root, so only PKI-7 follows it. Before applying the CRD, run `helm upgrade --reuse-values --set trustBundles.refreshIntervalMilliseconds=60000`. The verifying pod needs OpenSSL 3; the example installs it in `alpine:3.20`, which needs package egress.
 
 ```sh
 kubectl apply -f packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io-pki.yaml
@@ -567,6 +567,137 @@ sleep 30; kubectl -n pki5 get hmltrustbundle foreign; kubectl -n pki5 get config
 | CRDs | The API server accepted the CRD and rejects the patch with `consumerRef, consumerNamespace and target are immutable` | A CEL rule failed. Only a real API server proves it |
 | Ownership | `foreign` is `Ready=False` `ConfigMapConflict`, and `foreign-trust` still holds `keep` | A foreign ConfigMap was overwritten |
 | Audit | No `succeeded` events for `pki.bundle.get` or `pki.crl.get` from the consumer actor since the gate started (the admin route shares `pki.crl.get`, and PKI-2 created such events); `pki.certificate.revoke` and `pki.external-ca.upload-crl` (with `revokedCaIds`) succeeded; no object contains `-----BEGIN` | |
+
+## Gate PKI-7: a Hemlig root and its intermediates
+
+Run after PKI-6 in the same cluster and namespace `pki5`, with the PKI-4 shell (`consumer.crt`, `consumer.key`, `$CONSUMER_ID`), `grant5.json` from PKI-5 and the chart still at `trustBundles.refreshIntervalMilliseconds=60000`. Every key is `WRAPPED` in real KMS. This root is a throwaway: in production an external offline root is strongly recommended.
+
+```sh
+# 1. A root, two intermediates, and one refused as broader than the root
+hemlig pki ca create --kind ROOT --name acc-hroot-1 --key-algorithm ECDSA_P384 \
+  --subject 'CN=Hemlig Acceptance Root CA 1,O=Example Corp' --permit-dns acc.example.com 2> hroot.err
+for N in 1 2; do hemlig pki ca create --kind INTERMEDIATE --parent acc-hroot-1 --name acc-hint-$N --key-algorithm ECDSA_P256 \
+  --subject "CN=Hemlig Acceptance Intermediate CA $N,O=Example Corp" --validity 90d; done
+hemlig pki ca create --kind INTERMEDIATE --parent acc-hroot-1 --name acc-hint-x --key-algorithm ECDSA_P256 \
+  --subject 'CN=Hemlig Acceptance Intermediate CA X,O=Example Corp' --permit-dns example.org
+ROOT_ID=$(hemlig pki ca get acc-hroot-1 | jq -r .data.caId)
+H1_ID=$(hemlig pki ca get acc-hint-1 | jq -r .data.caId); H2_ID=$(hemlig pki ca get acc-hint-2 | jq -r .data.caId)
+hemlig pki ca get acc-hroot-1 | jq -r .data.certificatePem > hroot.pem
+hemlig pki ca get acc-hint-2 | jq -r .data.certificatePem > hint2.pem
+hemlig pki ca get acc-hint-1 | jq '.data | {status, parentCaId, crlIssuers, effectiveConstraints}'
+hemlig pki cert list acc-hroot-1 | jq -c '.data.certificates[] | {childCaId, status}'
+openssl x509 -in hroot.pem -noout -text | grep -A1 'Basic Constraints'
+openssl verify -x509_strict -CAfile hroot.pem hint2.pem
+# 2. Grants, issuers, certificates, a bundle and a verifying pod
+hemlig pki grant create "$CONSUMER_ID" acc-h1 --ca acc-hint-1 --file grant5.json
+hemlig pki grant create "$CONSUMER_ID" acc-h2 --ca acc-hint-2 --file grant5.json
+kubectl apply -f - <<EOF4
+apiVersion: hemlig.zyno.io/v1alpha1
+kind: HemligIssuer
+metadata: { name: acc-h1, namespace: pki5 }
+spec: { consumerRef: acc-consumer, issuanceGrant: acc-h1 }
+---
+apiVersion: hemlig.zyno.io/v1alpha1
+kind: HemligIssuer
+metadata: { name: acc-h2, namespace: pki5 }
+spec: { consumerRef: acc-consumer, issuanceGrant: acc-h2 }
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: { name: pki7a, namespace: pki5 }
+spec:
+  secretName: pki7a-tls
+  dnsNames: [pki7a.pki5.acc.example.com]
+  usages: [digital signature, server auth]
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  issuerRef: { group: hemlig.zyno.io, kind: HemligIssuer, name: acc-h1 }
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: { name: pki7b, namespace: pki5 }
+spec:
+  secretName: pki7b-tls
+  dnsNames: [pki7b.pki5.acc.example.com]
+  usages: [digital signature, server auth]
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  issuerRef: { group: hemlig.zyno.io, kind: HemligIssuer, name: acc-h2 }
+---
+apiVersion: hemlig.zyno.io/v1alpha1
+kind: HemligTrustBundle
+metadata: { name: acc-htrust, namespace: pki5 }
+spec: { consumerRef: acc-consumer, caIds: [$H1_ID, $H2_ID], target: { name: acc-htrust } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pki7-verify, namespace: pki5 }
+spec:
+  containers:
+    - name: verify
+      image: alpine:3.20
+      command: [sh, -c, "apk add --no-cache openssl >/dev/null && sleep 7200"]
+      volumeMounts: [{ name: trust, mountPath: /trust, readOnly: true }]
+  volumes:
+    - name: trust
+      projected:
+        sources:
+          - configMap: { name: acc-htrust }
+          - configMap: { name: acc-htrust-crl-$H1_ID, items: [{ key: crl.der, path: crls/h1.der }] }
+          - configMap: { name: acc-htrust-crl-$H2_ID, items: [{ key: crl.der, path: crls/h2.der }] }
+          - configMap: { name: acc-htrust-crl-$ROOT_ID, items: [{ key: crl.der, path: crls/root.der }] }
+EOF4
+kubectl -n pki5 wait hemligtrustbundle/acc-htrust --for=condition=Ready --timeout=300s
+kubectl -n pki5 wait certificate/pki7a certificate/pki7b --for=condition=Ready --timeout=120s
+kubectl -n pki5 wait pod/pki7-verify --for=condition=Ready --timeout=300s
+for C in pki7a pki7b; do kubectl -n pki5 get secret $C-tls -o jsonpath='{.data.tls\.crt}' | base64 -d > $C.pem
+  kubectl -n pki5 exec -i pki7-verify -- sh -c "cat > /tmp/$C.pem" < $C.pem; done
+check7() { kubectl -n pki5 exec pki7-verify -- sh -c "for F in h1 h2 root; do openssl crl -inform DER -in /trust/crls/\$F.der -out /tmp/\$F.pem || exit 1; done; \
+  openssl verify -CAfile ${2:-/trust/ca.crt} -untrusted /trust/chain.crt -crl_check_all -CRLfile /tmp/h1.pem -CRLfile /tmp/h2.pem -CRLfile /tmp/root.pem /tmp/$1.pem"; }
+check7 pki7a; check7 pki7b
+kubectl -n pki5 get hemligtrustbundle acc-htrust -o jsonpath='{.status}' | jq '{acceptedCaIds, crls: [.crls[] | {id, source, state}]}'
+kubectl -n pki5 exec pki7-verify -- sh -c 'grep -c "BEGIN CERTIFICATE" /trust/ca.crt /trust/chain.crt; openssl x509 -in /trust/ca.crt -noout -fingerprint -sha256'
+openssl x509 -in hroot.pem -noout -fingerprint -sha256
+# 3. CA revoke of acc-hint-1: the generated root CRL rejects its leaves
+hemlig pki ca revoke acc-hint-1 --reason caCompromise | jq '.data | {changed, crlEntry, crlPublished, revokedCaIds}'; T0=$(date +%s)
+until check7 pki7a 2>&1 | grep -q 'at 1 depth'; do [ $(( $(date +%s) - T0 )) -ge 600 ] && break; sleep 15; done; echo "elapsed=$(( $(date +%s) - T0 ))"
+check7 pki7a; check7 pki7b
+hemlig pki cert revoke acc-hroot-1 "$(hemlig pki ca get acc-hint-1 | jq -r .data.serial)"
+issue7() { openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$2.key" \
+    -subj "/CN=$2.pki5.acc.example.com" -addext "subjectAltName=DNS:$2.pki5.acc.example.com" -out "$2.csr" 2>/dev/null
+  jq -n --rawfile csr "$2.csr" '{certificateSigningRequestPem:$csr, usages:["digital signature","server auth"]}' > "$2.json"
+  curl -sS --cert consumer.crt --key consumer.key -H 'content-type: application/json' -H "idempotency-key: pki7-$3" \
+    --data @"$2.json" "https://api.acc.example.com/v1/pki/issuance-grants/$1/certificates"; }
+issue7 acc-h1 h7a 0701
+# 4. Local distrust of the root
+issue7 acc-h2 h7b 0702 | jq -r .serial
+kubectl -n pki5 exec pki7-verify -- cp /trust/ca.crt /tmp/saved-ca.crt
+hemlig pki ca revoke acc-hroot-1 --reason caCompromise | jq '.data | {changed, revokedCaIds, complete}'; T1=$(date +%s)
+curl -sS --cert consumer.crt --key consumer.key -H 'content-type: application/json' -H 'idempotency-key: pki7-0702' \
+  --data @h7b.json https://api.acc.example.com/v1/pki/issuance-grants/acc-h2/certificates
+until kubectl -n pki5 exec pki7-verify -- sh -c '! grep -q "BEGIN CERTIFICATE" /trust/ca.crt'; do [ $(( $(date +%s) - T1 )) -ge 600 ] && break; sleep 15; done; echo "elapsed=$(( $(date +%s) - T1 ))"
+check7 pki7b; echo "exit=$?"
+check7 pki7b /tmp/saved-ca.crt
+issue7 acc-h2 h7c 0703
+hemlig pki ca get acc-hint-2 | jq -r '.data | [.status, .key.state, .revocationEvidence] | @tsv'
+kubectl -n pki5 get hemligtrustbundle acc-htrust -o jsonpath='{.status}' | jq '{acceptedCaIds, reason: .conditions[0].reason}'
+```
+
+| Check | Pass | Fail means |
+| --- | --- | --- |
+| Create | `acc-hroot-1` is `ACTIVE`, `kind: ROOT`, `crl.number: 1`, and `hroot.err` holds the `warning:` line recommending an external offline root. Each intermediate is `ACTIVE` with `parentCaId: $ROOT_ID`, `crlIssuers` `[$Hn_ID, $ROOT_ID]` and the inherited `acc.example.com` constraint | |
+| Parent check | `acc-hint-x` exits 2 with `apiCode bad_request`, reason `name_constraints_broader_than_parent`, and `hemlig pki ca get acc-hint-x` exits 4 | A child broader than its root was signed |
+| Inventory | The root lists two certificates, each with a `childCaId` | Creation skipped the root's inventory row |
+| Profile | The root shows `CA:TRUE, pathlen:1`, and `hint2.pem: OK` under `-x509_strict` | |
+| Bundle | `Ready=True`; three `crls` entries (`$H1_ID`, `$H2_ID`, `$ROOT_ID`), all `GENERATED` and `Current`; `ca.crt` holds 1 certificate with the fingerprint of `hroot.pem`; `chain.crt` holds 2 | |
+| Healthy | Both `check7` runs print `OK` | |
+| CA revoke | `changed`, `crlEntry` and `crlPublished` are `true`, `revokedCaIds: [$H1_ID]`; `elapsed` is at most the refresh interval plus 120 s; `check7 pki7a` reports `error 23 at 1 depth lookup: certificate revoked`; `pki7b` stays `OK` | The generated root CRL was not published or not delivered |
+| Leaf route | `cert revoke` on the child's serial exits 5, `apiCode conflict`, reason `use_ca_revoke` | |
+| Issuance | `h7a` gives `409 ca_not_active`, reason `revoked` | |
+| Distrust | `changed: true`, `revokedCaIds` lists `$H1_ID` and `$H2_ID`, `complete: true`; `acc-hint-2` shows `REVOKED`, `DISABLED`, `ancestor:$ROOT_ID` | |
+| Replay | The `pki7-0702` replay gives `409 issuance_revoked`, reason `ca_revoked` (or `ancestor_revoked` if it raced the child walk) | A leaf under a distrusted root was delivered again |
+| Anchor removed | `elapsed` is at most the refresh interval plus 120 s; `check7 pki7b` fails with a non-zero `exit=`; `check7 pki7b /tmp/saved-ca.crt` prints `OK`, so only the anchor's removal rejects it; `acceptedCaIds` still lists both CAs | The distrusted root stayed in `ca.crt` |
+| New issuance | `h7c` gives `409 ca_not_active`, reason `revoked` or `ancestor_revoked` | |
+| CloudTrail | One `GenerateDataKey` per new CA with its own `caId`; `Decrypt` with `caId=$ROOT_ID` only from `pki-admin` (signing the intermediates and the revoke's CRL) or `pki-maintenance`, never from `pki-issuer` | The root key signed a leaf |
+| Audit | Succeeded: three `pki.ca.create` (`kind` `ROOT` and `INTERMEDIATE`) and two `pki.ca.revoke`. Failed: `pki.ca.create` with `name_constraints_broader_than_parent`, `pki.certificate.revoke` with `use_ca_revoke`, and `pki.certificate.issue` with `revoked` and with `ca_revoked` or `ancestor_revoked`. No object contains `-----BEGIN` | |
 
 ## Teardown
 
