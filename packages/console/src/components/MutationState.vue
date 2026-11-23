@@ -1,26 +1,37 @@
 <script setup lang="ts">
 import ErrorNotice from "./ErrorNotice.vue";
-import type { MutationPhase } from "../composables/useGuardedMutation";
+import type { MutationFamily, MutationPhase } from "../composables/useGuardedMutation";
 
-defineProps<{
-  phase: MutationPhase;
-  canRetry?: boolean;
-  /** What the caller was trying to do, for the ambiguous-outcome copy. */
-  intent: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    phase: MutationPhase;
+    canRetry?: boolean;
+    /** What the caller was trying to do, for the ambiguous-outcome copy. */
+    intent: string;
+    /** Selects the copy. Defaults to `secret`, which keeps the original text. */
+    family?: MutationFamily;
+  }>(),
+  { family: "secret" },
+);
 defineEmits<{ retry: []; reload: [] }>();
 </script>
 
 <template>
   <div v-if="phase.kind === 'stale'" class="notice notice-warning" role="status">
     <p class="notice-title">This changed while you were editing.</p>
-    <p class="mt-1">
-      Someone else created a newer control revision, so your update was refused rather
-      than silently overwriting theirs. Your draft is intact.
+    <p v-if="props.family === 'pki'" class="mt-1">
+      Someone else saved a newer version, so your change was refused rather than
+      overwriting theirs. Your draft is intact.
     </p>
-    <p class="mt-1">
-      Reload the current revision, re-apply your change, and submit again.
-    </p>
+    <template v-else>
+      <p class="mt-1">
+        Someone else created a newer control revision, so your update was refused rather
+        than silently overwriting theirs. Your draft is intact.
+      </p>
+      <p class="mt-1">
+        Reload the current revision, re-apply your change, and submit again.
+      </p>
+    </template>
     <button type="button" class="btn mt-3" @click="$emit('reload')">
       Reload current revision
     </button>
@@ -32,7 +43,11 @@ defineEmits<{ retry: []; reload: [] }>();
       The request to {{ intent }} may or may not have been applied.
       <template v-if="phase.reconciling"> Checking what actually happened…</template>
     </p>
-    <p v-if="!phase.reconciling && canRetry" class="mt-1">
+    <p v-if="!phase.reconciling && props.family === 'pki'" class="mt-1">
+      This operation replays safely: retrying with the same key returns the original
+      result.
+    </p>
+    <p v-else-if="!phase.reconciling && canRetry" class="mt-1">
       This operation replays safely, so retrying with the same key is correct.
     </p>
     <p v-else-if="!phase.reconciling" class="mt-1">

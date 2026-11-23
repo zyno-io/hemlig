@@ -52,6 +52,22 @@ Every status is a tag with a word in it (The Tag Triplet Rule).
 | Audit outcome | `succeeded` | success |
 | Audit outcome | `attempted`, `authorized` | neutral |
 | Audit outcome | `failed` | danger |
+| CA | `ACTIVE` | success |
+| CA | `PENDING_CERTIFICATE` | warning |
+| CA | `RETIRED` | neutral |
+| CA | `REVOKED`, `FAILED` | danger |
+| CA key | `ACTIVE` | success |
+| CA key | `DISABLED` | warning |
+| CA key | `DESTROYED` | danger |
+| CRL | `CURRENT` | success |
+| CRL | `STALE`, `MISSING` | warning |
+| Certificate | `ISSUED` | success |
+| Certificate | `REVOKED`, `CA_REVOKED`, `EXPIRED` | danger |
+| Issuance grant | `ACTIVE` | success |
+| Issuance grant | `DISABLED` | warning |
+| Issuance grant | `DELETED` | neutral |
+| Evaluate decision | `allow` | success |
+| Evaluate decision | `deny` | danger |
 | Any | unknown value | neutral |
 
 `info` and `release` are available but unassigned; do not invent meanings for

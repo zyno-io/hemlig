@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { ref } from "vue";
 
-const props = defineProps<{ label: string; value: string; multiline?: boolean }>();
+const props = defineProps<{
+  label: string;
+  value: string;
+  multiline?: boolean;
+  /** The download name. Defaults to a slug of the label plus `.pem`. */
+  filename?: string;
+}>();
 const copied = ref(false);
 
 const copy = async (): Promise<void> => {
@@ -17,7 +23,9 @@ const download = (): void => {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${props.label.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}.pem`;
+  anchor.download =
+    props.filename ??
+    `${props.label.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}.pem`;
   anchor.click();
   URL.revokeObjectURL(url);
 };
