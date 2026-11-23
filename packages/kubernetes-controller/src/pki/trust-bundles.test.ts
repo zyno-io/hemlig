@@ -1169,3 +1169,134 @@ test("freshness is recomputed at publish time on every path", async () => {
   assert.equal(y.ready()?.reason, "ConsumerNotReady");
   assert.equal(crlEntry(y, "ca-aaa").state, "Stale");
 });
+
+// -- Hemlig ROOT and INTERMEDIATE CAs -----------------------------------------------
+
+const ROOT_ID = "ca-root";
+const rootCaPem = pemOf("hemlig-root");
+const rootView = (overrides: Record<string, unknown> = {}) =>
+  caView(ROOT_ID, {
+    anchorPem: rootCaPem,
+    chainPem: "",
+    crlIssuers: [{ id: ROOT_ID, source: "GENERATED" }],
+    ...overrides,
+  });
+const childView = (id: string, overrides: Record<string, unknown> = {}) =>
+  caView(id, {
+    anchorPem: rootCaPem,
+    chainPem: pemOf(id),
+    crlIssuers: [
+      { id, source: "GENERATED" },
+      { id: ROOT_ID, source: "GENERATED" },
+    ],
+    ...overrides,
+  });
+const hemligSetup = (
+  ids: readonly string[],
+  views: Record<string, Record<string, unknown>>,
+  rootNextUpdate = "2027-01-01T00:00:00.000Z",
+): Rig => {
+  const r = setup({}, ids, { withExt: false });
+  for (const [id, view] of Object.entries(views)) r.server.views.set(id, view);
+  r.server.crls.set(ROOT_ID, crlFixture(41, "1", rootNextUpdate, 3));
+  return r;
+};
+
+test("a bundle listing only a ROOT becomes Ready with no chain", async () => {
+  const r = hemligSetup([ROOT_ID], { [ROOT_ID]: rootView() });
+  await r.run();
+  const target = cm(r, "trust");
+  assert.equal(target.data["ca.crt"], rootCaPem);
+  assert.equal(target.data["chain.crt"], "");
+  assert.deepEqual(r.core.configMapNames("app"), ["trust", crlName(ROOT_ID)]);
+  assert.equal(r.ready()?.reason, "Ready");
+  assert.equal(r.ready()?.status, "True");
+});
+
+test("two intermediates under one root: one anchor, two chain entries, three CRLs", async () => {
+  const r = hemligSetup(["ca-hem1", "ca-hem2"], {
+    "ca-hem1": childView("ca-hem1"),
+    "ca-hem2": childView("ca-hem2"),
+  });
+  await r.run();
+  const target = cm(r, "trust");
+  assert.equal(target.data["ca.crt"], rootCaPem);
+  assert.equal(target.data["chain.crt"], pemOf("ca-hem1") + pemOf("ca-hem2"));
+  assert.deepEqual(r.core.configMapNames("app"), [
+    "trust",
+    crlName("ca-hem1"),
+    crlName("ca-hem2"),
+    crlName(ROOT_ID),
+  ]);
+  for (const id of ["ca-hem1", "ca-hem2", ROOT_ID]) {
+    assert.equal(
+      cm(r, crlName(id)).metadata.annotations["hemlig.zyno.io/crl-source"],
+      "GENERATED",
+    );
+  }
+  assert.equal(r.ready()?.reason, "Ready");
+});
+
+test("distrust through every listed child empties ca.crt and stays Ready", async () => {
+  const r = hemligSetup([ROOT_ID, "ca-hem1", "ca-hem2"], {
+    [ROOT_ID]: rootView({ status: "REVOKED", anchorTrusted: false }),
+    "ca-hem1": childView("ca-hem1", { anchorTrusted: false }),
+    "ca-hem2": childView("ca-hem2", { anchorTrusted: false }),
+  });
+  await r.run();
+  const target = cm(r, "trust");
+  assert.equal(target.data["ca.crt"], "");
+  assert.equal(target.data["chain.crt"], pemOf("ca-hem1") + pemOf("ca-hem2"));
+  assert.deepEqual(r.bundle().status.acceptedCaIds, [
+    "ca-hem1",
+    "ca-hem2",
+    ROOT_ID,
+  ]);
+  assert.equal(r.ready()?.reason, "Ready");
+});
+
+test("the root CRL is required only while a listed child can still validate", async () => {
+  const stalePast = "2026-06-08T00:00:00.000Z";
+  // Distrusted dependents: a stale root CRL is no longer required.
+  const distrusted = hemligSetup(
+    ["ca-hem1", "ca-hem2"],
+    {
+      "ca-hem1": childView("ca-hem1", { anchorTrusted: false }),
+      "ca-hem2": childView("ca-hem2", { anchorTrusted: false }),
+    },
+    stalePast,
+  );
+  await distrusted.run();
+  await distrusted.scheduler.advance(8 * 86_400_000);
+  await distrusted.run();
+  assert.equal(crlEntry(distrusted, ROOT_ID).state, "Stale");
+  assert.equal(distrusted.ready()?.reason, "Ready");
+  // A CA-revoked child keeps a trusted anchor, so the root CRL is still required.
+  const revoked = hemligSetup(
+    ["ca-hem1", "ca-hem2"],
+    {
+      "ca-hem1": childView("ca-hem1", { status: "REVOKED" }),
+      "ca-hem2": childView("ca-hem2", { status: "REVOKED" }),
+    },
+    stalePast,
+  );
+  await revoked.run();
+  await revoked.scheduler.advance(8 * 86_400_000);
+  await revoked.run();
+  assert.equal(crlEntry(revoked, ROOT_ID).state, "Stale");
+  assert.equal(revoked.ready()?.reason, "CrlStale");
+  // Drained dependents: not required, and the bundle reports CaDrained.
+  const drained = hemligSetup(
+    ["ca-hem1", "ca-hem2"],
+    {
+      "ca-hem1": childView("ca-hem1", { drained: true }),
+      "ca-hem2": childView("ca-hem2", { drained: true }),
+    },
+    stalePast,
+  );
+  await drained.run();
+  await drained.scheduler.advance(8 * 86_400_000);
+  await drained.run();
+  assert.equal(crlEntry(drained, ROOT_ID).state, "Stale");
+  assert.equal(drained.ready()?.reason, "CaDrained");
+});
