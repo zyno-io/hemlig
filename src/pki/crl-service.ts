@@ -529,3 +529,47 @@ export class CrlService {
     return crlPublicationBusy();
   }
 }
+
+const inlinePublishBudgetMs = 5_000;
+
+/** The inline publication: best effort, under a 5-second deadline, never failing the revoke. */
+export const publishInlineBestEffort = async (
+  crls: Pick<CrlService, "publish">,
+  ca: CaRecord,
+  now: Date,
+  deadlineMs = inlinePublishBudgetMs,
+): Promise<{ crlPublished: boolean; crlNumber?: number }> => {
+  if (
+    (ca.status !== "ACTIVE" && ca.status !== "RETIRED") ||
+    ca.key.state !== "ACTIVE"
+  ) {
+    return { crlPublished: false };
+  }
+  try {
+    const result = await crls.publish(ca, {
+      trigger: "inline",
+      waitForLeaseMs: 1000,
+      deadline: new Date(now.getTime() + deadlineMs),
+    });
+    if (result.kind === "published") {
+      return { crlPublished: true, crlNumber: result.pointer.number };
+    }
+    console.error(
+      JSON.stringify({
+        event: "pki_inline_crl_failed",
+        caId: ca.caId,
+        kind: result.kind,
+      }),
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "pki_inline_crl_failed",
+        caId: ca.caId,
+        kind: "error",
+        error: error instanceof Error ? error.name : typeof error,
+      }),
+    );
+  }
+  return { crlPublished: false };
+};

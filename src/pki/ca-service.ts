@@ -1,37 +1,56 @@
 import { randomUUID } from "node:crypto";
 import {
+  ApiError,
   preconditionFailed,
   serviceUnavailable,
-  type ApiError,
 } from "../domain/errors";
 import type { Actor } from "../domain/types";
-import type { HumanIdempotencyWrite, PkiRepository } from "../repositories/pki";
+import {
+  pkiKeys,
+  quotaRetryAfterSeconds,
+  quotaWindows,
+  type HumanIdempotencyWrite,
+  type PkiRepository,
+} from "../repositories/pki";
 import { sha256Hex, stableJson } from "../util/encoding";
 import {
   assertHumanReplay,
+  assertRootPolicyUpdate,
   caDetail,
   caStatusReason,
   caSummary,
+  ekuOidsToNames,
   parseActivateRequest,
   parseCreateCaRequest,
   parseUpdateCaRequest,
   replayOutcome,
   requestDigest,
   resolvePolicy,
+  subjectDn,
+  type CreateCaInput,
 } from "./ca-model";
 import { verifySignature } from "./asn1/algorithms";
-import { parseCertificate } from "./asn1/certificate";
+import {
+  assembleCertificate,
+  generateSerial,
+  parseCertificate,
+  buildCaTbs,
+  buildRootTbs,
+} from "./asn1/certificate";
 import { parseCrl, type ParsedCrl } from "./asn1/crl";
 import { buildExternalIntermediateCsr, parseRawCsr } from "./asn1/csr";
 import { canonicalSerialHex } from "./asn1/der";
 import { fromPem, toPem } from "./asn1/pem";
+import { keyIdentifierFromSpki } from "./asn1/extensions";
 import { verifyActivationChain } from "./chain";
+import { CapacityService } from "./capacity-service";
 import {
   buildSignedCrl,
   crlObjectKey,
   CrlService,
   drainPoint,
   floorSeconds,
+  publishInlineBestEffort,
   pkiObjectRead,
   type CrlIssuerMaterial,
 } from "./crl-service";
@@ -41,25 +60,48 @@ import {
   type VerifiedRootCrl,
 } from "./crl-verify";
 import {
+  caCapacityExceeded,
   caKeyUnavailable,
   caNotActive,
   caSubjectInUse,
+  issuanceRateLimited,
   chainInvalid,
   crlInvalid,
   crlPublicationBusy,
+  pkiBadRequest,
   pkiConflict,
   pkiNotFound,
 } from "./errors";
+import {
+  assertBuiltCaCertificate,
+  assertParentCanIssue,
+  deriveChildConstraints,
+  childValidity,
+  externalRootRecommended,
+  parseRevokeCaRequest,
+  rootValidity,
+  ROOT_PATH_LEN,
+} from "./hierarchy-model";
+import { ADMIN_ISSUANCE_PER_HOUR } from "./issuance-model";
+import { reasonOfQuotas } from "./issuance-service";
 import { emitPkiMetrics, PKI_METRICS } from "./metrics";
 import type { MutationResult, PkiServiceDeps } from "./service-types";
-import { signWithPkcs8 } from "./signer";
+import { pkcs8Signer, signWithPkcs8 } from "./signer";
 import {
   buildCaSubject,
   matchesIdentityRoot,
   parseRestrictedName,
   type IdentityRootReference,
+  type RestrictedName,
 } from "./subject";
-import type { CaCrlState, CaRecord, CaStatus, ExternalCaRecord } from "./types";
+import type {
+  CaCrlState,
+  CaRecord,
+  CaStatus,
+  ExternalCaRecord,
+  IssuedCertificateRecord,
+  RevocationReason,
+} from "./types";
 import { generateCaKeyPair, wrapCaKey } from "./wrapped-keys";
 
 const maxActivationReruns = 3;
@@ -72,6 +114,29 @@ const ed25519Warning = {
 };
 
 const statusReason = caStatusReason;
+
+const mapLimit = async <T>(
+  items: readonly T[],
+  limit: number,
+  work: (item: T) => Promise<void>,
+): Promise<void> => {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (let index = next++; index < items.length; index = next++) {
+      await work(items[index] as T);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+};
+
+const parentWindow = (
+  parent: CaRecord,
+): { notBefore: string; notAfter: string } => ({
+  notBefore: parent.notBefore ?? "",
+  notAfter: parent.notAfter ?? "",
+});
 
 const hex = (value: Uint8Array): string => Buffer.from(value).toString("hex");
 
@@ -95,12 +160,14 @@ class ReplayRequested extends Error {
 
 export class CaService {
   private readonly emit: typeof emitPkiMetrics;
+  private readonly capacity: CapacityService;
 
   public constructor(
     private readonly deps: PkiServiceDeps,
     private readonly crls: CrlService,
   ) {
     this.emit = deps.emit ?? emitPkiMetrics;
+    this.capacity = new CapacityService(deps.pki);
   }
 
   private get pki(): PkiRepository {
@@ -209,22 +276,55 @@ export class CaService {
       throw serviceUnavailable("The stored idempotency record is incomplete.");
     }
     const { ca, body } = await this.detail(caId, (loaded) =>
-      this.warningsFor(loaded.key.algorithm, status === 201),
+      this.warningsFor(loaded, status === 201),
     );
     return {
       body,
       status,
       shouldWriteTerminalAudit: outcome.shouldWriteTerminalAudit,
-      auditTarget: this.auditTarget(ca),
+      auditTarget:
+        status === 201 ? this.createTarget(ca) : this.auditTarget(ca),
       etag: ca.version,
     };
   }
 
   private warningsFor(
-    algorithm: string,
+    ca: Pick<CaRecord, "kind"> & { key: Pick<CaRecord["key"], "algorithm"> },
     created: boolean,
   ): { code: string; message: string }[] | undefined {
-    return created && algorithm === "ED25519" ? [ed25519Warning] : undefined;
+    if (!created) {
+      return undefined;
+    }
+    const warnings = [
+      ...(ca.key.algorithm === "ED25519" ? [ed25519Warning] : []),
+      ...(ca.kind === "ROOT" ? [externalRootRecommended] : []),
+    ];
+    return warnings.length === 0 ? undefined : warnings;
+  }
+
+  /** `pki.ca.create` target: the CA, plus the certificate and anchor of a Hemlig CA. */
+  private createTarget(ca: CaRecord): Record<string, string> {
+    if (ca.kind === "EXTERNAL_INTERMEDIATE" || ca.fingerprint === undefined) {
+      return this.auditTarget(ca);
+    }
+    const anchorFingerprint =
+      ca.kind === "ROOT"
+        ? ca.fingerprint
+        : parseCertificate(
+            fromPem(
+              (ca.chainPem ?? "").match(
+                /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/,
+              )?.[0] ?? "",
+              "CERTIFICATE",
+            ),
+          ).fingerprint;
+    return {
+      ...this.auditTarget(ca),
+      ...(ca.parentCaId === undefined ? {} : { parentCaId: ca.parentCaId }),
+      fingerprint: ca.fingerprint,
+      serial: ca.serial ?? "",
+      anchorFingerprint,
+    };
   }
 
   private async replayAfterCancel(
@@ -381,6 +481,12 @@ export class CaService {
     if (existing.filter((item) => item.status !== "FAILED").length >= 50) {
       throw pkiConflict("ca_limit_reached");
     }
+    if (input.kind === "ROOT") {
+      return this.createRoot(actor, key, digest, input, subject);
+    }
+    if (input.kind === "INTERMEDIATE") {
+      return this.createIntermediate(actor, key, digest, input, subject);
+    }
 
     const caId = `ca-${randomUUID()}`;
     const generated = await generateCaKeyPair(input.keyAlgorithm);
@@ -467,9 +573,494 @@ export class CaService {
         break;
     }
     const { body: view } = await this.detail(caId, () =>
-      this.warningsFor(input.keyAlgorithm, true),
+      this.warningsFor(ca, true),
     );
     return this.success(ca, view, 201);
+  }
+
+  // -----------------------------------------------------------------------------------------------------------------
+  // Hemlig ROOT and INTERMEDIATE
+  // -----------------------------------------------------------------------------------------------------------------
+
+  /** The CA's first, empty CRL: number 1, signed with the plaintext key before it is wrapped. */
+  private crlStateOf(published: {
+    number: number;
+    objectKey: string;
+    sha256: string;
+    thisUpdate: Date;
+    nextUpdate: Date;
+  }): CaCrlState {
+    return {
+      revision: 0,
+      lastNumber: 1,
+      published: {
+        number: published.number,
+        objectKey: published.objectKey,
+        sha256: published.sha256,
+        thisUpdate: published.thisUpdate.toISOString(),
+        nextUpdate: published.nextUpdate.toISOString(),
+        revision: 0,
+        entryCount: 0,
+      },
+      sweptThrough: published.thisUpdate.toISOString(),
+    };
+  }
+
+  private async createRoot(
+    actor: Actor,
+    key: string,
+    digest: string,
+    input: Extract<CreateCaInput, { kind: "ROOT" }>,
+    subject: RestrictedName,
+  ): Promise<MutationResult> {
+    const now = this.now();
+    const caId = `ca-${randomUUID()}`;
+    const validity = rootValidity(input.validitySeconds, now);
+    const generated = await generateCaKeyPair(input.keyAlgorithm);
+    let certificateDer: Buffer;
+    let parsed;
+    let crl: { der: Buffer; sha256: string };
+    let wrapped;
+    const thisUpdate = floorSeconds(now);
+    const nextUpdate = new Date(
+      thisUpdate.getTime() + input.policy.crlValiditySeconds * 1000,
+    );
+    try {
+      // The root signs itself and its CRL with the plaintext key in process: KMS sees the key only once, to wrap it.
+      const signer = pkcs8Signer(input.keyAlgorithm, generated.privateKeyDer);
+      const built = buildRootTbs({
+        algorithm: input.keyAlgorithm,
+        serial: generateSerial(),
+        notBefore: validity.notBefore,
+        notAfter: validity.notAfter,
+        subjectDer: subject.der,
+        spkiDer: generated.spkiDer,
+        pathLen: ROOT_PATH_LEN,
+        ...(input.requested.nameConstraints === undefined
+          ? {}
+          : { nameConstraints: input.requested.nameConstraints }),
+        ...(input.requested.extendedKeyUsages === undefined
+          ? {}
+          : { extendedKeyUsage: input.requested.extendedKeyUsages }),
+      });
+      certificateDer = assembleCertificate(
+        built.tbs,
+        built.signatureAlgorithm,
+        await signer.sign(built.tbs),
+      );
+      parsed = assertBuiltCaCertificate(certificateDer, built, {
+        issuerSpkiDer: generated.spkiDer,
+        pathLen: ROOT_PATH_LEN,
+      });
+      crl = await buildSignedCrl(
+        {
+          subjectDer: subject.der.toString("base64"),
+          subjectKeyIdentifier: hex(
+            parsed.subjectKeyIdentifier ?? Buffer.alloc(0),
+          ),
+          spkiDer: generated.spkiDer,
+        },
+        signer,
+        { number: 1, thisUpdate, nextUpdate, entries: [] },
+      );
+      wrapped = await wrapCaKey(
+        this.deps.kms,
+        this.deps.config.payloadKmsKeyArn,
+        generated.privateKeyDer,
+        { caId, environment: input.environment },
+      );
+    } finally {
+      generated.privateKeyDer.fill(0);
+    }
+    const objectKey = crlObjectKey(caId, "1", crl.sha256);
+    await this.deps.objects.putImmutableOrGet(
+      this.deps.config.pkiBucketName,
+      objectKey,
+      crl.der,
+      "application/pkix-crl",
+    );
+
+    const createdAt = now.toISOString();
+    const certificatePem = toPem(certificateDer, "CERTIFICATE");
+    const ca: CaRecord = {
+      caId,
+      environment: input.environment,
+      name: input.name,
+      ...(input.displayName === undefined
+        ? {}
+        : { displayName: input.displayName }),
+      kind: "ROOT",
+      status: "ACTIVE",
+      version: versionId(),
+      crlIssuers: [{ type: "ca", id: caId }],
+      key: {
+        custody: "WRAPPED",
+        algorithm: input.keyAlgorithm,
+        spkiSha256: generated.spkiSha256,
+        state: "ACTIVE",
+        wrapped,
+      },
+      subject: input.subject,
+      subjectKey: subject.key,
+      requested: input.requested,
+      certificatePem,
+      chainPem: certificatePem,
+      serial: canonicalSerialHex(parsed.serialHex),
+      fingerprint: parsed.fingerprint,
+      subjectDer: subject.der.toString("base64"),
+      subjectKeyIdentifier: hex(parsed.subjectKeyIdentifier ?? Buffer.alloc(0)),
+      notBefore: parsed.notBefore.toISOString(),
+      notAfter: parsed.notAfter.toISOString(),
+      effective: {
+        ...(input.requested.nameConstraints === undefined
+          ? {}
+          : { nameConstraints: input.requested.nameConstraints }),
+        ...(input.requested.extendedKeyUsages === undefined
+          ? {}
+          : { extendedKeyUsages: input.requested.extendedKeyUsages }),
+      },
+      policy: input.policy,
+      maxIssueLifetimeEverSeconds: 0,
+      createdAt,
+      createdBy: actor,
+      activatedAt: createdAt,
+    };
+    const outcome = await this.pki.createCa({
+      idempotency: this.idempotency(actor, key, "pki.ca.create", digest, {
+        caId,
+      }),
+      ca,
+      crl: this.crlStateOf({
+        number: 1,
+        objectKey,
+        sha256: crl.sha256,
+        thisUpdate,
+        nextUpdate,
+      }),
+    });
+    switch (outcome.kind) {
+      case "replay":
+        return this.replayAfterCancel(actor, key, "pki.ca.create", digest, 201);
+      case "nameInUse":
+        throw pkiConflict("name_in_use");
+      case "subjectInUse":
+        throw caSubjectInUse("subject_claimed");
+      case "created":
+        break;
+    }
+    const { body: view } = await this.detail(caId, () =>
+      this.warningsFor(ca, true),
+    );
+    return {
+      ...this.success(ca, view, 201),
+      auditTarget: this.createTarget(ca),
+    };
+  }
+
+  private async createIntermediate(
+    actor: Actor,
+    key: string,
+    digest: string,
+    input: Extract<CreateCaInput, { kind: "INTERMEDIATE" }>,
+    subject: RestrictedName,
+  ): Promise<MutationResult> {
+    const replayed = async (): Promise<MutationResult | undefined> => {
+      const winner = await this.prior(actor, key, "pki.ca.create", digest);
+      return winner === undefined ? undefined : this.replayResult(winner, 201);
+    };
+    let parent = assertParentCanIssue(
+      await this.pki.getCa(input.parentCaId),
+      input.environment,
+      this.now(),
+    );
+    let effective = deriveChildConstraints(parent.effective, input.requested);
+    childValidity(parentWindow(parent), input.validitySeconds, this.now());
+
+    // Pre-check, as an administrator issuance does: the child counts against the parent's capacity and quotas.
+    {
+      const now = this.now();
+      const windows = quotaWindows(now);
+      const adminKey = pkiKeys.adminQuota(parent.caId, windows.hourSk);
+      const caKey = pkiKeys.caQuota(parent.caId, windows.hourSk);
+      const [count, adminCount, caCount] = await Promise.all([
+        this.pki
+          .getCaCrlState(parent.caId)
+          .then((crl) => this.capacity.current(parent, crl, now)),
+        this.pki.getQuotaCount(adminKey),
+        this.pki.getQuotaCount(caKey),
+      ]);
+      const failing: ("adminHour" | "caHour")[] = [
+        ...(adminCount >= ADMIN_ISSUANCE_PER_HOUR
+          ? (["adminHour"] as const)
+          : []),
+        ...(caCount >= parent.policy.issuancePerHour
+          ? (["caHour"] as const)
+          : []),
+      ];
+      const refusal =
+        count >= parent.policy.capacity
+          ? caCapacityExceeded()
+          : failing.length > 0
+            ? issuanceRateLimited(
+                reasonOfQuotas(failing),
+                quotaRetryAfterSeconds(failing, now),
+              )
+            : undefined;
+      if (refusal !== undefined) {
+        const winner = await replayed();
+        if (winner !== undefined) {
+          return winner;
+        }
+        throw refusal;
+      }
+    }
+
+    // The child's key, CRL #1 and wrapped envelope are made once and kept across parent-changed reruns.
+    const caId = `ca-${randomUUID()}`;
+    const generated = await generateCaKeyPair(input.keyAlgorithm);
+    const crlNow = this.now();
+    const thisUpdate = floorSeconds(crlNow);
+    const nextUpdate = new Date(
+      thisUpdate.getTime() + input.policy.crlValiditySeconds * 1000,
+    );
+    let crl: { der: Buffer; sha256: string };
+    let wrapped;
+    try {
+      crl = await buildSignedCrl(
+        {
+          subjectDer: subject.der.toString("base64"),
+          subjectKeyIdentifier: hex(keyIdentifierFromSpki(generated.spkiDer)),
+          spkiDer: generated.spkiDer,
+        },
+        pkcs8Signer(input.keyAlgorithm, generated.privateKeyDer),
+        { number: 1, thisUpdate, nextUpdate, entries: [] },
+      );
+      wrapped = await wrapCaKey(
+        this.deps.kms,
+        this.deps.config.payloadKmsKeyArn,
+        generated.privateKeyDer,
+        { caId, environment: input.environment },
+      );
+    } finally {
+      generated.privateKeyDer.fill(0);
+    }
+    const objectKey = crlObjectKey(caId, "1", crl.sha256);
+    await this.deps.objects.putImmutableOrGet(
+      this.deps.config.pkiBucketName,
+      objectKey,
+      crl.der,
+      "application/pkix-crl",
+    );
+    const crlState = this.crlStateOf({
+      number: 1,
+      objectKey,
+      sha256: crl.sha256,
+      thisUpdate,
+      nextUpdate,
+    });
+
+    for (let attempt = 0; attempt < maxActivationReruns; attempt += 1) {
+      if (attempt > 0) {
+        const winner = await replayed();
+        if (winner !== undefined) {
+          return winner;
+        }
+        parent = assertParentCanIssue(
+          await this.pki.getCa(input.parentCaId),
+          input.environment,
+          this.now(),
+        );
+        effective = deriveChildConstraints(parent.effective, input.requested);
+      }
+      const now = this.now();
+      const validity = childValidity(
+        parentWindow(parent),
+        input.validitySeconds,
+        now,
+      );
+      const parentCert = parseCertificate(
+        fromPem(parent.certificatePem ?? "", "CERTIFICATE"),
+      );
+      let rerun = false;
+      for (let serialAttempt = 0; serialAttempt < 3; serialAttempt += 1) {
+        const built = buildCaTbs({
+          issuer: parentCert,
+          serial: generateSerial(),
+          notBefore: validity.notBefore,
+          notAfter: validity.notAfter,
+          subjectDer: subject.der,
+          spkiDer: generated.spkiDer,
+          pathLen: 0,
+          ...(effective.nameConstraints === undefined
+            ? {}
+            : { nameConstraints: effective.nameConstraints }),
+          ...(effective.extendedKeyUsages === undefined
+            ? {}
+            : { extendedKeyUsage: effective.extendedKeyUsages }),
+        });
+        let signature: Uint8Array;
+        try {
+          signature = await this.deps.signerFor(parent).sign(built.tbs);
+        } catch (error) {
+          if (error instanceof ApiError) {
+            if (error.code === "ca_key_unavailable") {
+              this.emit(this.deps.config.environmentName, {
+                [PKI_METRICS.caKeyUnavailable]: 1,
+              });
+            } else if (error.safeReason === "kms_access_denied") {
+              this.emit(this.deps.config.environmentName, {
+                [PKI_METRICS.kmsAccessDenied]: 1,
+              });
+            }
+          }
+          throw error;
+        }
+        const certificateDer = assembleCertificate(
+          built.tbs,
+          built.signatureAlgorithm,
+          signature,
+        );
+        const parsed = assertBuiltCaCertificate(certificateDer, built, {
+          issuerSpkiDer: parentCert.spkiDer,
+          pathLen: 0,
+        });
+        const createdAt = now.toISOString();
+        const certificatePem = toPem(certificateDer, "CERTIFICATE");
+        const serialHex = canonicalSerialHex(parsed.serialHex);
+        const ca: CaRecord = {
+          caId,
+          environment: input.environment,
+          name: input.name,
+          ...(input.displayName === undefined
+            ? {}
+            : { displayName: input.displayName }),
+          kind: "INTERMEDIATE",
+          status: "ACTIVE",
+          version: versionId(),
+          parent: { type: "ca", id: parent.caId },
+          parentCaId: parent.caId,
+          crlIssuers: [
+            { type: "ca", id: caId },
+            { type: "ca", id: parent.caId },
+          ],
+          key: {
+            custody: "WRAPPED",
+            algorithm: input.keyAlgorithm,
+            spkiSha256: generated.spkiSha256,
+            state: "ACTIVE",
+            wrapped,
+          },
+          subject: input.subject,
+          subjectKey: subject.key,
+          requested: input.requested,
+          certificatePem,
+          chainPem: `${(parent.certificatePem ?? "").trim()}\n`,
+          serial: serialHex,
+          fingerprint: parsed.fingerprint,
+          subjectDer: subject.der.toString("base64"),
+          subjectKeyIdentifier: hex(
+            parsed.subjectKeyIdentifier ?? Buffer.alloc(0),
+          ),
+          notBefore: parsed.notBefore.toISOString(),
+          notAfter: parsed.notAfter.toISOString(),
+          effective: {
+            ...(effective.nameConstraints === undefined
+              ? {}
+              : { nameConstraints: effective.nameConstraints }),
+            ...(effective.extendedKeyUsages === undefined
+              ? {}
+              : { extendedKeyUsages: effective.extendedKeyUsages }),
+          },
+          policy: input.policy,
+          maxIssueLifetimeEverSeconds: input.policy.maxLeafLifetimeSeconds,
+          createdAt,
+          createdBy: actor,
+          activatedAt: createdAt,
+        };
+        const row: IssuedCertificateRecord = {
+          caId: parent.caId,
+          environment: input.environment,
+          serial: serialHex,
+          status: "ISSUED",
+          certificatePem,
+          fingerprint: parsed.fingerprint,
+          spkiSha256: generated.spkiSha256,
+          subject: subjectDn(subject.attributes),
+          sans: { dns: [], ip: [], uri: [] },
+          keyAlgorithm: input.keyAlgorithm,
+          keyUsages: ["keyCertSign", "cRLSign"],
+          extendedKeyUsages: ekuOidsToNames(effective.extendedKeyUsages ?? []),
+          isCa: true,
+          childCaId: caId,
+          lifetimeClamped: validity.clamped,
+          notBefore: ca.notBefore ?? createdAt,
+          notAfter: ca.notAfter ?? createdAt,
+          issuedAt: createdAt,
+          requester: { type: "human", id: actor.id },
+        };
+        const outcome = await this.pki.createIntermediateCa({
+          idempotency: this.idempotency(actor, key, "pki.ca.create", digest, {
+            caId,
+          }),
+          ca,
+          crl: crlState,
+          certificate: row,
+          parent: {
+            caId: parent.caId,
+            version: parent.version,
+            issuancePerHour: parent.policy.issuancePerHour,
+            loadedMaxIssueLifetimeEverSeconds:
+              parent.maxIssueLifetimeEverSeconds,
+            childLifetimeSeconds: Math.ceil(validity.lifetimeSeconds),
+          },
+          now,
+          adminPerHour: ADMIN_ISSUANCE_PER_HOUR,
+        });
+        switch (outcome.kind) {
+          case "created": {
+            const { body: view } = await this.detail(caId, () =>
+              this.warningsFor(ca, true),
+            );
+            return {
+              ...this.success(ca, view, 201),
+              auditTarget: this.createTarget(ca),
+            };
+          }
+          case "replay":
+            return this.replayAfterCancel(
+              actor,
+              key,
+              "pki.ca.create",
+              digest,
+              201,
+            );
+          case "nameInUse":
+            throw pkiConflict("name_in_use");
+          case "subjectInUse":
+            throw caSubjectInUse("subject_claimed");
+          case "quotaExhausted": {
+            const winner = await replayed();
+            if (winner !== undefined) {
+              return winner;
+            }
+            throw issuanceRateLimited(
+              reasonOfQuotas(outcome.quotas),
+              outcome.retryAfterSeconds,
+            );
+          }
+          case "serialCollision":
+            continue;
+          case "parentChanged":
+            rerun = true;
+            break;
+        }
+        break;
+      }
+      if (!rerun) {
+        break;
+      }
+    }
+    throw serviceUnavailable("The CA could not be created.");
   }
 
   // -----------------------------------------------------------------------------------------------------------------
@@ -795,6 +1386,9 @@ export class CaService {
     if (ca.status !== "PENDING_CERTIFICATE" && ca.status !== "ACTIVE") {
       throw caNotActive(statusReason[ca.status]);
     }
+    if (ca.kind === "ROOT") {
+      assertRootPolicyUpdate(input.policy, ca.policy);
+    }
     const policy = resolvePolicy(input.policy, ca.policy);
     const outcome = await this.pki.updateCaPolicy({
       idempotency: this.idempotency(actor, key, "pki.ca.update", digest, {
@@ -805,10 +1399,15 @@ export class CaService {
       newVersion: versionId(),
       now: this.now().toISOString(),
       policy,
-      maxIssueLifetimeEverSeconds: Math.max(
-        ca.maxIssueLifetimeEverSeconds,
-        policy.maxLeafLifetimeSeconds,
-      ),
+      // A ROOT's value is raised only by child creation: a PUT that carried it would race every new child.
+      ...(ca.kind === "ROOT"
+        ? {}
+        : {
+            maxIssueLifetimeEverSeconds: Math.max(
+              ca.maxIssueLifetimeEverSeconds,
+              policy.maxLeafLifetimeSeconds,
+            ),
+          }),
       ...(input.displayName === undefined
         ? {}
         : { displayName: input.displayName }),
@@ -978,6 +1577,412 @@ export class CaService {
       return this.success(destroyed, view);
     }
     throw serviceUnavailable("The CA key could not be destroyed.");
+  }
+
+  // -----------------------------------------------------------------------------------------------------------------
+  // Revoke a Hemlig CA
+  // -----------------------------------------------------------------------------------------------------------------
+
+  private revokeResult(
+    ca: CaRecord,
+    view: Record<string, unknown>,
+    flags: {
+      changed: boolean;
+      crlEntry: boolean;
+      crlPublished: boolean;
+      crlNumber?: number;
+      revokedCaIds: string[];
+      complete: boolean;
+    },
+    terminalAudit: boolean,
+  ): MutationResult {
+    return {
+      body: {
+        ca: view,
+        changed: flags.changed,
+        crlEntry: flags.crlEntry,
+        crlPublished: flags.crlPublished,
+        ...(flags.crlNumber === undefined
+          ? {}
+          : { crlNumber: flags.crlNumber }),
+        revokedCaIds: flags.revokedCaIds,
+        complete: flags.complete,
+      },
+      status: 200,
+      shouldWriteTerminalAudit: terminalAudit,
+      auditTarget: {
+        ...this.auditTarget(ca),
+        reason: ca.revocationReason ?? "unspecified",
+        changed: String(flags.changed),
+        crlEntry: String(flags.crlEntry),
+        crlPublished: String(flags.crlPublished),
+        ...(flags.crlNumber === undefined
+          ? {}
+          : { crlNumber: String(flags.crlNumber) }),
+        ...(ca.parentCaId === undefined ? {} : { parentCaId: ca.parentCaId }),
+        revokedCaIds: flags.revokedCaIds.join(","),
+        complete: String(flags.complete),
+      },
+      etag: ca.version,
+    };
+  }
+
+  public async revoke(
+    actor: Actor,
+    key: string,
+    caId: string,
+    body: unknown,
+  ): Promise<MutationResult> {
+    const { raw, reason, invalidityDate } = parseRevokeCaRequest(
+      body,
+      this.now(),
+    );
+    const digest = requestDigest("pki.ca.revoke", { caId, body: raw });
+    const stored = await this.prior(actor, key, "pki.ca.revoke", digest);
+    if (stored !== undefined) {
+      return this.revokeReplay(stored);
+    }
+    for (let attempt = 0; attempt < maxActivationReruns; attempt += 1) {
+      const ca = await this.load(caId);
+      if (ca.kind === "EXTERNAL_INTERMEDIATE") {
+        throw pkiConflict("revoke_at_root");
+      }
+      const result =
+        ca.kind === "ROOT"
+          ? await this.revokeRoot(
+              actor,
+              key,
+              digest,
+              ca,
+              reason,
+              invalidityDate,
+            )
+          : await this.revokeIntermediate(
+              actor,
+              key,
+              digest,
+              ca,
+              reason,
+              invalidityDate,
+            );
+      if (result !== "rerun") {
+        return result;
+      }
+    }
+    throw serviceUnavailable("The CA could not be revoked.");
+  }
+
+  /** Records only the idempotency key; `true` when a concurrent identical request already did. */
+  private async revokeNoop(
+    actor: Actor,
+    key: string,
+    digest: string,
+    result: Record<string, unknown>,
+  ): Promise<boolean> {
+    return (
+      (await this.pki.putHumanIdempotency(
+        this.idempotency(actor, key, "pki.ca.revoke", digest, result),
+      )) === "replay"
+    );
+  }
+
+  private async revokeReplayAfterCancel(
+    actor: Actor,
+    key: string,
+    digest: string,
+  ): Promise<MutationResult> {
+    const again = await this.prior(actor, key, "pki.ca.revoke", digest);
+    if (again === undefined) {
+      throw serviceUnavailable("The change could not be confirmed.");
+    }
+    return this.revokeReplay(again);
+  }
+
+  private async revokeIntermediate(
+    actor: Actor,
+    key: string,
+    digest: string,
+    ca: CaRecord,
+    reason: RevocationReason,
+    invalidityDate: string | undefined,
+  ): Promise<MutationResult | "rerun"> {
+    const parentCaId = ca.parentCaId;
+    if (parentCaId === undefined || ca.serial === undefined) {
+      throw serviceUnavailable("The CA record is inconsistent.");
+    }
+    if (ca.status === "REVOKED") {
+      const crlEntry =
+        (await this.pki.getRevocationEntry(parentCaId, ca.serial)) !==
+        undefined;
+      if (
+        await this.revokeNoop(actor, key, digest, {
+          caId: ca.caId,
+          changed: false,
+          crlEntry,
+        })
+      ) {
+        return this.revokeReplayAfterCancel(actor, key, digest);
+      }
+      return this.revokeResponse(ca.caId, {
+        changed: false,
+        crlEntry,
+        terminalAudit: true,
+      });
+    }
+    const parent = await this.pki.getCa(parentCaId);
+    if (parent === undefined) {
+      throw serviceUnavailable("The parent CA record is unavailable.");
+    }
+    const row = await this.pki.getCertificate(parentCaId, ca.serial);
+    const now = this.now();
+    let mode: "entry" | "expired" | "inventory" | undefined;
+    if (row?.status === "ISSUED") {
+      mode =
+        parent.status === "REVOKED"
+          ? "inventory"
+          : Date.parse(row.notAfter) <= now.getTime()
+            ? "expired"
+            : "entry";
+    }
+    const crlEntry = mode === "entry";
+    // The bump makes the root's revision at least this: a replay tests a published CRL against it.
+    const crlRevision = crlEntry
+      ? ((await this.pki.getCaCrlState(parentCaId))?.revision ?? 0) + 1
+      : undefined;
+    const outcome = await this.pki.revokeIntermediateCa({
+      idempotency: this.idempotency(actor, key, "pki.ca.revoke", digest, {
+        caId: ca.caId,
+        changed: true,
+        crlEntry,
+        ...(crlRevision === undefined ? {} : { crlRevision }),
+      }),
+      ca,
+      newVersion: versionId(),
+      now: now.toISOString(),
+      reason,
+      ...(invalidityDate === undefined ? {} : { invalidityDate }),
+      by: actor,
+      evidence: `parent:${parentCaId}`,
+      ...(crlRevision === undefined
+        ? {}
+        : { expectCrlRevision: crlRevision - 1 }),
+      ...(mode === undefined || row === undefined
+        ? {}
+        : { row: { mode, notAfter: row.notAfter } }),
+    });
+    if (outcome.kind === "canceled") {
+      if (outcome.failed.includes("idempotency")) {
+        return this.revokeReplayAfterCancel(actor, key, digest);
+      }
+      // The child, the parent's row or the parent's CRL moved: read again and redo the decision.
+      return "rerun";
+    }
+    const published = crlEntry
+      ? await publishInlineBestEffort(this.crls, parent, this.now())
+      : { crlPublished: false };
+    return this.revokeResponse(ca.caId, {
+      changed: true,
+      crlEntry,
+      crlPublished: published.crlPublished,
+      ...(published.crlNumber === undefined
+        ? {}
+        : { crlNumber: published.crlNumber }),
+      terminalAudit: true,
+    });
+  }
+
+  private async revokeRoot(
+    actor: Actor,
+    key: string,
+    digest: string,
+    ca: CaRecord,
+    reason: RevocationReason,
+    invalidityDate: string | undefined,
+  ): Promise<MutationResult | "rerun"> {
+    if (invalidityDate !== undefined) {
+      throw pkiBadRequest(
+        "invalid_invalidity_date",
+        "invalidityDate applies to an INTERMEDIATE, which is listed on its root's CRL.",
+      );
+    }
+    let changed = false;
+    if (ca.status === "REVOKED") {
+      if (
+        await this.revokeNoop(actor, key, digest, {
+          caId: ca.caId,
+          changed: false,
+        })
+      ) {
+        return this.revokeReplayAfterCancel(actor, key, digest);
+      }
+    } else {
+      const outcome = await this.pki.distrustRootCa({
+        idempotency: this.idempotency(actor, key, "pki.ca.revoke", digest, {
+          caId: ca.caId,
+          changed: true,
+        }),
+        ca,
+        newVersion: versionId(),
+        now: this.now().toISOString(),
+        reason,
+        evidence: "local-distrust",
+      });
+      if (outcome.kind === "replay") {
+        return this.revokeReplayAfterCancel(actor, key, digest);
+      }
+      if (outcome.kind === "conditionFailed") {
+        return "rerun";
+      }
+      changed = true;
+    }
+    return this.revokeResponse(ca.caId, { changed, terminalAudit: true });
+  }
+
+  /** The 200 body from current state. A ROOT re-runs the walk, so a retry finishes what a failed one missed. */
+  private async revokeResponse(
+    caId: string,
+    flags: {
+      changed: boolean;
+      crlEntry?: boolean;
+      crlRevision?: number;
+      crlPublished?: boolean;
+      crlNumber?: number;
+      terminalAudit: boolean;
+    },
+  ): Promise<MutationResult> {
+    const loaded = await this.load(caId);
+    let revokedCaIds: string[] = [];
+    let complete = true;
+    if (loaded.kind === "ROOT") {
+      const walk = await this.revokeChildrenOf(loaded);
+      revokedCaIds = walk.revokedCaIds;
+      complete = walk.remaining.length === 0;
+    } else if (flags.changed) {
+      revokedCaIds = [caId];
+    }
+    const { ca, body: view } = await this.detail(caId);
+    let crlPublished = flags.crlPublished ?? false;
+    let crlNumber = flags.crlNumber;
+    if (
+      flags.crlPublished === undefined &&
+      flags.crlEntry === true &&
+      ca.parentCaId !== undefined &&
+      ca.revokedAt !== undefined
+    ) {
+      const parentCrl = await this.pki.getCaCrlState(ca.parentCaId);
+      // With a recorded revision `thisUpdate` (floored to the second) is compared against the floored `revokedAt`;
+      // without one the original full-precision comparison stands.
+      const published = parentCrl?.published;
+      if (
+        published !== undefined &&
+        (flags.crlRevision === undefined
+          ? published.thisUpdate >= ca.revokedAt
+          : published.thisUpdate >= `${ca.revokedAt.slice(0, 19)}.000Z` &&
+            published.revision >= flags.crlRevision)
+      ) {
+        crlPublished = true;
+        crlNumber = published.number;
+      }
+    }
+    return this.revokeResult(
+      ca,
+      view,
+      {
+        changed: flags.changed,
+        crlEntry: flags.crlEntry ?? false,
+        crlPublished,
+        ...(crlNumber === undefined ? {} : { crlNumber }),
+        revokedCaIds,
+        complete,
+      },
+      flags.terminalAudit,
+    );
+  }
+
+  private async revokeReplay(
+    stored: Record<string, unknown>,
+  ): Promise<MutationResult> {
+    const outcome = replayOutcome(stored);
+    const caId = outcome.result.caId;
+    if (typeof caId !== "string") {
+      throw serviceUnavailable("The stored idempotency record is incomplete.");
+    }
+    const response = await this.revokeResponse(caId, {
+      changed: outcome.result.changed === true,
+      crlEntry: outcome.result.crlEntry === true,
+      ...(typeof outcome.result.crlRevision === "number"
+        ? { crlRevision: outcome.result.crlRevision }
+        : {}),
+      terminalAudit: outcome.shouldWriteTerminalAudit,
+    });
+    return response;
+  }
+
+  /**
+   * Flips each child of a REVOKED ROOT. Best effort: the ancestor checks at issuance are the security boundary, and the
+   * maintenance pass finishes whatever this walk misses.
+   */
+  public async revokeChildrenOf(
+    root: CaRecord,
+  ): Promise<{ revokedCaIds: string[]; remaining: string[] }> {
+    let childIds: string[];
+    try {
+      const items = await this.pki.queryDirectory("PKI_CAS", {
+        sortPrefix: `${root.environment}#`,
+      });
+      childIds = items
+        .filter((item) => item.parentCaId === root.caId)
+        .map((item) => String(item.caId));
+    } catch {
+      return { revokedCaIds: [], remaining: ["<unknown>"] };
+    }
+    const revokedCaIds: string[] = [];
+    const remaining: string[] = [];
+    const settle = async (id: string): Promise<void> => {
+      try {
+        let child = await this.pki.getCa(id);
+        if (child === undefined || child.parentCaId !== root.caId) {
+          return;
+        }
+        if (child.status === "ACTIVE" || child.status === "RETIRED") {
+          try {
+            await this.revokeForRevokedAncestor(child, root);
+          } catch {
+            // Classified from the reread below.
+          }
+          child = await this.pki.getCa(id);
+        }
+        if (child?.status === "REVOKED") {
+          revokedCaIds.push(id);
+        } else if (child?.status === "ACTIVE" || child?.status === "RETIRED") {
+          remaining.push(id);
+        }
+      } catch {
+        // A failed read: the child is unknown, so the walk is incomplete and maintenance finishes it.
+        remaining.push(id);
+      }
+    };
+    await mapLimit(childIds, 8, settle);
+    return { revokedCaIds: revokedCaIds.sort(), remaining: remaining.sort() };
+  }
+
+  /** The system flip of a child under a REVOKED ancestor; undefined when the child changed meanwhile. */
+  public async revokeForRevokedAncestor(
+    child: CaRecord,
+    ancestor: CaRecord,
+  ): Promise<CaRecord | undefined> {
+    if (ancestor.status !== "REVOKED") {
+      throw new Error("The ancestor is not revoked.");
+    }
+    return this.pki.revokeForRevokedAncestor(
+      child,
+      {
+        revokedAt: this.now().toISOString(),
+        reason: ancestor.revocationReason ?? "unspecified",
+        evidence: `ancestor:${ancestor.caId}`,
+      },
+      ancestor.caId,
+    );
   }
 
   public async forcePublish(

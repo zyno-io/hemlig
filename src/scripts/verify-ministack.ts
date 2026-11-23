@@ -20,6 +20,7 @@ import { AgentSyncService } from "../services/agent-sync";
 import { CursorService } from "../services/cursor";
 import type { AgentGrantRecord } from "../domain/types";
 import { verifyPkiOnMiniStack } from "./verify-ministack-pki";
+import { verifyPkiHierarchyOnMiniStack } from "./verify-ministack-pki-hierarchy";
 import { verifyPkiIssuanceOnMiniStack } from "./verify-ministack-pki-issuance";
 import { verifyPkiLifecycleOnMiniStack } from "./verify-ministack-pki-lifecycle";
 
@@ -389,6 +390,16 @@ const run = async (): Promise<void> => {
     config,
   });
   await verifyPkiIssuanceOnMiniStack({
+    dynamo,
+    kms,
+    s3,
+    keyArn: keyId,
+    table,
+    bucket,
+    config,
+  });
+  // The hierarchy suite runs before the last one, which seeds partial CA items; it keeps its own environment.
+  await verifyPkiHierarchyOnMiniStack({
     dynamo,
     kms,
     s3,

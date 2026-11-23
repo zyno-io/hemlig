@@ -289,6 +289,23 @@ export const pkiAdminRoutes: PkiAdminRoute[] = [
   ),
   route(
     "POST",
+    `/cas/${CA}/revoke`,
+    "pki.ca.revoke",
+    "ca-admin",
+    async (context, params) => {
+      const key = idempotencyKeyOf(context);
+      const result = await context.app.cas.revoke(
+        context.actor,
+        key,
+        params[0] as string,
+        parseObjectBody(context.event),
+      );
+      return respondMutation(context, key, result);
+    },
+    caTarget,
+  ),
+  route(
+    "POST",
     `/cas/${CA}/crl`,
     "pki.crl.publish",
     "operator",

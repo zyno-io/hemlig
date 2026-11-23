@@ -6,7 +6,7 @@ pageType: explanation
 
 # PKI: certificate authorities and CRLs
 
-Hemlig can hold an intermediate certificate authority (CA) that your offline root signs, and publishes that CA's certificate revocation lists (CRLs).
+Hemlig can hold an intermediate certificate authority (CA) that your offline root signs, and publishes that CA's certificate revocation lists (CRLs). It can also act as a root and sign its own intermediates; see [A Hemlig root and intermediates](#a-hemlig-root-and-intermediates).
 
 Consumers get leaf certificates through issuance grants. [cert-manager](cert-manager.md) can request and renew them unattended. [Trust bundles](trust-bundles.md) deliver CA anchors, intermediates and CRLs to Kubernetes. This page covers the CA lifecycle, grants, issuance, revocation and CRLs.
 
@@ -68,6 +68,8 @@ Hemlig CA names and subject DNs are claimed permanently, so a new CA, even after
 | `RETIRED`             | Retired by an administrator, or its certificate expired. CRLs keep publishing until it is drained |
 | `REVOKED`             | Your root's CRL lists the CA. Its key is disabled and its last CRL stays served                   |
 | `FAILED`              | Abandoned while pending                                                                           |
+
+`REVOKED` has two other meanings for a Hemlig CA. An `INTERMEDIATE` is `REVOKED` by `hemlig pki ca revoke`, or because its root was distrusted. A `ROOT` is `REVOKED` when you distrust it locally. In both cases the key is disabled.
 
 A retired CA is drained once every certificate it could have issued has expired. Hemlig then disables its key. `destroy-key` removes the wrapped key for good, and works only after the key is disabled.
 
@@ -140,6 +142,8 @@ Revocation is one transaction that marks the certificate, writes its CRL entry a
 
 A consumer-wide revoke commits in batches and stops after about 20 seconds. The CLI repeats the call with the same idempotency key until it reports `complete`. Revoking a consumer's leaves does not revoke its client certificate: do that too if the consumer itself is compromised.
 
+`hemlig pki cert revoke` refuses a row that is a CA certificate with `409 use_ca_revoke`. Revoke an intermediate with `hemlig pki ca revoke`, which puts it on its root's CRL; see [A Hemlig root and intermediates](#a-hemlig-root-and-intermediates).
+
 List what a CA or consumer holds with `hemlig pki cert list`, and read one certificate with `hemlig pki cert get`.
 
 ## Capacity and rate
@@ -195,6 +199,62 @@ Download a CRL, for either a CA or a root, with `hemlig pki ca crl get`. A [trus
 ## If the intermediate's key is compromised
 
 Revoke the intermediate at the root (`openssl ca -revoke`), regenerate the root CRL and upload it. Hemlig marks the CA `REVOKED` and disables its key. A [trust bundle](trust-bundles.md) picks up the new root CRL on its next refresh, so workloads reject the revoked CA's certificates. Then roll over to a new CA; see [Roll over a CA](../operations/pki-ca-rollover.md).
+
+If the CA is a Hemlig `INTERMEDIATE`, run `hemlig pki ca revoke <ca> --reason caCompromise` instead. Hemlig revokes it, disables its key, writes it into its root's generated CRL and publishes that CRL at once. Bundles that list the root deliver the new CRL on their next refresh.
+
+## A Hemlig root and intermediates
+
+::: warning An external offline root is strongly recommended
+A Hemlig `ROOT` key is `WRAPPED` and online. Anyone who can use the PKI roles' decrypt can copy it and mint certificates inside its constraints. The only remedy is local distrust, which reaches only relying parties that use Hemlig trust bundles. Use a Hemlig root for test, lab or short-lived internal hierarchies, and keep production roots offline with the [recipe](../operations/pki-offline-root.md).
+:::
+
+Hemlig can generate a self-signed root and sign intermediates under it, with no offline step. The hierarchy is two deep: a `ROOT` (path length 1) signs an `INTERMEDIATE` (path length 0), which issues leaves through grants as in the rest of this page.
+
+```mermaid
+flowchart LR
+  root["Hemlig ROOT: prod-root-1"]
+  int1["INTERMEDIATE: prod-int-1"]
+  int2["INTERMEDIATE: prod-int-2"]
+  leaf["Leaf certificates"]
+  rcrl["Generated root CRL"]
+  root -->|"signs"| int1
+  root -->|"signs"| int2
+  int1 -->|"grants"| leaf
+  root --> rcrl
+  rcrl -.->|"lists revoked intermediates"| int1
+```
+
+Create the root, then an intermediate under it. Both are `ACTIVE` as soon as the call returns, with no CSR and no `activate` step.
+
+```sh
+hemlig pki ca create --kind ROOT --name prod-root-1 --key-algorithm ECDSA_P384 \
+  --subject 'CN=Example Prod Root CA 1,O=Example Corp' --permit-dns example.com --validity 3650d
+hemlig pki ca create --kind INTERMEDIATE --parent prod-root-1 --name prod-int-1 \
+  --key-algorithm ECDSA_P256 --subject 'CN=Example Prod Intermediate CA 1,O=Example Corp' --validity 365d
+```
+
+A root refuses the leaf policy fields `--max-leaf-lifetime` and `--leaf-key-algorithm`, because it issues no leaves. Creating a root prints the warning above on stderr.
+
+Creating an intermediate checks the parent first:
+
+- The parent is an `ACTIVE` `ROOT` in the same environment, with a usable key, and an end date that leaves the intermediate at least 30 days of validity.
+- The intermediate's name constraints and extended key usages are no broader than the root's. When you omit them it inherits the root's.
+- It is a subordinate of a root only: an intermediate cannot sign another CA.
+
+The validity defaults to 3,650 days for a root and 365 days for an intermediate, and an intermediate's is clamped to its root's remaining validity. The creation counts against the root's hourly counters and its capacity, so a root with many intermediates is a bounded CA like any other. See [Limits](../reference/limits.md#pki).
+
+Revoke an intermediate with `hemlig pki ca revoke`. Hemlig marks it `REVOKED`, disables its key and puts it on the root's generated CRL, which it publishes at once. Revoking a root is local distrust instead: there is no CRL above it. The root and each of its intermediates become `REVOKED` with disabled keys, and a trust bundle drops the root from `ca.crt`.
+
+```sh
+hemlig pki ca revoke prod-int-1 --reason caCompromise
+hemlig pki ca revoke prod-root-1 --reason caCompromise
+```
+
+Issuance under a distrusted root stops at once, because every issuance and replay checks that no ancestor is `REVOKED`. The walk that flips the children is best effort, and maintenance finishes it within 15 minutes.
+
+A root revoke reports `revokedCaIds` and `complete`. `complete` means every child the directory listed is `REVOKED`; the listing is eventually consistent, so maintenance also finishes any child created just before the revoke. Repeat the revoke with the same idempotency key while `complete` is `false`.
+
+A retired root keeps signing its CRL and drains only after its longest intermediate lifetime has passed. Rolling a hierarchy is in [Roll over a CA](../operations/pki-ca-rollover.md#hemlig-hierarchy).
 
 ## Alarms
 

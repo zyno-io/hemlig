@@ -7,11 +7,13 @@ import {
   newKey,
   subjectDer,
 } from "../__fixtures__/testkit";
+import type { PkiKeyAlgorithm } from "../types";
 import { caSignatureAlgorithmIdentifier } from "./algorithms";
 import {
   assembleCertificate,
   buildCaTbs,
   buildLeafTbs,
+  buildRootTbs,
   generateSerial,
   parseCertificate,
   verifyCertificateSignature,
@@ -282,5 +284,92 @@ describe("certificate parsing and signatures", () => {
   it("rejects garbage", () => {
     expect(() => parseCertificate(Buffer.from("3000", "hex"))).toThrow();
     expect(() => parseCertificate(Buffer.from("deadbeef", "hex"))).toThrow();
+  });
+});
+
+describe("buildRootTbs", () => {
+  const algorithms: PkiKeyAlgorithm[] = [
+    "ECDSA_P256",
+    "ECDSA_P384",
+    "RSA_3072",
+    "ED25519",
+  ];
+
+  it.each(algorithms)(
+    "builds a self-issued %s root without an AKI",
+    async (algorithm) => {
+      const key = await newKey(algorithm);
+      const name = subjectDer("Hemlig Root");
+      const built = buildRootTbs({
+        algorithm,
+        serial,
+        notBefore: new Date("2026-11-22T00:00:00Z"),
+        notAfter: new Date("2036-11-22T00:00:00Z"),
+        subjectDer: name,
+        spkiDer: key.spkiDer,
+        pathLen: 1,
+        nameConstraints: {
+          permitted: [{ type: "dns", value: "example.com" }],
+          excluded: [],
+        },
+        extendedKeyUsage: [EKU.serverAuth],
+      });
+      expect(
+        built.signatureAlgorithm.equals(
+          caSignatureAlgorithmIdentifier(algorithm),
+        ),
+      ).toBe(true);
+      const root = assembleCertificate(
+        built.tbs,
+        built.signatureAlgorithm,
+        key.sign(built.tbs),
+      );
+      const parsed = parseCertificate(root);
+      expect(parsed.issuerDer.equals(parsed.subjectDer)).toBe(true);
+      expect(parsed.basicConstraints).toMatchObject({
+        ca: true,
+        critical: true,
+        pathLen: 1,
+      });
+      expect(parsed.keyUsageCritical).toBe(true);
+      expect(parsed.keyUsage).toEqual(["keyCertSign", "cRLSign"]);
+      expect(parsed.subjectKeyIdentifier).toBeDefined();
+      expect(parsed.authorityKeyIdentifier).toBeUndefined();
+      expect(
+        parsed.extensions.map((entry) => [entry.oid, entry.critical]),
+      ).toEqual([
+        [EXT.basicConstraints, true],
+        [EXT.keyUsage, true],
+        [EXT.nameConstraints, true],
+        [EXT.extendedKeyUsage, false],
+        [EXT.subjectKeyIdentifier, false],
+      ]);
+      expect(verifyCertificateSignature(parsed, key.spkiDer)).toBe(true);
+    },
+  );
+
+  it("omits NameConstraints when empty and rejects a mismatched key", async () => {
+    const key = await newKey("ECDSA_P256");
+    const input = {
+      algorithm: "ECDSA_P256" as const,
+      serial,
+      notBefore: new Date("2026-11-22T00:00:00Z"),
+      notAfter: new Date("2036-11-22T00:00:00Z"),
+      subjectDer: subjectDer("Hemlig Root"),
+      spkiDer: key.spkiDer,
+      pathLen: 1,
+    };
+    const parsed = unsigned(
+      buildRootTbs({
+        ...input,
+        nameConstraints: { permitted: [], excluded: [] },
+      }).tbs,
+    );
+    expect(parsed.extensions.map((entry) => entry.oid)).toEqual([
+      EXT.basicConstraints,
+      EXT.keyUsage,
+      EXT.subjectKeyIdentifier,
+    ]);
+    expect(() => buildRootTbs({ ...input, algorithm: "ECDSA_P384" })).toThrow();
   });
 });

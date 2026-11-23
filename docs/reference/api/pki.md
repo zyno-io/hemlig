@@ -187,9 +187,9 @@ API Gateway also throttles `POST /v1/pki/{proxy+}` (`pkiIssuanceRateLimit` and `
 | --- | --- |
 | `status` | `ACTIVE`, `RETIRED` or `REVOKED`. A revoked CA is still returned, with its anchor |
 | `drained` | `true` for a `RETIRED` CA whose last certificate has expired and whose CRL covers it |
-| `anchorPem` | The external root |
-| `anchorTrusted` | Whether the anchor should be trusted. Always `true` in this release |
-| `chainPem` | The CA certificate, then the non-anchor intermediates. Every block ends in a newline |
+| `anchorPem` | The external root, or the Hemlig root. A Hemlig root's own certificate is its anchor |
+| `anchorTrusted` | Whether the anchor should be trusted. A Hemlig root is `false` once it is `REVOKED`. A Hemlig intermediate follows its parent root, so a CA-revoked intermediate keeps a trusted anchor and the root CRL carries the revocation. Always `true` for an external CA |
+| `chainPem` | The CA certificate, then the non-anchor intermediates. Every block ends in a newline. It is `""` for a Hemlig root |
 | `crlIssuers` | The CRLs a verifier needs, self first and then the parent root. `GENERATED` is a Hemlig CA, `UPLOADED` is a root CRL you upload |
 
 A `PENDING_CERTIFICATE` or `FAILED` CA has no certificate and is `409 ca_not_active`.
@@ -240,10 +240,10 @@ Every error carries `error.details.reason`. The code list is in [Errors](errors.
 | `issuance_grant_not_found` | 404 | `grant_not_found` | Pending |
 | `issuance_grant_inactive` | 403 | `grant_disabled`, `grant_expired` | Pending |
 | `identity_not_active` | 403 | `agent_grant_inactive`, or none when the certificate itself is not active | Pending |
-| `ca_not_active` | 409 | `not_found`, `environment_mismatch`, `pending_certificate`, `retired`, `revoked`, `failed`, `revoked_by_parent`, `leaves_not_permitted`, `not_yet_valid`, `expired` | Pending |
+| `ca_not_active` | 409 | `not_found`, `environment_mismatch`, `pending_certificate`, `retired`, `revoked`, `failed`, `revoked_by_parent`, `leaves_not_permitted`, `ancestor_revoked`, `not_yet_valid`, `expired` | Pending |
 | `ca_capacity_exceeded` | 409 | `ca_capacity_exceeded` | Pending |
 | `ca_key_unavailable` | 409 | `ca_key_unavailable` | Pending, with an alarm |
-| `issuance_revoked` | 409 | `certificate_revoked`, `ca_revoked` | Failed |
+| `issuance_revoked` | 409 | `certificate_revoked`, `ca_revoked`, `ancestor_revoked` | Failed |
 | `issuance_expired` | 409 | `result_expiring`, `inventory_expired`, `issuance_expired` | Failed |
 | `conflict` | 409 | `idempotency_key_reused` | Failed |
 | `issuance_rate_limited` | 429 | `grant_hour`, `grant_day`, `ca_hour`, with `retryAfterSeconds` | Pending, honors `Retry-After` |

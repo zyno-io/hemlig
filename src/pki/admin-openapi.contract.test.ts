@@ -15,6 +15,7 @@ import {
   parseRevokeRequest,
 } from "./certificate-service";
 import { caBundleView } from "./bundle-model";
+import { parseRevokeCaRequest } from "./hierarchy-model";
 import { parseGrantRequest } from "./grant-model";
 import { validateGrantPolicy } from "./grant-policy";
 import {
@@ -111,7 +112,27 @@ const corpora: [string, (body: unknown) => unknown, [string, unknown][]][] = [
         create({ subject: { commonName: "x", cn: "y" } }),
       ],
       ["missing subject", { ...create(), subject: undefined }],
-      ["other kind", create({ kind: "ROOT" })],
+      ["other kind", create({ kind: "BOGUS" })],
+      ["root minimal", create({ kind: "ROOT" })],
+      ["root min validity", create({ kind: "ROOT", validitySeconds: 7_776_000 })],
+      ["root short validity", create({ kind: "ROOT", validitySeconds: 7_775_999 })],
+      ["root max validity", create({ kind: "ROOT", validitySeconds: 630_720_000 })],
+      ["root long validity", create({ kind: "ROOT", validitySeconds: 630_720_001 })],
+      ["root capacity", create({ kind: "ROOT", policy: { capacity: 100 } })],
+      ["root leaf lifetime", create({ kind: "ROOT", policy: { maxLeafLifetimeSeconds: 3600 } })],
+      ["root leaf algorithms", create({ kind: "ROOT", policy: { leafKeyAlgorithms: ["ECDSA_P256"] } })],
+      ["root with parent", create({ kind: "ROOT", parentCaId: "ca-root-one" })],
+      ["intermediate", create({ kind: "INTERMEDIATE", parentCaId: "ca-root-one" })],
+      ["intermediate without parent", create({ kind: "INTERMEDIATE" })],
+      ["intermediate bad parent", create({ kind: "INTERMEDIATE", parentCaId: "x" })],
+      ["intermediate min validity", create({ kind: "INTERMEDIATE", parentCaId: "ca-root-one", validitySeconds: 2_592_000 })],
+      ["intermediate short validity", create({ kind: "INTERMEDIATE", parentCaId: "ca-root-one", validitySeconds: 2_591_999 })],
+      ["root country", create({ kind: "ROOT", subject: { ...subject, country: "US" } })],
+      ["root long country", create({ kind: "ROOT", subject: { ...subject, country: "USA" } })],
+      ["intermediate long country", create({ kind: "INTERMEDIATE", parentCaId: "ca-root-one", subject: { ...subject, country: "USA" } })],
+      ["external long country", create({ subject: { ...subject, country: "USA" } })],
+      ["external validity", create({ validitySeconds: 2_592_000 })],
+      ["external parent", create({ parentCaId: "ca-root-one" })],
       ["bad algorithm", create({ keyAlgorithm: "DSA" })],
       ["bad name", create({ name: "Bad Name" })],
       ["policy bounds", create({ policy: { capacity: 12001 } })],
@@ -243,6 +264,18 @@ const corpora: [string, (body: unknown) => unknown, [string, unknown][]][] = [
       ["reason", { reason: "superseded" }],
       ["keyCompromise date", { reason: "keyCompromise", invalidityDate: "2026-05-01T00:00:00Z" }],
       ["caCompromise", { reason: "caCompromise" }],
+      ["unknown", { other: 1 }],
+      ["reason not string", { reason: 1 }],
+    ],
+  ],
+  [
+    "PkiRevokeCaRequest",
+    (body: unknown) => parseRevokeCaRequest(body, futureNow),
+    [
+      ["empty", {}],
+      ["caCompromise", { reason: "caCompromise" }],
+      ["caCompromise date", { reason: "caCompromise", invalidityDate: "2026-05-01T00:00:00Z" }],
+      ["keyCompromise", { reason: "keyCompromise" }],
       ["unknown", { other: 1 }],
       ["reason not string", { reason: 1 }],
     ],

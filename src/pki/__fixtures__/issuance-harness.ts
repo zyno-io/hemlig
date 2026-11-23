@@ -101,6 +101,8 @@ export interface HarnessOptions {
   readonly grant?: Partial<IssuanceGrantRecord>;
   readonly agentGrantId?: string;
   readonly now?: Date;
+  /** Makes the harness CA an INTERMEDIATE under this (Hemlig ROOT) record; `getCa` resolves both. */
+  readonly parent?: CaRecord;
 }
 
 /**
@@ -121,7 +123,10 @@ export const issuanceHarness = async (options: HarnessOptions = {}) => {
     caId,
     environment,
     name: "prod-issuing-1",
-    kind: "EXTERNAL_INTERMEDIATE",
+    kind: options.parent === undefined ? "EXTERNAL_INTERMEDIATE" : "INTERMEDIATE",
+    ...(options.parent === undefined
+      ? {}
+      : { parentCaId: options.parent.caId }),
     status: "ACTIVE",
     version: "pkv-ca-1",
     crlIssuers: [],
@@ -166,6 +171,7 @@ export const issuanceHarness = async (options: HarnessOptions = {}) => {
 
   const state = {
     ca,
+    parent: options.parent,
     crl: {
       revision: 0,
       lastNumber: 1,
@@ -202,7 +208,13 @@ export const issuanceHarness = async (options: HarnessOptions = {}) => {
   }
 
   const pki = {
-    getCa: jest.fn(async (id: string) => (id === caId ? state.ca : undefined)),
+    getCa: jest.fn(async (id: string) =>
+      id === caId
+        ? state.ca
+        : id === state.parent?.caId
+          ? state.parent
+          : undefined,
+    ),
     getCaCrlState: jest.fn(async () => state.crl),
     getGrant: jest.fn(async (_consumer: string, name: string) =>
       state.grants.get(name),

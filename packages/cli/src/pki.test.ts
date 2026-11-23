@@ -1876,3 +1876,277 @@ test("revoke-certificates sums revoked and --invalidity-date durations count bac
     when <= Date.now() - 3600_000 + 1000 && when >= before - 3600_000 - 1000,
   );
 });
+
+const rootId = "ca-aaaaaaaa-2222-3333-4444-555555555555";
+const rootDetail = {
+  ...detail,
+  caId: rootId,
+  name: "root-1",
+  kind: "ROOT",
+  subject: { commonName: "Root CA 1", organization: "Example" },
+  policy: { ...policy, issueLeaves: false, issueSubordinates: true },
+  parent: undefined,
+};
+const rootWarning =
+  "An external offline root is strongly recommended: this ROOT's key is WRAPPED and online, so a compromised PKI role can copy it, and local distrust only reaches relying parties that use Hemlig trust bundles.";
+const rootArgs = [
+  "pki",
+  "ca",
+  "create",
+  "--kind",
+  "ROOT",
+  "--name",
+  "root-1",
+  "--key-algorithm",
+  "ECDSA_P384",
+  "--subject",
+  "CN=Root CA 1,O=Example",
+  "--validity",
+  "3650d",
+];
+
+test("ca create ROOT builds the request and prints the callout fallback on stderr", async () => {
+  const bare = await execute(rootArgs, () => ({
+    status: 201,
+    headers: {},
+    body: rootDetail,
+  }));
+  assert.equal(bare.exitCode, 0, bare.stderr);
+  assert.deepEqual(bare.requests[0]!.body, {
+    environment: "production",
+    name: "root-1",
+    kind: "ROOT",
+    validitySeconds: 3650 * 86400,
+    keyAlgorithm: "ECDSA_P384",
+    subject: { commonName: "Root CA 1", organization: "Example" },
+  });
+  assert.equal(bare.stderr, `warning: ${rootWarning}\n`);
+
+  const withServerWarning = await execute(rootArgs, () => ({
+    status: 201,
+    headers: {},
+    body: {
+      ...rootDetail,
+      warnings: [{ code: "external_root_recommended", message: rootWarning }],
+    },
+  }));
+  assert.equal(withServerWarning.stderr, `warning: ${rootWarning}\n`);
+});
+
+test("ca create INTERMEDIATE resolves --parent by name", async () => {
+  const respond: Responder = (request) =>
+    request.method === "GET"
+      ? {
+          status: 200,
+          headers: {},
+          body: { cas: [{ caId: rootId, name: "root-1" }] },
+        }
+      : {
+          status: 201,
+          headers: {},
+          body: { ...detail, kind: "INTERMEDIATE", parentCaId: rootId },
+        };
+  const result = await execute(
+    [
+      "pki",
+      "ca",
+      "create",
+      "--kind",
+      "INTERMEDIATE",
+      "--parent",
+      "root-1",
+      "--name",
+      "int-1",
+      "--key-algorithm",
+      "ECDSA_P256",
+      "--subject",
+      "CN=Int 1",
+    ],
+    respond,
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  const body = result.requests[1]!.body as Record<string, unknown>;
+  assert.equal(body.kind, "INTERMEDIATE");
+  assert.equal(body.parentCaId, rootId);
+  assert.equal(result.stderr, "");
+});
+
+test("ca create kind rules are usage errors before any request", async () => {
+  const base = [
+    "--name",
+    "x-1",
+    "--key-algorithm",
+    "ECDSA_P256",
+    "--subject",
+    "CN=X 1",
+  ];
+  for (const extra of [
+    ["--kind", "BOGUS"],
+    ["--kind", "INTERMEDIATE"],
+    ["--kind", "ROOT", "--parent", rootId],
+    ["--parent", rootId],
+    ["--validity", "30d"],
+    ["--kind", "ROOT", "--csr-out", "/nonexistent-dir/x.csr"],
+    ["--kind", "ROOT", "--max-leaf-lifetime", "30d"],
+    ["--kind", "ROOT", "--leaf-key-algorithm", "ECDSA_P256"],
+  ]) {
+    const result = await execute(["pki", "ca", "create", ...base, ...extra]);
+    assert.equal(result.exitCode, 2, extra.join(" "));
+    assert.equal(result.requests.length, 0, extra.join(" "));
+  }
+  const message = await execute([
+    "pki",
+    "ca",
+    "create",
+    ...base,
+    "--kind",
+    "ROOT",
+    "--max-leaf-lifetime",
+    "30d",
+  ]);
+  assert.match(message.stderr, /A ROOT CA issues no leaves; omit/);
+});
+
+test("ca revoke sends the body, validates the reason and returns the receipt", async () => {
+  const response = {
+    ca: { ...rootDetail, status: "REVOKED", version: "pkv-9" },
+    changed: true,
+    crlEntry: false,
+    crlPublished: false,
+    revokedCaIds: [caId],
+    complete: true,
+  };
+  const result = await execute(
+    [
+      "pki",
+      "ca",
+      "revoke",
+      rootId,
+      "--reason",
+      "caCompromise",
+      "--invalidity-date",
+      "2026-01-01T00:00:00Z",
+      "--idempotency-key",
+      "key-12345678",
+    ],
+    () => ({ status: 200, headers: {}, body: response }),
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  const request = result.requests[0]!;
+  assert.equal(request.method, "POST");
+  assert.equal(request.url.pathname, `/v1/admin/pki/cas/${rootId}/revoke`);
+  assert.equal(request.headers?.["idempotency-key"], "key-12345678");
+  assert.deepEqual(request.body, {
+    reason: "caCompromise",
+    invalidityDate: "2026-01-01T00:00:00.000Z",
+  });
+  const receipt = JSON.parse(result.stdout);
+  assert.equal(receipt.etag, "pkv-9");
+  assert.deepEqual(receipt.data.revokedCaIds, [caId]);
+
+  for (const args of [
+    ["--reason", "keyCompromise"],
+    ["--reason", "bogus"],
+    ["--invalidity-date", "2026-01-01T00:00:00Z"],
+    ["--reason", "superseded", "--invalidity-date", "2026-01-01T00:00:00Z"],
+  ]) {
+    const bad = await execute(["pki", "ca", "revoke", rootId, ...args]);
+    assert.equal(bad.exitCode, 2, args.join(" "));
+    assert.equal(bad.requests.length, 0, args.join(" "));
+  }
+});
+
+test("ca update on a ROOT strips leaf fields and refuses leaf flags", async () => {
+  const respond: Responder = (request) =>
+    request.method === "GET"
+      ? { status: 200, headers: {}, body: rootDetail }
+      : { status: 200, headers: {}, body: rootDetail };
+  const result = await execute(
+    [
+      "pki",
+      "ca",
+      "update",
+      rootId,
+      "--if-match",
+      "current",
+      "--capacity",
+      "50",
+    ],
+    respond,
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  const body = result.requests[1]!.body as { policy: Record<string, unknown> };
+  assert.equal("maxLeafLifetimeSeconds" in body.policy, false);
+  assert.equal("leafKeyAlgorithms" in body.policy, false);
+  assert.equal(body.policy.capacity, 50);
+
+  const refused = await execute(
+    [
+      "pki",
+      "ca",
+      "update",
+      rootId,
+      "--if-match",
+      "current",
+      "--max-leaf-lifetime",
+      "30d",
+    ],
+    respond,
+  );
+  assert.equal(refused.exitCode, 2);
+  assert.equal(refused.requests.length, 1);
+});
+
+test("rollover from an INTERMEDIATE copies the kind and the parent", async () => {
+  const intDetail = {
+    ...detail,
+    name: "int-1",
+    kind: "INTERMEDIATE",
+    parentCaId: rootId,
+    subject: { commonName: "Int CA 1" },
+  };
+  const result = await execute(
+    ["pki", "ca", "create", "--rollover-from", caId],
+    (request) =>
+      request.method === "POST"
+        ? { status: 201, headers: {}, body: intDetail }
+        : { status: 200, headers: {}, body: intDetail },
+    { ...env, HEMLIG_ENVIRONMENT: undefined },
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  const body = result.requests[1]!.body as Record<string, unknown>;
+  assert.equal(body.kind, "INTERMEDIATE");
+  assert.equal(body.parentCaId, rootId);
+  assert.equal(body.name, "int-2");
+});
+
+test("rollover from a ROOT omits leaf fields and keeps the kind", async () => {
+  const result = await execute(
+    ["pki", "ca", "create", "--rollover-from", rootId],
+    (request) =>
+      request.method === "POST"
+        ? { status: 201, headers: {}, body: rootDetail }
+        : { status: 200, headers: {}, body: rootDetail },
+    { ...env, HEMLIG_ENVIRONMENT: undefined },
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  const body = result.requests[1]!.body as {
+    kind: string;
+    policy: Record<string, unknown>;
+  };
+  assert.equal(body.kind, "ROOT");
+  assert.equal("maxLeafLifetimeSeconds" in body.policy, false);
+  assert.equal("leafKeyAlgorithms" in body.policy, false);
+  assert.match(result.stderr, /external offline root is strongly recommended/);
+});
+
+test("--kind INTERMEDIATE over a non-INTERMEDIATE rollover base needs --parent, locally", async () => {
+  const result = await execute(
+    ["pki", "ca", "create", "--rollover-from", caId, "--kind", "INTERMEDIATE"],
+    () => ({ status: 200, headers: {}, body: detail }),
+    { ...env, HEMLIG_ENVIRONMENT: undefined },
+  );
+  assert.equal(result.exitCode, 2);
+  assert.match(result.stderr, /needs --parent/);
+  assert.equal(result.requests.filter((r) => r.method === "POST").length, 0);
+});

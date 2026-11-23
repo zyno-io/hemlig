@@ -282,6 +282,60 @@ describe("consumer bundle and CRL routes", () => {
     expect(listGrantsPage).not.toHaveBeenCalled();
   });
 
+  it("reads the parent once for an INTERMEDIATE and reports the parent's trust", async () => {
+    const child = {
+      ...ca,
+      kind: "INTERMEDIATE",
+      parentCaId: "ca-test-root",
+      status: "REVOKED",
+      certificatePem: block("CHILD"),
+      chainPem: block("ROOT"),
+    };
+    getCa.mockImplementation(async (id?: string) =>
+      id === "ca-test-one" ? child : { status: "REVOKED" },
+    );
+    const revokedParent = JSON.parse((await bundle()).body ?? "{}");
+    expect(getCa).toHaveBeenCalledTimes(2);
+    expect(getCa).toHaveBeenLastCalledWith("ca-test-root");
+    expect(revokedParent).toMatchObject({
+      status: "REVOKED",
+      anchorTrusted: false,
+      anchorPem: block("ROOT"),
+      chainPem: block("CHILD"),
+    });
+    getCa.mockImplementation(async (id?: string) =>
+      id === "ca-test-one" ? { ...child, status: "REVOKED" } : { status: "ACTIVE" },
+    );
+    expect(JSON.parse((await bundle()).body ?? "{}")).toMatchObject({
+      status: "REVOKED",
+      anchorTrusted: true,
+    });
+  });
+
+  it("serves a ROOT with an empty chain and its own anchor", async () => {
+    getCa.mockResolvedValue({
+      ...ca,
+      kind: "ROOT",
+      crlIssuers: [{ type: "ca", id: "ca-test-one" }],
+      certificatePem: block("ROOT"),
+      chainPem: block("ROOT"),
+    });
+    const body = JSON.parse((await bundle()).body ?? "{}");
+    expect(getCa).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({
+      anchorPem: block("ROOT"),
+      anchorTrusted: true,
+      chainPem: "",
+      crlIssuers: [{ id: "ca-test-one", source: "GENERATED" }],
+    });
+  });
+
+  it("reads only the CA itself for the EXTERNAL kind", async () => {
+    getCa.mockResolvedValue({ ...ca, kind: "EXTERNAL_INTERMEDIATE" });
+    expect((await bundle()).statusCode).toBe(200);
+    expect(getCa).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores If-None-Match on the bundle", async () => {
     const result = await handler(
       event("GET", "/v1/pki/cas/ca-test-one/bundle", {

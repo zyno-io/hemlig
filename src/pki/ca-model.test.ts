@@ -1,5 +1,6 @@
 import {
   assertHumanReplay,
+  assertRootPolicyUpdate,
   caDetail,
   caSummary,
   crlReasonName,
@@ -11,6 +12,8 @@ import {
   parseUpdateCaRequest,
   parseUploadCrlRequest,
   requestDigest,
+  resolvePolicy,
+  DEFAULT_ROOT_POLICY,
   rootCrlState,
   subjectDn,
   toSubtreeMap,
@@ -86,7 +89,7 @@ describe("parseCreateCaRequest", () => {
         }),
       ),
     ).toBe("unknown_field");
-    expect(reason(() => parseCreateCaRequest({ ...base, kind: "ROOT" }))).toBe(
+    expect(reason(() => parseCreateCaRequest({ ...base, kind: "BOGUS" }))).toBe(
       "kind_not_supported",
     );
     expect(() =>
@@ -390,5 +393,225 @@ describe("response mappers", () => {
       subjectDn: "CN=Root",
       crlState: "MISSING",
     });
+  });
+});
+
+describe("EXTERNAL create digest stability (T-A7)", () => {
+  it("keeps the digest of an EXTERNAL_INTERMEDIATE create byte-identical", () => {
+    // Computed on the Phase 6 code. Stored idempotency records hold this digest, so it must never change.
+    const parsed = parseCreateCaRequest({
+      environment: "prod",
+      name: "prod-issuing-1",
+      kind: "EXTERNAL_INTERMEDIATE",
+      keyAlgorithm: "ECDSA_P256",
+      subject: {
+        commonName: "Prod Issuing CA 1",
+        organization: "Example Corp",
+      },
+      requestedConstraints: {
+        nameConstraints: { permitted: { dns: ["example.com"] } },
+        extendedKeyUsages: ["serverAuth"],
+      },
+      policy: { capacity: 100 },
+      displayName: "Prod",
+    });
+    expect(requestDigest("pki.ca.create", parsed)).toBe(
+      "1306d773c2240662578d0b957368f36d013e1ff9bb4dff19b40e5275d974a5ad",
+    );
+  });
+});
+
+describe("ROOT and INTERMEDIATE creation", () => {
+  const root = { ...base, kind: "ROOT" };
+  const intermediate = {
+    ...base,
+    kind: "INTERMEDIATE",
+    parentCaId: "ca-root-one",
+  };
+
+  it("defaults a ROOT to pathLen 1, no leaf issuance and 3,650 days", () => {
+    const parsed = parseCreateCaRequest(root);
+    expect(parsed).toMatchObject({
+      kind: "ROOT",
+      requested: { pathLen: 1 },
+      validitySeconds: 315_360_000,
+      policy: { issueLeaves: false, issueSubordinates: true },
+    });
+    expect("parentCaId" in parsed).toBe(false);
+  });
+
+  it("defaults an INTERMEDIATE to pathLen 0, leaf issuance and 365 days", () => {
+    expect(parseCreateCaRequest(intermediate)).toMatchObject({
+      kind: "INTERMEDIATE",
+      parentCaId: "ca-root-one",
+      requested: { pathLen: 0 },
+      validitySeconds: 31_536_000,
+      policy: { issueLeaves: true, issueSubordinates: false },
+    });
+  });
+
+  it("applies the parentCaId rules", () => {
+    expect(
+      reason(() => parseCreateCaRequest({ ...base, kind: "INTERMEDIATE" })),
+    ).toBe("parent_required");
+    expect(
+      reason(() =>
+        parseCreateCaRequest({ ...root, parentCaId: "ca-root-one" }),
+      ),
+    ).toBe("parent_not_allowed");
+    expect(
+      reason(() =>
+        parseCreateCaRequest({ ...base, parentCaId: "ca-root-one" }),
+      ),
+    ).toBe("parent_not_allowed");
+    expect(() =>
+      parseCreateCaRequest({ ...intermediate, parentCaId: "x" }),
+    ).toThrow();
+  });
+
+  it("checks the validity bounds per kind and refuses it for the EXTERNAL kind", () => {
+    const rootOf = (validitySeconds: number) => () =>
+      parseCreateCaRequest({ ...root, validitySeconds });
+    const childOf = (validitySeconds: number) => () =>
+      parseCreateCaRequest({ ...intermediate, validitySeconds });
+    expect(rootOf(7_776_000)().kind).toBe("ROOT");
+    expect(reason(rootOf(7_775_999))).toBe("invalid_validity");
+    expect(rootOf(630_720_000)().kind).toBe("ROOT");
+    expect(reason(rootOf(630_720_001))).toBe("invalid_validity");
+    expect(childOf(2_592_000)().kind).toBe("INTERMEDIATE");
+    expect(reason(childOf(2_591_999))).toBe("invalid_validity");
+    expect(reason(childOf(630_720_001))).toBe("invalid_validity");
+    expect(
+      reason(() => parseCreateCaRequest({ ...root, validitySeconds: 1.5 })),
+    ).toBe("invalid_validity");
+    expect(
+      reason(() =>
+        parseCreateCaRequest({ ...base, validitySeconds: 2_592_000 }),
+      ),
+    ).toBe("validity_not_allowed");
+  });
+
+  it("refuses leaf fields on a ROOT and accepts them on an INTERMEDIATE", () => {
+    for (const policy of [
+      { maxLeafLifetimeSeconds: 3600 },
+      { leafKeyAlgorithms: ["ECDSA_P256"] },
+    ]) {
+      expect(reason(() => parseCreateCaRequest({ ...root, policy }))).toBe(
+        "invalid_policy",
+      );
+    }
+    expect(
+      parseCreateCaRequest({ ...root, policy: { capacity: 100 } }).policy
+        .capacity,
+    ).toBe(100);
+    expect(
+      parseCreateCaRequest({
+        ...intermediate,
+        policy: { maxLeafLifetimeSeconds: 3600 },
+      }).policy.maxLeafLifetimeSeconds,
+    ).toBe(3600);
+  });
+
+  it("requires a two-letter country for the Hemlig kinds only", () => {
+    const withCountry = (extra: Record<string, unknown>, country: string) => ({
+      ...extra,
+      subject: { ...base.subject, country },
+    });
+    for (const extra of [root, intermediate]) {
+      expect(parseCreateCaRequest(withCountry(extra, "US")).subject.C).toBe(
+        "US",
+      );
+      for (const bad of ["USA", "U", "1A", ""]) {
+        expect(() => parseCreateCaRequest(withCountry(extra, bad))).toThrow();
+      }
+    }
+    expect(parseCreateCaRequest(withCountry(base, "USA")).subject.C).toBe(
+      "USA",
+    );
+  });
+
+  it("names the three kinds when refusing another", () => {
+    try {
+      parseCreateCaRequest({ ...base, kind: "BOGUS" });
+    } catch (error) {
+      expect((error as Error).message).toBe(
+        "kind must be EXTERNAL_INTERMEDIATE, ROOT or INTERMEDIATE.",
+      );
+    }
+  });
+});
+
+describe("resolvePolicy and root policy updates", () => {
+  it("keeps the stored issue flags", () => {
+    expect(resolvePolicy({ capacity: 5 }, DEFAULT_ROOT_POLICY)).toMatchObject({
+      issueLeaves: false,
+      issueSubordinates: true,
+      capacity: 5,
+    });
+    expect(resolvePolicy({})).toMatchObject({
+      issueLeaves: true,
+      issueSubordinates: false,
+    });
+  });
+
+  it("passes equal leaf fields and refuses different ones", () => {
+    expect(() =>
+      assertRootPolicyUpdate(
+        {
+          maxLeafLifetimeSeconds: DEFAULT_ROOT_POLICY.maxLeafLifetimeSeconds,
+          leafKeyAlgorithms: [...DEFAULT_ROOT_POLICY.leafKeyAlgorithms],
+          capacity: 7,
+        },
+        DEFAULT_ROOT_POLICY,
+      ),
+    ).not.toThrow();
+    expect(() => assertRootPolicyUpdate({}, DEFAULT_ROOT_POLICY)).not.toThrow();
+    expect(
+      reason(() =>
+        assertRootPolicyUpdate(
+          { maxLeafLifetimeSeconds: 600 },
+          DEFAULT_ROOT_POLICY,
+        ),
+      ),
+    ).toBe("invalid_policy");
+    expect(
+      reason(() =>
+        assertRootPolicyUpdate(
+          { leafKeyAlgorithms: ["ECDSA_P256"] },
+          DEFAULT_ROOT_POLICY,
+        ),
+      ),
+    ).toBe("invalid_policy");
+  });
+
+  it("shows parentCaId in the detail", () => {
+    const detail = caDetail(
+      {
+        caId: "ca-child",
+        environment: "prod",
+        name: "child",
+        kind: "INTERMEDIATE",
+        status: "ACTIVE",
+        version: "v",
+        parent: { type: "ca", id: "ca-root-one" },
+        parentCaId: "ca-root-one",
+        crlIssuers: [],
+        key: {
+          custody: "WRAPPED",
+          algorithm: "ECDSA_P256",
+          spkiSha256: "a",
+          state: "ACTIVE",
+        },
+        subject: { CN: "Child" },
+        subjectKey: "k",
+        requested: { pathLen: 0 },
+        policy: parseCaPolicy({}),
+        maxIssueLifetimeEverSeconds: 1,
+        createdAt: "2026-11-01T00:00:00.000Z",
+        createdBy: { type: "human", id: "a" },
+      } as unknown as CaRecord,
+      { now: new Date("2026-11-22T00:00:00Z") },
+    );
+    expect(detail.parentCaId).toBe("ca-root-one");
   });
 });

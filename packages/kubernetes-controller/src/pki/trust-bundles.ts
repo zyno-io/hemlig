@@ -317,7 +317,10 @@ const validView = (id: string, value: unknown): PkiCaBundle | undefined => {
     return undefined;
   }
   if (pemCertificateBlocks(view.anchorPem).length !== 1) return undefined;
-  if (pemCertificateBlocks(view.chainPem).length < 1) return undefined;
+  // A Hemlig ROOT has no chain: its certificate is the anchor.
+  if (pemCertificateBlocks(view.chainPem).length < 1 && view.chainPem !== "") {
+    return undefined;
+  }
   for (const issuer of view.crlIssuers as unknown[]) {
     const entry = issuer as { id?: unknown; source?: unknown } | null;
     if (
@@ -805,13 +808,30 @@ export class TrustBundleReconciler {
 
     // 11. Status.
     const required = (entry: TrustBundleCrlStatus): boolean => {
-      if (entry.source !== "GENERATED" || !accepted.includes(entry.id)) {
-        return true;
+      if (entry.source !== "GENERATED") return true;
+      if (accepted.includes(entry.id)) {
+        const view = views.get(entry.id);
+        return !(
+          view !== undefined &&
+          (view.status === "REVOKED" || view.drained)
+        );
       }
-      const view = views.get(entry.id);
-      return !(
-        view !== undefined &&
-        (view.status === "REVOKED" || view.drained)
+      // An accepted CA with no view this pass (its fetch failed) may depend on any root: keep every root slot.
+      if (accepted.some((id) => !views.has(id))) return true;
+      // A Hemlig root slot named by listed children: needed while one of them can still validate.
+      const dependents = accepted
+        .map((id) => views.get(id))
+        .filter(
+          (v): v is PkiCaBundle =>
+            v?.crlIssuers.some((i) => i.id === entry.id) === true,
+        );
+      // A CA-revoked child is REVOKED and never drains, so it counts only until its own certificate expires.
+      const at = this.deps.scheduler.now();
+      return (
+        dependents.length === 0 ||
+        dependents.some(
+          (v) => v.anchorTrusted && !v.drained && Date.parse(v.notAfter) > at,
+        )
       );
     };
     const publishAt = this.deps.scheduler.now();

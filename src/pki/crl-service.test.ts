@@ -10,6 +10,7 @@ import {
   drainPoint,
   evaluateCrl,
   isDrained,
+  publishInlineBestEffort,
   selectCrlEntries,
 } from "./crl-service";
 import { makeIntermediate, makeRoot, newKey } from "./__fixtures__/testkit";
@@ -648,5 +649,65 @@ describe("CrlService.download", () => {
     await expect(
       service.download("ca-known", [], { environment: "prod" }),
     ).rejects.toMatchObject({ statusCode: 503 });
+  });
+});
+
+describe("publishInlineBestEffort", () => {
+  const now = new Date("2026-11-22T12:00:00.000Z");
+  const publish = (result: unknown) =>
+    jest.fn(async () => {
+      if (result instanceof Error) {
+        throw result;
+      }
+      return result;
+    });
+  let log: jest.SpyInstance;
+  beforeEach(() => {
+    log = jest.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+  afterEach(() => log.mockRestore());
+
+  it("reports the number of a published CRL and passes an inline deadline", async () => {
+    const crls = { publish: publish({ kind: "published", pointer: { number: 7 } }) };
+    expect(await publishInlineBestEffort(crls as never, ca(), now)).toEqual({
+      crlPublished: true,
+      crlNumber: 7,
+    });
+    expect(crls.publish).toHaveBeenCalledWith(expect.anything(), {
+      trigger: "inline",
+      waitForLeaseMs: 1000,
+      deadline: new Date(now.getTime() + 5000),
+    });
+    await publishInlineBestEffort(crls as never, ca(), now, 1000);
+    expect(
+      (crls.publish.mock.calls[1] as unknown as [unknown, { deadline: Date }])[1]
+        .deadline,
+    ).toEqual(new Date(now.getTime() + 1000));
+  });
+
+  it("does not sign a CA that cannot sign", async () => {
+    const crls = { publish: publish({ kind: "published", pointer: { number: 7 } }) };
+    for (const target of [
+      ca({ status: "REVOKED" }),
+      ca({ key: { state: "DISABLED" } as CaRecord["key"] }),
+    ]) {
+      expect(await publishInlineBestEffort(crls as never, target, now)).toEqual({
+        crlPublished: false,
+      });
+    }
+    expect(crls.publish).not.toHaveBeenCalled();
+  });
+
+  it("logs a busy lease or a failure without failing", async () => {
+    expect(
+      await publishInlineBestEffort({ publish: publish({ kind: "busy" }) } as never, ca({ caId: "ca-a" }), now),
+    ).toEqual({ crlPublished: false });
+    expect(
+      await publishInlineBestEffort({ publish: publish(new TypeError("x")) } as never, ca({ caId: "ca-a" }), now),
+    ).toEqual({ crlPublished: false });
+    expect(log.mock.calls.map((call) => JSON.parse(call[0] as string))).toEqual([
+      { event: "pki_inline_crl_failed", caId: "ca-a", kind: "busy" },
+      { event: "pki_inline_crl_failed", caId: "ca-a", kind: "error", error: "TypeError" },
+    ]);
   });
 });

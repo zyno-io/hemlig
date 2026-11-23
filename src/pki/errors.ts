@@ -166,7 +166,7 @@ export const caCapacityExceeded = (): ApiError =>
   );
 
 export const issuanceRevoked = (
-  reason: "certificate_revoked" | "ca_revoked",
+  reason: "certificate_revoked" | "ca_revoked" | "ancestor_revoked",
 ): ApiError =>
   reasoned(
     409,

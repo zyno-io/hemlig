@@ -1,7 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { AsnConvert } from "@peculiar/asn1-schema";
 import { Certificate } from "@peculiar/asn1-x509";
-import type { KeyUsageName, NameConstraintSet } from "../types";
+import type {
+  KeyUsageName,
+  NameConstraintSet,
+  PkiKeyAlgorithm,
+} from "../types";
 import {
   caSignatureAlgorithmIdentifier,
   describePublicKey,
@@ -428,15 +432,22 @@ export interface CaTbsInput extends IssuedTbsInput {
   readonly extendedKeyUsage?: readonly string[];
 }
 
-/** A subordinate CA certificate: critical BasicConstraints and KeyUsage keyCertSign+cRLSign, SKI and AKI. */
-export const buildCaTbs = (input: CaTbsInput): BuiltTbs => {
-  const { signatureAlgorithm, authorityKeyId } = issuerParameters(input.issuer);
+interface CaExtensionInput {
+  readonly pathLen: number;
+  readonly nameConstraints?: NameConstraintSet;
+  readonly extendedKeyUsage?: readonly string[];
+  readonly spkiDer: Uint8Array;
+  readonly authorityKeyId?: Uint8Array;
+}
+
+/** Extension order for a CA certificate: BC, KU, NC?, EKU?, SKI, AKI?. */
+const caExtensions = (input: CaExtensionInput): Buffer[] => {
   const constrained =
     input.nameConstraints !== undefined &&
     input.nameConstraints.permitted.length +
       input.nameConstraints.excluded.length >
       0;
-  const extensions = [
+  return [
     extension(
       EXT.basicConstraints,
       true,
@@ -467,12 +478,21 @@ export const buildCaTbs = (input: CaTbsInput): BuiltTbs => {
       false,
       keyIdentifierValue(keyIdentifierFromSpki(input.spkiDer)),
     ),
-    extension(
-      EXT.authorityKeyIdentifier,
-      false,
-      authorityKeyIdentifierValue(authorityKeyId),
-    ),
+    ...(input.authorityKeyId === undefined
+      ? []
+      : [
+          extension(
+            EXT.authorityKeyIdentifier,
+            false,
+            authorityKeyIdentifierValue(input.authorityKeyId),
+          ),
+        ]),
   ];
+};
+
+/** A subordinate CA certificate: critical BasicConstraints and KeyUsage keyCertSign+cRLSign, SKI and AKI. */
+export const buildCaTbs = (input: CaTbsInput): BuiltTbs => {
+  const { signatureAlgorithm, authorityKeyId } = issuerParameters(input.issuer);
   return {
     signatureAlgorithm,
     tbs: buildTbsCertificate({
@@ -483,7 +503,62 @@ export const buildCaTbs = (input: CaTbsInput): BuiltTbs => {
       notAfter: input.notAfter,
       subjectDer: input.subjectDer,
       spkiDer: input.spkiDer,
-      extensions,
+      extensions: caExtensions({
+        pathLen: input.pathLen,
+        ...(input.nameConstraints === undefined
+          ? {}
+          : { nameConstraints: input.nameConstraints }),
+        ...(input.extendedKeyUsage === undefined
+          ? {}
+          : { extendedKeyUsage: input.extendedKeyUsage }),
+        spkiDer: input.spkiDer,
+        authorityKeyId,
+      }),
+    }),
+  };
+};
+
+export interface RootTbsInput {
+  readonly algorithm: PkiKeyAlgorithm;
+  readonly serial: Uint8Array;
+  readonly notBefore: Date;
+  readonly notAfter: Date;
+  readonly subjectDer: Uint8Array;
+  readonly spkiDer: Uint8Array;
+  readonly pathLen: number;
+  readonly nameConstraints?: NameConstraintSet;
+  readonly extendedKeyUsage?: readonly string[];
+}
+
+/**
+ * A self-signed Hemlig root: issuer bytes equal the subject bytes, critical BasicConstraints and KeyUsage, optional
+ * NameConstraints and EKU, and an SKI. There is no AKI, matching the recipe root.
+ */
+export const buildRootTbs = (input: RootTbsInput): BuiltTbs => {
+  if (pkiKeyAlgorithm(describePublicKey(input.spkiDer)) !== input.algorithm) {
+    throw new Error("The root key does not match the requested algorithm.");
+  }
+  const signatureAlgorithm = caSignatureAlgorithmIdentifier(input.algorithm);
+  return {
+    signatureAlgorithm,
+    tbs: buildTbsCertificate({
+      serial: input.serial,
+      signatureAlgorithm,
+      issuerDer: input.subjectDer,
+      notBefore: input.notBefore,
+      notAfter: input.notAfter,
+      subjectDer: input.subjectDer,
+      spkiDer: input.spkiDer,
+      extensions: caExtensions({
+        pathLen: input.pathLen,
+        ...(input.nameConstraints === undefined
+          ? {}
+          : { nameConstraints: input.nameConstraints }),
+        ...(input.extendedKeyUsage === undefined
+          ? {}
+          : { extendedKeyUsage: input.extendedKeyUsage }),
+        spkiDer: input.spkiDer,
+      }),
     }),
   };
 };

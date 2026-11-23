@@ -87,6 +87,10 @@ Object Lock Compliance retention cannot be shortened by anyone. Revisions and au
 | --- | --- | --- |
 | CAs per environment | 50 not counting `FAILED` ones; the count reads the directory index, so it can lag | `src/pki/ca-service.ts` |
 | CA validity at activation | At least 30 days remaining | `src/pki/chain.ts` |
+| Hemlig `ROOT` validity | 7,776,000 to 630,720,000 seconds (90 days to 20 years), default 3,650 days | `src/pki/hierarchy-model.ts` |
+| Hemlig `INTERMEDIATE` validity | 2,592,000 to 630,720,000 seconds (30 days to 20 years), default 365 days. Clamped to its root's `notAfter`, and refused (`parent_validity_insufficient`) when the clamped certificate would be valid for under 30 days | `src/pki/hierarchy-model.ts` |
+| Intermediate creation | Charged to the root: its administrator and CA hourly counters, and its capacity count | `src/pki/ca-service.ts` |
+| Root distrust walk | One level of children, best effort. Maintenance finishes any child it missed within 15 minutes | `src/pki/maintenance.ts` |
 | Name constraint subtrees per CA | 50 in total | `src/pki/ca-model.ts` |
 | CA request or certificate PEM | 32 KiB | `src/pki/ca-model.ts` |
 | Admin request body | 1 MiB | `src/handlers/pki-http.ts` |

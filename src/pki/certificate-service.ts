@@ -11,7 +11,7 @@ import type {
 import { maxBulkRevokeBatch } from "../repositories/pki";
 import { sha256Hex, stableJson } from "../util/encoding";
 import { assertHumanReplay, replayOutcome, requestDigest } from "./ca-model";
-import type { CrlService } from "./crl-service";
+import { publishInlineBestEffort, type CrlService } from "./crl-service";
 import { pkiBadRequest, pkiConflict, pkiNotFound } from "./errors";
 import { pageWithCursor } from "./paging";
 import type { MutationResult, PkiServiceDeps } from "./service-types";
@@ -25,7 +25,6 @@ import type {
 type Json = Record<string, unknown>;
 
 const pageLimit = 100;
-const inlinePublishBudgetMs = 5_000;
 const bulkReadBudgetMs = 20_000;
 const bulkPublishBudgetMs = 25_000;
 const maxBatchRetries = 3;
@@ -185,6 +184,8 @@ export const certificateSummary = (
   notBefore: cert.notBefore,
   notAfter: cert.notAfter,
   issuedAt: cert.issuedAt,
+  ...(cert.isCa ? { isCa: true } : {}),
+  ...(cert.childCaId === undefined ? {} : { childCaId: cert.childCaId }),
   requester: {
     type: cert.requester.type,
     id: cert.requester.id,
@@ -487,6 +488,7 @@ export class CertificateService {
     flags: {
       crlEntry: boolean;
       changed: boolean;
+      crlRevision?: number;
       crlPublished?: boolean;
       crlNumber?: number;
     },
@@ -504,7 +506,13 @@ export class CertificateService {
       (flags.crlEntry &&
         crl?.published !== undefined &&
         cert.revocation !== undefined &&
-        crl.published.thisUpdate >= cert.revocation.at);
+        (flags.crlRevision === undefined
+          ? // A receipt from before the recorded revision keeps its original full-precision comparison.
+            crl.published.thisUpdate >= cert.revocation.at
+          : // `thisUpdate` is floored to the second and `at` is not.
+            crl.published.thisUpdate >=
+              `${cert.revocation.at.slice(0, 19)}.000Z` &&
+            crl.published.revision >= flags.crlRevision));
     const crlNumber =
       flags.crlNumber ??
       (crlPublished === true ? crl?.published?.number : undefined);
@@ -557,6 +565,9 @@ export class CertificateService {
     const flags = {
       crlEntry: outcome.result.crlEntry === true,
       changed: outcome.result.changed === true,
+      ...(typeof outcome.result.crlRevision === "number"
+        ? { crlRevision: outcome.result.crlRevision }
+        : {}),
     };
     const { body, cert } = await this.revokeBody(caId, serial, flags);
     return {
@@ -577,44 +588,10 @@ export class CertificateService {
     };
   }
 
-  /** The inline publication: best effort, under a 5-second deadline, never failing the revoke. */
-  private async publishInline(
+  private publishInline(
     ca: CaRecord,
-    deadlineMs = inlinePublishBudgetMs,
   ): Promise<{ crlPublished: boolean; crlNumber?: number }> {
-    if (
-      (ca.status !== "ACTIVE" && ca.status !== "RETIRED") ||
-      ca.key.state !== "ACTIVE"
-    ) {
-      return { crlPublished: false };
-    }
-    try {
-      const result = await this.crls.publish(ca, {
-        trigger: "inline",
-        waitForLeaseMs: 1000,
-        deadline: new Date(this.now().getTime() + deadlineMs),
-      });
-      if (result.kind === "published") {
-        return { crlPublished: true, crlNumber: result.pointer.number };
-      }
-      console.error(
-        JSON.stringify({
-          event: "pki_inline_crl_failed",
-          caId: ca.caId,
-          kind: result.kind,
-        }),
-      );
-    } catch (error) {
-      console.error(
-        JSON.stringify({
-          event: "pki_inline_crl_failed",
-          caId: ca.caId,
-          kind: "error",
-          error: error instanceof Error ? error.name : typeof error,
-        }),
-      );
-    }
-    return { crlPublished: false };
+    return publishInlineBestEffort(this.crls, ca, this.now());
   }
 
   public async revoke(
@@ -680,11 +657,17 @@ export class CertificateService {
         crlEntry = (await this.pki.getRevocationEntry(caId, serial)) !== undefined;
       }
       const changed = mode !== "none";
+      // The bump makes the CRL's revision at least this: a replay tests a published CRL against it.
+      const crlRevision =
+        mode === "entry" || (mode === "upgrade" && entryLive)
+          ? ((await this.pki.getCaCrlState(caId))?.revision ?? 0) + 1
+          : undefined;
       const idempotency = this.idempotency(actor, key, digest, {
         caId,
         serial,
         crlEntry,
         changed,
+        ...(crlRevision === undefined ? {} : { crlRevision }),
       });
       let outcome: TransactOutcome;
       if (mode === "none") {
@@ -708,6 +691,9 @@ export class CertificateService {
           by: actor,
           expired,
           entryLive,
+          ...(crlRevision === undefined
+            ? {}
+            : { expectCrlRevision: crlRevision - 1 }),
         });
       }
       if (outcome.kind === "canceled") {

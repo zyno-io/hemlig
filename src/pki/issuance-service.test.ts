@@ -13,6 +13,8 @@ import {
   type Harness,
 } from "./__fixtures__/issuance-harness";
 import { leafKey } from "./__fixtures__/testkit";
+import { admin } from "./__fixtures__/issuance-harness";
+import type { CaRecord } from "./types";
 
 const issue = (
   h: Harness,
@@ -791,5 +793,111 @@ describe("secrets never reach logs or audit targets", () => {
         spy.mockRestore();
       }
     }
+  });
+});
+
+describe("a Hemlig INTERMEDIATE under a ROOT", () => {
+  const rootId = "ca-test-root";
+  const root = (status: CaRecord["status"] = "ACTIVE"): CaRecord =>
+    ({ caId: rootId, kind: "ROOT", status }) as CaRecord;
+
+  it("commits the ancestor slot for an INTERMEDIATE and none for an EXTERNAL CA", async () => {
+    const h = await issuanceHarness({ parent: root() });
+    await issue(h);
+    expect(h.state.commits[0]).toMatchObject({ ancestors: [rootId] });
+    const admin1 = await issuanceHarness({ parent: root() });
+    await admin1.issuance.issueForAdmin(admin, "key-admin-0001", caId, {
+      certificateSigningRequestPem: admin1.defaultCsr,
+      useCsrNames: true,
+    });
+    expect(admin1.state.commits[0]).toMatchObject({
+      path: "admin",
+      ancestors: [rootId],
+    });
+    const external = await issuanceHarness();
+    await issue(external);
+    expect(external.state.commits[0]).toMatchObject({ ancestors: [] });
+  });
+
+  it("refuses a REVOKED parent before signing, on both paths", async () => {
+    const h = await issuanceHarness({ parent: root("REVOKED") });
+    const callsBefore = h.kms.send.mock.calls.length;
+    expect(await errorOf(issue(h))).toMatchObject({
+      statusCode: 409,
+      code: "ca_not_active",
+      safeReason: "ancestor_revoked",
+    });
+    expect(
+      await errorOf(
+        h.issuance.issueForAdmin(admin, "key-admin-0002", caId, {
+          certificateSigningRequestPem: h.defaultCsr,
+        }),
+      ),
+    ).toMatchObject({ code: "ca_not_active", safeReason: "ancestor_revoked" });
+    expect(h.kms.send.mock.calls).toHaveLength(callsBefore);
+    expect(h.state.commits).toHaveLength(0);
+  });
+
+  it("issues under a RETIRED parent", async () => {
+    const h = await issuanceHarness({ parent: root("RETIRED") });
+    expect((await issue(h)).status).toBe(201);
+  });
+
+  it("answers 503 when the parent record is missing", async () => {
+    const h = await issuanceHarness({ parent: root() });
+    h.state.parent = undefined;
+    expect(await errorOf(issue(h))).toMatchObject({ statusCode: 503 });
+  });
+
+  it("reruns after an ancestor precondition failure, then reports ancestor_revoked", async () => {
+    const h = await issuanceHarness({ parent: root() });
+    h.state.outcomes.push({ kind: "preconditionFailed", slots: ["ancestor"] });
+    h.pki.commitIssuance.mockImplementationOnce(async (commit) => {
+      h.state.commits.push(commit);
+      h.state.parent = root("REVOKED");
+      return { kind: "preconditionFailed", slots: ["ancestor"] };
+    });
+    expect(await errorOf(issue(h))).toMatchObject({
+      code: "ca_not_active",
+      safeReason: "ancestor_revoked",
+    });
+    expect(h.state.commits).toHaveLength(1);
+  });
+
+  it("replays an administrator issuance under a REVOKED parent as ancestor_revoked", async () => {
+    const h = await issuanceHarness({ parent: root() });
+    const request = {
+      certificateSigningRequestPem: h.defaultCsr,
+      useCsrNames: true,
+    };
+    await h.issuance.issueForAdmin(admin, "key-admin-0003", caId, request);
+    h.state.parent = root("REVOKED");
+    expect(
+      await errorOf(
+        h.issuance.issueForAdmin(admin, "key-admin-0003", caId, request),
+      ),
+    ).toMatchObject({
+      statusCode: 409,
+      code: "issuance_revoked",
+      safeReason: "ancestor_revoked",
+    });
+    expect(h.state.ca.status).toBe("ACTIVE");
+  });
+
+  it("replays with the child ACTIVE and the parent REVOKED as ancestor_revoked, and a REVOKED child as ca_revoked", async () => {
+    const h = await issuanceHarness({ parent: root() });
+    await issue(h, { idempotencyKey: "key-ancestor-01" });
+    h.state.parent = root("REVOKED");
+    expect(
+      await errorOf(issue(h, { idempotencyKey: "key-ancestor-01" })),
+    ).toMatchObject({
+      statusCode: 409,
+      code: "issuance_revoked",
+      safeReason: "ancestor_revoked",
+    });
+    h.state.ca = { ...h.ca, status: "REVOKED" };
+    expect(
+      await errorOf(issue(h, { idempotencyKey: "key-ancestor-01" })),
+    ).toMatchObject({ code: "issuance_revoked", safeReason: "ca_revoked" });
   });
 });

@@ -17,7 +17,9 @@ import {
 import { caSignatureAlgorithmIdentifier } from "./asn1/algorithms";
 import {
   assembleCertificate,
+  buildCaTbs,
   buildLeafTbs,
+  buildRootTbs,
   generateSerial,
   parseCertificate,
 } from "./asn1/certificate";
@@ -32,6 +34,8 @@ import {
 } from "./chain";
 import { parseCsr } from "./csr";
 import { verifyRootCrl } from "./crl-verify";
+import { buildSignedCrl } from "./crl-service";
+import { pkcs8Signer } from "./signer";
 import { buildCaSubject } from "./subject";
 import type { NameConstraintSet } from "./types";
 
@@ -501,5 +505,175 @@ suite("openssl cross-checks", () => {
       "ed.csr",
     ]);
     expect(parseCsr(read("ed.csr")).keyAlgorithm).toBe("ED25519");
+  });
+
+  it("verifies a Hemlig ROOT, INTERMEDIATE and leaf, enforces the root's NameConstraints and its CRL", async () => {
+    const rootKey = await newKey("ECDSA_P384");
+    const childKey = await newKey("ECDSA_P256");
+    const notBefore = new Date(Date.now() - 60_000);
+    const notAfter = new Date(Date.now() + 3650 * 86_400_000);
+    const constraints: NameConstraintSet = {
+      permitted: [{ type: "dns", value: "example.com" }],
+      excluded: [],
+    };
+    const rootName = buildCaSubject({ O: "Example Corp", CN: "Hemlig Root 1" });
+    const rootTbs = buildRootTbs({
+      algorithm: "ECDSA_P384",
+      serial: generateSerial(),
+      notBefore,
+      notAfter,
+      subjectDer: rootName.der,
+      spkiDer: rootKey.spkiDer,
+      pathLen: 1,
+      nameConstraints: constraints,
+    });
+    const rootDer = assembleCertificate(
+      rootTbs.tbs,
+      rootTbs.signatureAlgorithm,
+      rootKey.sign(rootTbs.tbs),
+    );
+    const root = parseCertificate(rootDer);
+    const sign = (
+      key: TestKey,
+      tbs: { tbs: Buffer; signatureAlgorithm: Buffer },
+    ) =>
+      assembleCertificate(tbs.tbs, tbs.signatureAlgorithm, key.sign(tbs.tbs));
+    const childOf = (name: string, nameConstraints?: NameConstraintSet) => {
+      const built = buildCaTbs({
+        issuer: root,
+        serial: generateSerial(),
+        notBefore,
+        notAfter: new Date(notAfter.getTime() - 86_400_000),
+        subjectDer: buildCaSubject({ O: "Example Corp", CN: name }).der,
+        spkiDer: childKey.spkiDer,
+        pathLen: 0,
+        ...(nameConstraints === undefined ? {} : { nameConstraints }),
+      });
+      return parseCertificate(sign(rootKey, built));
+    };
+    const leafOf = (
+      child: ReturnType<typeof parseCertificate>,
+      dns: string,
+    ) => {
+      const leaf = leafKey({ type: "ec", curve: "prime256v1" });
+      const built = buildLeafTbs({
+        issuer: child,
+        serial: generateSerial(),
+        notBefore,
+        notAfter: new Date(Date.now() + 30 * 86_400_000),
+        subjectDer: subjectDer({ CN: dns }),
+        spkiDer: leaf.spkiDer,
+        keyUsage: ["digitalSignature"],
+        extendedKeyUsage: [EKU.serverAuth],
+        san: { dns: [dns] },
+        subjectEmpty: false,
+      });
+      return toPem(sign(childKey, built), "CERTIFICATE");
+    };
+    const crlOf = async (
+      ca: ReturnType<typeof parseCertificate>,
+      key: TestKey,
+      number: number,
+      entries: Parameters<typeof buildSignedCrl>[2]["entries"] = [],
+    ) =>
+      toPem(
+        (
+          await buildSignedCrl(
+            {
+              subjectDer: ca.subjectDer.toString("base64"),
+              subjectKeyIdentifier: ca.subjectKeyIdentifier!.toString("hex"),
+              spkiDer: ca.spkiDer,
+            },
+            pkcs8Signer(key.algorithm, key.pkcs8),
+            {
+              number,
+              thisUpdate: new Date(),
+              nextUpdate: new Date(Date.now() + 7 * 86_400_000),
+              entries,
+            },
+          )
+        ).der,
+        "X509 CRL",
+      );
+
+    const child = childOf("Hemlig Issuing 1", constraints);
+    write("h-root.pem", toPem(rootDer, "CERTIFICATE"));
+    write("h-child.pem", toPem(child.der, "CERTIFICATE"));
+    write("h-leaf.pem", leafOf(child, "api.example.com"));
+    // The profile: CA:TRUE, pathlen:1 and no AKI on the root.
+    const text = openssl([
+      "x509",
+      "-in",
+      "h-root.pem",
+      "-noout",
+      "-text",
+    ]).output;
+    expect(text).toMatch(/CA:TRUE, pathlen:1/);
+    expect(text).not.toContain("X509v3 Authority Key Identifier");
+    const verify = (...extra: string[]) =>
+      openssl(
+        [
+          "verify",
+          "-x509_strict",
+          "-purpose",
+          "sslserver",
+          "-CAfile",
+          "h-root.pem",
+          "-untrusted",
+          "h-child.pem",
+          ...extra,
+          "h-leaf.pem",
+        ],
+        { allowFailure: true },
+      );
+    expect(verify().output).toContain("h-leaf.pem: OK");
+
+    // Both CRLs, checked along the whole chain.
+    write(
+      "h-crls.pem",
+      `${await crlOf(root, rootKey, 1)}${await crlOf(child, childKey, 1)}`,
+    );
+    const checked = verify("-crl_check_all", "-CRLfile", "h-crls.pem");
+    expect(checked.status).toBe(0);
+    expect(checked.output).toContain("h-leaf.pem: OK");
+
+    // The root's CRL #2 lists the child: caCompromise rejects at depth 1.
+    write(
+      "h-crls-revoked.pem",
+      `${await crlOf(root, rootKey, 2, [
+        {
+          caId: "ca-root",
+          serial: child.serialHex,
+          revokedAt: new Date().toISOString(),
+          reason: "caCompromise",
+          notAfter: child.notAfter.toISOString(),
+        },
+      ])}${await crlOf(child, childKey, 1)}`,
+    );
+    const revoked = verify("-crl_check_all", "-CRLfile", "h-crls-revoked.pem");
+    expect(revoked.status).not.toBe(0);
+    expect(revoked.output).toMatch(/at 1 depth/);
+    expect(revoked.output).toMatch(/certificate revoked/);
+
+    // A child without NameConstraints cannot widen the root's.
+    const wide = childOf("Hemlig Issuing 2");
+    write("h-wide.pem", toPem(wide.der, "CERTIFICATE"));
+    write("h-outside.pem", leafOf(wide, "x.example.org"));
+    const outside = openssl(
+      [
+        "verify",
+        "-x509_strict",
+        "-purpose",
+        "sslserver",
+        "-CAfile",
+        "h-root.pem",
+        "-untrusted",
+        "h-wide.pem",
+        "h-outside.pem",
+      ],
+      { allowFailure: true },
+    );
+    expect(outside.status).not.toBe(0);
+    expect(outside.output).toMatch(/permitted subtree violation/);
   });
 });

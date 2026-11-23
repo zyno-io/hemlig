@@ -191,6 +191,7 @@ describe("pki-admin handler", () => {
       ["POST", `/cas/${ca}/certificate`, "pki.ca.activate", "ca-admin"],
       ["POST", `/cas/${ca}/retire`, "pki.ca.retire", "ca-admin"],
       ["POST", `/cas/${ca}/destroy-key`, "pki.ca.destroy-key", "ca-admin"],
+      ["POST", `/cas/${ca}/revoke`, "pki.ca.revoke", "ca-admin"],
       ["POST", `/cas/${ca}/crl`, "pki.crl.publish", "operator"],
       ["GET", `/crls/${ca}`, "pki.crl.get", "read"],
       ["GET", `/crls/${ext}`, "pki.crl.get", "read"],
@@ -284,6 +285,7 @@ describe("pki-admin handler", () => {
     };
     const issuance = { issueForAdmin: jest.fn(), evaluate: jest.fn() };
     const certificates = { bulkRevoke: jest.fn() };
+    const cas = { revoke: jest.fn() };
     const markAuditSucceeded = jest.fn(async () => undefined);
     const phase4 = {
       config,
@@ -292,6 +294,7 @@ describe("pki-admin handler", () => {
       grants,
       issuance,
       certificates,
+      cas,
     } as unknown as PkiApplication;
     const phase4Respond = createErrorResponder(() => phase4);
     const call = (
@@ -319,6 +322,86 @@ describe("pki-admin handler", () => {
       } as APIGatewayProxyEventV2);
     afterEach(() => {
       delete config.adminPkiOperatorRole;
+      delete config.adminPkiCaRole;
+    });
+
+    describe("POST /cas/{caId}/revoke", () => {
+      const revoke = (
+        headers: Record<string, string> = { "idempotency-key": "key-0000001" },
+        claims?: Record<string, unknown>,
+      ) =>
+        call("POST", "/cas/ca-prod-one/revoke", {
+          headers,
+          body: { reason: "caCompromise" },
+          ...(claims === undefined ? {} : { claims }),
+        });
+
+      it("needs the CA administrator role", async () => {
+        config.adminPkiCaRole = "pki-ca-admin";
+        expect(await revoke(undefined, { roles: ["other"] })).toMatchObject({
+          statusCode: 403,
+        });
+        expect(cas.revoke).not.toHaveBeenCalled();
+        expect(write).toHaveBeenCalledWith(
+          expect.objectContaining({
+            operation: "pki.ca.revoke",
+            outcome: "failed",
+            reasonCode: "pki_role_required",
+          }),
+        );
+      });
+
+      it("needs an Idempotency-Key", async () => {
+        expect(await revoke({})).toMatchObject({ statusCode: 400 });
+        expect(cas.revoke).not.toHaveBeenCalled();
+      });
+
+      it("revokes with the body, sets the ETag and audits pki.ca.revoke", async () => {
+        cas.revoke.mockResolvedValueOnce({
+          status: 200,
+          body: { changed: true },
+          shouldWriteTerminalAudit: true,
+          auditTarget: { caId: "ca-prod-one", reason: "caCompromise" },
+          etag: "pkv-9",
+        });
+        (write as jest.Mock).mockResolvedValueOnce({ eventId: "e-1" });
+        const result = await revoke();
+        expect(result).toMatchObject({
+          statusCode: 200,
+          headers: expect.objectContaining({ etag: "pkv-9" }),
+        });
+        expect(cas.revoke).toHaveBeenCalledWith(
+          expect.objectContaining({ id: "admin-1" }),
+          "key-0000001",
+          "ca-prod-one",
+          { reason: "caCompromise" },
+        );
+        expect(markAuditSucceeded).toHaveBeenCalled();
+        expect(write).toHaveBeenCalledWith(
+          expect.objectContaining({
+            operation: "pki.ca.revoke",
+            outcome: "succeeded",
+            target: { caId: "ca-prod-one", reason: "caCompromise" },
+          }),
+        );
+      });
+
+      it("audits a failure under the CA", async () => {
+        cas.revoke.mockRejectedValueOnce(
+          new ApiError(409, "conflict", "No.", "revoke_at_root", {
+            details: { reason: "revoke_at_root" },
+          }),
+        );
+        expect(await revoke()).toMatchObject({ statusCode: 409 });
+        expect(write).toHaveBeenCalledWith(
+          expect.objectContaining({
+            operation: "pki.ca.revoke",
+            outcome: "failed",
+            reasonCode: "revoke_at_root",
+            target: { caId: "ca-prod-one" },
+          }),
+        );
+      });
     });
 
     it("audits a consumer-scoped failure under consumerId", async () => {

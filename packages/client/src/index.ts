@@ -320,10 +320,24 @@ export interface PkiCaPolicy {
   readonly issueSubordinates: boolean;
 }
 
+export type PkiCaKind = "EXTERNAL_INTERMEDIATE" | "ROOT" | "INTERMEDIATE";
+
+export type PkiCaRevocationReason =
+  | "unspecified"
+  | "caCompromise"
+  | "affiliationChanged"
+  | "superseded"
+  | "cessationOfOperation"
+  | "privilegeWithdrawn";
+
 export interface PkiCreateCaRequest {
   readonly environment: string;
   readonly name: string;
-  readonly kind: "EXTERNAL_INTERMEDIATE";
+  readonly kind: PkiCaKind;
+  /** Required for INTERMEDIATE, refused otherwise. */
+  readonly parentCaId?: string;
+  /** ROOT and INTERMEDIATE only. */
+  readonly validitySeconds?: number;
   readonly keyAlgorithm: PkiKeyAlgorithm;
   readonly subject: PkiCaSubject;
   readonly requestedConstraints?: PkiRequestedConstraints;
@@ -380,7 +394,7 @@ export interface PkiCaSummary {
   readonly environment: string;
   readonly name: string;
   readonly displayName?: string;
-  readonly kind: "EXTERNAL_INTERMEDIATE";
+  readonly kind: PkiCaKind;
   readonly status: PkiCaStatus;
   readonly version: string;
   readonly keyAlgorithm: PkiKeyAlgorithm;
@@ -408,6 +422,7 @@ export interface PkiCaDetail extends PkiCaSummary {
   readonly serial?: string;
   readonly notBefore?: string;
   readonly parent?: { readonly type: string; readonly id: string };
+  readonly parentCaId?: string;
   readonly crlIssuers: readonly {
     readonly type: string;
     readonly id: string;
@@ -438,7 +453,22 @@ export interface PkiCaCapacityView {
 }
 
 export interface PkiCreateCaResponse extends PkiCaDetail {
-  readonly csrPem: string;
+  readonly csrPem?: string;
+}
+
+export interface PkiRevokeCaRequest {
+  readonly reason?: PkiCaRevocationReason;
+  readonly invalidityDate?: string;
+}
+
+export interface PkiRevokeCaResponse {
+  readonly ca: PkiCaDetail;
+  readonly changed: boolean;
+  readonly crlEntry: boolean;
+  readonly crlPublished: boolean;
+  readonly crlNumber?: number;
+  readonly revokedCaIds: readonly string[];
+  readonly complete: boolean;
 }
 
 export interface PkiCaListPage {
@@ -706,6 +736,8 @@ export interface PkiCertificateSummary {
   readonly issuedAt: string;
   readonly requester: Readonly<Record<string, unknown>>;
   readonly revocation?: Readonly<Record<string, unknown>>;
+  readonly isCa?: boolean;
+  readonly childCaId?: string;
 }
 
 export interface PkiCertificateDetail extends PkiCertificateSummary {
@@ -1406,6 +1438,21 @@ export class HemligClient {
       `${pkiCaPath(caId)}/retire`,
       token,
       undefined,
+      idempotencyKey,
+    );
+  }
+
+  public async revokePkiCa(
+    token: string,
+    caId: string,
+    input: PkiRevokeCaRequest,
+    idempotencyKey: string,
+  ): Promise<PkiRevokeCaResponse> {
+    return this.request(
+      "POST",
+      `${pkiCaPath(caId)}/revoke`,
+      token,
+      input,
       idempotencyKey,
     );
   }

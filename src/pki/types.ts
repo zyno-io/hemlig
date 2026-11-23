@@ -1,7 +1,7 @@
 import type { Actor } from "../domain/types";
 import type { GrantPolicy } from "./policy-types";
 
-export type CaKind = "EXTERNAL_INTERMEDIATE" | "ROOT" | "INTERMEDIATE"; // v1 creates EXTERNAL_INTERMEDIATE only
+export type CaKind = "EXTERNAL_INTERMEDIATE" | "ROOT" | "INTERMEDIATE"; // Phase 7 creates all three
 export type CaStatus =
   "PENDING_CERTIFICATE" | "ACTIVE" | "RETIRED" | "REVOKED" | "FAILED";
 export type IssuerRef =
@@ -84,7 +84,7 @@ export interface CaRecord {
   subject: CaSubject;
   subjectKey: string; // restricted form; registry hash
   requested: {
-    pathLen: 0;
+    pathLen: 0 | 1;
     nameConstraints?: NameConstraintSet;
     extendedKeyUsages?: string[];
   };
@@ -104,14 +104,14 @@ export interface CaRecord {
   };
   policy: {
     issueLeaves: boolean;
-    issueSubordinates: boolean; // v1: true, false
+    issueSubordinates: boolean; // true for ROOT only
     maxLeafLifetimeSeconds: number;
     leafKeyAlgorithms: LeafKeyAlgorithm[];
     capacity: number;
     issuancePerHour: number; // per-CA hourly issuance counter limit (the "rate")
     crlValiditySeconds: number;
   }; // 8,000; 2,000; 604,800
-  maxIssueLifetimeEverSeconds: number; // monotone; sets the drain point
+  maxIssueLifetimeEverSeconds: number; // monotone; sets the drain point. ROOT: the longest subordinate lifetime it issued
   createdAt: string;
   createdBy: Actor;
   retiredAt?: string;

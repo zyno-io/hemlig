@@ -1,4 +1,4 @@
-import { CertificateService } from "./certificate-service";
+import { CertificateService, certificateSummary } from "./certificate-service";
 import { admin, issuanceHarness, errorOf, type Harness } from "./__fixtures__/issuance-harness";
 import type { CaRecord, IssuedCertificateRecord, RevocationEntryRecord } from "./types";
 
@@ -74,7 +74,7 @@ describe("CertificateService.revoke", () => {
         by: admin,
         idempotency: expect.objectContaining({
           operationType: "pki.certificate.revoke",
-          result: { caId: "ca-test-one", serial: "0a1b", crlEntry: true, changed: true },
+          result: { caId: "ca-test-one", serial: "0a1b", crlEntry: true, changed: true, crlRevision: 1 },
         }),
       }),
     );
@@ -468,5 +468,137 @@ describe("inventory", () => {
     h.state.ca = { ...h.ca, status: "REVOKED" };
     expect(await service.get("ca-test-one", "01")).toMatchObject({ status: "CA_REVOKED" });
     expect(await errorOf(service.get("ca-test-one", "02"))).toMatchObject({ statusCode: 404 });
+  });
+});
+
+describe("certificateSummary", () => {
+  it("adds isCa and childCaId on a CA row only", async () => {
+    const h = await issuanceHarness();
+    const now = h.clock.now;
+    const leaf = certificateSummary(certificate(h, "0a1b"), h.ca, now);
+    expect(leaf).not.toHaveProperty("isCa");
+    expect(leaf).not.toHaveProperty("childCaId");
+    const row = certificateSummary(
+      certificate(h, "0a1c", { isCa: true, childCaId: "ca-child-one" }),
+      h.ca,
+      now,
+    );
+    expect(row).toMatchObject({ isCa: true, childCaId: "ca-child-one", status: "ISSUED" });
+  });
+});
+
+describe("CertificateService.revoke replay", () => {
+  it("recomputes crlPublished against the floored second and the recorded revision", async () => {
+    const { h, pki, service } = await setup();
+    h.clock.now = new Date("2026-11-22T12:00:00.789Z");
+    const cert = seed(h, certificate(h, "0a1b"));
+    h.state.crl = { revision: 4, lastNumber: 6 };
+    pki.revokeCertificate.mockImplementation(async (input: any) => {
+      h.state.human.set(input.idempotency.idempotencyKey, {
+        operationType: input.idempotency.operationType,
+        requestDigest: input.idempotency.requestDigest,
+        status: "COMMITTED",
+        result: input.idempotency.result,
+      });
+      h.state.certificates.set(cert.serial, {
+        ...cert,
+        status: "REVOKED",
+        revocation: { at: input.now, reason: input.reason, by: admin },
+      });
+      return { kind: "committed" };
+    });
+    await service.revoke(admin, "key-rev-replay1", "ca-test-one", cert.serial, {});
+    expect(h.state.human.get("key-rev-replay1")!.result).toMatchObject({
+      crlEntry: true,
+      crlRevision: 5,
+    });
+    const published = (revision: number) => ({
+      revision: 5,
+      lastNumber: 7,
+      published: {
+        number: 7,
+        objectKey: "k",
+        sha256: "s",
+        thisUpdate: "2026-11-22T12:00:00.000Z",
+        nextUpdate: "2026-11-29T12:00:00.000Z",
+        revision,
+        entryCount: 1,
+      },
+    });
+    // Published within the same second as the revoke, covering the bump.
+    h.state.crl = published(5);
+    const covered = await service.revoke(admin, "key-rev-replay1", "ca-test-one", cert.serial, {});
+    expect(covered.body).toMatchObject({ crlEntry: true, crlPublished: true, crlNumber: 7 });
+    // A CRL from the same second that predates the bump does not count.
+    h.state.crl = published(4);
+    const stale = await service.revoke(admin, "key-rev-replay1", "ca-test-one", cert.serial, {});
+    expect(stale.body.crlPublished).toBe(false);
+    expect(stale.body.crlNumber).toBeUndefined();
+  });
+});
+
+describe("CertificateService.revoke CRL revision race", () => {
+  it("reruns once when the CRL revision moved, then conditions on the revision it read", async () => {
+    const { h, pki, service } = await setup();
+    const cert = seed(h, certificate(h, "0a1b"));
+    h.state.crl = { revision: 4, lastNumber: 6 };
+    pki.revokeCertificate.mockImplementationOnce(async () => {
+      h.state.crl = { revision: 6, lastNumber: 6 };
+      return { kind: "canceled", failed: ["crl"] };
+    });
+    await service.revoke(admin, "key-rev-race001", "ca-test-one", cert.serial, {});
+    const calls = pki.revokeCertificate.mock.calls.map((call) => call[0] as any);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({ expectCrlRevision: 4 });
+    expect(calls[0].idempotency.result.crlRevision).toBe(5);
+    expect(calls[1]).toMatchObject({ expectCrlRevision: 6 });
+    expect(calls[1].idempotency.result.crlRevision).toBe(7);
+  });
+});
+
+describe("CertificateService.revoke legacy receipts", () => {
+  it("keeps the full-precision comparison when the receipt has no revision", async () => {
+    const { h, pki, service } = await setup();
+    h.clock.now = new Date("2026-11-22T12:00:00.789Z");
+    const cert = seed(
+      h,
+      certificate(h, "0a1b", {
+        status: "REVOKED",
+        revocation: { at: "2026-11-22T12:00:00.789Z", reason: "superseded", by: admin },
+      }),
+    );
+    h.state.human.set("key-rev-legacy1", {
+      operationType: "pki.certificate.revoke",
+      requestDigest: "x",
+      status: "SUCCEEDED",
+      result: { caId: "ca-test-one", serial: cert.serial, crlEntry: true, changed: true },
+    });
+    const published = {
+      revision: 9,
+      lastNumber: 7,
+      published: {
+        number: 7,
+        objectKey: "k",
+        sha256: "s",
+        thisUpdate: "2026-11-22T12:00:00.000Z",
+        nextUpdate: "2026-11-29T12:00:00.000Z",
+        revision: 9,
+        entryCount: 1,
+      },
+    };
+    h.state.crl = published;
+    // A CRL published before the revocation instant, within the same second, does not count for a legacy receipt.
+    const replay = (service as any).replayRevoke(h.state.human.get("key-rev-legacy1"));
+    const result = await replay;
+    expect(result.body.crlPublished).toBe(false);
+    h.state.crl = {
+      ...published,
+      published: { ...published.published, thisUpdate: "2026-11-22T12:00:01.000Z" },
+    };
+    expect((await (service as any).replayRevoke(h.state.human.get("key-rev-legacy1"))).body).toMatchObject({
+      crlPublished: true,
+      crlNumber: 7,
+    });
+    void pki;
   });
 });

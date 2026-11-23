@@ -296,6 +296,18 @@ A `HemligTrustBundle`: the anchors, intermediates and CRLs of a set of CAs, writ
 
 See: [Distribute trust bundles](../guide/trust-bundles.md).
 
+### Hemlig root
+
+A `ROOT` CA that Hemlig generates and holds itself, with a `WRAPPED` online key, as opposed to your offline root. It signs `INTERMEDIATE` CAs. An external offline root is strongly recommended instead.
+
+See: [A Hemlig root and intermediates](../guide/pki.md#a-hemlig-root-and-intermediates).
+
+### Local distrust
+
+Revoking a Hemlig `ROOT`. There is no CRL above a root, so Hemlig marks the root and its intermediates `REVOKED`, disables their keys and removes the root from trust bundles. It reaches only relying parties that use Hemlig trust bundles.
+
+See: [A Hemlig root and intermediates](../guide/pki.md#a-hemlig-root-and-intermediates).
+
 ### Enrollment
 
 Issuing a client certificate and activating it once truststore publication is confirmed.
