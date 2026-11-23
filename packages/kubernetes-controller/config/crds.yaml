@@ -284,3 +284,56 @@ spec:
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: hemligtrustbundles.hemlig.zyno.io
+spec:
+  group: hemlig.zyno.io
+  scope: Namespaced
+  names:
+    plural: hemligtrustbundles
+    singular: hemligtrustbundle
+    kind: HemligTrustBundle
+    shortNames: [hmltrustbundle]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources: { status: {} }
+      additionalPrinterColumns:
+        - { name: Ready, type: string, jsonPath: '.status.conditions[?(@.type=="Ready")].status' }
+        - { name: Reason, type: string, jsonPath: '.status.conditions[?(@.type=="Ready")].reason' }
+        - { name: Target, type: string, jsonPath: ".spec.target.name" }
+        - { name: Age, type: date, jsonPath: ".metadata.creationTimestamp" }
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [consumerRef, caIds, target]
+              properties:
+                consumerRef: { type: string, maxLength: 253, pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" }
+                consumerNamespace: { type: string, maxLength: 63, pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" }
+                caIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  x-kubernetes-list-type: set
+                  items: { type: string, maxLength: 83, pattern: "^ca-[a-z0-9-]{2,79}[a-z0-9]$" }
+                includeCrl: { type: boolean, default: true }
+                crlFormat: { type: string, enum: [der, pem], default: der }
+                target:
+                  type: object
+                  required: [name]
+                  properties:
+                    name: { type: string, minLength: 1, maxLength: 165, pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" }
+              x-kubernetes-validations:
+                - rule: "self.consumerRef == oldSelf.consumerRef && has(self.consumerNamespace) == has(oldSelf.consumerNamespace) && (!has(self.consumerNamespace) || self.consumerNamespace == oldSelf.consumerNamespace) && self.target.name == oldSelf.target.name"
+                  message: consumerRef, consumerNamespace and target are immutable
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

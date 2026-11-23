@@ -141,6 +141,10 @@ export default withMermaid(
                 text: "Issue certificates with cert-manager",
                 link: "/guide/cert-manager",
               },
+              {
+                text: "Distribute trust bundles",
+                link: "/guide/trust-bundles",
+              },
             ],
           },
           {

@@ -1,23 +1,23 @@
 ---
 title: Kubernetes CRD reference
-description: Every field, status field, annotation and status reason of the HemligProvider, HemligConsumer, HemligSecretImport, HemligSecretExport, HemligIssuer and HemligClusterIssuer resources.
+description: Every field, status field, annotation and status reason of the HemligProvider, HemligConsumer, HemligSecretImport, HemligSecretExport, HemligIssuer, HemligClusterIssuer and HemligTrustBundle resources.
 pageType: reference
 ---
 
 # Kubernetes CRD reference
 
-Field-by-field reference for the six Hemlig custom resources, plus every status reason the controller reports.
+Field-by-field reference for the seven Hemlig custom resources, plus every status reason the controller reports.
 
 Group `hemlig.zyno.io`, version `v1beta1` (the CRDs also serve `v1alpha1` for imports
 and exports during migration; it is not extended).
 
-`HemligIssuer` and `HemligClusterIssuer` are `v1alpha1` and may change before beta.
+`HemligIssuer`, `HemligClusterIssuer` and `HemligTrustBundle` are `v1alpha1` and may change before beta.
 
 The schemas live in
 [`chart/hemlig-controller/crds/hemlig.zyno.io.yaml`](https://github.com/zyno-io/hemlig/blob/main/packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io.yaml)
 and [`hemlig.zyno.io-pki.yaml`](https://github.com/zyno-io/hemlig/blob/main/packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io-pki.yaml).
 
-For usage see the [controller guide](../guide/kubernetes.md) and [Issue certificates with cert-manager](../guide/cert-manager.md).
+For usage see the [controller guide](../guide/kubernetes.md), [Issue certificates with cert-manager](../guide/cert-manager.md) and [Distribute trust bundles](../guide/trust-bundles.md).
 
 ## HemligProvider (cluster-scoped)
 
@@ -138,6 +138,43 @@ Short name `hmlclusterissuer`, version `v1alpha1`. Has a `status` subresource.
 
 `kubectl get hmlissuer` and `kubectl get hmlclusterissuer` show `Ready`, `Reason`, `CA`, `Grant` and `Age`.
 
+## HemligTrustBundle (namespaced)
+
+Short name `hmltrustbundle`, version `v1alpha1`. Has a `status` subresource. It writes the anchors, intermediates and CRLs of the listed CAs to ConfigMaps in its own namespace. See [Distribute trust bundles](../guide/trust-bundles.md).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `spec.consumerRef` | string | yes | `HemligConsumer` name |
+| `spec.consumerNamespace` | string | no | Defaults to the bundle's namespace; another namespace requires the consumer's `allowCrossNamespaceReferences` |
+| `spec.caIds` | []string | yes | 1 to 50 unique CA IDs, each `^ca-[a-z0-9-]{2,79}[a-z0-9]$`. Get them from `hemlig pki ca list` |
+| `spec.includeCrl` | boolean | no | Default `true`. When `false`, no CRL ConfigMaps are written and existing ones are deleted |
+| `spec.crlFormat` | string | no | `der` (default) or `pem` |
+| `spec.target.name` | string | yes | Name of the target ConfigMap, 1 to 165 characters, `^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$` |
+
+`consumerRef`, `consumerNamespace` and `target.name` are immutable (`consumerRef, consumerNamespace and target are immutable`); create a new bundle instead. `caIds`, `includeCrl` and `crlFormat` can change.
+
+| Status field | Description |
+| --- | --- |
+| `observedGeneration` | Last reconciled generation |
+| `consumerId`, `environment` | From the resolved consumer |
+| `acceptedCaIds` | Sorted CA IDs whose material is in the target ConfigMap. Mirrors its `hemlig.zyno.io/ca-ids` annotation |
+| `crls` | One entry per CRL ConfigMap, sorted by `id`: `id`, `source` (`GENERATED` or `UPLOADED`), `configMap`, `state`, `number`, `thisUpdate` and `nextUpdate` |
+| `crls[].state` | `Current`, `Stale` (past `nextUpdate`), `Missing` (Hemlig has no CRL yet), `Rejected` (the ConfigMap could not be written) or `Conflict` (a ConfigMap the bundle does not own) |
+| `conditions` | `Ready`. Reasons are in [Status reasons](#hemligtrustbundle-condition-ready) |
+
+### Printer columns
+
+`kubectl get hmltrustbundle` shows `Ready`, `Reason`, `Target` and `Age`.
+
+### ConfigMaps
+
+Both kinds carry the label `hemlig.zyno.io/managed-by: trust-bundle`, the annotation `hemlig.zyno.io/trust-bundle-owner: <namespace>/<name>` and an `ownerReferences` entry for the bundle, so Kubernetes deletes them with it. The controller never writes a ConfigMap that lacks this label and owner.
+
+| ConfigMap | Name | Content | Extra annotations |
+| --- | --- | --- | --- |
+| Target | `spec.target.name` | `data["ca.crt"]`: the trusted anchors, deduplicated. `data["chain.crt"]`: every CA certificate and non-anchor intermediate, deduplicated | `hemlig.zyno.io/ca-ids`: the accepted CA IDs, sorted and comma-joined |
+| CRL | `<target>-crl-<issuerId>` | `der`: `binaryData["crl.der"]`. `pem`: `data["crl.pem"]` | `hemlig.zyno.io/crl-issuer`, `crl-source`, `crl-sha256` (of the DER), `crl-number`, `crl-this-update`, `crl-next-update` |
+
 ## Annotations and labels
 
 | Key                              | On               | Meaning                                                              |
@@ -149,6 +186,10 @@ Short name `hmlclusterissuer`, version `v1alpha1`. Has a `status` subresource.
 | `hemlig.zyno.io/provider`, `grant-id`, `api-fingerprint` | identity Secret | Provider name, grant, and fingerprint of the current leaf |
 | `hemlig.zyno.io/rotate-identity`      | HemligConsumer   | Forces one rotation (see [Identity rotation](../operations/identity-rotation.md#force-a-rotation)) |
 | `hemlig.zyno.io/rotated-at`           | identity Secret  | When the current certificate was swapped in                           |
+| `hemlig.zyno.io/managed-by`           | ConfigMaps       | `trust-bundle` on the target and CRL ConfigMaps of a `HemligTrustBundle` |
+| `hemlig.zyno.io/trust-bundle-owner`   | trust bundle ConfigMaps | Owning `namespace/name` of the `HemligTrustBundle`              |
+| `hemlig.zyno.io/ca-ids`               | target ConfigMap | Accepted CA IDs, sorted and comma-joined                              |
+| `hemlig.zyno.io/crl-issuer`, `crl-source`, `crl-sha256`, `crl-number`, `crl-this-update`, `crl-next-update` | CRL ConfigMap | The CRL's issuer ID, source, DER SHA-256 and metadata |
 
 ## Status reasons
 
@@ -183,6 +224,29 @@ The reasons below come from [`v1beta.ts`](https://github.com/zyno-io/hemlig/blob
 | `IssuanceGrantInactive` | False | The grant is `DISABLED` or has expired | Enable or replace the grant |
 | `CaNotActive` | False | The grant's CA is not `ACTIVE` | Activate the CA, or move the grant to an active one |
 | `RemoteError` | False | Hemlig could not be asked, or answered unexpectedly. A transient error keeps an already `Ready` issuer `Ready` | None for transient errors. Check the controller logs |
+
+### HemligTrustBundle, condition `Ready`
+
+The first matching row wins. The message names at most five CA IDs.
+
+| Reason | Status | Meaning | Action |
+| --- | --- | --- | --- |
+| `ConsumerNotFound` | False | `consumerRef` names no `HemligConsumer` | Fix `consumerRef` or create the consumer |
+| `ConsumerReferenceNotPermitted` | False | The consumer does not allow references from this namespace | Set `allowCrossNamespaceReferences: true` on the consumer, or use a consumer in the bundle's namespace |
+| `ConsumerNotReady` | False | The consumer is not ready, or Hemlig rejected its identity | Fix the consumer first |
+| `ProviderNotPermitted` | False | The namespace labels do not match the provider's `allowedNamespaces` | Label the namespace |
+| `ConfigMapConflict` | False | The target ConfigMap exists and the bundle does not own it. Nothing is written to it | Choose another `target.name`, or delete the foreign ConfigMap |
+| `ConfigMapRejected` | False | The target was not written: over 1,048,576 bytes, or the API server refused it. The previous content stays mounted | Remove CAs from `caIds`, or read the controller logs |
+| `CaNotFound` | False | A listed CA does not exist, or is in another environment | Fix `caIds` |
+| `CaNotActive` | False | A listed CA is `PENDING_CERTIFICATE` or `FAILED` | Activate the CA, or remove it from `caIds` |
+| `CrlRejected` | False | A CRL ConfigMap could not be written (too large, refused) or is a foreign ConfigMap. The mounted copy is kept | Use `crlFormat: der`, or read the controller logs |
+| `CrlMissing` | False | Hemlig has no CRL yet for a required issuer, for example a root CRL not uploaded | [Upload the root CRL](../guide/pki.md) |
+| `CrlStale` | False | A required mounted CRL is past its `nextUpdate` | Check that Hemlig publishes it, or that the root CRL was uploaded |
+| `RemoteError` | False | Hemlig could not be asked, or answered unexpectedly, and the bundle was not `Ready` before. A transient error keeps a `Ready` bundle `Ready` | None for transient errors. Check the controller logs |
+| `CaDrained` | True | Every listed CA is usable, and at least one retired CA is drained | Remove the drained CA from `caIds` when no mount needs it |
+| `Ready` | True | The target and every CRL are written and current | None |
+
+A revoked CA stays in the target, so its anchor keeps verifying older chains. Its own CRL and a drained CA's CRL are not required, so they never raise `CrlStale` or `CrlMissing`.
 
 ### HemligSecretImport, condition `Ready`
 

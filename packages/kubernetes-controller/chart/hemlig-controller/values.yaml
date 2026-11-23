@@ -56,6 +56,10 @@ certManager:
     serviceAccount: cert-manager
     namespace: cert-manager
 
+trustBundles:
+  # How often each HemligTrustBundle re-reads its CAs and CRLs with conditional GETs; sets HEMLIG_PKI_BUNDLE_INTERVAL_MS.
+  refreshIntervalMilliseconds: 300000
+
 resources: {}
 nodeSelector: {}
 tolerations: []

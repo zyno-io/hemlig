@@ -398,7 +398,9 @@ issue api2 0002 >/dev/null; issue api3 0003 >/dev/null; issue api4 0004; grep -i
 
 ## Gate PKI-5: cert-manager renews unattended
 
-Run after PKI-4, on Kind or EKS, with `acc-root` from PKI-2. This gate is manual: no Kind job exists in CI. Install cert-manager with Helm and its CRDs, then the controller chart from this release with default approval (`certManager.approval.grantDefaultApprover=true`). Use a consumer with a PKI-only AgentGrant, in namespace `pki5`. The run has no `HemligTrustBundle` CRD, which is inherent in this release.
+Run after PKI-4, on Kind or EKS, with `acc-root` from PKI-2. This gate is manual: no Kind job exists in CI. Install cert-manager with Helm and its CRDs, then the controller chart from this release with default approval (`certManager.approval.grantDefaultApprover=true`). Use a consumer with a PKI-only AgentGrant, in namespace `pki5`.
+
+Delete the `HemligTrustBundle` CRD before this gate (`kubectl delete crd hemligtrustbundles.hemlig.zyno.io`): the issuer must run without it. PKI-6 applies it again.
 
 ```sh
 cat > grant5.json <<'EOF2'
@@ -463,6 +465,108 @@ kubectl -n pki5 get certificaterequest -o json | jq '.items[] | select(.metadata
 | Restart | After `kubectl rollout restart` of the controller during a pending issuance, the request still becomes `Ready`, and `hemlig pki cert list --consumer` shows one certificate for it | The idempotency key was not reused |
 | Approval off (optional) | With `grantDefaultApprover=false`, a request stays `Waiting for approval` until approved | The controller approved by itself |
 | CRDs | The API server accepts both new CRDs, including their CEL immutability rules, and rejects a change of `spec.consumerRef` | A CEL rule failed validation. This is the only gate that proves them |
+
+## Gate PKI-6: mounted full-chain revocation
+
+Run after PKI-5 in the same cluster and namespace `pki5`, with `acc-root`, `$CA_ID` and `$EXT_ID` from PKI-2 and the PKI-4 shell (`consumer.crt`, the `issue` function, `api2.json`). Run it last: it revokes `acc-issuing-1` at the root. To shorten the waits, upgrade the chart with `--set trustBundles.refreshIntervalMilliseconds=60000`. The verifying pod needs OpenSSL 3; the example installs it in `alpine:3.20`, which needs package egress.
+
+```sh
+kubectl apply -f packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io-pki.yaml
+kubectl logs deploy/hemlig-controller -n hemlig-system --since=10m | grep 'trust bundles enabled'   # within 6 minutes
+kubectl apply -f - <<EOF3
+apiVersion: hemlig.zyno.io/v1alpha1
+kind: HemligTrustBundle
+metadata: { name: acc-trust, namespace: pki5 }
+spec: { consumerRef: acc-consumer, caIds: [$CA_ID], target: { name: acc-trust } }
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: { name: pki6a, namespace: pki5 }
+spec:
+  secretName: pki6a-tls
+  dnsNames: [pki6a.pki5.acc.example.com]
+  usages: [digital signature, server auth]
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  issuerRef: { group: hemlig.zyno.io, kind: HemligIssuer, name: acc }
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: { name: pki6b, namespace: pki5 }
+spec:
+  secretName: pki6b-tls
+  dnsNames: [pki6b.pki5.acc.example.com]
+  usages: [digital signature, server auth]
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  issuerRef: { group: hemlig.zyno.io, kind: HemligIssuer, name: acc }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pki6-verify, namespace: pki5 }
+spec:
+  containers:
+    - name: verify
+      image: alpine:3.20
+      command: [sh, -c, "apk add --no-cache openssl >/dev/null && sleep 7200"]
+      volumeMounts: [{ name: trust, mountPath: /trust, readOnly: true }]
+  volumes:
+    - name: trust
+      projected:
+        sources:
+          - configMap: { name: acc-trust }
+          - configMap: { name: acc-trust-crl-$CA_ID, items: [{ key: crl.der, path: crls/issuing.der }] }
+          - configMap: { name: acc-trust-crl-$EXT_ID, items: [{ key: crl.der, path: crls/root.der }] }
+EOF3
+kubectl -n pki5 wait hemligtrustbundle/acc-trust --for=condition=Ready --timeout=300s
+kubectl -n pki5 wait certificate/pki6a certificate/pki6b --for=condition=Ready --timeout=120s
+kubectl -n pki5 wait pod/pki6-verify --for=condition=Ready --timeout=300s
+for C in pki6a pki6b; do kubectl -n pki5 get secret $C-tls -o jsonpath='{.data.tls\.crt}' | base64 -d > $C.pem
+  kubectl -n pki5 exec -i pki6-verify -- sh -c "cat > /tmp/$C.pem" < $C.pem; done
+check() { kubectl -n pki5 exec pki6-verify -- sh -c "openssl crl -inform DER -in /trust/crls/issuing.der -out /tmp/i.pem && \
+  openssl crl -inform DER -in /trust/crls/root.der -out /tmp/r.pem && openssl verify -CAfile /trust/ca.crt \
+  -untrusted /trust/chain.crt -crl_check_all -CRLfile /tmp/i.pem -CRLfile /tmp/r.pem /tmp/$1.pem"; }
+check pki6a; check pki6b
+kubectl -n pki5 get hemligtrustbundle acc-trust -o jsonpath='{.status}' | jq .
+kubectl -n pki5 exec pki6-verify -- sh -c 'grep -c "BEGIN CERTIFICATE" /trust/ca.crt /trust/chain.crt; openssl x509 -in /trust/ca.crt -noout -fingerprint -sha256'
+# Leaf revocation
+SERIAL_A=$(openssl x509 -in pki6a.pem -noout -serial | cut -d= -f2 | tr 'A-F' 'a-f')
+hemlig pki cert revoke acc-issuing-1 "$SERIAL_A" --reason keyCompromise; T0=$(date +%s)
+until check pki6a 2>&1 | grep -q 'certificate revoked'; do [ $(( $(date +%s) - T0 )) -ge 600 ] && break; sleep 15; done; echo "elapsed=$(( $(date +%s) - T0 ))"
+check pki6a; check pki6b
+# Intermediate revocation at the root
+(cd acc-root && openssl ca -config root-ca.cnf -revoke issuing.pem -crl_reason keyCompromise && openssl ca -config root-ca.cnf -gencrl -out root3.crl.pem)
+hemlig pki external-ca upload-crl --for-ca acc-issuing-1 --crl acc-root/root3.crl.pem; T1=$(date +%s)
+until check pki6b 2>&1 | grep -q 'at 1 depth'; do [ $(( $(date +%s) - T1 )) -ge 600 ] && break; sleep 15; done; echo "elapsed=$(( $(date +%s) - T1 ))"
+check pki6b
+hemlig pki ca get acc-issuing-1 | jq -r .data.status
+issue api6 0006
+curl -sS --cert consumer.crt --key consumer.key -H 'content-type: application/json' -H 'idempotency-key: pki4-0002' \
+  --data @api2.json https://api.acc.example.com/v1/pki/issuance-grants/acc-web/certificates
+kubectl -n pki5 get hemligtrustbundle acc-trust -o jsonpath='{.status.acceptedCaIds}'
+# CEL and ownership
+kubectl -n pki5 patch hemligtrustbundle acc-trust --type merge -p '{"spec":{"target":{"name":"other"}}}'
+kubectl -n pki5 create configmap foreign-trust --from-literal=ca.crt=keep
+kubectl apply -f - <<EOF3
+apiVersion: hemlig.zyno.io/v1alpha1
+kind: HemligTrustBundle
+metadata: { name: foreign, namespace: pki5 }
+spec: { consumerRef: acc-consumer, caIds: [$CA_ID], target: { name: foreign-trust } }
+EOF3
+sleep 30; kubectl -n pki5 get hmltrustbundle foreign; kubectl -n pki5 get configmap foreign-trust -o jsonpath='{.data.ca\.crt}'
+```
+
+| Check | Pass | Fail means |
+| --- | --- | --- |
+| Feature | The controller logs `trust bundles enabled` within 6 minutes of applying the CRD, with no restart | The CRD probe or re-probe is broken |
+| Bundle | `Ready=True`, `acceptedCaIds: [$CA_ID]`, two `crls` entries (`$CA_ID` `GENERATED`, `$EXT_ID` `UPLOADED`), both `Current` | Bundle or CRL routes, or ConfigMap writes |
+| Content | `ca.crt` holds 1 certificate whose fingerprint equals the recorded `acc-root` fingerprint; `chain.crt` holds 1 | Anchors and intermediates are mixed |
+| Healthy | Both `check` runs print `OK` | Wrong chain or CRLs |
+| Leaf revocation | `elapsed` is at most the refresh interval plus 120 s; `check pki6a` reports `error 23 at 0 depth lookup: certificate revoked`; `pki6b` stays `OK` | Refresh or kubelet propagation is broken |
+| Intermediate revocation | The upload returns `revokedCaIds` containing `$CA_ID`; `check pki6b` reports `error 23 at 1 depth lookup: certificate revoked`; the CA status is `REVOKED` | The root CRL was not delivered |
+| Anchor kept | `acceptedCaIds` still lists `$CA_ID`, and the `ca.crt` fingerprint is unchanged | A revoked CA dropped its anchor |
+| Issuance | `api6` gives `409 ca_not_active`, reason `revoked`; the replay gives `409 issuance_revoked`, reason `ca_revoked` | |
+| CRDs | The API server accepted the CRD and rejects the patch with `consumerRef, consumerNamespace and target are immutable` | A CEL rule failed. Only a real API server proves it |
+| Ownership | `foreign` is `Ready=False` `ConfigMapConflict`, and `foreign-trust` still holds `keep` | A foreign ConfigMap was overwritten |
+| Audit | No events for `pki.bundle.get` or `pki.crl.get`; `pki.certificate.revoke` and `pki.external-ca.upload-crl` (with `revokedCaIds`) succeeded; no object contains `-----BEGIN` | |
 
 ## Teardown
 
