@@ -35,7 +35,7 @@ const TABS: readonly { id: CaTab; label: string }[] = [
   { id: "certificates", label: "Certificates" },
   { id: "grants", label: "Certificate grants" },
 ];
-const CERT_STATUSES = ["ISSUED", "REVOKED", "EXPIRED", "CA_REVOKED"] as const;
+const CERT_STATUSES = ["ISSUED", "REVOKED", "EXPIRED"] as const;
 
 // PKI reads are audited: no refetch on focus, and a mutation writes its result
 // into the cache rather than reading the CA again.
@@ -616,7 +616,7 @@ const effectiveJson = computed(() =>
         family="pki"
         intent="abandon this CA"
         @retry="abandon.retry()"
-        @reload="abandon.reset()"
+        @reload="abandon.reset(); void ca.refetch()"
       />
     </TypedConfirmDialog>
 

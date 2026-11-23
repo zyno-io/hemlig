@@ -149,7 +149,8 @@ describe("ConsumerCertificateGrants", () => {
   });
 
   it("reuses one key while incomplete and sums the totals", async () => {
-    const responses = [bulk(false, 100, 0), bulk(false, 100, 2), bulk(true, 30, 1)];
+    // A rerun starts over, so earlier revocations come back as alreadyRevoked.
+    const responses = [bulk(false, 100, 0), bulk(false, 100, 102), bulk(true, 30, 203)];
     const revoke = vi.fn(
       async (_c: string, _i: PkiBulkRevokeInput, _k: string) =>
         responses.shift() ?? bulk(true, 0, 0),
@@ -166,6 +167,7 @@ describe("ConsumerCertificateGrants", () => {
     const result = wrapper.get('[data-testid="bulk-result"]').text();
     expect(result).toContain("Revoked 230");
     expect(result).toContain("3 were already revoked");
+    expect(result).not.toContain("205");
     wrapper.unmount();
   });
 

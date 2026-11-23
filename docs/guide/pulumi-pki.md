@@ -68,7 +68,7 @@ pulumi config set issuing1Certificate "$(cat issuing1.pem)"
 pulumi config set issuing1Chain "$(cat root.pem)"
 ```
 
-The provider never sends a root CRL. If this root is new to Hemlig, activate its first CA with the CLI or console and `--root-crl` instead. Pulumi then finds the CA `ACTIVE` with the same certificate and changes nothing. Later CAs under the same root activate from Pulumi.
+The provider never sends a root CRL, and activation does not need one. If this root is new to Hemlig, activation still succeeds, and the root CRL state is `MISSING` until you upload one (see [The root CRL stays manual](#the-root-crl-stays-manual)).
 
 ## 4. Activate
 
@@ -102,7 +102,7 @@ hemlig.issuanceGrant(
 ## Verify
 
 ```sh
-hemlig pki ca get prod-issuing-1
+hemlig pki ca get prod-issuing-1 --environment prod
 hemlig pki grant get payments-prod web
 ```
 
@@ -110,11 +110,13 @@ Expected output: the CA is `ACTIVE` with its key `ACTIVE`, and the grant is `ACT
 
 ## The root CRL stays manual
 
-Pulumi never uploads a root CRL. Refresh it before its `nextUpdate` with the CLI or the [console](console.md#pki):
+Pulumi never uploads a root CRL. After the first activation under a new root, the root CRL state is `MISSING` until you upload one. Then refresh it before its `nextUpdate`. Use the CLI or the [console](console.md#pki):
 
 ```sh
-hemlig pki external-ca upload-crl --for-ca prod-issuing-1 --crl root.crl.pem
+hemlig pki external-ca upload-crl --for-ca prod-issuing-1 --environment prod --crl root.crl.pem
 ```
+
+Set `HEMLIG_ENVIRONMENT=prod` instead of repeating `--environment`.
 
 ## Reference
 
@@ -124,7 +126,7 @@ hemlig pki external-ca upload-crl --for-ca prod-issuing-1 --crl root.crl.pem
 | --- | --- | --- |
 | `environment`, `name`, `kind`, `keyAlgorithm`, `subject` | yes | Immutable. A change fails at preview with the rollover message |
 | `parentCaId` | `INTERMEDIATE` only | Immutable |
-| `validitySeconds` | `ROOT` and `INTERMEDIATE` | Immutable. Used only at create |
+| `validitySeconds` | no, `ROOT` and `INTERMEDIATE` only | Immutable. Used only at create. The server applies its default when unset. Not allowed for `EXTERNAL_INTERMEDIATE` |
 | `requestedConstraints` | no | Immutable |
 | `policy` | no | In place, while the CA is `PENDING_CERTIFICATE` or `ACTIVE` |
 | `displayName` | no | In place when set. Omitting it keeps the stored value |

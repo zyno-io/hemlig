@@ -396,6 +396,11 @@ const save = async (): Promise<void> => {
 };
 
 const reloadStale = async (): Promise<void> => {
+  if (!isEdit.value) {
+    // Create mode has no grant to refetch (the query is disabled).
+    saveMutation.reset();
+    return;
+  }
   const fresh = (await grantQuery.refetch()).data;
   if (fresh === undefined) {
     return;
@@ -409,6 +414,14 @@ const reloadStale = async (): Promise<void> => {
   }
   staleNote.value = `${fresh.updatedBy.email ?? fresh.updatedBy.id} saved version ${fresh.version} at ${fresh.updatedAt}; review and save again.`;
   saveMutation.reset();
+};
+
+const reloadDelete = async (): Promise<void> => {
+  const fresh = (await grantQuery.refetch()).data;
+  if (fresh !== undefined) {
+    savedGrant.value = fresh;
+  }
+  deleteMutation.reset();
 };
 
 const discardDraft = async (): Promise<void> => {
@@ -510,7 +523,7 @@ const toggle = <T extends string>(values: T[], value: T): void => {
           family="pki"
           intent="delete this grant"
           @retry="deleteMutation.retry()"
-          @reload="grantQuery.refetch()"
+          @reload="reloadDelete"
         />
 
         <div

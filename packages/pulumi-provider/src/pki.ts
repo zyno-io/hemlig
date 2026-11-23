@@ -199,9 +199,17 @@ export const withKey = async <T>(
   }
 };
 
-const rejectPrivateKeys = (inputs: unknown): string[] =>
-  JSON.stringify(clean(inputs)).includes("PRIVATE KEY-----")
-    ? ["Inputs must never contain private key material (PRIVATE KEY)."]
+// Built at runtime so the serialized provider source (`__provider`) never
+// contains the literal marker, and a stack export stays free of it.
+// A function, not a constant: the serializer would inline a constant's value.
+const pkMarker = (): string => ["PRIVATE", "KEY-----"].join(" ");
+
+const rejectPrivateKeys = (
+  inputs: Record<string, unknown>,
+  keys: readonly string[],
+): string[] =>
+  JSON.stringify(clean(pick(inputs, keys))).includes(pkMarker())
+    ? ["Inputs must never contain private key material."]
     : [];
 
 const listAllCas = async (
@@ -421,7 +429,7 @@ export class HemligCertificateAuthorityProvider
         fail(key, `${key} is required.`);
       }
     }
-    for (const reason of rejectPrivateKeys(news)) {
+    for (const reason of rejectPrivateKeys(news as Record<string, unknown>, CA_INPUT_KEYS)) {
       fail("inputs", reason);
     }
 
@@ -440,13 +448,6 @@ export class HemligCertificateAuthorityProvider
     }
     if (kind === "EXTERNAL_INTERMEDIATE" && news.validitySeconds !== undefined) {
       fail("validitySeconds", "validitySeconds is not allowed for an EXTERNAL_INTERMEDIATE CA.");
-    }
-    if (
-      !exists &&
-      (kind === "ROOT" || kind === "INTERMEDIATE") &&
-      news.validitySeconds === undefined
-    ) {
-      fail("validitySeconds", `validitySeconds is required for a ${kind} CA.`);
     }
     if (
       kind === "ROOT" &&
@@ -868,9 +869,6 @@ const activationHint = (error: unknown): string => {
   if (hasReason(error, "chain_invalid", "constraints_broader")) {
     return " (set acceptBroaderConstraints: true if the broader constraints are intended)";
   }
-  if (hasReason(error, "crl_invalid", "upload_first")) {
-    return " (this root is new to Hemlig: activate the first CA under it in the console or with the CLI and --root-crl; Pulumi never sends a root CRL)";
-  }
   return "";
 };
 
@@ -1144,7 +1142,7 @@ export class HemligIssuanceGrantProvider
         failures.push({ property: key, reason: `${key} is required.` });
       }
     }
-    for (const reason of rejectPrivateKeys(news)) {
+    for (const reason of rejectPrivateKeys(news as Record<string, unknown>, GRANT_INPUT_KEYS)) {
       failures.push({ property: "inputs", reason });
     }
     if (failures.length > 0) {
@@ -1302,12 +1300,18 @@ export class HemligIssuanceGrantProvider
       return {};
     }
 
+    // On refresh the state's status and caId stay put, so update's drift
+    // guard still sees an out-of-band disable or migration.
+    const refreshing =
+      props.version !== undefined &&
+      props.status !== undefined &&
+      props.caId !== undefined;
     const envelope = {
       consumerId,
       name,
-      caId: server.caId,
+      caId: refreshing ? (props.caId as string) : server.caId,
       displayName: server.displayName,
-      status: server.status as "ACTIVE" | "DISABLED",
+      status: (refreshing ? props.status : server.status) as "ACTIVE" | "DISABLED",
       expiresAt:
         sameInstant(props.expiresAt, server.expiresAt) &&
         props.expiresAt !== undefined

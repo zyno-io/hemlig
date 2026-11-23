@@ -83,9 +83,12 @@ const mutation = useGuardedMutation<PkiBulkRevokeInput, { complete: boolean }>({
       const response = await store
         .requireApi()
         .revokeConsumerPkiCertificates(props.consumerId, input, key);
+      // An incomplete run leaves no replay record, so a rerun starts over and
+      // reports earlier revocations as already revoked: take the last response,
+      // minus what earlier attempts revoked.
       totals.value = {
         revoked: totals.value.revoked + response.revoked,
-        alreadyRevoked: totals.value.alreadyRevoked + response.alreadyRevoked,
+        alreadyRevoked: Math.max(0, response.alreadyRevoked - totals.value.revoked),
         attempts: totals.value.attempts + 1,
       };
       last = response.complete;

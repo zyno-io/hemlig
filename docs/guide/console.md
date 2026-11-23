@@ -100,7 +100,7 @@ A fresh deployment has no environments. The console prompts you to create the fi
 
 The PKI tab lists the environment's certificate authorities and the offline roots they chain to. Create a CA there, or roll one over: "Roll over" pre-fills the old CA's settings with an incremented name and common name, and blocks Create while the subject DN equals the old one, because a DN is never reused. See [Roll over a CA](../operations/pki-ca-rollover.md).
 
-Selecting `ROOT` shows the server's recommendation to use an external offline root, and asks you to acknowledge it before Create. An external CA shows its CSR after creation. Sign it offline, then paste the certificate and the root chain into the CA's activation panel. A root CRL is only needed for a root Hemlig has not seen.
+Selecting `ROOT` shows the server's recommendation to use an external offline root, and asks you to acknowledge it before Create. An external CA shows its CSR after creation. Sign it offline, then paste the certificate and the root chain into the CA's activation panel. A root CRL is optional at activation. Without one, the root CRL state is `MISSING` until you upload it.
 
 Retiring a CA asks for the CA name when grants still reference it. Abandoning a pending CA and destroying a disabled key always ask you to type the CA name. A grant's editor validates against the server and tests the saved grant with a dry-run evaluation. An unsaved draft is not tested.
 

@@ -257,6 +257,32 @@ describe("IssuanceGrantEditor edit mode", () => {
     wrapper.unmount();
   });
 
+  it("reloads the current revision after a stale delete and confirms with the new version", async () => {
+    const api = fake({
+      deleteIssuanceGrant: vi
+        .fn()
+        .mockRejectedValueOnce(new ApiError(412, "precondition_failed", "stale"))
+        .mockResolvedValue(baseGrant({ status: "DELETED" })),
+    });
+    const { wrapper } = await mountEditor(api);
+    await wrapper.get('[data-testid="grant-delete-open"]').trigger("click");
+    await wrapper.get('[data-testid="grant-delete-confirm"]').trigger("click");
+    await flushPromises();
+    expect(api.deleteIssuanceGrant.mock.calls[0]?.[2]).toBe("v1");
+
+    api.getAdminIssuanceGrant.mockResolvedValue(baseGrant({ version: "v4" }));
+    const reload = wrapper.findAll("button").find((b) => b.text().includes("Reload current revision"));
+    await reload?.trigger("click");
+    await flushPromises();
+
+    await wrapper.get('[data-testid="grant-delete-open"]').trigger("click");
+    await wrapper.get('[data-testid="grant-delete-confirm"]').trigger("click");
+    await flushPromises();
+    expect(api.deleteIssuanceGrant).toHaveBeenCalledTimes(2);
+    expect(api.deleteIssuanceGrant.mock.calls[1]?.[2]).toBe("v4");
+    wrapper.unmount();
+  });
+
   it("is read-only when the policy has fields the form cannot represent", async () => {
     const api = fake({
       getAdminIssuanceGrant: vi.fn(async () =>
@@ -338,6 +364,24 @@ describe("IssuanceGrantEditor create mode", () => {
     expect(body.caId).toBe("ca-1");
     expect(typeof key).toBe("string");
     expect(wrapper.text()).toContain("A grant with that name already exists.");
+    wrapper.unmount();
+  });
+
+  it("makes no GET when reloading a stale state in create mode", async () => {
+    const api = fake({
+      createIssuanceGrant: vi.fn(async () => {
+        throw new ApiError(412, "precondition_failed", "stale");
+      }),
+    });
+    const { wrapper } = await mountEditor(api, { caId: "ca-1" });
+    await wrapper.get('[data-testid="grant-name"]').setValue("web");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+    const reload = wrapper.findAll("button").find((b) => b.text().includes("Reload current revision"));
+    expect(reload).toBeDefined();
+    await reload?.trigger("click");
+    await flushPromises();
+    expect(api.getAdminIssuanceGrant).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 

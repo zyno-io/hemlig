@@ -195,6 +195,50 @@ describe("CaDetail pending activation", () => {
   });
 });
 
+describe("CaDetail abandon stale", () => {
+  it("reloads the current revision after a 412 and confirms with the new version", async () => {
+    const getPkiCa = vi
+      .fn()
+      .mockResolvedValueOnce(
+        ca({ status: "PENDING_CERTIFICATE", csrPem: pem("CERTIFICATE REQUEST"), crl: undefined }),
+      );
+    getPkiCa.mockResolvedValue(
+      ca({ status: "PENDING_CERTIFICATE", csrPem: pem("CERTIFICATE REQUEST"), crl: undefined, version: "v8" }),
+    );
+    const deletePkiCa = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(412, "precondition_failed", "stale"))
+      .mockResolvedValue(ca({ status: "FAILED" }));
+    const wrapper = await mountView({ getPkiCa, deletePkiCa });
+    await click(wrapper, "abandon");
+    await typeName(wrapper, "prod-issuing-1");
+    await wrapper.get('[role="dialog"] form').trigger("submit");
+    await flushPromises();
+    expect(deletePkiCa.mock.calls[0]?.[1]).toBe("v7");
+
+    const reload = wrapper.findAll("button").find((b) => b.text().includes("Reload current revision"));
+    await reload?.trigger("click");
+    await flushPromises();
+    expect(getPkiCa).toHaveBeenCalledTimes(2);
+
+    await wrapper.get('[role="dialog"] form').trigger("submit");
+    await flushPromises();
+    expect(deletePkiCa).toHaveBeenCalledTimes(2);
+    expect(deletePkiCa.mock.calls[1]?.[1]).toBe("v8");
+  });
+});
+
+describe("CaDetail certificates filter", () => {
+  it("offers only the statuses the server accepts", async () => {
+    const wrapper = await mountView(
+      { getPkiCa: vi.fn(async () => ca()), listPkiCaCertificates: vi.fn(async () => ({ certificates: [] })) },
+      { tab: "certificates" },
+    );
+    const options = wrapper.findAll('select[aria-label="Status filter"] option').map((o) => o.text());
+    expect(options).toEqual(["Any", "ISSUED", "REVOKED", "EXPIRED"]);
+  });
+});
+
 describe("CaDetail destroy key", () => {
   it("has no destroy button while the key is ACTIVE", async () => {
     const wrapper = await mountView({

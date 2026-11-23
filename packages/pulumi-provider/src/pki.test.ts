@@ -994,6 +994,27 @@ test("grant: the drift guard refuses to undo an out-of-band disable or migration
   );
 });
 
+test("grant: refresh then update still hits the drift guard for an out-of-band disable", async () => {
+  const server = fake<HemligGrantClient>({
+    getAdminIssuanceGrant: () => grantDetail({ status: "DISABLED" }),
+  });
+  const provider = grantProvider(server.client);
+  const read = (await provider.read(
+    "payments-prod/web",
+    grantState(),
+  )) as pulumi.dynamic.ReadResult & { inputs: ResolvedIssuanceGrantInputs };
+  assert.equal(read.inputs.status, "ACTIVE");
+  await assert.rejects(
+    provider.update(
+      "payments-prod/web",
+      read.props as ResolvedIssuanceGrantState,
+      grantInputs({ displayName: "Web" }),
+    ),
+    /status changed outside Pulumi/,
+  );
+  assert.equal(callsOf(server.calls, "updateIssuanceGrant").length, 0);
+});
+
 test("grant: update of a grant deleted outside Pulumi asks for a refresh", async () => {
   const missing = fake<HemligGrantClient>({
     getAdminIssuanceGrant: () => {
@@ -1149,7 +1170,8 @@ test("grant: refresh keeps the declared form on an equal digest and takes the se
   assert.deepEqual(refreshed.inputs.names, {
     dns: { allow: ["*.other.example.com"], deny: [] },
   });
-  assert.equal(refreshed.inputs.caId, "ca-2");
+  // The state's caId stays, so the update drift guard still sees the migration.
+  assert.equal(refreshed.inputs.caId, "ca-1");
   assert.equal((refreshed.props as ResolvedIssuanceGrantState).policyDigest, "digest-2");
 });
 
@@ -1239,4 +1261,44 @@ test("serializing either provider does not capture the administrator token", asy
       process.env.HEMLIG_ADMIN_TOKEN = previous;
     }
   }
+});
+
+test("check scans only declared inputs, so a real serialized __provider is accepted", async () => {
+  const caProviderInstance = new HemligCertificateAuthorityProvider();
+  const grantProviderInstance = new HemligIssuanceGrantProvider();
+  const serializedCa = (await pulumi.runtime.serializeFunction(() => caProviderInstance)).text;
+  const serializedGrant = (await pulumi.runtime.serializeFunction(() => grantProviderInstance)).text;
+  const pem = "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----";
+
+  const caNews = { ...caInputs(), __provider: serializedCa };
+  assert.equal((await caProviderInstance.check({}, caNews as never)).failures, undefined);
+  assert.ok(
+    ((await caProviderInstance.check({}, { ...caNews, displayName: pem } as never)).failures ?? []).length > 0,
+  );
+
+  const grantNews = { ...grantInputs(), __provider: serializedGrant };
+  assert.equal((await grantProviderInstance.check({}, grantNews as never)).failures, undefined);
+  assert.ok(
+    ((await grantProviderInstance.check({}, { ...grantNews, displayName: pem } as never)).failures ?? [])
+      .length > 0,
+  );
+});
+
+test("serialized provider text does not contain the private key marker", async () => {
+  for (const provider of [
+    new HemligCertificateAuthorityProvider(),
+    new HemligIssuanceGrantProvider(),
+  ]) {
+    const serialized = await pulumi.runtime.serializeFunction(() => provider);
+    assert.equal(serialized.text.includes("PRIVATE KEY"), false);
+  }
+});
+
+test("CA: check allows ROOT and INTERMEDIATE without validitySeconds", async () => {
+  const provider = new HemligCertificateAuthorityProvider();
+  const result = await provider.check(
+    {},
+    caInputs({ kind: "ROOT", validitySeconds: undefined }),
+  );
+  assert.equal(failedProperties(result).includes("validitySeconds"), false);
 });
