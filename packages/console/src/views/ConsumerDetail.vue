@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import ConsumerCertificateGrants from "../components/ConsumerCertificateGrants.vue";
 import CopyField from "../components/CopyField.vue";
 import CsrGeneratorModal from "../components/CsrGeneratorModal.vue";
 import ErrorNotice from "../components/ErrorNotice.vue";
@@ -18,8 +20,32 @@ import { useCursorPages } from "../composables/useCursorPages";
 import { useGuardedMutation } from "../composables/useGuardedMutation";
 import { useAppStore } from "../stores/app";
 
-const props = defineProps<{ env: string; consumerId: string }>();
+const props = defineProps<{
+  env: string;
+  consumerId: string;
+  tab?: "certificate-grants";
+}>();
 const store = useAppStore();
+const router = useRouter();
+const route = useRoute();
+
+type ConsumerTab = "identities" | "certificate-grants";
+const activeTab = ref<ConsumerTab>(props.tab ?? "identities");
+watch(
+  () => props.tab,
+  (tab) => {
+    activeTab.value = tab ?? "identities";
+  },
+);
+
+const selectTab = (tab: ConsumerTab): void => {
+  activeTab.value = tab;
+  const { tab: _previous, ...rest } = route.query;
+  void _previous;
+  void router.replace({
+    query: tab === "identities" ? rest : { ...rest, tab },
+  });
+};
 const queryClient = useQueryClient();
 
 const consumerKey = computed(() => ["consumer", props.consumerId]);
@@ -230,7 +256,33 @@ const confirmGrantRevoke = async (): Promise<void> => {
       </div>
     </div>
 
-    <div class="space-y-4">
+    <div class="mb-4 flex gap-1" role="tablist" aria-label="Consumer sections">
+      <button
+        v-for="option in [
+          { id: 'identities', label: 'Identities and secrets' },
+          { id: 'certificate-grants', label: 'Certificate grants' },
+        ] as const"
+        :key="option.id"
+        type="button"
+        role="tab"
+        class="btn btn-sm"
+        :aria-selected="activeTab === option.id"
+        :class="activeTab === option.id ? 'bg-surface-3! text-ink!' : ''"
+        @click="selectTab(option.id)"
+      >
+        {{ option.label }}
+      </button>
+    </div>
+
+    <!-- Mounted only while selected: its PKI reads are audited, so it must not
+         fetch until the operator asks for it. -->
+    <ConsumerCertificateGrants
+      v-if="activeTab === 'certificate-grants'"
+      :env="env"
+      :consumer-id="consumerId"
+    />
+
+    <div v-show="activeTab === 'identities'" class="space-y-4">
       <ErrorNotice v-if="consumer.error.value" :error="consumer.error.value" />
 
       <section v-if="consumer.data.value" class="card card-body">
