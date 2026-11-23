@@ -839,6 +839,46 @@ export type BinaryResult =
     }
   | { readonly status: 304; readonly etag?: string };
 
+export type PkiCrlSource = "GENERATED" | "UPLOADED";
+
+export interface PkiCrlIssuer {
+  readonly id: string;
+  readonly source: PkiCrlSource;
+}
+
+export interface PkiCaBundle {
+  readonly caId: string;
+  readonly name: string;
+  readonly status: PkiCaStatus;
+  readonly drained: boolean;
+  readonly fingerprint: string;
+  readonly notAfter: string;
+  readonly anchorPem: string;
+  readonly anchorTrusted: boolean;
+  readonly chainPem: string;
+  readonly crlIssuers: readonly PkiCrlIssuer[];
+}
+
+export interface PkiCrlMetadata {
+  readonly number: string;
+  readonly thisUpdate: string;
+  readonly nextUpdate: string;
+}
+
+export type PkiCrlResult =
+  | {
+      readonly status: 200;
+      readonly bytes: Uint8Array;
+      readonly etag?: string;
+      readonly contentType?: string;
+      readonly crl?: PkiCrlMetadata;
+    }
+  | {
+      readonly status: 304;
+      readonly etag?: string;
+      readonly crl?: PkiCrlMetadata;
+    };
+
 export interface HemligTransport {
   request(request: TransportRequest): Promise<TransportResponse>;
 }
@@ -1403,25 +1443,61 @@ export class HemligClient {
     token: string,
     issuerId: string,
     ifNoneMatch?: string,
-  ): Promise<BinaryResult> {
-    const headers: Record<string, string> = {
-      authorization: `Bearer ${token}`,
-    };
+  ): Promise<PkiCrlResult> {
+    return this.crlRequest(
+      `/v1/admin/pki/crls/${encodeURIComponent(issuerId)}`,
+      { authorization: `Bearer ${token}` },
+      ifNoneMatch,
+    );
+  }
+
+  /** Downloads a CRL as the calling consumer (mTLS; no token). */
+  public async getCrl(
+    issuerId: string,
+    ifNoneMatch?: string,
+  ): Promise<PkiCrlResult> {
+    return this.crlRequest(
+      `/v1/pki/crls/${encodeURIComponent(issuerId)}`,
+      {},
+      ifNoneMatch,
+    );
+  }
+
+  /** Reads a CA's trust anchor and chain as the calling consumer (mTLS). */
+  public async getCaBundle(caId: string): Promise<PkiCaBundle> {
+    return this.request(
+      "GET",
+      `/v1/pki/cas/${encodeURIComponent(caId)}/bundle`,
+    );
+  }
+
+  private async crlRequest(
+    path: string,
+    baseHeaders: Record<string, string>,
+    ifNoneMatch: string | undefined,
+  ): Promise<PkiCrlResult> {
+    const headers: Record<string, string> = { ...baseHeaders };
     if (ifNoneMatch !== undefined) {
       headers["if-none-match"] = `"${ifNoneMatch}"`;
     }
     const response = await this.transport.request({
       method: "GET",
-      url: new URL(
-        `/v1/admin/pki/crls/${encodeURIComponent(issuerId)}`,
-        this.baseUrl,
-      ),
+      url: new URL(path, this.baseUrl),
       headers,
       responseType: "binary",
     });
     const etag = unquoteEtag(response.headers.etag);
+    const number = response.headers["hemlig-crl-number"];
+    const thisUpdate = response.headers["hemlig-crl-this-update"];
+    const nextUpdate = response.headers["hemlig-crl-next-update"];
+    const crl: { crl?: PkiCrlMetadata } =
+      number !== undefined &&
+      thisUpdate !== undefined &&
+      nextUpdate !== undefined
+        ? { crl: { number, thisUpdate, nextUpdate } }
+        : {};
     if (response.status === 304) {
-      return etag === undefined ? { status: 304 } : { status: 304, etag };
+      return { status: 304, ...(etag === undefined ? {} : { etag }), ...crl };
     }
     if (response.status < 200 || response.status >= 300) {
       return this.responseBody<never>(response);
@@ -1439,6 +1515,7 @@ export class HemligClient {
       bytes: response.bytes,
       ...(etag === undefined ? {} : { etag }),
       ...(contentType === undefined ? {} : { contentType }),
+      ...crl,
     };
   }
 
