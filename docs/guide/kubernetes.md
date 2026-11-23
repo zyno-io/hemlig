@@ -22,8 +22,9 @@ The [controller](../reference/glossary.md#kubernetes-controller) copies Hemlig s
 | `HemligSecretExport` | Namespaced | `hmlexport` | Pushes a Kubernetes Secret into Hemlig |
 | `HemligIssuer` | Namespaced | `hmlissuer` | Lets cert-manager request certificates through a PKI issuance grant |
 | `HemligClusterIssuer` | Cluster | `hmlclusterissuer` | The same, usable from any namespace the issuer selects |
+| `HemligTrustBundle` | Namespaced | `hmltrustbundle` | Writes CA anchors, intermediates and CRLs to ConfigMaps |
 
-Every field is in the [CRD reference](../reference/crds.md). The two issuer kinds are covered in [Issue certificates with cert-manager](cert-manager.md).
+Every field is in the [CRD reference](../reference/crds.md). The two issuer kinds are covered in [Issue certificates with cert-manager](cert-manager.md), and trust bundles in [Distribute trust bundles](trust-bundles.md).
 
 ## Install the controller
 
@@ -166,6 +167,7 @@ The controller stores its private key and certificate in `hemlig-payments-client
 | Imports | Written to a Secret the import owns. It never overwrites a Secret owned by something else. See [Import a secret](import-secret.md) |
 | Exports | Reject an import target as their source. See [Export a Secret](export-secret.md) |
 | cert-manager requests | Processed as they change, with a 5-minute resync. See [Issue certificates with cert-manager](cert-manager.md) |
+| Trust bundles | On change and every 5 minutes with conditional GETs; never overwrites a ConfigMap it does not own. See [Distribute trust bundles](trust-bundles.md) |
 | Deletion | An import target is removed only when Hemlig confirms access was revoked. See [Safety](../operations/safety.md) |
 
 ### Share one consumer across namespaces

@@ -1,0 +1,138 @@
+---
+title: "Distribute trust bundles"
+description: "Write the anchors, intermediates and CRLs of your Hemlig CAs to Kubernetes ConfigMaps with a HemligTrustBundle, mount them, verify a chain and understand revocation latency."
+pageType: how-to
+---
+
+# Distribute trust bundles
+
+A `HemligTrustBundle` keeps a set of ConfigMaps up to date with the CA certificates and CRLs that your workloads need to verify peers. The controller reads them from Hemlig, so a new intermediate or a revocation reaches your pods with no manual step.
+
+**Role:** platform team. **Before you start:** the [controller](kubernetes.md) with a `Ready` `HemligConsumer`, the PKI CRDs from `crds/hemlig.zyno.io-pki.yaml`, and the IDs of your CAs from `hemlig pki ca list`. The consumer needs no issuance grant, and a PKI-only AgentGrant is enough. cert-manager is not required.
+
+## Create a bundle
+
+```yaml
+apiVersion: hemlig.zyno.io/v1alpha1
+kind: HemligTrustBundle
+metadata:
+  name: payments-trust
+  namespace: payments
+spec:
+  consumerRef: payments
+  caIds: [ca-0a1b2c3d]
+  target:
+    name: payments-trust
+```
+
+| Field | Description |
+| --- | --- |
+| `consumerRef` | The `HemligConsumer`. Set `consumerNamespace` to use one in another namespace, as for a [HemligIssuer](cert-manager.md#create-a-hemligissuer) |
+| `caIds` | 1 to 50 CA IDs. List the CA you issue from now and, during a rollover, the next one |
+| `target.name` | The ConfigMap to write, in the bundle's namespace. At most 165 characters |
+| `includeCrl` | Default `true`. Set `false` to write no CRLs |
+| `crlFormat` | `der` (default) or `pem` |
+
+`consumerRef`, `consumerNamespace` and `target.name` cannot be changed. Create a new bundle to change them. `caIds`, `includeCrl` and `crlFormat` can change at any time.
+
+## What it writes
+
+The target ConfigMap holds two keys. `ca.crt` has the trusted anchors, deduplicated: your external roots. `chain.crt` has every CA certificate and any intermediate that is not an anchor. Either can be empty.
+
+For each CRL a verifier needs, the bundle writes one more ConfigMap named `<target>-crl-<issuerId>`. It holds the Hemlig CA's own CRL and the CRL of its external root, once per issuer however many CAs share the root.
+
+| ConfigMap | Key | Content |
+| --- | --- | --- |
+| `payments-trust` | `ca.crt`, `chain.crt` | PEM certificates |
+| `payments-trust-crl-ca-0a1b2c3d` | `crl.der` in `binaryData`, or `crl.pem` in `data` | The CRL |
+| `payments-trust-crl-ext-<40 hex>` | The same | The root's CRL |
+
+Each ConfigMap has the label `hemlig.zyno.io/managed-by: trust-bundle`, an owner annotation, and an owner reference to the bundle, so deleting the bundle deletes them. CRL ConfigMaps also carry annotations for the issuer, source, SHA-256, number and validity. The full list is in the [CRD reference](../reference/crds.md#hemligtrustbundle-namespaced).
+
+The controller never overwrites a ConfigMap it does not own. A foreign target gives `ConfigMapConflict` and is left as it is.
+
+## Mount it
+
+Use a projected volume. It puts the target and each CRL under one directory, and kubelet refreshes it in place.
+
+```yaml
+volumes:
+  - name: trust
+    projected:
+      sources:
+        - configMap: { name: payments-trust }
+        - configMap:
+            name: payments-trust-crl-ca-0a1b2c3d
+            optional: true
+            items: [{ key: crl.der, path: crls/issuing.der }]
+        - configMap:
+            name: payments-trust-crl-ext-0123456789abcdef0123456789abcdef01234567
+            optional: true
+            items: [{ key: crl.der, path: crls/root.der }]
+```
+
+Never use `subPath` for these files. Kubelet does not refresh a `subPath` mount, so a revocation would never arrive. Make the CRL sources `optional`, or update the mounts before you remove a CA from the bundle, because removing it deletes its CRL ConfigMap.
+
+## Verify
+
+Convert the CRLs and check a leaf with full-chain CRL checking, as an application would.
+
+```sh
+openssl crl -inform DER -in /trust/crls/issuing.der -out issuing.crl.pem
+openssl crl -inform DER -in /trust/crls/root.der -out root.crl.pem
+openssl verify -CAfile /trust/ca.crt -untrusted /trust/chain.crt -crl_check_all \
+  -CRLfile issuing.crl.pem -CRLfile root.crl.pem leaf.pem
+```
+
+Expected output: `leaf.pem: OK`. A revoked leaf prints `certificate revoked` at depth 0, and a revoked intermediate at depth 1.
+
+## PEM for Envoy and nginx
+
+Set `crlFormat: pem` and each CRL ConfigMap holds `crl.pem` in `data`, with `-----BEGIN X509 CRL-----` and 64-column lines. Envoy and nginx each read one CRL file, so concatenate the PEM files when the container starts:
+
+```sh
+cat /trust/crls/*.pem > /run/crl.pem
+```
+
+PEM is a third larger than DER, so it fits fewer entries in a 1 MiB ConfigMap, about 9,600 revoked certificates. A CRL that does not fit is `CrlRejected` and the previous copy stays mounted.
+
+## Check the status
+
+```sh
+kubectl -n payments get hmltrustbundle
+kubectl -n payments get hmltrustbundle payments-trust -o jsonpath='{.status.crls}'
+```
+
+`READY` is `True` when the target and every required CRL are written and current. `status.acceptedCaIds` lists the CAs whose material is mounted, and each `status.crls` entry has a `state`: `Current`, `Stale`, `Missing`, `Rejected` or `Conflict`. The reasons and fixes are in [CRDs](../reference/crds.md#hemligtrustbundle-condition-ready).
+
+A revoked CA stays in the bundle with its anchor, so chains issued earlier still fail on the CRL rather than on a missing root. A drained retired CA gives `Ready=True` with reason `CaDrained`, which tells you it can be removed.
+
+## Roll over a CA
+
+Add the new CA to `caIds` before you move grants to it, and remove the old one only after it is drained. The steps are in [Roll over a CA](../operations/pki-ca-rollover.md).
+
+## How fast a revocation arrives
+
+| Stage | Delay |
+| --- | --- |
+| Hemlig serves the new CRL on the [CRL route](../reference/api/pki.md#crls) | Seconds after a revoke, or an upload of the root CRL |
+| The controller refreshes the bundle | Up to the refresh interval, 5 minutes by default (`trustBundles.refreshIntervalMilliseconds`) |
+| Kubelet updates the mounted files | About a minute |
+
+Your application must also reload the file. Refreshes use conditional GETs, so an unchanged CRL costs one `304`.
+
+## Limits
+
+- The controller runs as one replica. It writes only to the bundle's own namespace.
+- A bundle lists at most 50 CAs, and a ConfigMap holds at most 1 MiB. A CRL is at most 1,000,000 bytes in DER.
+- While the target is rejected, a newly listed CA gets nothing, but the CAs already mounted keep refreshing their CRLs.
+- A ConfigMap changed by hand is put back at the next refresh. A deleted CA's CRL ConfigMap is removed.
+- The target name is at most 165 characters, so every CRL ConfigMap name stays valid.
+
+Constants are in [Limits and timings](../reference/limits.md#controller).
+
+## Next steps
+
+- [CRD reference](../reference/crds.md#hemligtrustbundle-namespaced)
+- [PKI consumer routes: bundles and CRLs](../reference/api/pki.md#ca-bundles)
+- [Roll over a CA](../operations/pki-ca-rollover.md)

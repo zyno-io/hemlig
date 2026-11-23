@@ -10,8 +10,6 @@ Replace `prod-issuing-1` with `prod-issuing-2` while the old CA drains.
 
 **Role:** administrator with the PKI CA role and the PKI operator role (to migrate grants), and the root key holder. **Before you start:** an active `prod-issuing-1` and the [offline root recipe](pki-offline-root.md). Allow about an hour.
 
-Step 3 needs trust bundles, which arrive in a later release. Steps 4 and 5 are available now, except that step 4 cannot check the bundle yet.
-
 ## Create the replacement
 
 1. Create a CA with a new DN. A subject DN is claimed forever, so never reuse one. The CLI's `--rollover-from` copies the old CA's settings and increments the trailing number of the name and common name.
@@ -24,8 +22,13 @@ Step 3 needs trust bundles, which arrive in a later release. Steps 4 and 5 are a
 
 ## Move trust and grants
 
-3. Add the new CA to every trust bundle and confirm its CRL is mounted. <Badge type="warning" text="later release" />
-4. Issue a test leaf under the new CA and verify it with full-chain CRL checking against your root and both CRLs. Verifying against a trust bundle arrives in a later release. <Badge type="warning" text="bundle check: later release" />
+3. Add the new `caId` to every [trust bundle](../guide/trust-bundles.md)'s `spec.caIds`, then wait for `Ready`. Check that `status.crls` lists `<target>-crl-<newCaId>` as `Current`, and read the CRL.
+
+   ```sh
+   kubectl get configmap <target>-crl-<newCaId> -o jsonpath='{.binaryData.crl\.der}' | base64 -d | openssl crl -inform DER -noout -text
+   ```
+
+4. Issue a test leaf under the new CA and verify it with full-chain CRL checking against the mounted bundle files (`ca.crt`, `chain.crt` and the CRLs), or against your root and both CRLs.
 
    ```sh
    hemlig pki cert issue prod-issuing-2 --csr test.csr --use-csr-names --out leaf.pem --chain-out chain.pem
@@ -51,7 +54,7 @@ Step 3 needs trust bundles, which arrive in a later release. Steps 4 and 5 are a
    hemlig pki ca retire prod-issuing-1
    ```
 
-Keep the old CA in bundles until it shows as drained, then remove it. Once its key is disabled, `hemlig pki ca destroy-key prod-issuing-1` removes the wrapped key.
+Keep the old CA in bundles until the bundle reports `CaDrained`, then remove it from `spec.caIds`. Removing it deletes its CRL ConfigMap, so first update or make optional any mount of it. Once its key is disabled, `hemlig pki ca destroy-key prod-issuing-1` removes the wrapped key.
 
 ## Verify
 
