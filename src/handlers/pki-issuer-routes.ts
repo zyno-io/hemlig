@@ -2,19 +2,32 @@ import type { APIGatewayProxyStructuredResultV2 } from "aws-lambda";
 import { ApiError } from "../domain/errors";
 import { json } from "../http/responses";
 import { consumerGrantView } from "../pki/grant-model";
-import { issuanceGrantNotFound } from "../pki/errors";
+import { caStatusReason } from "../pki/ca-model";
+import { caBundleView } from "../pki/bundle-model";
+import {
+  caNotActive,
+  issuanceGrantNotFound,
+  pkiNotFound,
+} from "../pki/errors";
 import { sha256Hex, stableJson } from "../util/encoding";
-import { parseObjectBody, requireIdempotencyKey } from "./pki-http";
+import {
+  binaryResponse,
+  notModified,
+  parseIfNoneMatch,
+  parseObjectBody,
+  requireIdempotencyKey,
+} from "./pki-http";
 import type { PkiIssuerContext, PkiIssuerRoute } from "./pki-issuer";
 import type { PkiRouteMethod } from "./pki-routes";
 
 const NAME = "([a-z][a-z0-9-]{2,63})";
+const CA = "(ca-[a-z0-9-]{3,80})";
+const EXT = "(ext-[0-9a-f]{40})";
 const suppressionWindowSeconds = 10 * 60;
 const maxListedGrants = 20;
 
 interface RouteState {
   readonly target: Record<string, string>;
-  readonly grantName?: string;
 }
 
 /**
@@ -24,7 +37,7 @@ interface RouteState {
  */
 const consumerRoute = (
   method: PkiRouteMethod,
-  suffix: string,
+  path: string,
   operation: string,
   handle: (
     context: PkiIssuerContext,
@@ -34,16 +47,19 @@ const consumerRoute = (
       readonly update: (extra: Record<string, string>) => void;
     },
   ) => Promise<APIGatewayProxyStructuredResultV2>,
+  targetOf: (params: string[]) => Record<string, string> = (
+    params,
+  ): Record<string, string> =>
+    params[0] === undefined ? {} : { issuanceGrant: params[0] },
 ): PkiIssuerRoute => ({
   method,
-  pattern: new RegExp(`^/v1/pki/issuance-grants${suffix}$`),
+  pattern: new RegExp(`^/v1/pki${path}$`),
   operation,
   handle: async (context, params) => {
-    const grantName = params[0];
     const target: Record<string, string> = {
       consumerId: context.consumerId,
       environment: context.environment,
-      ...(grantName === undefined ? {} : { issuanceGrant: grantName }),
+      ...targetOf(params),
     };
     const publish = (): void =>
       context.setAuditContext({
@@ -57,7 +73,6 @@ const consumerRoute = (
       readonly update: (extra: Record<string, string>) => void;
     } = {
       target,
-      ...(grantName === undefined ? {} : { grantName }),
       update: (extra) => {
         Object.assign(target, extra);
         publish();
@@ -73,7 +88,7 @@ const consumerRoute = (
           state.update({ deniedNameType: type, deniedName: name });
         }
         const scope = `PKI#${sha256Hex(
-          stableJson([operation, grantName ?? "", error.safeReason ?? error.code]),
+          stableJson([operation, params[0] ?? "", error.safeReason ?? error.code]),
         ).slice(0, 32)}`;
         const claimed = await context.app.repository
           .claimAuditSuppression(
@@ -92,7 +107,7 @@ const consumerRoute = (
 });
 
 export const pkiIssuerRoutes: PkiIssuerRoute[] = [
-  consumerRoute("GET", "", "pki.grant.list", async (context) => {
+  consumerRoute("GET", "/issuance-grants", "pki.grant.list", async (context) => {
     const { app, consumerId, environment } = context;
     const now = app.now();
     const page = await app.pki.listGrantsPage(consumerId, {
@@ -116,7 +131,7 @@ export const pkiIssuerRoutes: PkiIssuerRoute[] = [
       generatedAt: now.toISOString(),
     });
   }),
-  consumerRoute("GET", `/${NAME}`, "pki.grant.get", async (context, params) => {
+  consumerRoute("GET", `/issuance-grants/${NAME}`, "pki.grant.get", async (context, params) => {
     const { app, consumerId, environment } = context;
     const grant = await app.pki.getGrant(consumerId, params[0] as string);
     if (
@@ -131,7 +146,7 @@ export const pkiIssuerRoutes: PkiIssuerRoute[] = [
   }),
   consumerRoute(
     "POST",
-    `/${NAME}/certificates`,
+    `/issuance-grants/${NAME}/certificates`,
     "pki.certificate.issue",
     async (context, params, state) => {
       const { app } = context;
@@ -157,6 +172,56 @@ export const pkiIssuerRoutes: PkiIssuerRoute[] = [
         sourceIp: context.event.requestContext.http.sourceIp,
       });
       return json(result.status, result.body);
+    },
+  ),
+  consumerRoute(
+    "GET",
+    `/cas/${CA}/bundle`,
+    "pki.bundle.get",
+    async (context, params) => {
+      const { app, environment } = context;
+      const caId = params[0] as string;
+      const ca = await app.pki.getCa(caId);
+      if (ca === undefined || ca.environment !== environment) {
+        throw pkiNotFound("ca_not_found");
+      }
+      if (ca.status === "PENDING_CERTIFICATE" || ca.status === "FAILED") {
+        throw caNotActive(caStatusReason[ca.status]);
+      }
+      const crl = await app.pki.getCaCrlState(caId);
+      return json(200, caBundleView(ca, crl));
+    },
+    (params) => ({ caId: params[0] as string }),
+  ),
+  consumerRoute(
+    "GET",
+    `/crls/(${CA.slice(1, -1)}|${EXT.slice(1, -1)})`,
+    "pki.crl.get",
+    async (context, params) => {
+      const id = params[0] as string;
+      const download = await context.app.crls.download(
+        id,
+        parseIfNoneMatch(context.event.headers["if-none-match"]),
+        { environment: context.environment },
+      );
+      const crl = {
+        number: download.numberText,
+        thisUpdate: download.thisUpdate,
+        nextUpdate: download.nextUpdate,
+      };
+      if (download.kind === "notModified") {
+        return notModified(download.sha256, crl);
+      }
+      return binaryResponse(
+        download.der,
+        `${id}-${download.numberText}.crl`,
+        download.sha256,
+        crl,
+      );
+    },
+    (params): Record<string, string> => {
+      const id = params[0] as string;
+      return id.startsWith("ext-") ? { extId: id } : { caId: id };
     },
   ),
 ];

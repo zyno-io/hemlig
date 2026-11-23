@@ -850,6 +850,23 @@ export const capacityView = (ca: CaRecord, crl?: CaCrlState): Json => ({
       }),
 });
 
+/** True once a RETIRED CA has published a CRL covering its drain point. */
+export const caDrained = (
+  ca: CaRecord,
+  crl: CaCrlState | undefined,
+): boolean => {
+  const retiredDrain =
+    ca.status === "RETIRED" &&
+    ca.notAfter !== undefined &&
+    ca.retiredAt !== undefined;
+  return (
+    ca.status === "RETIRED" &&
+    crl?.published !== undefined &&
+    retiredDrain &&
+    isDrained(ca, { ...crl, published: crl.published })
+  );
+};
+
 export const caDetail = (
   ca: CaRecord,
   options: {
@@ -866,11 +883,7 @@ export const caDetail = (
     ca.status === "RETIRED" &&
     ca.notAfter !== undefined &&
     ca.retiredAt !== undefined;
-  const drained =
-    ca.status === "RETIRED" &&
-    crl?.published !== undefined &&
-    retiredDrain &&
-    isDrained(ca, { ...crl, published: crl.published });
+  const drained = caDrained(ca, crl);
   const view: Json = {
     ...caSummary(ca),
     capacity: capacityView(ca, crl),

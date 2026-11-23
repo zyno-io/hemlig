@@ -318,13 +318,19 @@ export const pkiAdminRoutes: PkiAdminRoute[] = [
         context,
         id.startsWith("ext-") ? { extId: id } : { caId: id },
       );
+      const crl = {
+        number: download.numberText,
+        thisUpdate: download.thisUpdate,
+        nextUpdate: download.nextUpdate,
+      };
       if (download.kind === "notModified") {
-        return notModified(download.sha256);
+        return notModified(download.sha256, crl);
       }
       return binaryResponse(
         download.der,
         `${id}-${download.numberText}.crl`,
         download.sha256,
+        crl,
       );
     },
   ),

@@ -295,9 +295,19 @@ export interface PublishOptions {
   readonly deadline?: Date;
 }
 
+interface CrlDownloadMetadata {
+  numberText: string;
+  thisUpdate: string;
+  nextUpdate: string;
+}
+
 export type CrlDownload =
-  | { kind: "notModified"; sha256: string }
-  | { kind: "bytes"; der: Buffer; sha256: string; numberText: string };
+  | ({ kind: "notModified"; sha256: string } & CrlDownloadMetadata)
+  | ({
+      kind: "bytes";
+      der: Buffer;
+      sha256: string;
+    } & CrlDownloadMetadata);
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -453,23 +463,36 @@ export class CrlService {
     }
   }
 
-  /** The admin download: a conditional read of the published pointer's object. */
+  /**
+   * A conditional read of the published pointer's object. A `scope` (the consumer routes) limits the issuer to one
+   * environment and answers a foreign or unknown issuer identically; the admin route passes none.
+   */
   public async download(
     issuerId: string,
     ifNoneMatch?: readonly string[],
+    scope?: { readonly environment: string },
   ): Promise<CrlDownload> {
     const { pki, config, objects } = this.deps;
-    let pointer: { sha256: string; objectKey: string } | undefined;
+    let pointer:
+      | { sha256: string; objectKey: string; thisUpdate: string; nextUpdate: string }
+      | undefined;
     let numberText = "";
     if (issuerId.startsWith("ext-")) {
       const ext = await pki.getExternalCa(issuerId);
-      if (ext === undefined) {
+      if (
+        ext === undefined ||
+        (scope !== undefined && !ext.environments.has(scope.environment))
+      ) {
         throw pkiNotFound("external_ca_not_found");
       }
       pointer = ext.crl;
       numberText = ext.crl?.numberHex ?? "";
     } else {
-      if ((await pki.getCa(issuerId)) === undefined) {
+      const ca = await pki.getCa(issuerId);
+      if (
+        ca === undefined ||
+        (scope !== undefined && ca.environment !== scope.environment)
+      ) {
         throw pkiNotFound("ca_not_found");
       }
       const state = await pki.getCaCrlState(issuerId);
@@ -479,11 +502,16 @@ export class CrlService {
     if (pointer === undefined) {
       throw pkiNotFound("crl_missing");
     }
+    const metadata = {
+      numberText,
+      thisUpdate: pointer.thisUpdate,
+      nextUpdate: pointer.nextUpdate,
+    };
     if (
       ifNoneMatch?.includes("*") === true ||
       ifNoneMatch?.includes(pointer.sha256) === true
     ) {
-      return { kind: "notModified", sha256: pointer.sha256 };
+      return { kind: "notModified", sha256: pointer.sha256, ...metadata };
     }
     const der = await pkiObjectRead(
       objects,
@@ -493,7 +521,7 @@ export class CrlService {
     if (sha256Hex(der) !== pointer.sha256) {
       throw serviceUnavailable("The stored CRL failed its integrity check.");
     }
-    return { kind: "bytes", der, sha256: pointer.sha256, numberText };
+    return { kind: "bytes", der, sha256: pointer.sha256, ...metadata };
   }
 
   /** Maps the busy outcome of a forced publication to the API error. */
