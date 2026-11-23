@@ -205,7 +205,7 @@ describe("CaService.create", () => {
   it("refuses other kinds, the identity root subject, duplicates and the 51st CA", async () => {
     expect(
       await errorOf(
-        setup().service.create(actor, "idem-key-0001", body({ kind: "ROOT" })),
+        setup().service.create(actor, "idem-key-0001", body({ kind: "BOGUS" })),
       ),
     ).toMatchObject({
       code: "bad_request",

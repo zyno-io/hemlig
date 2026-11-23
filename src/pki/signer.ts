@@ -41,6 +41,18 @@ export const signWithPkcs8 = (
   }
 };
 
+/**
+ * Signs with a plaintext PKCS#8 key, for the brief window before a new key is wrapped. The caller owns the buffer and
+ * must zero it once the last signature is made.
+ */
+export const pkcs8Signer = (
+  algorithm: PkiKeyAlgorithm,
+  pkcs8Der: Buffer,
+): CaSigner => ({
+  algorithm,
+  sign: async (tbs) => signWithPkcs8(algorithm, pkcs8Der, tbs),
+});
+
 export interface WrappedCaSignerOptions extends CaKeyBinding {
   readonly kms: PkiKmsClient;
   /** The application CMK. */

@@ -11,7 +11,7 @@ import type {
 import { maxBulkRevokeBatch } from "../repositories/pki";
 import { sha256Hex, stableJson } from "../util/encoding";
 import { assertHumanReplay, replayOutcome, requestDigest } from "./ca-model";
-import type { CrlService } from "./crl-service";
+import { publishInlineBestEffort, type CrlService } from "./crl-service";
 import { pkiBadRequest, pkiConflict, pkiNotFound } from "./errors";
 import { pageWithCursor } from "./paging";
 import type { MutationResult, PkiServiceDeps } from "./service-types";
@@ -25,7 +25,6 @@ import type {
 type Json = Record<string, unknown>;
 
 const pageLimit = 100;
-const inlinePublishBudgetMs = 5_000;
 const bulkReadBudgetMs = 20_000;
 const bulkPublishBudgetMs = 25_000;
 const maxBatchRetries = 3;
@@ -185,6 +184,8 @@ export const certificateSummary = (
   notBefore: cert.notBefore,
   notAfter: cert.notAfter,
   issuedAt: cert.issuedAt,
+  ...(cert.isCa ? { isCa: true } : {}),
+  ...(cert.childCaId === undefined ? {} : { childCaId: cert.childCaId }),
   requester: {
     type: cert.requester.type,
     id: cert.requester.id,
@@ -577,44 +578,10 @@ export class CertificateService {
     };
   }
 
-  /** The inline publication: best effort, under a 5-second deadline, never failing the revoke. */
-  private async publishInline(
+  private publishInline(
     ca: CaRecord,
-    deadlineMs = inlinePublishBudgetMs,
   ): Promise<{ crlPublished: boolean; crlNumber?: number }> {
-    if (
-      (ca.status !== "ACTIVE" && ca.status !== "RETIRED") ||
-      ca.key.state !== "ACTIVE"
-    ) {
-      return { crlPublished: false };
-    }
-    try {
-      const result = await this.crls.publish(ca, {
-        trigger: "inline",
-        waitForLeaseMs: 1000,
-        deadline: new Date(this.now().getTime() + deadlineMs),
-      });
-      if (result.kind === "published") {
-        return { crlPublished: true, crlNumber: result.pointer.number };
-      }
-      console.error(
-        JSON.stringify({
-          event: "pki_inline_crl_failed",
-          caId: ca.caId,
-          kind: result.kind,
-        }),
-      );
-    } catch (error) {
-      console.error(
-        JSON.stringify({
-          event: "pki_inline_crl_failed",
-          caId: ca.caId,
-          kind: "error",
-          error: error instanceof Error ? error.name : typeof error,
-        }),
-      );
-    }
-    return { crlPublished: false };
+    return publishInlineBestEffort(this.crls, ca, this.now());
   }
 
   public async revoke(

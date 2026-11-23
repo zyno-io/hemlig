@@ -19,6 +19,14 @@ import {
 import { MAX_LEAF_LIFETIME_SECONDS, type GrantCaContext } from "./grant-policy";
 import type { ParsedCertificate } from "./asn1/certificate";
 import type { CaPolicyInput as EngineCaPolicyInput } from "./policy-types";
+import {
+  DEFAULT_INTERMEDIATE_VALIDITY_SECONDS,
+  DEFAULT_ROOT_VALIDITY_SECONDS,
+  MAX_CA_VALIDITY_SECONDS,
+  MIN_INTERMEDIATE_VALIDITY_SECONDS,
+  MIN_ROOT_VALIDITY_SECONDS,
+  ROOT_PATH_LEN,
+} from "./hierarchy-model";
 import { buildCaSubject } from "./subject";
 import type {
   CaCrlState,
@@ -57,7 +65,10 @@ const nameKeys = [
   "policy",
   "crl",
   "displayName",
+  "parentCaId",
+  "validitySeconds",
 ] as const;
+const parentCaIdPattern = /^ca-[a-z0-9-]{3,80}$/;
 const namePattern = /^[a-z][a-z0-9-]{2,63}$/;
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -485,6 +496,13 @@ export const DEFAULT_CA_POLICY: CaPolicy = {
   crlValiditySeconds: 604_800,
 };
 
+/** A ROOT signs subordinates only; its leaf fields are inert defaults. */
+export const DEFAULT_ROOT_POLICY: CaPolicy = {
+  ...DEFAULT_CA_POLICY,
+  issueLeaves: false,
+  issueSubordinates: true,
+};
+
 /** Validates the supplied fields only; absent fields stay absent. */
 export const parsePolicyInput = (value: unknown): CaPolicyInput => {
   const input = record(value, "policy");
@@ -543,8 +561,8 @@ export const resolvePolicy = (
   base: CaPolicy = DEFAULT_CA_POLICY,
 ): CaPolicy => {
   const policy: CaPolicy = {
-    issueLeaves: true,
-    issueSubordinates: false,
+    issueLeaves: base.issueLeaves,
+    issueSubordinates: base.issueSubordinates,
     maxLeafLifetimeSeconds:
       input.maxLeafLifetimeSeconds ?? base.maxLeafLifetimeSeconds,
     leafKeyAlgorithms: input.leafKeyAlgorithms ?? base.leafKeyAlgorithms,
@@ -566,16 +584,39 @@ export const parseCaPolicy = (value: unknown, existing?: CaPolicy): CaPolicy =>
 // Request parsers
 // ---------------------------------------------------------------------------------------------------------------------
 
-export interface CreateCaInput {
+interface CreateCaCommon {
   environment: string;
   name: string;
-  kind: "EXTERNAL_INTERMEDIATE";
   keyAlgorithm: PkiKeyAlgorithm;
   subject: CaSubject;
   requested: CaRecord["requested"];
   policy: CaPolicy;
   displayName?: string;
 }
+
+/** The EXTERNAL object carries no Phase 7 keys: its idempotency digest must stay byte-identical (T-A7). */
+export type CreateCaInput = CreateCaCommon &
+  (
+    | { kind: "EXTERNAL_INTERMEDIATE" }
+    | { kind: "ROOT"; validitySeconds: number }
+    | { kind: "INTERMEDIATE"; parentCaId: string; validitySeconds: number }
+  );
+
+/** A leaf field that is present and differs from the stored policy is refused on a ROOT. */
+export const assertRootPolicyUpdate = (
+  input: CaPolicyInput,
+  stored: CaPolicy,
+): void => {
+  if (
+    (input.maxLeafLifetimeSeconds !== undefined &&
+      input.maxLeafLifetimeSeconds !== stored.maxLeafLifetimeSeconds) ||
+    (input.leafKeyAlgorithms !== undefined &&
+      stableJson(input.leafKeyAlgorithms) !==
+        stableJson(stored.leafKeyAlgorithms))
+  ) {
+    throw pkiBadRequest("invalid_policy", "A ROOT CA issues no leaves.");
+  }
+};
 
 const parseDisplayName = (value: unknown): string =>
   text(value, "displayName", { max: 128 });
@@ -594,10 +635,33 @@ export const parseCreateCaRequest = (body: unknown): CreateCaInput => {
   if (typeof kind !== "string") {
     throw badRequest("kind must be a string.");
   }
-  if (kind !== "EXTERNAL_INTERMEDIATE") {
+  if (
+    kind !== "EXTERNAL_INTERMEDIATE" &&
+    kind !== "ROOT" &&
+    kind !== "INTERMEDIATE"
+  ) {
     throw pkiBadRequest(
       "kind_not_supported",
-      "Only EXTERNAL_INTERMEDIATE CAs can be created.",
+      "kind must be EXTERNAL_INTERMEDIATE, ROOT or INTERMEDIATE.",
+    );
+  }
+  if (kind === "INTERMEDIATE") {
+    if (input.parentCaId === undefined) {
+      throw pkiBadRequest(
+        "parent_required",
+        "parentCaId is required for an INTERMEDIATE.",
+      );
+    }
+  } else if (input.parentCaId !== undefined) {
+    throw pkiBadRequest(
+      "parent_not_allowed",
+      "parentCaId is allowed only for an INTERMEDIATE.",
+    );
+  }
+  if (kind === "EXTERNAL_INTERMEDIATE" && input.validitySeconds !== undefined) {
+    throw pkiBadRequest(
+      "validity_not_allowed",
+      "validitySeconds is not allowed for an EXTERNAL_INTERMEDIATE.",
     );
   }
   const keyAlgorithm = input.keyAlgorithm;
@@ -609,8 +673,18 @@ export const parseCreateCaRequest = (body: unknown): CreateCaInput => {
     input.requestedConstraints === undefined
       ? ({ pathLen: 0 } as CaRecord["requested"])
       : parseRequestedConstraints(input.requestedConstraints);
+  if (kind === "ROOT") {
+    requested.pathLen = ROOT_PATH_LEN;
+  }
   const policyInput =
     input.policy === undefined ? {} : parsePolicyInput(input.policy);
+  if (
+    kind === "ROOT" &&
+    (policyInput.maxLeafLifetimeSeconds !== undefined ||
+      policyInput.leafKeyAlgorithms !== undefined)
+  ) {
+    throw pkiBadRequest("invalid_policy", "A ROOT CA issues no leaves.");
+  }
   if (input.crl !== undefined) {
     const crl = record(input.crl, "crl");
     strict(crl, "crl", ["validitySeconds"]);
@@ -633,18 +707,64 @@ export const parseCreateCaRequest = (body: unknown): CreateCaInput => {
       policyInput.crlValiditySeconds = validity;
     }
   }
-  return {
+  const common = {
     environment,
     name,
-    kind,
     keyAlgorithm: keyAlgorithm as PkiKeyAlgorithm,
     subject,
     requested,
-    policy: resolvePolicy(policyInput),
+    policy: resolvePolicy(
+      policyInput,
+      kind === "ROOT" ? DEFAULT_ROOT_POLICY : DEFAULT_CA_POLICY,
+    ),
     ...(input.displayName === undefined
       ? {}
       : { displayName: parseDisplayName(input.displayName) }),
   };
+  if (kind === "EXTERNAL_INTERMEDIATE") {
+    return { ...common, kind };
+  }
+  const validitySeconds = parseValidity(
+    input.validitySeconds,
+    kind === "ROOT"
+      ? MIN_ROOT_VALIDITY_SECONDS
+      : MIN_INTERMEDIATE_VALIDITY_SECONDS,
+    kind === "ROOT"
+      ? DEFAULT_ROOT_VALIDITY_SECONDS
+      : DEFAULT_INTERMEDIATE_VALIDITY_SECONDS,
+  );
+  if (kind === "ROOT") {
+    return { ...common, kind, validitySeconds };
+  }
+  if (
+    typeof input.parentCaId !== "string" ||
+    !parentCaIdPattern.test(input.parentCaId)
+  ) {
+    throw badRequest("parentCaId is not a CA id.");
+  }
+  return { ...common, kind, parentCaId: input.parentCaId, validitySeconds };
+};
+
+const parseValidity = (
+  value: unknown,
+  min: number,
+  fallback: number,
+): number => {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < min ||
+    value > MAX_CA_VALIDITY_SECONDS
+  ) {
+    throw pkiBadRequest(
+      "invalid_validity",
+      `validitySeconds must be an integer between ${min} and ${MAX_CA_VALIDITY_SECONDS}.`,
+    );
+  }
+  return value;
 };
 
 export interface UpdateCaInput {
@@ -908,6 +1028,7 @@ export const caDetail = (
     ...(ca.serial === undefined ? {} : { serial: ca.serial }),
     ...(ca.notBefore === undefined ? {} : { notBefore: ca.notBefore }),
     ...(ca.parent === undefined ? {} : { parent: ca.parent }),
+    ...(ca.parentCaId === undefined ? {} : { parentCaId: ca.parentCaId }),
     crlIssuers: ca.crlIssuers,
     policy: ca.policy,
     maxIssueLifetimeEverSeconds: ca.maxIssueLifetimeEverSeconds,

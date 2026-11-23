@@ -42,6 +42,7 @@ import {
   type RateLimitReason,
 } from "./errors";
 import { grantExpired, resolvedQuotas } from "./grant-model";
+import { hemligAncestors } from "./hierarchy-model";
 import {
   ADMIN_ISSUANCE_PER_HOUR,
   adminIssueDigest,
@@ -207,6 +208,19 @@ export class IssuanceService {
     return ca;
   }
 
+  /** A Hemlig CA under a REVOKED ancestor issues nothing: the ancestor's distrust covers the whole subtree at once. */
+  private async assertAncestorsUsable(ca: CaRecord): Promise<void> {
+    for (const ancestorId of hemligAncestors(ca)) {
+      const ancestor = await this.pki.getCa(ancestorId);
+      if (ancestor === undefined) {
+        throw serviceUnavailable("The ancestor CA record is missing.");
+      }
+      if (ancestor.status === "REVOKED") {
+        throw caNotActive("ancestor_revoked");
+      }
+    }
+  }
+
   private denialError(denial: Denial): ApiError {
     return issuanceDenied(
       denial.reason,
@@ -287,6 +301,15 @@ export class IssuanceService {
     }
     if (ca.status === "REVOKED") {
       throw issuanceRevoked("ca_revoked");
+    }
+    for (const ancestorId of hemligAncestors(ca)) {
+      const ancestor = await this.pki.getCa(ancestorId);
+      if (ancestor === undefined) {
+        throw serviceUnavailable("The ancestor CA record is missing.");
+      }
+      if (ancestor.status === "REVOKED") {
+        throw issuanceRevoked("ancestor_revoked");
+      }
     }
     if (Date.parse(cert.notAfter) <= now.getTime() + resultMargin) {
       throw issuanceExpired("result_expiring");
@@ -549,6 +572,7 @@ export class IssuanceService {
         grant.environment,
         now,
       );
+      await this.assertAncestorsUsable(ca);
 
       // Step 4: capacity, then quota, then one more look for a winner.
       const windows = quotaWindows(now);
@@ -636,7 +660,7 @@ export class IssuanceService {
             version: ca.version,
             issuancePerHour: ca.policy.issuancePerHour,
           },
-          ancestors: [],
+          ancestors: hemligAncestors(ca),
           consumerId: ctx.consumerId,
           identityFingerprint: ctx.actor.id,
           grant: {
@@ -748,6 +772,7 @@ export class IssuanceService {
         throw pkiNotFound("ca_not_found");
       }
       const ca = this.assertCaUsable(found, found.environment, now);
+      await this.assertAncestorsUsable(ca);
 
       const windows = quotaWindows(now);
       const [count, quotaState] = await Promise.all([
@@ -824,7 +849,7 @@ export class IssuanceService {
             version: ca.version,
             issuancePerHour: ca.policy.issuancePerHour,
           },
-          ancestors: [],
+          ancestors: hemligAncestors(ca),
           actor,
           adminPerHour: ADMIN_ISSUANCE_PER_HOUR,
         }),

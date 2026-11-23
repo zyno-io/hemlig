@@ -420,6 +420,44 @@ const requireLimit = (label: string, value: number): number => {
   return value;
 };
 
+/** The certificate row Put shared by every certificate commit. */
+export const issuedCertificatePutItem = (
+  tableName: string,
+  certificate: IssuedCertificateRecord,
+): NonNullable<TransactWriteCommandInput["TransactItems"]>[number] => ({
+  Put: {
+    TableName: tableName,
+    Item: {
+      ...pkiKeys.certificate(certificate.caId, certificate.serial),
+      ...certificate,
+      ...pkiDirectory.certificate(
+        certificate.caId,
+        certificate.notAfter,
+        certificate.serial,
+      ),
+      ttl: pkiTtl.certificate(certificate.notAfter),
+    },
+    ConditionExpression: "attribute_not_exists(pk)",
+  },
+});
+
+/** A quota counter increment, refused at `limit`. */
+export const quotaIncrementItem = (
+  tableName: string,
+  key: PkiKey,
+  limit: number,
+  ttl: number,
+): NonNullable<TransactWriteCommandInput["TransactItems"]>[number] => ({
+  Update: {
+    TableName: tableName,
+    Key: { ...key },
+    UpdateExpression: "SET #ttl = if_not_exists(#ttl, :ttl) ADD #count :one",
+    ConditionExpression: "attribute_not_exists(#count) OR #count < :limit",
+    ExpressionAttributeNames: { "#ttl": "ttl", "#count": "count" },
+    ExpressionAttributeValues: { ":ttl": ttl, ":one": 1, ":limit": limit },
+  },
+});
+
 /**
  * `TransactWriteItems` input for one certificate commit. Item order is the slot index, with the replay item first
  * so it is reported even if evaluation stops early. Every non-key attribute goes through `ExpressionAttributeNames`
@@ -463,7 +501,6 @@ export const buildIssuanceCommit = (
   const now = commit.now.toISOString();
   const windows = quotaWindows(commit.now);
   const { serial: certSerial, notAfter, issuedAt } = certificate;
-  const certificateKey = pkiKeys.certificate(ca.caId, certSerial);
   const items: NonNullable<TransactWriteCommandInput["TransactItems"]> = [];
   const slots: IssuanceSlot[] = [];
   const add = (
@@ -474,32 +511,13 @@ export const buildIssuanceCommit = (
     items.push(item);
   };
 
-  const certificatePut = {
-    Put: {
-      TableName: tableName,
-      Item: {
-        ...certificateKey,
-        ...certificate,
-        ...pkiDirectory.certificate(ca.caId, notAfter, certSerial),
-        ttl: pkiTtl.certificate(notAfter),
-      },
-      ConditionExpression: "attribute_not_exists(pk)",
-    },
-  };
+  const certificatePut = issuedCertificatePutItem(tableName, certificate);
   const quota = (
     key: PkiKey,
     limit: number,
     ttl: number,
-  ): NonNullable<TransactWriteCommandInput["TransactItems"]>[number] => ({
-    Update: {
-      TableName: tableName,
-      Key: { ...key },
-      UpdateExpression: "SET #ttl = if_not_exists(#ttl, :ttl) ADD #count :one",
-      ConditionExpression: "attribute_not_exists(#count) OR #count < :limit",
-      ExpressionAttributeNames: { "#ttl": "ttl", "#count": "count" },
-      ExpressionAttributeValues: { ":ttl": ttl, ":one": 1, ":limit": limit },
-    },
-  });
+  ): NonNullable<TransactWriteCommandInput["TransactItems"]>[number] =>
+    quotaIncrementItem(tableName, key, limit, ttl);
   const caCheck = {
     ConditionCheck: {
       TableName: tableName,
@@ -882,6 +900,8 @@ export const buildHumanIdempotencyPut = (
 export interface CreateCaTransaction {
   readonly idempotency: HumanIdempotencyWrite;
   readonly ca: CaRecord;
+  /** A Hemlig CA is created ACTIVE with its first CRL state in the same transaction. */
+  readonly crl?: CaCrlState;
 }
 
 export const buildCreateCaTransaction = (
@@ -941,6 +961,129 @@ export const buildCreateCaTransaction = (
         },
       },
     },
+    ...(input.crl === undefined
+      ? []
+      : [
+          {
+            slot: "crl",
+            item: {
+              Put: {
+                TableName: tableName,
+                Item: { ...pkiKeys.caCrl(ca.caId), ...defined(input.crl) },
+                ConditionExpression: notExists,
+              },
+            },
+          },
+        ]),
+  ];
+};
+
+export interface CreateIntermediateTransaction {
+  readonly idempotency: HumanIdempotencyWrite;
+  readonly ca: CaRecord;
+  readonly crl: CaCrlState;
+  /** The parent's inventory row: `isCa` true and `childCaId` equal to `ca.caId`. */
+  readonly certificate: IssuedCertificateRecord;
+  readonly parent: {
+    readonly caId: string;
+    readonly version: string;
+    readonly issuancePerHour: number;
+    readonly loadedMaxIssueLifetimeEverSeconds: number;
+    readonly childLifetimeSeconds: number;
+  };
+  readonly now: Date;
+  readonly adminPerHour: number;
+}
+
+/**
+ * The child's creation commit: the CA records, the parent's inventory row and both quota counters, and the parent
+ * guard. The guard is an Update when the child's lifetime raises the parent's `maxIssueLifetimeEverSeconds` (monotone,
+ * no version bump) and a ConditionCheck otherwise.
+ */
+export const buildCreateIntermediateTransaction = (
+  tableName: string,
+  input: CreateIntermediateTransaction,
+): NamedItem[] => {
+  const { ca, certificate, parent } = input;
+  if (
+    certificate.caId !== parent.caId ||
+    !certificate.isCa ||
+    certificate.childCaId !== ca.caId ||
+    ca.parentCaId !== parent.caId
+  ) {
+    throw new Error("The intermediate does not match its parent.");
+  }
+  requireLimit("adminPerHour", input.adminPerHour);
+  requireLimit("CA issuancePerHour", parent.issuancePerHour);
+  const windows = quotaWindows(input.now);
+  const baseCondition =
+    "#status = :active AND #version = :version AND #key.#state = :active AND #policy.#issueSubordinates = :true";
+  const baseNames = {
+    "#status": "status",
+    "#version": "version",
+    "#key": "key",
+    "#state": "state",
+    "#policy": "policy",
+    "#issueSubordinates": "issueSubordinates",
+  };
+  const baseValues = { ":active": "ACTIVE", ":version": parent.version, ":true": true };
+  const grows =
+    parent.childLifetimeSeconds > parent.loadedMaxIssueLifetimeEverSeconds;
+  const guard: TransactItem = grows
+    ? {
+        Update: {
+          TableName: tableName,
+          Key: { ...pkiKeys.caProfile(parent.caId) },
+          UpdateExpression: "SET #max = :lifetime",
+          ConditionExpression: `${baseCondition} AND #max <= :lifetime`,
+          ExpressionAttributeNames: {
+            ...baseNames,
+            "#max": "maxIssueLifetimeEverSeconds",
+          },
+          ExpressionAttributeValues: {
+            ...baseValues,
+            ":lifetime": parent.childLifetimeSeconds,
+          },
+        },
+      }
+    : {
+        ConditionCheck: {
+          TableName: tableName,
+          Key: { ...pkiKeys.caProfile(parent.caId) },
+          ConditionExpression: baseCondition,
+          ExpressionAttributeNames: baseNames,
+          ExpressionAttributeValues: baseValues,
+        },
+      };
+  return [
+    ...buildCreateCaTransaction(tableName, {
+      idempotency: input.idempotency,
+      ca,
+      crl: input.crl,
+    }),
+    {
+      slot: "certificate",
+      item: issuedCertificatePutItem(tableName, certificate),
+    },
+    {
+      slot: "adminHour",
+      item: quotaIncrementItem(
+        tableName,
+        pkiKeys.adminQuota(parent.caId, windows.hourSk),
+        input.adminPerHour,
+        pkiTtl.hourCounter(windows.hourStart),
+      ),
+    },
+    {
+      slot: "caHour",
+      item: quotaIncrementItem(
+        tableName,
+        pkiKeys.caQuota(parent.caId, windows.hourSk),
+        parent.issuancePerHour,
+        pkiTtl.hourCounter(windows.hourStart),
+      ),
+    },
+    { slot: "parent", item: guard },
   ];
 };
 
@@ -1094,7 +1237,8 @@ export interface CaMutationTransaction {
 
 export interface UpdateCaPolicyTransaction extends CaMutationTransaction {
   readonly policy: CaRecord["policy"];
-  readonly maxIssueLifetimeEverSeconds: number;
+  /** Absent for a ROOT: its value is raised only by child creation, never by a policy PUT. */
+  readonly maxIssueLifetimeEverSeconds?: number;
   /** Undefined keeps the stored name; null removes it. */
   readonly displayName?: string | null;
 }
@@ -1132,17 +1276,26 @@ export const buildUpdateCaPolicyTransaction = (
     slot: "profile",
     item: profileSlot(tableName, input.caId, {
       expression:
-        "SET #policy = :policy, #maxIssueLifetimeEverSeconds = :max, #version = :v" +
+        "SET #policy = :policy, " +
+        (input.maxIssueLifetimeEverSeconds === undefined
+          ? ""
+          : "#maxIssueLifetimeEverSeconds = :max, ") +
+        "#version = :v" +
         (input.displayName === undefined
           ? ""
           : input.displayName === null
             ? " REMOVE #displayName"
             : ", #displayName = :displayName"),
       condition:
-        "#version = :ifMatch AND (#status = :pending OR #status = :active) AND #maxIssueLifetimeEverSeconds <= :max",
+        "#version = :ifMatch AND (#status = :pending OR #status = :active)" +
+        (input.maxIssueLifetimeEverSeconds === undefined
+          ? ""
+          : " AND #maxIssueLifetimeEverSeconds <= :max"),
       names: {
         "#policy": "policy",
-        "#maxIssueLifetimeEverSeconds": "maxIssueLifetimeEverSeconds",
+        ...(input.maxIssueLifetimeEverSeconds === undefined
+          ? {}
+          : { "#maxIssueLifetimeEverSeconds": "maxIssueLifetimeEverSeconds" }),
         "#version": "version",
         ...(input.displayName === undefined
           ? {}
@@ -1151,7 +1304,9 @@ export const buildUpdateCaPolicyTransaction = (
       },
       values: {
         ":policy": input.policy,
-        ":max": input.maxIssueLifetimeEverSeconds,
+        ...(input.maxIssueLifetimeEverSeconds === undefined
+          ? {}
+          : { ":max": input.maxIssueLifetimeEverSeconds }),
         ":v": input.newVersion,
         ":ifMatch": input.loadedVersion,
         ":pending": "PENDING_CERTIFICATE",
@@ -1948,6 +2103,211 @@ export const buildRevokeTransaction = (
   return items;
 };
 
+export interface RevokeIntermediateTransaction {
+  readonly idempotency: HumanIdempotencyWrite;
+  readonly ca: Pick<
+    CaRecord,
+    "caId" | "version" | "key" | "parentCaId" | "serial"
+  >;
+  readonly newVersion: string;
+  readonly now: string;
+  readonly reason: RevocationReason;
+  readonly invalidityDate?: string;
+  readonly by: Actor;
+  readonly evidence: string;
+  /** Absent when the parent's row is TTL'd or already REVOKED. */
+  readonly row?: {
+    readonly mode: "entry" | "expired" | "inventory";
+    readonly notAfter: string;
+  };
+}
+
+/** The shared SET of a Hemlig-sourced CA revocation; the key is disabled only when it is still ACTIVE. */
+const hemligRevokeAssignments = (keyActive: boolean): string =>
+  `SET #status = :revoked, #revokedAt = :now, #revocationReason = :reason, #revocationSource = :hemlig, #revocationEvidence = :evidence, #version = :v${
+    keyActive ? ", #key.#state = :disabled" : ""
+  }`;
+
+const hemligRevokeNames = {
+  "#status": "status",
+  "#revokedAt": "revokedAt",
+  "#revocationReason": "revocationReason",
+  "#revocationSource": "revocationSource",
+  "#revocationEvidence": "revocationEvidence",
+  "#version": "version",
+};
+
+const hemligRevokeValues = (input: {
+  now: string;
+  reason: string;
+  evidence: string;
+  newVersion: string;
+  keyActive: boolean;
+}): Record<string, unknown> => ({
+  ":revoked": "REVOKED",
+  ":active": "ACTIVE",
+  ":retired": "RETIRED",
+  ":now": input.now,
+  ":reason": input.reason,
+  ":hemlig": "HEMLIG",
+  ":evidence": input.evidence,
+  ":v": input.newVersion,
+  ...(input.keyActive ? { ":disabled": "DISABLED" } : {}),
+});
+
+export const buildRevokeIntermediateTransaction = (
+  tableName: string,
+  input: RevokeIntermediateTransaction,
+): NamedItem[] => {
+  const { ca } = input;
+  if (ca.parentCaId === undefined || ca.serial === undefined) {
+    throw new Error("The CA is not a Hemlig intermediate.");
+  }
+  const keyActive = ca.key.state === "ACTIVE";
+  const items: NamedItem[] = [
+    {
+      slot: "idempotency",
+      item: buildHumanIdempotencyPut(tableName, input.idempotency),
+    },
+    {
+      slot: "profile",
+      item: profileSlot(tableName, ca.caId, {
+        expression: hemligRevokeAssignments(keyActive),
+        condition:
+          "(#status = :active OR #status = :retired) AND #version = :loaded AND #kind = :intermediate AND #parentCaId = :parent",
+        names: {
+          ...hemligRevokeNames,
+          "#kind": "kind",
+          "#parentCaId": "parentCaId",
+          ...(keyActive ? { "#key": "key", "#state": "state" } : {}),
+        },
+        values: {
+          ...hemligRevokeValues({ ...input, keyActive }),
+          ":loaded": ca.version,
+          ":intermediate": "INTERMEDIATE",
+          ":parent": ca.parentCaId,
+        },
+      }),
+    },
+  ];
+  const row = input.row;
+  if (row !== undefined) {
+    const certificateInput = {
+      caId: ca.parentCaId,
+      serial: ca.serial,
+      now: input.now,
+      reason: input.reason,
+      ...(input.invalidityDate === undefined
+        ? {}
+        : { invalidityDate: input.invalidityDate }),
+      by: input.by,
+    };
+    items.push({
+      slot: "certificate",
+      item: revokeCertificateUpdate(
+        tableName,
+        certificateInput,
+        row.mode === "entry"
+          ? "#status = :issued AND #notAfter > :now"
+          : row.mode === "expired"
+            ? "#status = :issued AND #notAfter <= :now"
+            : "#status = :issued",
+      ),
+    });
+    if (row.mode === "entry") {
+      items.push({
+        slot: "entry",
+        item: revocationEntryPut(tableName, {
+          ...certificateInput,
+          notAfter: row.notAfter,
+        }),
+      });
+      items.push({
+        slot: "crl",
+        item: crlRevisionBump(tableName, ca.parentCaId, input.now),
+      });
+    }
+  }
+  return items;
+};
+
+export interface DistrustRootTransaction {
+  readonly idempotency: HumanIdempotencyWrite;
+  readonly ca: Pick<CaRecord, "caId" | "version" | "key">;
+  readonly newVersion: string;
+  readonly now: string;
+  readonly reason: RevocationReason;
+  readonly evidence: string;
+}
+
+/** Local distrust of a ROOT: REVOKED with its key disabled. There is no CRL above a root. */
+export const buildDistrustRootTransaction = (
+  tableName: string,
+  input: DistrustRootTransaction,
+): NamedItem[] => {
+  const keyActive = input.ca.key.state === "ACTIVE";
+  return [
+    {
+      slot: "idempotency",
+      item: buildHumanIdempotencyPut(tableName, input.idempotency),
+    },
+    {
+      slot: "profile",
+      item: profileSlot(tableName, input.ca.caId, {
+        expression: hemligRevokeAssignments(keyActive),
+        condition:
+          "(#status = :active OR #status = :retired) AND #version = :loaded AND #kind = :root",
+        names: {
+          ...hemligRevokeNames,
+          "#kind": "kind",
+          ...(keyActive ? { "#key": "key", "#state": "state" } : {}),
+        },
+        values: {
+          ...hemligRevokeValues({ ...input, keyActive }),
+          ":loaded": input.ca.version,
+          ":root": "ROOT",
+        },
+      }),
+    },
+  ];
+};
+
+/** The walk's single-item flip of a child whose ancestor is REVOKED. */
+export const buildRevokeForRevokedAncestorUpdate = (
+  tableName: string,
+  ca: Pick<CaRecord, "caId" | "key">,
+  revocation: ExternalRevocation,
+  ancestorCaId: string,
+  newVersion: string,
+): UpdateCommandInput => {
+  const keyActive = ca.key.state === "ACTIVE";
+  return {
+    TableName: tableName,
+    Key: { ...pkiKeys.caProfile(ca.caId) },
+    UpdateExpression: hemligRevokeAssignments(keyActive),
+    ConditionExpression:
+      "(#status = :active OR #status = :retired) AND #parentCaId = :ancestor AND #key.#state = :loadedKeyState",
+    ExpressionAttributeNames: {
+      ...hemligRevokeNames,
+      "#parentCaId": "parentCaId",
+      "#key": "key",
+      "#state": "state",
+    },
+    ExpressionAttributeValues: {
+      ...hemligRevokeValues({
+        now: revocation.revokedAt,
+        reason: revocation.reason,
+        evidence: revocation.evidence,
+        newVersion,
+        keyActive,
+      }),
+      ":ancestor": ancestorCaId,
+      ":loadedKeyState": ca.key.state,
+    },
+    ReturnValues: "ALL_NEW",
+  };
+};
+
 export interface BulkRevokeBatch {
   readonly caId: string;
   readonly items: readonly { serial: string; notAfter: string }[];
@@ -2607,6 +2967,92 @@ export class PkiRepository {
       return { kind: "subjectInUse" };
     }
     throw serviceUnavailable("The CA could not be created.");
+  }
+
+  public async createIntermediateCa(
+    input: CreateIntermediateTransaction,
+  ): Promise<
+    | { kind: "created" }
+    | { kind: "replay" }
+    | { kind: "nameInUse" }
+    | { kind: "subjectInUse" }
+    | { kind: "parentChanged" }
+    | { kind: "quotaExhausted"; quotas: QuotaSlot[]; retryAfterSeconds: number }
+    | { kind: "serialCollision" }
+  > {
+    const outcome = await this.commitHuman(
+      "create-intermediate-ca",
+      input.idempotency,
+      buildCreateIntermediateTransaction(this.tableName, input),
+    );
+    if (outcome.kind === "committed") {
+      return { kind: "created" };
+    }
+    const failed = outcome.failed;
+    if (failed.includes("idempotency")) {
+      return { kind: "replay" };
+    }
+    if (failed.includes("name")) {
+      return { kind: "nameInUse" };
+    }
+    if (failed.includes("subject")) {
+      return { kind: "subjectInUse" };
+    }
+    if (failed.includes("parent")) {
+      return { kind: "parentChanged" };
+    }
+    const quotas = (["adminHour", "caHour"] as const).filter((slot) =>
+      failed.includes(slot),
+    );
+    if (quotas.length > 0) {
+      return {
+        kind: "quotaExhausted",
+        quotas,
+        retryAfterSeconds: quotaRetryAfterSeconds(quotas, input.now),
+      };
+    }
+    if (failed.includes("certificate")) {
+      return { kind: "serialCollision" };
+    }
+    throw serviceUnavailable("The CA could not be created.");
+  }
+
+  public revokeIntermediateCa(
+    input: RevokeIntermediateTransaction,
+  ): Promise<TransactOutcome> {
+    return this.commitHuman(
+      "revoke-ca",
+      input.idempotency,
+      buildRevokeIntermediateTransaction(this.tableName, input),
+    );
+  }
+
+  public distrustRootCa(input: DistrustRootTransaction) {
+    return this.profileMutation(
+      "distrust-root",
+      input.idempotency,
+      buildDistrustRootTransaction(this.tableName, input),
+    );
+  }
+
+  /** The walk's flip of a child under a REVOKED ancestor: the updated record, or undefined when it changed. */
+  public async revokeForRevokedAncestor(
+    ca: Pick<CaRecord, "caId" | "key">,
+    revocation: ExternalRevocation,
+    ancestorCaId: string,
+  ): Promise<CaRecord | undefined> {
+    const result = await this.updateWithRetry(
+      buildRevokeForRevokedAncestorUpdate(
+        this.tableName,
+        ca,
+        revocation,
+        ancestorCaId,
+        `pkv-${newId()}`,
+      ),
+    );
+    return result.kind === "updated" && result.attributes !== undefined
+      ? toCaRecord(result.attributes)
+      : undefined;
   }
 
   public async activateCa(

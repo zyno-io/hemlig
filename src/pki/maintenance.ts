@@ -32,6 +32,7 @@ export interface MaintenanceSummary {
   published: number;
   counted: number;
   retired: number;
+  revoked: number;
   drained: number;
   failures: number;
   skipped: number;
@@ -81,6 +82,7 @@ export const runMaintenancePass = async (
     published: 0,
     counted: 0,
     retired: 0,
+    revoked: 0,
     drained: 0,
     failures: 0,
     skipped: 0,
@@ -154,6 +156,38 @@ export const runMaintenancePass = async (
       }
     } catch (error) {
       fail(ca.caId, "expiry", error);
+    }
+  }
+
+  // B2. Finish the distrust walk: a child whose parent is REVOKED is revoked, in case the walk missed it.
+  for (const state of states.values()) {
+    const { ca } = state;
+    if (
+      ca.parentCaId === undefined ||
+      (ca.status !== "ACTIVE" && ca.status !== "RETIRED")
+    ) {
+      continue;
+    }
+    try {
+      const parent =
+        states.get(ca.parentCaId)?.ca ?? (await app.pki.getCa(ca.parentCaId));
+      if (parent?.status !== "REVOKED") {
+        continue;
+      }
+      const revoked = await app.cas.revokeForRevokedAncestor(ca, parent);
+      if (revoked !== undefined) {
+        state.ca = revoked;
+        summary.revoked += 1;
+        await audit("pki.ca.revoke", {
+          caId: ca.caId,
+          environment: ca.environment,
+          parentCaId: parent.caId,
+          reason: "ancestor_revoked",
+          trigger: "maintenance",
+        });
+      }
+    } catch (error) {
+      fail(ca.caId, "ancestor", error);
     }
   }
 
