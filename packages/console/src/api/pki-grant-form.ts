@@ -117,7 +117,7 @@ export const emptyDraft = (ca?: Pick<PkiCaDetail, "caId" | "policy">): GrantDraf
     ekuDefault: ["serverAuth"],
     lifetimeDefault: formatDuration(max),
     lifetimeMax: formatDuration(max),
-    lifetimeMin: "1h",
+    lifetimeMin: formatDuration(Math.min(3600, max)),
     forcedSubject: blankSubject(),
     forcedDns: "",
     forcedIp: "",
@@ -210,6 +210,11 @@ const compact = <T extends Record<string, unknown>>(
 
 /** A list is written when it has entries or the stored policy had the key. */
 const list = (text: string, stored: unknown): string[] | undefined => {
+  // Unedited text keeps the stored entries verbatim: a stored rule may have
+  // meaningful surrounding whitespace that trimming would change.
+  if (Array.isArray(stored) && stored.join("\n") === text) {
+    return [...(stored as string[])];
+  }
   const lines = splitLines(text);
   return lines.length > 0 || stored !== undefined ? lines : undefined;
 };

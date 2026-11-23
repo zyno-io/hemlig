@@ -165,12 +165,19 @@ describe("IssuanceGrantEditor edit mode", () => {
     wrapper.unmount();
   });
 
-  it("shows the stale panel on 412, keeps the draft, and reload adopts only the version", async () => {
+  it("shows the stale panel on 412, rebases the draft, and keeps another tab's change", async () => {
+    const base = baseGrant();
     const fresh = baseGrant({
       version: "v9",
       updatedAt: "2026-11-05T00:00:00Z",
       updatedBy: { type: "human", id: "alice", email: "alice@example.com" },
-      displayName: "alice was here",
+      policy: {
+        ...base.policy,
+        names: {
+          ...(base.policy.names as object),
+          dns: { allow: ["*.payments.example.com"], deny: ["internal.payments.example.com"] },
+        },
+      },
     });
     const api = fake({
       updateIssuanceGrant: vi.fn(async () => {
@@ -196,6 +203,36 @@ describe("IssuanceGrantEditor edit mode", () => {
     await wrapper.get("form").trigger("submit");
     await flushPromises();
     expect(api.updateIssuanceGrant.mock.calls[1]?.[2]).toBe("v9");
+    const sent = api.updateIssuanceGrant.mock.calls[1]?.[3] as PkiGrantInput;
+    expect(sent.displayName).toBe("my edit");
+    expect(sent.names.dns?.deny).toEqual(["internal.payments.example.com"]);
+    wrapper.unmount();
+  });
+
+  it("names the fields whose edits were replaced by a conflicting newer save", async () => {
+    const api = fake({
+      updateIssuanceGrant: vi.fn(async () => {
+        throw new ApiError(412, "precondition_failed", "stale");
+      }),
+    });
+    const { wrapper } = await mountEditor(api);
+    await wrapper.get('[data-testid="grant-display-name"]').setValue("my edit");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+    api.getAdminIssuanceGrant.mockResolvedValue(
+      baseGrant({
+        version: "v9",
+        displayName: "theirs",
+        updatedBy: { type: "human", id: "alice", email: "alice@example.com" },
+      }),
+    );
+    const reload = wrapper.findAll("button").find((b) => b.text().includes("Reload current revision"));
+    await reload?.trigger("click");
+    await flushPromises();
+    expect((wrapper.get('[data-testid="grant-display-name"]').element as HTMLInputElement).value).toBe("theirs");
+    expect(wrapper.get('[data-testid="stale-note"]').text()).toContain(
+      "Your edits to displayName were replaced by the newer saved values",
+    );
     wrapper.unmount();
   });
 

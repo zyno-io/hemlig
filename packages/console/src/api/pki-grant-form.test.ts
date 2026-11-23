@@ -36,7 +36,7 @@ const grant = (): PkiIssuanceGrant => ({
       commonName: { mode: "san", addToSans: true },
       maxSans: 50,
     },
-    subject: { allow: { organizationalUnit: ["payments-*"] } },
+    subject: { allow: { organizationalUnit: ["payments-*"], organization: [" *"] } },
     keyAlgorithms: ["ECDSA_P256", "ECDSA_P384", "RSA_2048", "RSA_3072"],
     keyUsages: ["digitalSignature", "keyEncipherment"],
     extendedKeyUsages: {
@@ -152,6 +152,12 @@ describe("create drafts", () => {
     expect("subject" in request).toBe(false);
     expect("forced" in request).toBe(false);
     expect(request.names).toEqual({ dns: { allow: ["*.example.com"] } });
+  });
+
+  it("fits the minimum lifetime to a short CA", () => {
+    const draft = emptyDraft({ caId: "ca-1", policy: { maxLeafLifetimeSeconds: 300 } as never });
+    expect(draft.lifetimeMin).toBe("5m");
+    expect(emptyDraft().lifetimeMin).toBe("1h");
   });
 
   it("reports local problems", () => {

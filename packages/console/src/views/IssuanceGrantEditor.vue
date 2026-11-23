@@ -21,6 +21,7 @@ import {
   emptyDraft,
   issuePathToField,
   KEY_USAGES,
+  stableJson,
   SUBJECT_KEYS,
   type GrantDraft,
 } from "../api/pki-grant-form";
@@ -140,6 +141,7 @@ watch(issuingCas, (cas) => {
 
 // A new grant starts with lifetimes that fit the chosen CA.
 let autoLifetime = emptyDraft().lifetimeDefault;
+let autoMin = emptyDraft().lifetimeMin;
 watch(
   () => caDetail.data.value,
   (ca) => {
@@ -150,9 +152,13 @@ watch(
     if (draft.lifetimeDefault === autoLifetime && draft.lifetimeMax === autoLifetime) {
       draft.lifetimeDefault = fitted.lifetimeDefault;
       draft.lifetimeMax = fitted.lifetimeMax;
+      if (draft.lifetimeMin === autoMin) {
+        draft.lifetimeMin = fitted.lifetimeMin;
+      }
       baseline.value = draftSnapshot(draft);
     }
     autoLifetime = fitted.lifetimeDefault;
+    autoMin = fitted.lifetimeMin;
   },
 );
 
@@ -405,14 +411,46 @@ const reloadStale = async (): Promise<void> => {
   if (fresh === undefined) {
     return;
   }
-  // Adopt only the version: the draft is the operator's work in progress.
-  savedGrant.value = fresh;
+  // Rebase the operator's edits onto the fresh grant, field by field, so
+  // another operator's saved change is never overwritten by the old draft.
+  const oldSaved = savedGrant.value;
+  const oldPolicy = strictPolicy.value;
   const policy = editableGrant(fresh);
-  strictPolicy.value = policy;
-  if (policy !== undefined) {
+  const conflicts: string[] = [];
+  if (oldSaved !== undefined && oldPolicy !== undefined && policy !== undefined) {
+    const base = draftFromGrant(oldSaved, oldPolicy) as unknown as Record<string, unknown>;
+    const freshDraft = draftFromGrant(fresh, policy);
+    const merged = freshDraft as unknown as Record<string, unknown>;
+    const current = draft as unknown as Record<string, unknown>;
+    for (const field of Object.keys(base)) {
+      if (field === "origin" || field === "originExpiresAt") {
+        continue;
+      }
+      if (stableJson(current[field]) === stableJson(base[field])) {
+        continue;
+      }
+      if (stableJson(merged[field]) === stableJson(base[field])) {
+        merged[field] = current[field];
+      } else {
+        conflicts.push(field);
+      }
+    }
+    setDraft(freshDraft);
+    savedGrant.value = fresh;
+    strictPolicy.value = policy;
     baseline.value = draftSnapshot(draftFromGrant(fresh, policy));
+  } else {
+    savedGrant.value = fresh;
+    strictPolicy.value = policy;
+    if (policy !== undefined) {
+      baseline.value = draftSnapshot(draftFromGrant(fresh, policy));
+    }
   }
-  staleNote.value = `${fresh.updatedBy.email ?? fresh.updatedBy.id} saved version ${fresh.version} at ${fresh.updatedAt}; review and save again.`;
+  staleNote.value =
+    `${fresh.updatedBy.email ?? fresh.updatedBy.id} saved version ${fresh.version} at ${fresh.updatedAt}; review and save again.` +
+    (conflicts.length > 0
+      ? ` Your edits to ${conflicts.join(", ")} were replaced by the newer saved values; reapply them if still needed.`
+      : "");
   saveMutation.reset();
 };
 

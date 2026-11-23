@@ -1,3 +1,4 @@
+import { ApiError } from "../api/errors";
 import { QueryClient, VueQueryPlugin } from "@tanstack/vue-query";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
@@ -191,6 +192,27 @@ describe("ConsumerCertificateGrants", () => {
     expect(revoke).toHaveBeenCalledTimes(21);
     expect(new Set(revoke.mock.calls.map((call) => call[2])).size).toBe(1);
     expect(wrapper.get('[data-testid="bulk-result"]').text()).toContain("Revoked 21");
+    wrapper.unmount();
+  });
+
+  it("locks the inputs and reuses the key while the outcome is unknown", async () => {
+    const revoke = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(503, "service_unavailable", "busy"))
+      .mockResolvedValue(bulk(true));
+    const { wrapper } = await mountTab({ revokeConsumerPkiCertificates: revoke });
+    await wrapper.get('[data-testid="bulk-open"]').trigger("click");
+    await typeConsumer(wrapper);
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(wrapper.get('[data-testid="bulk-scope"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="bulk-reason"]').attributes("disabled")).toBeDefined();
+
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+    expect(revoke).toHaveBeenCalledTimes(2);
+    expect(revoke.mock.calls[1]?.[2]).toBe(revoke.mock.calls[0]?.[2]);
     wrapper.unmount();
   });
 

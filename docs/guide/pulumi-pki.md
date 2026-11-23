@@ -64,8 +64,8 @@ Expected output: `issuing1Status` is `PENDING_CERTIFICATE`, and `issuing1.csr` h
 Have the root sign the CSR and issue the root's CRL, as in [Offline root recipe](../operations/pki-offline-root.md#sign-a-hemlig-csr). Then store both certificates in config:
 
 ```sh
-pulumi config set issuing1Certificate "$(cat issuing1.pem)"
-pulumi config set issuing1Chain "$(cat root.pem)"
+pulumi config set issuing1Certificate < issuing1.pem
+pulumi config set issuing1Chain < root.pem
 ```
 
 The provider never sends a root CRL, and activation does not need one. If this root is new to Hemlig, activation still succeeds, and the root CRL state is `MISSING` until you upload one (see [The root CRL stays manual](#the-root-crl-stays-manual)).
@@ -169,9 +169,11 @@ The policy fields are the [grant fields](../reference/api/admin-pki.md#issuance-
 
 Destroying a CA resource retires an `ACTIVE` CA and never destroys its key. Before it retires, the provider lists the CA's grants, re-reads each one and refuses while any live grant still points at the CA. It lists up to 10 and tells you to migrate or delete them. More than 20 listed grants also refuses.
 
-For a CA in any other status (`PENDING_CERTIFICATE`, `RETIRED`, `REVOKED`, `FAILED`), destroy makes no remote call. A pending CA keeps its key, so an accidental removal can be undone with `import`. Abandoning it, revoking it and destroying its key are human actions in the console or CLI. The provider cannot call them.
+For a CA in any other status (`PENDING_CERTIFICATE`, `RETIRED`, `REVOKED`, `FAILED`), destroy makes no remote call. Abandoning it, revoking it and destroying its key are human actions in the console or CLI. The provider cannot call them.
 
-Use `protect: true` on every CA. `retainOnDelete: true` removes a CA from state without touching Hemlig, which is the safe way to hand a CA to another stack.
+Use `protect: true` on every CA. `retainOnDelete: true` removes a CA from state without touching Hemlig.
+
+The live-grant check is best-effort. A grant migrated onto the CA at the same moment as the destroy can race it, because the server's retire is not conditioned on grants. Do not migrate grants onto a CA while removing it.
 
 Destroying a grant deletes it and leaves a tombstone. It never revokes certificates; use [bulk revoke](pki.md#revoke) for that.
 
@@ -179,9 +181,9 @@ Destroying a grant deletes it and leaves a tombstone. It never revokes certifica
 
 | Error | Cause | Action |
 | --- | --- | --- |
-| `A CA named X already exists` | An earlier run created the CA, or the name is taken | Add `{ import: "caId" }` to the resource options with the ID in the message. Otherwise choose a new name and DN |
+| `A CA named X already exists` | An earlier run created the CA, or the name is taken | CA names and DNs are never reused. Abandon the orphan with `hemlig pki ca delete <caId> --environment <env> --if-match current` if it is `PENDING_CERTIFICATE`, or retire it with `hemlig pki ca retire <caId> --environment <env>` if it is `ACTIVE`. Then choose a new name and DN |
 | `ca_subject_in_use` | The DN is claimed forever | Choose a new DN |
-| `Grant X exists` | A grant of that name is live | Import it with `{ import: "consumerId/name" }`, or delete it and run again. Declare the policy the way `hemlig pki grant get` prints it |
+| `Grant X exists` | A grant of that name is live | Delete the orphan with `hemlig pki grant delete <consumerId> <name> --if-match current` and run again |
 | `changed outside Pulumi` | A grant was disabled or migrated out of band | Run `pulumi refresh`, then update the program |
 | `deleted outside Pulumi` | The grant was deleted elsewhere | Run `pulumi refresh` |
 | `not found at` on refresh | `adminUrl` points at another deployment | Fix `adminUrl`. The provider never drops a CA or grant from state on a 404 |

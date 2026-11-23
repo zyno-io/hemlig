@@ -55,7 +55,7 @@ describe("PemField", () => {
     const input = wrapper.get('input[type="file"]');
     Object.defineProperty(input.element, "files", {
       configurable: true,
-      value: [new File([new Uint8Array([0x30, 0x82, 0x01, 0xff])], "c.der")],
+      value: [new File([new Uint8Array([0x30, 0x05, 0x30, 0x01, 0x02, 0x03, 0x00])], "c.der")],
     });
     await input.trigger("change");
     await vi.waitFor(() => {

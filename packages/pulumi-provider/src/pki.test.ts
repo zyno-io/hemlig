@@ -672,7 +672,7 @@ test("CA: a concurrent retire (ca_not_active) counts as success", async () => {
   await caProvider(client).delete("ca-1", caState({ status: "ACTIVE" }));
 });
 
-test("CA: name_in_use explains how to import and adopts nothing", async () => {
+test("CA: name_in_use explains how to recover and adopts nothing", async () => {
   const { client, calls } = fake<HemligCaClient>({
     createPkiCa: () => {
       throw http(409, "conflict", "name_in_use");
@@ -691,7 +691,8 @@ test("CA: name_in_use explains how to import and adopts nothing", async () => {
     (error: Error) =>
       /ca-existing/.test(error.message) &&
       /ACTIVE/.test(error.message) &&
-      /import: "ca-existing"/.test(error.message),
+      /hemlig pki ca retire ca-existing/.test(error.message) &&
+      !/import/.test(error.message),
   );
   assert.deepEqual(
     calls.map((call) => call.method),
@@ -858,7 +859,7 @@ test("grant: create over a tombstone posts; over a live grant throws without pos
   });
   await assert.rejects(
     grantProvider(live.client).create(grantInputs()),
-    /import: "payments-prod\/web"/,
+    /hemlig pki grant delete payments-prod web/,
   );
   assert.equal(callsOf(live.calls, "createIssuanceGrant").length, 0);
 

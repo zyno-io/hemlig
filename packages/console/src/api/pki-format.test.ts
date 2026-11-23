@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   daysUntil,
@@ -108,7 +109,8 @@ describe("inspectPem", () => {
 
   it("accepts a CRL as PEM or base64 DER", () => {
     expect(inspectPem(block("X509 CRL"), "crl").problems).toEqual([]);
-    expect(inspectPem("MIIBAAoBAA==\n", "crl").problems).toEqual([]);
+    expect(inspectPem(toBase64(derCrl()), "crl").problems).toEqual([]);
+    expect(inspectPem(toBase64(pkcs8()), "crl").problems).not.toEqual([]);
     expect(inspectPem("not base64!!", "crl").problems).not.toEqual([]);
     expect(inspectPem(block("CERTIFICATE"), "crl").problems).not.toEqual([]);
   });
@@ -135,6 +137,21 @@ describe("pemBodiesEqual", () => {
   });
 });
 
+const tlv = (tag: number, content: Uint8Array): Uint8Array<ArrayBuffer> => {
+  const length =
+    content.length < 0x80
+      ? [content.length]
+      : [0x82, content.length >> 8, content.length & 0xff];
+  return Uint8Array.from([tag, ...length, ...content]);
+};
+const cat = (...parts: Uint8Array[]): Uint8Array<ArrayBuffer> => Uint8Array.from(parts.flatMap((part) => [...part]));
+/** The outer shape of a certificate or CRL: SEQUENCE { SEQUENCE { ... }, ... }. */
+const derCrl = (): Uint8Array<ArrayBuffer> =>
+  tlv(0x30, cat(tlv(0x30, tlv(0x02, Uint8Array.from([1]))), tlv(0x03, Uint8Array.from([0, 1]))));
+const pkcs8 = (): Uint8Array<ArrayBuffer> =>
+  Uint8Array.from(generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ format: "der", type: "pkcs8" }));
+const toBase64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
+
 describe("fileToPemOrBase64", () => {
   const file = (bytes: BlobPart, name = "f"): File => new File([bytes], name);
 
@@ -145,20 +162,29 @@ describe("fileToPemOrBase64", () => {
 
   it("wraps a DER certificate as PEM", async () => {
     const result = await fileToPemOrBase64(
-      file(new Uint8Array([0x30, 0x82, 0x01, 0xff])),
+      file(derCrl()),
       "certificate",
     );
     expect(result.text).toBe(
-      "-----BEGIN CERTIFICATE-----\nMIIB/w==\n-----END CERTIFICATE-----\n",
+      `-----BEGIN CERTIFICATE-----\n${toBase64(derCrl())}\n-----END CERTIFICATE-----\n`,
     );
   });
 
   it("turns a DER CRL into base64", async () => {
     const result = await fileToPemOrBase64(
-      file(new Uint8Array([0x30, 0xff, 0x00])),
+      file(derCrl()),
       "crl",
     );
-    expect(result.text).toBe("MP8A");
+    expect(result.text).toBe(toBase64(derCrl()));
+  });
+
+  it("refuses a DER private key for every kind, and a pasted one", async () => {
+    for (const kind of ["certificate", "csr", "crl"] as const) {
+      const result = await fileToPemOrBase64(file(pkcs8()), kind);
+      expect(result.problem).toBeDefined();
+      expect(result.text).toBeUndefined();
+    }
+    expect(inspectPem(toBase64(pkcs8()), "crl").problems).not.toEqual([]);
   });
 
   it("refuses a private key in PEM or in raw bytes", async () => {

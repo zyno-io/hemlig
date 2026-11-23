@@ -41,7 +41,10 @@ const confirm = async (): Promise<void> => {
   if (submitting.value || retirement.result.value !== undefined) {
     return;
   }
-  const result = await retirement.submit(undefined);
+  // An unknown outcome must resolve through the same key.
+  const result = await (retirement.canRetry.value
+    ? retirement.retry()
+    : retirement.submit(undefined));
   if (result !== undefined) {
     emit("retired", result);
   }

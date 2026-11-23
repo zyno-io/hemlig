@@ -195,6 +195,21 @@ describe("CaDetail pending activation", () => {
   });
 });
 
+describe("CaDetail publish CRL retry", () => {
+  it("retries an ambiguous publish with the same key", async () => {
+    const publishPkiCrl = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(503, "service_unavailable", "busy"))
+      .mockResolvedValue({ crl: ca().crl });
+    const wrapper = await mountView({ getPkiCa: vi.fn(async () => ca()), publishPkiCrl });
+    await click(wrapper, "publish-crl");
+    expect(publishPkiCrl).toHaveBeenCalledTimes(1);
+    await click(wrapper, "publish-crl");
+    expect(publishPkiCrl).toHaveBeenCalledTimes(2);
+    expect(publishPkiCrl.mock.calls[1]?.[1]).toBe(publishPkiCrl.mock.calls[0]?.[1]);
+  });
+});
+
 describe("CaDetail abandon stale", () => {
   it("reloads the current revision after a 412 and confirms with the new version", async () => {
     const getPkiCa = vi

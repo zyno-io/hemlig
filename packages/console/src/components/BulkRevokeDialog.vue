@@ -107,6 +107,11 @@ const confirm = async (): Promise<void> => {
   if (running.value || invalidityProblem.value !== undefined) {
     return;
   }
+  if (mutation.canRetry.value) {
+    // The outcome is unknown: resolve it on the same key, never a new one.
+    await mutation.retry();
+    return;
+  }
   if (complete.value !== false) {
     totals.value = { revoked: 0, alreadyRevoked: 0, attempts: 0 };
   }
@@ -114,7 +119,7 @@ const confirm = async (): Promise<void> => {
   await mutation.submit(buildInput());
 };
 
-const lockedInput = computed(() => running.value || incomplete.value);
+const lockedInput = computed(() => running.value || incomplete.value || mutation.canRetry.value);
 </script>
 
 <template>

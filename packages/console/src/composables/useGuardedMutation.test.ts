@@ -8,6 +8,27 @@ const stale = new ApiError(412, "precondition_failed", "not current", "corr-3");
 const network = new ApiError(0, "network", "unreachable");
 
 describe("useGuardedMutation", () => {
+  it("retries a no-input mutation with the same key", async () => {
+    const keys: string[] = [];
+    let calls = 0;
+    const mutation = useGuardedMutation<undefined, string>({
+      family: "pki",
+      mutate: async (_input, key) => {
+        keys.push(key);
+        calls += 1;
+        if (calls === 1) {
+          throw unavailable;
+        }
+        return "ok";
+      },
+    });
+    await mutation.submit(undefined);
+    expect(mutation.canRetry.value).toBe(true);
+    expect(await mutation.retry()).toBe("ok");
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+  });
+
   it("uses one key per submit intent and the same key on retry", async () => {
     const keys: string[] = [];
     const mutate = vi.fn(async (_input: string, key: string) => {

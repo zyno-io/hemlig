@@ -133,7 +133,7 @@ const publish = useGuardedMutation<undefined, PkiCrlPublishResponse>({
   mutate: (_input, key) => store.requireApi().publishPkiCrl(props.caId, key),
 });
 const publishCrl = async (): Promise<void> => {
-  const result = await publish.submit(undefined);
+  const result = await (publish.canRetry.value ? publish.retry() : publish.submit(undefined));
   if (result !== undefined && detail.value !== undefined) {
     cacheCa({ ...detail.value, crl: result.crl });
   }
@@ -144,7 +144,7 @@ const destroy = useGuardedMutation<undefined, PkiCaDetail>({
   mutate: (_input, key) => store.requireApi().destroyPkiCaKey(props.caId, key),
 });
 const confirmDestroy = async (): Promise<void> => {
-  const result = await destroy.submit(undefined);
+  const result = await (destroy.canRetry.value ? destroy.retry() : destroy.submit(undefined));
   if (result !== undefined) {
     cacheCa(result);
     showDestroy.value = false;

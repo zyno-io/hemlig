@@ -701,7 +701,7 @@ kubectl -n pki5 get hemligtrustbundle acc-htrust -o jsonpath='{.status}' | jq '{
 
 ## Gate PKI-8: console and Pulumi drive the PKI
 
-Run after gate PKI-7. You need the gate 2 `$TOKEN`, the PKI-2 recipe root, the console from gate 3, a Pulumi project with the provider and a stack for this deployment, and the `hemlig` CLI. Steps 1 to 6 are in the console. Step 7 is in Pulumi. Steps 8 and 9 read the results.
+Run after gate PKI-7. You need the gate 2 `$TOKEN`, the PKI-2 recipe root, the console from gate 3, a Pulumi project with the provider and a stack for this deployment, and the `hemlig` CLI. Steps 1 to 6 are in the console. Steps 7 to 9 are in Pulumi: step 8 reads the state while both PKI resources still exist, and step 9 destroys them. Step 10 reads the audit log.
 
 ```sh
 aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
@@ -711,7 +711,8 @@ curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS https://admin.acc.example.co
 aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
 openssl crl -inform DER -in downloaded.crl -noout -text | head -5
 hemlig pki ca get acc-console-1 | jq -r '.data | [.status, .key.state] | @tsv'
-pulumi stack export | jq 'del(.. | .__provider?)' | grep -c -e "$HEMLIG_ADMIN_TOKEN" -e 'PRIVATE KEY'
+pulumi stack export | grep -cF -e "$HEMLIG_ADMIN_TOKEN"
+pulumi stack export | grep -cF 'PRIVATE KEY'
 ```
 
 | Step | Do | Pass | Fail means |
@@ -722,9 +723,10 @@ pulumi stack export | jq 'del(.. | .__provider?)' | grep -c -e "$HEMLIG_ADMIN_TO
 | 4. Grant editor | Create a grant with a DNS allow rule. Validate it, then evaluate an allowed name and a denied one. Save from two tabs | Validate lists no errors. Evaluate returns `allow` with a plan, then `deny` with `name_not_permitted`. The second save shows the stale panel with the draft intact | The editor retried a `412`, or lost the draft |
 | 5. Revoke | Issue a certificate under the CA with `hemlig pki cert issue acc-console-1 --csr pki-client.csr --use-csr-names --usage digitalSignature --usage clientAuth --duration 5m` (the PKI-3 CSR; the CA policy caps leaves at 300 s). Revoke it from its detail page in the console, then open it again | The CRL number rises within 60 seconds, and the second view offers only the key compromise upgrade | A second revoke is offered, or the CRL was not published |
 | 6. Destroy the key | Retire the CA. The key becomes `DISABLED` once the drain point (`retiredAt` plus the longest lifetime ever issued, here the 5 minute certificate from step 5) has passed and maintenance has published a CRL after it, so expect about 5 minutes plus up to 15 minutes. Then destroy the key and type the CA name | The button needs the exact name. The key becomes `DESTROYED` and the CA record remains | Destroy ran without confirmation, or deleted the record |
-| 7. Pulumi | Apply the [two-phase CA](../guide/pulumi-pki.md), then create a grant. Edit the grant in the console, change it in Pulumi and apply. Run `pulumi destroy` with `protect`, then unprotect and destroy | The first apply gives `PENDING_CERTIFICATE` and `csrPem`. After the config is set, `ACTIVE`. The grant update succeeds. A protected destroy is refused. After unprotecting, the grant is a tombstone, the CA is `RETIRED` with its key still `ACTIVE`, and nothing is revoked | The provider replaced or revoked something, or destroyed the key |
-| 8. State | The `pulumi stack export` count | `0` | The token or a private key reached state |
-| 9. Audit volume | Load one CA detail page, then count audit objects and search them for `-----BEGIN` | A bounded number of read events and no `-----BEGIN` | The console refetches PKI reads, or evidence carries PEM |
+| 7. Pulumi | Apply the [two-phase CA](../guide/pulumi-pki.md), then create a grant. Edit the grant in the console, change it in Pulumi and apply | The first apply gives `PENDING_CERTIFICATE` and `csrPem`. After the config is set, `ACTIVE`. The grant update succeeds | The provider replaced or revoked something |
+| 8. State | While the CA and grant still exist, before any destroy, run the two `pulumi stack export` counts above. They search the whole export, including each resource's serialized provider | Both print `0` | The token or a private key reached state |
+| 9. Destroy | Run `pulumi destroy` with `protect`, then unprotect and destroy | A protected destroy is refused. After unprotecting, the grant is a tombstone, the CA is `RETIRED` with its key still `ACTIVE`, and nothing is revoked | The provider revoked something, or destroyed the key |
+| 10. Audit volume | Load one CA detail page, then count audit objects and search them for `-----BEGIN` | A bounded number of read events and no `-----BEGIN` | The console refetches PKI reads, or evidence carries PEM |
 
 ## Teardown
 

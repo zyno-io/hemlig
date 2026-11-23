@@ -112,6 +112,43 @@ const BASE64_BODY = /^[A-Za-z0-9+/=\s]+$/;
 
 const byteLength = (text: string): number => new TextEncoder().encode(text).length;
 
+/**
+ * Checks that DER bytes have the outer shape of a certificate, CSR or CRL:
+ * a SEQUENCE with a consistent length whose first element is a SEQUENCE.
+ * Private keys (PKCS#8, RSA, EC) start with an INTEGER instead.
+ */
+export const derShapeProblem = (bytes: Uint8Array): string | undefined => {
+  const invalid = "Expected a DER certificate, CSR or CRL. It is not sent.";
+  if (bytes.length < 4 || bytes[0] !== 0x30) {
+    return invalid;
+  }
+  let offset = 2;
+  let length = bytes[1] ?? 0;
+  if (length >= 0x80) {
+    const count = length - 0x80;
+    if (count < 1 || count > 4 || bytes.length < 2 + count) {
+      return invalid;
+    }
+    length = 0;
+    for (let index = 0; index < count; index += 1) {
+      length = length * 256 + (bytes[2 + index] ?? 0);
+    }
+    offset = 2 + count;
+  }
+  if (offset + length !== bytes.length || bytes[offset] !== 0x30) {
+    return invalid;
+  }
+  return undefined;
+};
+
+const base64Bytes = (text: string): Uint8Array | undefined => {
+  try {
+    return Uint8Array.from(atob(text.replace(/\s+/g, "")), (char) => char.charCodeAt(0));
+  } catch {
+    return undefined;
+  }
+};
+
 export const inspectPem = (text: string, kind: PemKind): PemInspection => {
   const problems: string[] = [];
   const labels = [...text.matchAll(BLOCK)].map((match) => match[1] ?? "");
@@ -152,6 +189,12 @@ export const inspectPem = (text: string, kind: PemKind): PemInspection => {
       if (labels.length === 0) {
         if (!BASE64_BODY.test(text) || text.trim() === "") {
           problems.push("Expected an X509 CRL PEM block or base64 DER.");
+        } else {
+          const bytes = base64Bytes(text);
+          const problem = bytes === undefined ? undefined : derShapeProblem(bytes);
+          if (problem !== undefined) {
+            problems.push(problem);
+          }
         }
       } else if (labels.length !== 1 || labels[0] !== "X509 CRL") {
         problems.push("Expected exactly one X509 CRL block.");
@@ -236,6 +279,10 @@ export const fileToPemOrBase64 = async (
   }
   if (raw.includes("-----BEGIN ")) {
     return { text: new TextDecoder().decode(bytes) };
+  }
+  const shape = derShapeProblem(bytes);
+  if (shape !== undefined) {
+    return { problem: shape };
   }
   const base64 = btoa(raw);
   const label = DER_LABEL[kind];

@@ -58,6 +58,8 @@ export const useGuardedMutation = <TInput, TResult>(
   const canRetry = ref(false);
   let pendingKey: string | undefined;
   let pendingInput: TInput | undefined;
+  // Explicit, because a no-input mutation's pending input is `undefined`.
+  let hasPending = false;
 
   const run = async (input: TInput, key: string): Promise<TResult | undefined> => {
     phase.value = { kind: "submitting" };
@@ -68,6 +70,7 @@ export const useGuardedMutation = <TInput, TResult>(
       phase.value = { kind: "succeeded" };
       pendingKey = undefined;
       pendingInput = undefined;
+      hasPending = false;
       return value;
     } catch (caught) {
       const error =
@@ -139,15 +142,16 @@ export const useGuardedMutation = <TInput, TResult>(
     async submit(input) {
       pendingKey = (options.newKey ?? defaultKey)();
       pendingInput = input;
+      hasPending = true;
       return run(input, pendingKey);
     },
     async retry() {
-      if (pendingKey === undefined || pendingInput === undefined) {
+      if (pendingKey === undefined || !hasPending) {
         return undefined;
       }
       // Deliberately the same key: this path exists only for the route family
       // that replays it.
-      return run(pendingInput, pendingKey);
+      return run(pendingInput as TInput, pendingKey);
     },
     reset() {
       phase.value = { kind: "idle" };
@@ -155,6 +159,7 @@ export const useGuardedMutation = <TInput, TResult>(
       canRetry.value = false;
       pendingKey = undefined;
       pendingInput = undefined;
+      hasPending = false;
     },
   };
 };

@@ -560,7 +560,7 @@ export class HemligCertificateAuthorityProvider
       );
     }
     return plainError(
-      `A CA named ${inputs.name} already exists (${existing.caId}, status ${existing.status}). If an interrupted run of this program created it, add { import: "${existing.caId}" } to the resource options; otherwise choose a new name and DN.`,
+      `A CA named ${inputs.name} already exists (${existing.caId}, status ${existing.status}). CA names and DNs are never reused. If an interrupted run created it, abandon it (hemlig pki ca delete ${existing.caId} --environment ${inputs.environment} --if-match current, while PENDING_CERTIFICATE) or retire it (hemlig pki ca retire ${existing.caId} --environment ${inputs.environment}, while ACTIVE), then choose a new name and DN.`,
     );
   }
 
@@ -1083,7 +1083,7 @@ const grantPolicyOf = (
 ): Record<string, unknown> => clean(pick(value, GRANT_POLICY_KEYS));
 
 const grantExistsMessage = (consumerId: string, name: string): string =>
-  `Grant ${consumerId}/${name} exists. If an interrupted run created it, delete it (hemlig pki grant delete) and re-run, or import it with { import: "${consumerId}/${name}" }.`;
+  `Grant ${consumerId}/${name} exists. If an interrupted run created it, delete it (hemlig pki grant delete ${consumerId} ${name} --if-match current) and re-run.`;
 
 const sameInstant = (a: string | undefined, b: string | undefined): boolean =>
   a === undefined || b === undefined
