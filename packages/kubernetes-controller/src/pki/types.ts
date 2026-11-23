@@ -10,9 +10,22 @@ export const ISSUER_PLURAL = "hemligissuers";
 export const CLUSTER_ISSUER_PLURAL = "hemligclusterissuers";
 export const CONSUMER_PLURAL = "hemligconsumers";
 export const CR_PLURAL = "certificaterequests";
+export const TRUST_BUNDLE_PLURAL = "hemligtrustbundles";
 
 export const ISSUER_KIND = "HemligIssuer";
 export const CLUSTER_ISSUER_KIND = "HemligClusterIssuer";
+export const TRUST_BUNDLE_KIND = "HemligTrustBundle";
+
+export const MANAGED_BY_LABEL = "hemlig.zyno.io/managed-by";
+export const MANAGED_BY_TRUST_BUNDLE = "trust-bundle";
+export const OWNER_ANNOTATION = "hemlig.zyno.io/trust-bundle-owner";
+export const CA_IDS_ANNOTATION = "hemlig.zyno.io/ca-ids";
+export const CRL_ISSUER_ANNOTATION = "hemlig.zyno.io/crl-issuer";
+export const CRL_SOURCE_ANNOTATION = "hemlig.zyno.io/crl-source";
+export const CRL_SHA256_ANNOTATION = "hemlig.zyno.io/crl-sha256";
+export const CRL_NUMBER_ANNOTATION = "hemlig.zyno.io/crl-number";
+export const CRL_THIS_UPDATE_ANNOTATION = "hemlig.zyno.io/crl-this-update";
+export const CRL_NEXT_UPDATE_ANNOTATION = "hemlig.zyno.io/crl-next-update";
 
 export const CERTIFICATE_NAME_ANNOTATION = "cert-manager.io/certificate-name";
 export const CERTIFICATE_REVISION_ANNOTATION =
@@ -28,6 +41,10 @@ export const FAST = { base: 1_000, max: 300_000 } as const;
 export const ISSUER_REFRESH_MIN_MS = 30_000;
 export const RELIST_PAGE = 500;
 export const STATUS_WRITE_ATTEMPTS = 5;
+export const CONFIGMAP_MAX_BYTES = 1_048_576;
+export const BUNDLE_INTERVAL_DEFAULT_MS = 300_000;
+export const BUNDLE_INTERVAL_MIN_MS = 30_000;
+export const BUNDLE_INTERVAL_MAX_MS = 3_600_000;
 
 export const requestKey = (namespace: string, name: string): string =>
   `cr/${namespace}/${name}`;
@@ -35,6 +52,8 @@ export const issuerKey = (namespace: string, name: string): string =>
   `issuer/${namespace}/${name}`;
 export const clusterIssuerKey = (name: string): string =>
   `clusterissuer/${name}`;
+export const bundleKey = (namespace: string, name: string): string =>
+  `bundle/${namespace}/${name}`;
 export const consumerGroup = (namespace: string, name: string): string =>
   `${namespace}/${name}`;
 
@@ -114,6 +133,38 @@ export interface HemligClusterIssuer {
   readonly status?: IssuerStatus;
 }
 
+export interface TrustBundleCrlStatus {
+  readonly id: string;
+  readonly source: "GENERATED" | "UPLOADED";
+  readonly configMap: string;
+  readonly state: "Current" | "Stale" | "Missing" | "Rejected" | "Conflict";
+  readonly number?: string;
+  readonly thisUpdate?: string;
+  readonly nextUpdate?: string;
+}
+
+export interface TrustBundleStatus {
+  readonly observedGeneration?: number;
+  readonly consumerId?: string;
+  readonly environment?: string;
+  readonly acceptedCaIds?: readonly string[];
+  readonly crls?: readonly TrustBundleCrlStatus[];
+  readonly conditions?: readonly IssuerCondition[];
+}
+
+export interface HemligTrustBundle {
+  readonly metadata: ObjectMeta;
+  readonly spec: {
+    readonly consumerRef: string;
+    readonly consumerNamespace?: string;
+    readonly caIds: readonly string[];
+    readonly includeCrl?: boolean;
+    readonly crlFormat?: "der" | "pem";
+    readonly target: { readonly name: string };
+  };
+  readonly status?: TrustBundleStatus;
+}
+
 export type AnyIssuer = HemligIssuer | HemligClusterIssuer;
 
 export interface Scheduler {
@@ -145,18 +196,39 @@ export interface WatchApi {
 
 export interface PkiConfig {
   readonly concurrency: number;
+  readonly bundleIntervalMs?: number;
 }
 
 export const pkiConfigFromEnvironment = (
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): PkiConfig => {
   const raw = env.HEMLIG_PKI_CONCURRENCY;
-  if (raw === undefined || raw === "") return { concurrency: 4 };
-  const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 64) {
-    throw new Error("HEMLIG_PKI_CONCURRENCY must be an integer from 1 to 64.");
+  let concurrency = 4;
+  if (raw !== undefined && raw !== "") {
+    const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 64) {
+      throw new Error(
+        "HEMLIG_PKI_CONCURRENCY must be an integer from 1 to 64.",
+      );
+    }
+    concurrency = parsed;
   }
-  return { concurrency: parsed };
+  const rawInterval = env.HEMLIG_PKI_BUNDLE_INTERVAL_MS;
+  let bundleIntervalMs = BUNDLE_INTERVAL_DEFAULT_MS;
+  if (rawInterval !== undefined && rawInterval !== "") {
+    const parsed = /^\d+$/.test(rawInterval) ? Number(rawInterval) : Number.NaN;
+    if (
+      !Number.isInteger(parsed) ||
+      parsed < BUNDLE_INTERVAL_MIN_MS ||
+      parsed > BUNDLE_INTERVAL_MAX_MS
+    ) {
+      throw new Error(
+        "HEMLIG_PKI_BUNDLE_INTERVAL_MS must be an integer from 30000 to 3600000.",
+      );
+    }
+    bundleIntervalMs = parsed;
+  }
+  return { concurrency, bundleIntervalMs };
 };
 
 export const unwrap = (value: unknown): unknown =>

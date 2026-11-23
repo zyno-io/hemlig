@@ -9,7 +9,9 @@ import type { ConsumerRegistry, RegisteredConsumer } from "../v1beta";
 import { CertificateRequestReconciler } from "./certificate-requests";
 import { IssuerReconciler, type PkiDeps } from "./issuers";
 import { KeyedWorkQueue } from "./queue";
-import type { Scheduler, WatchApi } from "./types";
+import { TrustBundleReconciler } from "./trust-bundles";
+import { CONFIGMAP_MAX_BYTES, type Scheduler, type WatchApi } from "./types";
+import { createHash } from "node:crypto";
 
 export const flush = async (): Promise<void> => {
   for (let i = 0; i < 5; i += 1) {
@@ -238,9 +240,25 @@ export class FakeCustom {
   }
 }
 
+export interface ConfigMapCall {
+  readonly op: "read" | "create" | "replace" | "delete";
+  readonly namespace: string;
+  readonly name: string;
+  readonly body?: any;
+}
+
 export class FakeCore {
   public readonly labels = new Map<string, Record<string, string>>();
+  public readonly configMapCalls: ConfigMapCall[] = [];
+  /** Names the fake API server refuses with 422. */
+  public readonly rejectConfigMaps = new Set<string>();
   public secretWrites = 0;
+  /** The largest values-only payload any create or replace carried. */
+  public maxWrittenBytes = 0;
+  private readonly configMaps = new Map<string, any>();
+  private uidCounter = 1;
+  private cmVersion = 1;
+
   public async readNamespace(input: { name: string }) {
     const labels = this.labels.get(input.name);
     if (labels === undefined) throw apiError(404);
@@ -254,6 +272,113 @@ export class FakeCore {
   }
   public async deleteNamespacedSecret() {
     this.secretWrites += 1;
+  }
+
+  /** Seeds a ConfigMap as another actor would have created it. */
+  public seedConfigMap(namespace: string, object: any): any {
+    const stored = structuredClone(object);
+    stored.metadata = {
+      ...stored.metadata,
+      namespace,
+      uid: stored.metadata.uid ?? `cm-uid-${this.uidCounter++}`,
+      resourceVersion: String(this.cmVersion++),
+    };
+    this.configMaps.set(`${namespace}/${stored.metadata.name}`, stored);
+    return stored;
+  }
+  public configMap(namespace: string, name: string): any | undefined {
+    return this.configMaps.get(`${namespace}/${name}`);
+  }
+  public configMapNames(namespace: string): string[] {
+    return [...this.configMaps.keys()]
+      .filter((key) => key.startsWith(`${namespace}/`))
+      .map((key) => key.slice(namespace.length + 1))
+      .sort();
+  }
+  public callsOf(op: ConfigMapCall["op"], name?: string): ConfigMapCall[] {
+    return this.configMapCalls.filter(
+      (call) => call.op === op && (name === undefined || call.name === name),
+    );
+  }
+
+  public async readNamespacedConfigMap(input: {
+    name: string;
+    namespace: string;
+  }) {
+    this.configMapCalls.push({ op: "read", ...input });
+    const value = this.configMap(input.namespace, input.name);
+    if (value === undefined) throw apiError(404);
+    return structuredClone(value);
+  }
+  private checkWrite(name: string, body: any): void {
+    if (this.rejectConfigMaps.has(name)) throw apiError(422);
+    let bytes = 0;
+    for (const value of Object.values<string>(body.data ?? {})) {
+      bytes += Buffer.byteLength(value, "utf8");
+    }
+    for (const value of Object.values<string>(body.binaryData ?? {})) {
+      bytes += Buffer.from(value, "base64").length;
+    }
+    this.maxWrittenBytes = Math.max(this.maxWrittenBytes, bytes);
+    if (bytes > CONFIGMAP_MAX_BYTES) throw apiError(422);
+  }
+  public async createNamespacedConfigMap(input: {
+    namespace: string;
+    body: any;
+  }) {
+    const name = input.body.metadata.name as string;
+    this.configMapCalls.push({
+      op: "create",
+      namespace: input.namespace,
+      name,
+      body: structuredClone(input.body),
+    });
+    if (this.configMap(input.namespace, name) !== undefined) {
+      throw apiError(409);
+    }
+    this.checkWrite(name, input.body);
+    return this.seedConfigMap(input.namespace, input.body);
+  }
+  public async replaceNamespacedConfigMap(input: {
+    name: string;
+    namespace: string;
+    body: any;
+  }) {
+    this.configMapCalls.push({
+      op: "replace",
+      namespace: input.namespace,
+      name: input.name,
+      body: structuredClone(input.body),
+    });
+    const current = this.configMap(input.namespace, input.name);
+    if (current === undefined) throw apiError(404);
+    if (
+      input.body.metadata.resourceVersion !== current.metadata.resourceVersion
+    ) {
+      throw apiError(409);
+    }
+    this.checkWrite(input.name, input.body);
+    return this.seedConfigMap(input.namespace, {
+      ...input.body,
+      metadata: { ...input.body.metadata, uid: current.metadata.uid },
+    });
+  }
+  public async deleteNamespacedConfigMap(input: {
+    name: string;
+    namespace: string;
+    body?: { preconditions?: { uid?: string } };
+  }) {
+    this.configMapCalls.push({
+      op: "delete",
+      namespace: input.namespace,
+      name: input.name,
+      body: structuredClone(input.body),
+    });
+    const current = this.configMap(input.namespace, input.name);
+    if (current === undefined) throw apiError(404);
+    const uid = input.body?.preconditions?.uid;
+    if (uid !== undefined && uid !== current.metadata.uid) throw apiError(409);
+    this.configMaps.delete(`${input.namespace}/${input.name}`);
   }
 }
 
@@ -572,5 +697,203 @@ export const rig = (options: { concurrency?: number } = {}) => {
     run,
     cr,
     ready,
+  };
+};
+
+// -- Trust bundles ---------------------------------------------------------------
+
+export const pemOf = (label: string): string =>
+  `-----BEGIN CERTIFICATE-----\n${Buffer.from(label).toString("base64")}\n-----END CERTIFICATE-----\n`;
+
+export const sha256Of = (bytes: Uint8Array): string =>
+  createHash("sha256").update(bytes).digest("hex");
+
+export interface Fault {
+  readonly fault: true;
+  readonly status: number;
+  readonly code?: string;
+  readonly reason?: string;
+}
+
+export interface CrlFixture {
+  readonly der: Buffer;
+  readonly number: string;
+  readonly thisUpdate: string;
+  readonly nextUpdate: string;
+}
+
+export const fault = (
+  status: number,
+  code?: string,
+  reason?: string,
+): Fault => ({
+  fault: true,
+  status,
+  ...(code === undefined ? {} : { code }),
+  ...(reason === undefined ? {} : { reason }),
+});
+
+export const caView = (
+  id: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  caId: id,
+  name: id,
+  status: "ACTIVE",
+  drained: false,
+  fingerprint: "ff",
+  notAfter: "2030-01-01T00:00:00.000Z",
+  anchorPem: rootPem,
+  anchorTrusted: true,
+  chainPem: pemOf(id),
+  crlIssuers: [{ id, source: "GENERATED" }],
+  ...overrides,
+});
+
+export const crlFixture = (
+  size: number,
+  number: string,
+  nextUpdate = "2026-06-08T00:00:00.000Z",
+  fill = 7,
+): CrlFixture => ({
+  der: Buffer.alloc(size, fill),
+  number,
+  thisUpdate: "2026-06-01T00:00:00.000Z",
+  nextUpdate,
+});
+
+/** Answers the consumer bundle and CRL routes from in-memory fixtures. */
+export class BundleServer {
+  public readonly views = new Map<string, Record<string, unknown> | Fault>();
+  public readonly crls = new Map<string, CrlFixture | Fault>();
+
+  public readonly handler = (request: TransportRequest): TransportResponse => {
+    const path = request.url.pathname;
+    const bundle = /^\/v1\/pki\/cas\/([^/]+)\/bundle$/.exec(path);
+    if (bundle !== null) {
+      return this.answer(this.views.get(bundle[1] as string), (view) => ({
+        status: 200,
+        headers: {},
+        body: view,
+      }));
+    }
+    const crl = /^\/v1\/pki\/crls\/([^/]+)$/.exec(path);
+    if (crl !== null) {
+      return this.answer(this.crls.get(crl[1] as string), (entry) => {
+        const etag = sha256Of(entry.der);
+        const headers = {
+          etag,
+          "content-type": "application/pkix-crl",
+          "hemlig-crl-number": entry.number,
+          "hemlig-crl-this-update": entry.thisUpdate,
+          "hemlig-crl-next-update": entry.nextUpdate,
+        };
+        const sent = request.headers?.["if-none-match"]?.replace(/"/g, "");
+        return sent === etag || sent === "*"
+          ? { status: 304, headers }
+          : { status: 200, headers, bytes: Uint8Array.from(entry.der) };
+      });
+    }
+    return errorResponse(404, "not_found");
+  };
+
+  private answer<T extends object>(
+    value: T | Fault | undefined,
+    ok: (value: T) => TransportResponse,
+  ): TransportResponse {
+    if (value === undefined) {
+      return errorResponse(404, "not_found", { reason: "ca_not_found" });
+    }
+    if ("fault" in value && (value as Fault).fault === true) {
+      const failure = value as Fault;
+      return errorResponse(
+        failure.status,
+        failure.code,
+        failure.reason === undefined ? undefined : { reason: failure.reason },
+      );
+    }
+    return ok(value as T);
+  }
+}
+
+export const bundleObject = (
+  spec: Record<string, unknown> = {},
+  options: { generation?: number; name?: string } = {},
+): Obj => ({
+  apiVersion: "hemlig.zyno.io/v1alpha1",
+  kind: "HemligTrustBundle",
+  metadata: {
+    name: options.name ?? "bundle",
+    namespace: "app",
+    uid: "bundle-uid",
+    generation: options.generation ?? 1,
+  },
+  spec: {
+    consumerRef: "consumer",
+    caIds: ["ca-aaa"],
+    target: { name: "trust" },
+    ...spec,
+  },
+});
+
+/** The trust-bundle reconciler on its own queue, wired like `rig()`. */
+export const bundleRig = (options: { concurrency?: number } = {}) => {
+  const scheduler = new FakeScheduler();
+  const custom = new FakeCustom();
+  const core = new FakeCore();
+  core.labels.set("app", {});
+  const registry = new FakeRegistry();
+  const transport = new FakeTransport();
+  const server = new BundleServer();
+  transport.handler = server.handler;
+  registry.entries.set("app/consumer", registered(transport));
+  custom.put("hemligconsumers", consumerObject());
+  const deps: PkiDeps = {
+    core: core as never,
+    custom: custom as never,
+    registry,
+    scheduler,
+  };
+  const queue: KeyedWorkQueue = new KeyedWorkQueue(
+    (key, context) => reconciler.reconcile(key, context),
+    {
+      concurrency: options.concurrency ?? 4,
+      groupConcurrency: 2,
+      scheduler,
+    },
+  );
+  const reconciler = new TrustBundleReconciler(deps, queue);
+  const key = "bundle/app/bundle";
+  const run = async (target: string = key) => {
+    queue.add(target);
+    await queue.whenIdle();
+    await flush();
+  };
+  const bundle = (name = "bundle") =>
+    custom.peek("hemligtrustbundles", "app", name)!;
+  const ready = (name = "bundle") =>
+    bundle(name).status?.conditions?.find((c: any) => c.type === "Ready");
+  /** Edits the stored bundle spec and bumps its generation, like an apply would. */
+  const edit = (spec: Record<string, unknown>) => {
+    custom.update("hemligtrustbundles", "app", "bundle", (o) => {
+      o.spec = { ...o.spec, ...spec };
+      o.metadata.generation += 1;
+    });
+  };
+  return {
+    scheduler,
+    custom,
+    core,
+    registry,
+    transport,
+    server,
+    deps,
+    queue,
+    reconciler,
+    key,
+    run,
+    bundle,
+    ready,
+    edit,
   };
 };

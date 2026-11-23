@@ -181,6 +181,24 @@ export interface CoreApi {
     readonly namespace: string;
   }): Promise<unknown>;
   readNamespace(input: { readonly name: string }): Promise<unknown>;
+  readNamespacedConfigMap(input: {
+    readonly name: string;
+    readonly namespace: string;
+  }): Promise<unknown>;
+  createNamespacedConfigMap(input: {
+    readonly namespace: string;
+    readonly body: unknown;
+  }): Promise<unknown>;
+  replaceNamespacedConfigMap(input: {
+    readonly name: string;
+    readonly namespace: string;
+    readonly body: unknown;
+  }): Promise<unknown>;
+  deleteNamespacedConfigMap(input: {
+    readonly name: string;
+    readonly namespace: string;
+    readonly body?: unknown;
+  }): Promise<unknown>;
 }
 
 export interface CustomApi {

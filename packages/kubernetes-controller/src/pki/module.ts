@@ -2,8 +2,10 @@ import type { ConsumerRegistry, CoreApi, CustomApi } from "../v1beta";
 import { CertificateRequestReconciler } from "./certificate-requests";
 import { isHemligRequest, isTerminal } from "./cert-manager";
 import { IssuerReconciler } from "./issuers";
+import { TrustBundleReconciler } from "./trust-bundles";
 import { KeyedWorkQueue, type Outcome, type WorkContext } from "./queue";
 import {
+  BUNDLE_INTERVAL_DEFAULT_MS,
   CLUSTER_ISSUER_PLURAL,
   CM_GROUP,
   CM_VERSION,
@@ -14,6 +16,8 @@ import {
   ISSUER_VERSION,
   RELIST_PAGE,
   RESYNC_MS,
+  TRUST_BUNDLE_PLURAL,
+  bundleKey,
   clusterIssuerKey,
   isForbidden,
   isGone,
@@ -67,6 +71,10 @@ interface Feature {
   readonly streams: Map<StreamResource, Stream>;
   /** Drops every key and in-memory record the feature owns. */
   readonly clear: () => void;
+  /** Called once after the streams of a newly enabled feature started. */
+  readonly onEnabled?: () => void;
+  /** Called on each resync while the feature stays enabled. */
+  readonly onResync?: () => void;
 }
 
 const watchPath = (resource: StreamResource): string =>
@@ -264,11 +272,16 @@ export class PkiModule {
   private readonly scheduler: Scheduler;
   private readonly issuers: IssuerReconciler;
   private readonly requests: CertificateRequestReconciler;
+  private readonly bundles: TrustBundleReconciler;
   private readonly pending = new Set<string>();
   private readonly issuerKeys = new Set<string>();
+  private readonly bundleKeys = new Set<string>();
+  private readonly issuerFeature: Feature;
+  private readonly bundleFeature: Feature;
   private readonly features: Feature[];
   private readonly loggedRbac = new Set<string>();
   private resyncTimer: unknown;
+  private bundleTimer: unknown;
   private resyncing: Promise<void> | undefined;
   private unsubscribe: (() => void) | undefined;
   private started = false;
@@ -291,6 +304,7 @@ export class PkiModule {
       scheduler: this.scheduler,
     };
     this.issuers = new IssuerReconciler(shared, this.queue);
+    this.bundles = new TrustBundleReconciler(shared, this.queue);
     this.requests = new CertificateRequestReconciler(
       shared,
       this.issuers,
@@ -329,26 +343,54 @@ export class PkiModule {
         onRelist: (keys) => this.onIssuerRelist(keys, true),
       },
     ];
-    // Phase 6 appends a trust-bundle feature; each feature is enabled on its own.
-    this.features = [
-      {
-        name: "cert-manager issuer",
-        resources,
-        enabled: false,
-        streams: new Map(),
-        clear: () => {
-          this.queue.forgetWhere(
-            (key) =>
-              key.startsWith("cr/") ||
-              key.startsWith("issuer/") ||
-              key.startsWith("clusterissuer/"),
-          );
-          this.pending.clear();
-          this.issuerKeys.clear();
-          this.issuers.reset();
-        },
+    // Each feature is probed and enabled on its own.
+    this.issuerFeature = {
+      name: "cert-manager issuer",
+      resources,
+      enabled: false,
+      streams: new Map(),
+      clear: () => {
+        this.queue.forgetWhere(
+          (key) =>
+            key.startsWith("cr/") ||
+            key.startsWith("issuer/") ||
+            key.startsWith("clusterissuer/"),
+        );
+        this.pending.clear();
+        this.issuerKeys.clear();
+        this.issuers.reset();
       },
-    ];
+      // Resync uses the in-memory pending set: CR objects carry the CSR and
+      // certificate, so relisting them every five minutes is too heavy.
+      onResync: () => {
+        for (const key of this.issuerKeys) this.queue.add(key);
+        for (const key of this.pending) this.queue.add(key);
+      },
+    };
+    this.bundleFeature = {
+      name: "trust bundles",
+      resources: [
+        {
+          name: TRUST_BUNDLE_PLURAL,
+          group: HEMLIG_GROUP,
+          version: ISSUER_VERSION,
+          plural: TRUST_BUNDLE_PLURAL,
+          scope: "all",
+          onEvent: (phase, object) => this.onBundleEvent(phase, object),
+          keyOf: (item) => this.bundleKeyOf(item),
+          onRelist: (keys) => this.onBundleRelist(keys),
+        },
+      ],
+      enabled: false,
+      streams: new Map(),
+      clear: () => {
+        this.queue.forgetWhere((key) => key.startsWith("bundle/"));
+        this.bundleKeys.clear();
+        this.clearBundleTimer();
+      },
+      onEnabled: () => this.scheduleBundleRefresh(),
+    };
+    this.features = [this.issuerFeature, this.bundleFeature];
   }
 
   public get enabled(): boolean {
@@ -361,6 +403,9 @@ export class PkiModule {
     this.started = true;
     this.unsubscribe = this.deps.registry.onChange(() => {
       for (const key of this.issuerKeys) {
+        this.queue.add(key, { resetBackoff: true });
+      }
+      for (const key of this.bundleKeys) {
         this.queue.add(key, { resetBackoff: true });
       }
     });
@@ -379,6 +424,7 @@ export class PkiModule {
       this.scheduler.clearTimeout(this.resyncTimer);
     }
     this.resyncTimer = undefined;
+    this.clearBundleTimer();
     this.unsubscribe?.();
     for (const feature of this.features) {
       for (const stream of feature.streams.values()) stream.stop();
@@ -470,6 +516,7 @@ export class PkiModule {
             return stream.start();
           }),
         );
+        feature.onEnabled?.();
         continue;
       }
       const restarts: Promise<void>[] = [];
@@ -477,15 +524,17 @@ export class PkiModule {
         if (!stream.running) restarts.push(stream.start());
       }
       await Promise.all(restarts);
-      // Resync uses the in-memory pending set: CR objects carry the CSR and
-      // certificate, so relisting them every five minutes is too heavy.
-      for (const key of this.issuerKeys) this.queue.add(key);
-      for (const key of this.pending) this.queue.add(key);
+      feature.onResync?.();
     }
   }
 
   private handle(key: string, context: WorkContext): Promise<Outcome> {
-    if (!this.enabled) return Promise.resolve({ kind: "done" });
+    if (key.startsWith("bundle/")) {
+      return this.bundleFeature.enabled
+        ? this.bundles.reconcile(key, context)
+        : Promise.resolve({ kind: "done" });
+    }
+    if (!this.issuerFeature.enabled) return Promise.resolve({ kind: "done" });
     if (key.startsWith("cr/")) return this.requests.reconcile(key, context);
     if (key.startsWith("issuer/") || key.startsWith("clusterissuer/")) {
       return this.issuers.reconcile(key, context);
@@ -595,5 +644,72 @@ export class PkiModule {
       this.issuerKeys.add(key);
       this.queue.add(key);
     }
+  }
+
+  // -- Trust bundle events and refresh ---------------------------------------
+
+  private bundleKeyOf(object: unknown): string | undefined {
+    const metadata = (object as ObjectLike | null)?.metadata;
+    return metadata?.namespace === undefined || metadata.name === undefined
+      ? undefined
+      : bundleKey(metadata.namespace, metadata.name);
+  }
+
+  private onBundleEvent(phase: string, object: unknown): void {
+    const key = this.bundleKeyOf(object);
+    if (key === undefined) return;
+    if (phase === "DELETED") {
+      this.bundleKeys.delete(key);
+      this.queue.forget(key);
+      return;
+    }
+    const bundle = object as ObjectLike;
+    this.bundleKeys.add(key);
+    // Our own status write: nothing to do.
+    if (
+      phase === "MODIFIED" &&
+      bundle.metadata?.generation !== undefined &&
+      bundle.status?.observedGeneration === bundle.metadata.generation
+    ) {
+      return;
+    }
+    this.queue.add(key, { resetBackoff: true });
+  }
+
+  private onBundleRelist(keys: readonly string[]): void {
+    const next = new Set(keys);
+    for (const key of [...this.bundleKeys]) {
+      if (!next.has(key)) {
+        this.bundleKeys.delete(key);
+        this.queue.forget(key);
+      }
+    }
+    for (const key of next) {
+      this.bundleKeys.add(key);
+      this.queue.add(key);
+    }
+  }
+
+  private clearBundleTimer(): void {
+    if (this.bundleTimer !== undefined) {
+      this.scheduler.clearTimeout(this.bundleTimer);
+    }
+    this.bundleTimer = undefined;
+  }
+
+  private scheduleBundleRefresh(): void {
+    if (this.stopped || !this.bundleFeature.enabled) return;
+    this.clearBundleTimer();
+    this.bundleTimer = this.scheduler.setTimeout(
+      () => {
+        this.bundleTimer = undefined;
+        if (this.stopped || !this.bundleFeature.enabled) return;
+        // No resetBackoff: a key that is backing off keeps its delay.
+        for (const key of this.bundleKeys) this.queue.add(key);
+        this.scheduleBundleRefresh();
+      },
+      (this.deps.config.bundleIntervalMs ?? BUNDLE_INTERVAL_DEFAULT_MS) *
+        (0.9 + 0.2 * this.scheduler.random()),
+    );
   }
 }

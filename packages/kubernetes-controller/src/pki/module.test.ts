@@ -4,14 +4,19 @@ import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { PkiModule } from "./module";
 import {
+  BundleServer,
   FakeCore,
   FakeCustom,
   FakeRegistry,
   FakeWatch,
   FakeScheduler,
   FakeTransport,
+  bundleObject,
+  caView,
   consumerObject,
   crObject,
+  crlFixture,
+  fault,
   flush,
   issuerObject,
   registered,
@@ -20,11 +25,17 @@ import {
 const CR_PATH = "/apis/cert-manager.io/v1/certificaterequests";
 const ISSUER_PATH = "/apis/hemlig.zyno.io/v1alpha1/hemligissuers";
 const CLUSTER_PATH = "/apis/hemlig.zyno.io/v1alpha1/hemligclusterissuers";
+const BUNDLE_PATH = "/apis/hemlig.zyno.io/v1alpha1/hemligtrustbundles";
 const GONE = { code: 410 };
 
 const world = (
   t: TestContext,
-  options: { issuer?: boolean; watch?: FakeWatch } = {},
+  options: {
+    issuer?: boolean;
+    watch?: FakeWatch;
+    bundles?: boolean;
+    bundleIntervalMs?: number;
+  } = {},
 ) => {
   const scheduler = new FakeScheduler();
   const custom = new FakeCustom();
@@ -35,13 +46,21 @@ const world = (
   registry.entries.set("app/consumer", registered(transport));
   custom.put("hemligconsumers", consumerObject());
   if (options.issuer !== false) custom.put("hemligissuers", issuerObject());
+  // The trust-bundle CRD is absent unless a test opts in, so the existing tests
+  // keep seeing a module with only the cert-manager feature.
+  if (options.bundles !== true) custom.absent.add("hemligtrustbundles");
   const watch = options.watch ?? new FakeWatch();
   const module = new PkiModule({
     core: core as never,
     custom: custom as never,
     watch,
     registry,
-    config: { concurrency: 4 },
+    config: {
+      concurrency: 4,
+      ...(options.bundleIntervalMs === undefined
+        ? {}
+        : { bundleIntervalMs: options.bundleIntervalMs }),
+    },
     scheduler,
   });
   const abort = new AbortController();
@@ -319,4 +338,200 @@ test("a 410 delivered while the first watch opens triggers another relist", asyn
     w.watch.watches.filter((x) => x.path === CR_PATH).length >= 2,
     true,
   );
+});
+
+// -- Trust bundles -----------------------------------------------------------------
+
+const EXT = `ext-${"cd".repeat(20)}`;
+
+const bundleWorld = (
+  t: TestContext,
+  options: { bundleIntervalMs?: number; issuer?: boolean } = {},
+) => {
+  const w = world(t, { bundles: true, ...options });
+  const server = new BundleServer();
+  w.transport.handler = server.handler;
+  server.views.set(
+    "ca-aaa",
+    caView("ca-aaa", {
+      crlIssuers: [
+        { id: "ca-aaa", source: "GENERATED" },
+        { id: EXT, source: "UPLOADED" },
+      ],
+    }),
+  );
+  server.crls.set("ca-aaa", crlFixture(40, "1", "2027-01-01T00:00:00.000Z", 1));
+  server.crls.set(EXT, crlFixture(50, "2", "2027-01-01T00:00:00.000Z", 2));
+  w.custom.put("hemligtrustbundles", bundleObject());
+  const crlRequests = () =>
+    w.transport.requests.filter((q) =>
+      q.url.pathname.startsWith("/v1/pki/crls/"),
+    );
+  const gets = () => w.custom.count("get", "hemligtrustbundles");
+  return { ...w, server, crlRequests, gets };
+};
+
+test("the trust-bundle feature runs with the cert-manager CRDs absent", async (t) => {
+  const w = bundleWorld(t);
+  w.custom.absent.add("certificaterequests");
+  await w.start();
+  assert.ok(w.watch.active(BUNDLE_PATH));
+  assert.equal(w.watch.active(CR_PATH), undefined);
+  assert.equal(w.watch.active(ISSUER_PATH), undefined);
+  assert.equal(w.module.enabled, true);
+  assert.ok(w.core.configMap("app", "trust") !== undefined);
+  assert.equal(
+    w.custom.peek("hemligtrustbundles", "app", "bundle")?.status
+      ?.conditions?.[0]?.reason,
+    "Ready",
+  );
+});
+
+test("an absent trust-bundle CRD disables only that feature; a later resync starts it", async (t) => {
+  const w = world(t);
+  await w.start();
+  assert.ok(w.watch.active(ISSUER_PATH));
+  assert.equal(w.watch.active(BUNDLE_PATH), undefined);
+  assert.equal(w.module.enabled, true);
+  w.custom.absent.delete("hemligtrustbundles");
+  await w.start();
+  assert.ok(w.watch.active(BUNDLE_PATH));
+  assert.ok(w.watch.active(ISSUER_PATH));
+});
+
+test("cert-manager keys do not run when only the trust-bundle feature is enabled", async (t) => {
+  const w = bundleWorld(t);
+  w.custom.absent.add("hemligissuers");
+  w.custom.put("certificaterequests", crObject());
+  await w.start();
+  assert.ok(w.watch.active(BUNDLE_PATH));
+  assert.equal(w.watch.active(CR_PATH), undefined);
+  w.module.queue.add("cr/app/cr-1");
+  w.module.queue.add("issuer/app/issuer");
+  await w.settle();
+  assert.equal(w.transport.posts().length, 0);
+  assert.equal(w.custom.count("get", "hemligissuers"), 0);
+});
+
+test("the refresh tick re-runs every bundle with conditional CRL requests", async (t) => {
+  const w = bundleWorld(t, { bundleIntervalMs: 60_000 });
+  w.module.start(w.abort.signal);
+  await w.settle();
+  assert.equal(w.crlRequests().length, 2);
+  assert.equal(w.crlRequests()[0]?.headers?.["if-none-match"], undefined);
+  await w.scheduler.advance(0.9 * 60_000);
+  await w.settle();
+  assert.equal(w.crlRequests().length, 4);
+  for (const request of w.crlRequests().slice(2)) {
+    assert.match(request.headers?.["if-none-match"] ?? "", /^"[0-9a-f]{64}"$/);
+  }
+  await w.scheduler.advance(0.9 * 60_000);
+  await w.settle();
+  assert.equal(w.crlRequests().length, 6);
+});
+
+test("the refresh tick does not reset a backoff", async (t) => {
+  const w = bundleWorld(t, { bundleIntervalMs: 60_000 });
+  w.server.views.set("ca-aaa", fault(503, "service_unavailable"));
+  w.module.start(w.abort.signal);
+  await w.settle();
+  const before = w.gets();
+  const delay = w.module.queue.scheduledDelay("bundle/app/bundle");
+  assert.ok(delay !== undefined);
+  // The tick lands while the key sits in its fast backoff timer.
+  await w.scheduler.advance(0.9 * 60_000 - 1);
+  const afterTick = w.gets();
+  assert.ok(afterTick >= before);
+  assert.ok(w.module.queue.scheduledDelay("bundle/app/bundle") !== undefined);
+});
+
+test("a registry change re-runs the bundles", async (t) => {
+  const w = bundleWorld(t);
+  w.module.start(w.abort.signal);
+  await w.settle();
+  const before = w.gets();
+  w.registry.fire("app/consumer");
+  await w.settle();
+  assert.ok(w.gets() > before);
+});
+
+test("the bundle's own status MODIFIED event is ignored; a generation bump is not", async (t) => {
+  const w = bundleWorld(t);
+  await w.start();
+  const before = w.gets();
+  w.watch.emit(
+    BUNDLE_PATH,
+    "MODIFIED",
+    w.custom.peek("hemligtrustbundles", "app", "bundle"),
+  );
+  await w.settle();
+  assert.equal(w.gets(), before);
+  const changed = structuredClone(
+    w.custom.peek("hemligtrustbundles", "app", "bundle"),
+  )!;
+  changed.metadata.generation = 2;
+  w.watch.emit(BUNDLE_PATH, "MODIFIED", changed);
+  await w.settle();
+  assert.ok(w.gets() > before);
+});
+
+test("a spec change during backoff runs at once, and DELETED forgets the key", async (t) => {
+  const w = bundleWorld(t);
+  w.server.views.set("ca-aaa", fault(503, "service_unavailable"));
+  await w.start();
+  assert.ok(w.module.queue.scheduledDelay("bundle/app/bundle") !== undefined);
+  assert.equal(w.core.configMap("app", "trust"), undefined);
+  w.server.views.set(
+    "ca-aaa",
+    caView("ca-aaa", { crlIssuers: [{ id: "ca-aaa", source: "GENERATED" }] }),
+  );
+  w.custom.update("hemligtrustbundles", "app", "bundle", (o) => {
+    o.metadata.generation = 2;
+  });
+  w.watch.emit(
+    BUNDLE_PATH,
+    "MODIFIED",
+    w.custom.peek("hemligtrustbundles", "app", "bundle"),
+  );
+  await w.settle();
+  assert.ok(w.core.configMap("app", "trust") !== undefined);
+  assert.equal(w.module.queue.scheduledDelay("bundle/app/bundle"), undefined);
+  w.watch.emit(
+    BUNDLE_PATH,
+    "DELETED",
+    w.custom.peek("hemligtrustbundles", "app", "bundle"),
+  );
+  const gets = w.gets();
+  await w.scheduler.advance(400_000);
+  await w.settle();
+  assert.equal(w.gets(), gets);
+});
+
+test("stop clears the bundle timer", async (t) => {
+  const w = bundleWorld(t, { bundleIntervalMs: 60_000 });
+  w.module.start(w.abort.signal);
+  await w.settle();
+  assert.ok(w.scheduler.pendingTimers > 0);
+  w.abort.abort();
+  assert.equal(w.scheduler.pendingTimers, 0);
+  const requests = w.transport.requests.length;
+  await w.scheduler.advance(10_000_000);
+  assert.equal(w.transport.requests.length, requests);
+});
+
+test("a bundle CRD removed while enabled stops its stream, forgets keys and the tick", async (t) => {
+  const w = bundleWorld(t, { bundleIntervalMs: 60_000 });
+  await w.start();
+  const watcher = w.watch.active(BUNDLE_PATH)!;
+  w.custom.absent.add("hemligtrustbundles");
+  await w.start();
+  assert.equal(watcher.controller.signal.aborted, true);
+  const pkiRequests = () =>
+    w.transport.requests.filter((q) => q.url.pathname.startsWith("/v1/pki/c"))
+      .length;
+  const requests = pkiRequests();
+  await w.scheduler.advance(200_000);
+  await w.settle();
+  assert.equal(pkiRequests(), requests);
+  assert.ok(w.watch.active(ISSUER_PATH));
 });
