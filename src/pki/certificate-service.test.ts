@@ -1,4 +1,4 @@
-import { CertificateService } from "./certificate-service";
+import { CertificateService, certificateSummary } from "./certificate-service";
 import { admin, issuanceHarness, errorOf, type Harness } from "./__fixtures__/issuance-harness";
 import type { CaRecord, IssuedCertificateRecord, RevocationEntryRecord } from "./types";
 
@@ -468,5 +468,21 @@ describe("inventory", () => {
     h.state.ca = { ...h.ca, status: "REVOKED" };
     expect(await service.get("ca-test-one", "01")).toMatchObject({ status: "CA_REVOKED" });
     expect(await errorOf(service.get("ca-test-one", "02"))).toMatchObject({ statusCode: 404 });
+  });
+});
+
+describe("certificateSummary", () => {
+  it("adds isCa and childCaId on a CA row only", async () => {
+    const h = await issuanceHarness();
+    const now = h.clock.now;
+    const leaf = certificateSummary(certificate(h, "0a1b"), h.ca, now);
+    expect(leaf).not.toHaveProperty("isCa");
+    expect(leaf).not.toHaveProperty("childCaId");
+    const row = certificateSummary(
+      certificate(h, "0a1c", { isCa: true, childCaId: "ca-child-one" }),
+      h.ca,
+      now,
+    );
+    expect(row).toMatchObject({ isCa: true, childCaId: "ca-child-one", status: "ISSUED" });
   });
 });

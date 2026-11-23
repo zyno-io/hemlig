@@ -1,6 +1,6 @@
 import { createPublicKey, Decipheriv, verify } from "node:crypto";
 import { generateCaKeyPair, wrapCaKey } from "./wrapped-keys";
-import { WrappedCaSigner, type CaSigner } from "./signer";
+import { pkcs8Signer, WrappedCaSigner, type CaSigner } from "./signer";
 import { mockKms } from "./__fixtures__/testkit";
 import type { PkiKeyAlgorithm } from "./types";
 
@@ -156,5 +156,32 @@ describe("WrappedCaSigner", () => {
       statusCode: 409,
       code: "ca_key_unavailable",
     });
+  });
+});
+
+describe("pkcs8Signer", () => {
+  it("signs with the caller's plaintext key and does not copy it", async () => {
+    const key = await generateCaKeyPair("ECDSA_P256");
+    const signer = pkcs8Signer("ECDSA_P256", key.privateKeyDer);
+    expect(signer.algorithm).toBe("ECDSA_P256");
+    const signature = await signer.sign(tbs);
+    expect(
+      verify(
+        "sha256",
+        tbs,
+        {
+          key: createPublicKey({
+            key: key.spkiDer,
+            format: "der",
+            type: "spki",
+          }),
+          dsaEncoding: "der",
+        },
+        signature,
+      ),
+    ).toBe(true);
+    // The caller owns the buffer: once zeroed, signing fails instead of using a stale copy.
+    key.privateKeyDer.fill(0);
+    await expect(signer.sign(tbs)).rejects.toThrow();
   });
 });

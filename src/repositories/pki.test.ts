@@ -1,8 +1,24 @@
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { IssuanceGrantRecord, IssuedCertificateRecord } from "../pki/types";
+import type {
+  CaCrlState,
+  CaRecord,
+  IssuanceGrantRecord,
+  IssuedCertificateRecord,
+} from "../pki/types";
 import {
   buildBulkRevokeBatch,
+  buildCreateCaTransaction,
   buildCreateGrantTransaction,
+  buildCreateIntermediateTransaction,
+  buildDistrustRootTransaction,
+  buildRevokeForRevokedAncestorUpdate,
+  buildRevokeIntermediateTransaction,
+  buildUpdateCaPolicyTransaction,
+  issuedCertificatePutItem,
+  quotaIncrementItem,
+  type CreateIntermediateTransaction,
+  type NamedItem,
+  type RevokeIntermediateTransaction,
   buildDeleteGrantTransaction,
   buildIssuanceCommit,
   buildRevokeTransaction,
@@ -1331,5 +1347,403 @@ describe("Phase 4 repository reads and writes", () => {
       "caHour",
       "ca",
     ]);
+  });
+});
+
+describe("Phase 7 hierarchy transactions", () => {
+  const caRecord = (overrides: Record<string, unknown> = {}): CaRecord =>
+    ({
+      caId: "ca-child-one",
+      environment: "prod",
+      name: "child-one",
+      kind: "INTERMEDIATE",
+      status: "ACTIVE",
+      version: "pkv-child",
+      parent: { type: "ca", id: "ca-root-one" },
+      parentCaId: "ca-root-one",
+      crlIssuers: [],
+      key: { custody: "WRAPPED", algorithm: "ECDSA_P256", spkiSha256: "c".repeat(64), state: "ACTIVE" },
+      subject: { CN: "Child" },
+      subjectKey: "d".repeat(64),
+      requested: { pathLen: 0 },
+      policy: {},
+      maxIssueLifetimeEverSeconds: 1,
+      serial: "0a0b",
+      createdAt: now.toISOString(),
+      createdBy: actor,
+      ...overrides,
+    }) as unknown as CaRecord;
+  const crl: CaCrlState = { revision: 0, lastNumber: 1, sweptThrough: now.toISOString() };
+  const childRow = (overrides: Partial<IssuedCertificateRecord> = {}) =>
+    certificate(
+      { type: "human", id: "admin-1" },
+      { caId: "ca-root-one", isCa: true, childCaId: "ca-child-one", serial: "0a0b", ...overrides },
+    );
+  const createInput = (parent: Partial<CreateIntermediateTransaction["parent"]> = {}): CreateIntermediateTransaction => ({
+    idempotency,
+    ca: caRecord(),
+    crl,
+    certificate: childRow(),
+    parent: {
+      caId: "ca-root-one",
+      version: "pkv-root",
+      issuancePerHour: 2000,
+      loadedMaxIssueLifetimeEverSeconds: 0,
+      childLifetimeSeconds: 31_536_000,
+      ...parent,
+    },
+    now,
+    adminPerHour: 100,
+  });
+
+  it("refactors the shared issuance items without changing them", () => {
+    const built = buildIssuanceCommit("control", adminCommit());
+    const cert = adminCommit().certificate;
+    expect(built.input.TransactItems![1]).toEqual(issuedCertificatePutItem("control", cert));
+    expect(built.input.TransactItems![2]).toEqual(
+      quotaIncrementItem(
+        "control",
+        pkiKeys.adminQuota("ca-prod-one", quotaWindows(now).hourSk),
+        100,
+        pkiTtl.hourCounter(quotaWindows(now).hourStart),
+      ),
+    );
+    expect(issuedCertificatePutItem("control", cert).Put!.Item).toMatchObject({
+      ...pkiKeys.certificate("ca-prod-one", serial),
+      ...pkiDirectory.certificate("ca-prod-one", notAfter, serial),
+      ttl: pkiTtl.certificate(notAfter),
+    });
+  });
+
+  it("buildCreateCaTransaction appends the CRL state only when given", () => {
+    const without = buildCreateCaTransaction("control", { idempotency, ca: caRecord() });
+    expect(without.map((item) => item.slot)).toEqual(["idempotency", "name", "subject", "profile"]);
+    const withCrl = buildCreateCaTransaction("control", { idempotency, ca: caRecord(), crl });
+    expect(withCrl.map((item) => item.slot)).toEqual(["idempotency", "name", "subject", "profile", "crl"]);
+    expect(withCrl[4]!.item.Put).toMatchObject({
+      Item: { ...pkiKeys.caCrl("ca-child-one"), revision: 0, lastNumber: 1 },
+      ConditionExpression: "attribute_not_exists(pk)",
+    });
+  });
+
+  describe("buildCreateIntermediateTransaction", () => {
+    const base =
+      "#status = :active AND #version = :version AND #key.#state = :active AND #policy.#issueSubordinates = :true";
+
+    it("orders the nine slots and writes the parent's inventory row and counters", () => {
+      const items = buildCreateIntermediateTransaction("control", createInput());
+      expect(items.map((item) => item.slot)).toEqual([
+        "idempotency", "name", "subject", "profile", "crl", "certificate", "adminHour", "caHour", "parent",
+      ]);
+      const windows = quotaWindows(now);
+      expect(items[5]!.item.Put!.Item).toMatchObject({
+        ...pkiKeys.certificate("ca-root-one", "0a0b"),
+        ...pkiDirectory.certificate("ca-root-one", notAfter, "0a0b"),
+        ttl: pkiTtl.certificate(notAfter),
+        isCa: true,
+        childCaId: "ca-child-one",
+      });
+      expect(items[6]!.item.Update).toMatchObject({
+        Key: pkiKeys.adminQuota("ca-root-one", windows.hourSk),
+        ExpressionAttributeValues: { ":limit": 100, ":ttl": pkiTtl.hourCounter(windows.hourStart) },
+      });
+      expect(items[7]!.item.Update).toMatchObject({
+        Key: pkiKeys.caQuota("ca-root-one", windows.hourSk),
+        ExpressionAttributeValues: { ":limit": 2000 },
+      });
+      expectNoUnusedPlaceholders(items);
+    });
+
+    it("guards the parent with a ConditionCheck when the lifetime does not grow", () => {
+      for (const loaded of [31_536_000, 40_000_000]) {
+        const parent = buildCreateIntermediateTransaction(
+          "control",
+          createInput({ loadedMaxIssueLifetimeEverSeconds: loaded }),
+        )[8]!.item;
+        expect(parent.Update).toBeUndefined();
+        expect(parent.ConditionCheck).toMatchObject({
+          Key: pkiKeys.caProfile("ca-root-one"),
+          ConditionExpression: base,
+          ExpressionAttributeValues: { ":active": "ACTIVE", ":version": "pkv-root", ":true": true },
+        });
+      }
+    });
+
+    it("raises the parent's maximum in place, without a version bump, when the lifetime grows", () => {
+      const items = buildCreateIntermediateTransaction("control", createInput());
+      const update = items[8]!.item.Update!;
+      expect(update).toMatchObject({
+        Key: pkiKeys.caProfile("ca-root-one"),
+        UpdateExpression: "SET #max = :lifetime",
+        ConditionExpression: `${base} AND #max <= :lifetime`,
+        ExpressionAttributeNames: { "#max": "maxIssueLifetimeEverSeconds" },
+        ExpressionAttributeValues: { ":lifetime": 31_536_000, ":version": "pkv-root" },
+      });
+      expect(update.UpdateExpression).not.toContain("#version");
+      expectNoUnusedPlaceholders(items);
+    });
+
+    it("refuses an inconsistent input and a zero limit", () => {
+      expect(() =>
+        buildCreateIntermediateTransaction("control", { ...createInput(), certificate: childRow({ isCa: false }) }),
+      ).toThrow();
+      expect(() =>
+        buildCreateIntermediateTransaction("control", { ...createInput(), certificate: childRow({ childCaId: "ca-other" }) }),
+      ).toThrow();
+      expect(() =>
+        buildCreateIntermediateTransaction("control", { ...createInput(), certificate: childRow({ caId: "ca-other" }) }),
+      ).toThrow();
+      expect(() =>
+        buildCreateIntermediateTransaction("control", { ...createInput(), ca: caRecord({ parentCaId: "ca-other" }) }),
+      ).toThrow();
+      expect(() => buildCreateIntermediateTransaction("control", { ...createInput(), adminPerHour: 0 })).toThrow();
+      expect(() =>
+        buildCreateIntermediateTransaction("control", createInput({ issuancePerHour: 0 })),
+      ).toThrow();
+    });
+  });
+
+  describe("createIntermediateCa outcomes", () => {
+    const slots = buildCreateIntermediateTransaction("control", createInput()).map((item) => item.slot);
+    const cancelWith = (failed: string[], other = "None") =>
+      Object.assign(new Error("canceled"), {
+        name: "TransactionCanceledException",
+        CancellationReasons: slots.map((slot) => ({
+          Code: failed.includes(slot) ? "ConditionalCheckFailed" : other,
+        })),
+      });
+    const run = (error: unknown) => {
+      const send = jest.fn().mockRejectedValue(error);
+      const repository = new PkiRepository({ send } as unknown as DynamoDBDocumentClient, {
+        tableName: "control",
+        directoryIndex: "pki-directory",
+        sleep: async () => undefined,
+        random: () => 0,
+      });
+      return repository.createIntermediateCa(createInput());
+    };
+
+    it("commits", async () => {
+      const send = jest.fn().mockResolvedValue({});
+      const repository = new PkiRepository({ send } as unknown as DynamoDBDocumentClient, {
+        tableName: "control",
+        directoryIndex: "pki-directory",
+      });
+      await expect(repository.createIntermediateCa(createInput())).resolves.toEqual({ kind: "created" });
+    });
+
+    it.each([
+      [["idempotency", "name"], { kind: "replay" }],
+      [["name"], { kind: "nameInUse" }],
+      [["subject"], { kind: "subjectInUse" }],
+      [["parent"], { kind: "parentChanged" }],
+      [["certificate"], { kind: "serialCollision" }],
+    ])("maps a failed %j", async (failed, expected) => {
+      await expect(run(cancelWith(failed))).resolves.toEqual(expected);
+    });
+
+    it("lists the exhausted counters with a retry time", async () => {
+      await expect(run(cancelWith(["caHour"]))).resolves.toEqual({
+        kind: "quotaExhausted",
+        quotas: ["caHour"],
+        retryAfterSeconds: 1800,
+      });
+      await expect(run(cancelWith(["adminHour", "caHour"]))).resolves.toMatchObject({
+        quotas: ["adminHour", "caHour"],
+      });
+    });
+
+    it("answers 503 for a profile or CRL collision and for an unknown cancellation", async () => {
+      await expect(run(cancelWith(["profile"]))).rejects.toMatchObject({ statusCode: 503 });
+      await expect(run(cancelWith(["crl"]))).rejects.toMatchObject({ statusCode: 503 });
+      await expect(
+        run(Object.assign(new Error("canceled"), { name: "TransactionCanceledException" })),
+      ).rejects.toMatchObject({ statusCode: 503 });
+    });
+  });
+
+  describe("buildRevokeIntermediateTransaction", () => {
+    const revoke = (
+      row: RevokeIntermediateTransaction["row"],
+      ca: Partial<CaRecord> = {},
+    ): NamedItem[] =>
+      buildRevokeIntermediateTransaction("control", {
+        idempotency,
+        ca: caRecord(ca),
+        newVersion: "pkv-new",
+        now: now.toISOString(),
+        reason: "caCompromise",
+        invalidityDate: "2026-11-01T00:00:00.000Z",
+        by: actor,
+        evidence: "parent:ca-root-one",
+        ...(row === undefined ? {} : { row }),
+      });
+
+    it("entry mode has five items and bumps the root's CRL revision", () => {
+      const items = revoke({ mode: "entry", notAfter });
+      expect(items.map((item) => item.slot)).toEqual(["idempotency", "profile", "certificate", "entry", "crl"]);
+      expect(items[1]!.item.Update).toMatchObject({
+        Key: pkiKeys.caProfile("ca-child-one"),
+        UpdateExpression:
+          "SET #status = :revoked, #revokedAt = :now, #revocationReason = :reason, #revocationSource = :hemlig, #revocationEvidence = :evidence, #version = :v, #key.#state = :disabled",
+        ConditionExpression:
+          "(#status = :active OR #status = :retired) AND #version = :loaded AND #kind = :intermediate AND #parentCaId = :parent",
+        ExpressionAttributeValues: {
+          ":hemlig": "HEMLIG",
+          ":evidence": "parent:ca-root-one",
+          ":loaded": "pkv-child",
+          ":parent": "ca-root-one",
+          ":disabled": "DISABLED",
+        },
+      });
+      expect(items[2]!.item.Update).toMatchObject({
+        Key: pkiKeys.certificate("ca-root-one", "0a0b"),
+        ConditionExpression: "#status = :issued AND #notAfter > :now",
+      });
+      expect(items[3]!.item.Put).toMatchObject({
+        Item: { pk: "PKI_CA#ca-root-one", sk: "REVOKED#0a0b", reason: "caCompromise", notAfter },
+      });
+      expect(items[4]!.item.Update).toMatchObject({ Key: pkiKeys.caCrl("ca-root-one") });
+      expectNoUnusedPlaceholders(items);
+    });
+
+    it("expired mode has three items and no entry or revision bump", () => {
+      const items = revoke({ mode: "expired", notAfter });
+      expect(items.map((item) => item.slot)).toEqual(["idempotency", "profile", "certificate"]);
+      expect(items[2]!.item.Update!.ConditionExpression).toBe("#status = :issued AND #notAfter <= :now");
+      expectNoUnusedPlaceholders(items);
+    });
+
+    it("inventory mode has three items with the bare condition", () => {
+      const items = revoke({ mode: "inventory", notAfter });
+      expect(items.map((item) => item.slot)).toEqual(["idempotency", "profile", "certificate"]);
+      expect(items[2]!.item.Update!.ConditionExpression).toBe("#status = :issued");
+      expect(items[2]!.item.Update!.ExpressionAttributeNames).not.toHaveProperty("#notAfter");
+      expect(items[2]!.item.Update!.ExpressionAttributeValues).not.toHaveProperty(":now");
+      expectNoUnusedPlaceholders(items);
+    });
+
+    it("without a row has two items", () => {
+      const items = revoke(undefined);
+      expect(items.map((item) => item.slot)).toEqual(["idempotency", "profile"]);
+      expectNoUnusedPlaceholders(items);
+    });
+
+    it("sets the key state only when the loaded key is ACTIVE", () => {
+      const disabled = revoke({ mode: "entry", notAfter }, {
+        key: { custody: "WRAPPED", algorithm: "ECDSA_P256", spkiSha256: "c", state: "DISABLED" },
+      } as Partial<CaRecord>);
+      const update = disabled[1]!.item.Update!;
+      expect(update.UpdateExpression).not.toContain("#key");
+      expect(update.ExpressionAttributeNames).not.toHaveProperty("#key");
+      expect(update.ExpressionAttributeValues).not.toHaveProperty(":disabled");
+      expectNoUnusedPlaceholders(disabled);
+    });
+
+    it("refuses a CA that is not a Hemlig intermediate", () => {
+      expect(() => revoke(undefined, { parentCaId: undefined })).toThrow();
+    });
+  });
+
+  describe("distrust and the ancestor flip", () => {
+    const input = {
+      idempotency,
+      ca: caRecord({ kind: "ROOT", parentCaId: undefined }),
+      newVersion: "pkv-new",
+      now: now.toISOString(),
+      reason: "caCompromise" as const,
+      evidence: "local-distrust",
+    };
+
+    it("distrusts a root with the key disabled in the same write", () => {
+      const items = buildDistrustRootTransaction("control", input);
+      expect(items.map((item) => item.slot)).toEqual(["idempotency", "profile"]);
+      expect(items[1]!.item.Update).toMatchObject({
+        ConditionExpression:
+          "(#status = :active OR #status = :retired) AND #version = :loaded AND #kind = :root",
+        ExpressionAttributeValues: { ":root": "ROOT", ":evidence": "local-distrust", ":disabled": "DISABLED" },
+      });
+      expect(items[1]!.item.Update!.UpdateExpression).toContain("#key.#state = :disabled");
+      expectNoUnusedPlaceholders(items);
+      const retired = buildDistrustRootTransaction("control", {
+        ...input,
+        ca: caRecord({
+          kind: "ROOT",
+          key: { custody: "WRAPPED", algorithm: "ECDSA_P256", spkiSha256: "c", state: "DISABLED" },
+        }),
+      });
+      expectNoUnusedPlaceholders(retired);
+      expect(retired[1]!.item.Update!.UpdateExpression).not.toContain("#key");
+    });
+
+    it("flips a child with ReturnValues and a key-state condition", () => {
+      const update = buildRevokeForRevokedAncestorUpdate(
+        "control",
+        caRecord(),
+        { revokedAt: now.toISOString(), reason: "caCompromise", evidence: "ancestor:ca-root-one" },
+        "ca-root-one",
+        "pkv-new",
+      );
+      expect(update).toMatchObject({
+        Key: pkiKeys.caProfile("ca-child-one"),
+        ConditionExpression:
+          "(#status = :active OR #status = :retired) AND #parentCaId = :ancestor AND #key.#state = :loadedKeyState",
+        ReturnValues: "ALL_NEW",
+        ExpressionAttributeValues: { ":ancestor": "ca-root-one", ":loadedKeyState": "ACTIVE", ":disabled": "DISABLED" },
+      });
+      expectNoUnusedPlaceholders([{ item: { Update: update } }]);
+      const disabled = buildRevokeForRevokedAncestorUpdate(
+        "control",
+        caRecord({ key: { custody: "WRAPPED", algorithm: "ECDSA_P256", spkiSha256: "c", state: "DISABLED" } }),
+        { revokedAt: now.toISOString(), reason: "unspecified", evidence: "ancestor:ca-root-one" },
+        "ca-root-one",
+        "pkv-new",
+      );
+      expect(disabled.UpdateExpression).not.toContain("#key");
+      expect(disabled.ExpressionAttributeValues).not.toHaveProperty(":disabled");
+      expectNoUnusedPlaceholders([{ item: { Update: disabled } }]);
+    });
+
+    it("revokeForRevokedAncestor returns the new record or undefined", async () => {
+      const send = jest
+        .fn()
+        .mockResolvedValueOnce({ Attributes: { ...caRecord(), pk: "PKI_CA#ca-child-one", sk: "PROFILE", status: "REVOKED" } })
+        .mockRejectedValueOnce(Object.assign(new Error("c"), { name: "ConditionalCheckFailedException" }));
+      const repository = new PkiRepository({ send } as unknown as DynamoDBDocumentClient, {
+        tableName: "control",
+        directoryIndex: "pki-directory",
+      });
+      const revocation = { revokedAt: now.toISOString(), reason: "unspecified", evidence: "ancestor:ca-root-one" };
+      await expect(repository.revokeForRevokedAncestor(caRecord(), revocation, "ca-root-one")).resolves.toMatchObject({
+        caId: "ca-child-one",
+        status: "REVOKED",
+      });
+      await expect(repository.revokeForRevokedAncestor(caRecord(), revocation, "ca-root-one")).resolves.toBeUndefined();
+    });
+  });
+
+  it("builds the policy update without the maximum when it is undefined", () => {
+    const base = {
+      idempotency,
+      caId: "ca-root-one",
+      loadedVersion: "pkv-1",
+      newVersion: "pkv-2",
+      now: now.toISOString(),
+      policy: {} as CaRecord["policy"],
+    };
+    const without = buildUpdateCaPolicyTransaction("control", base);
+    const update = without[1]!.item.Update!;
+    expect(update.UpdateExpression).toBe("SET #policy = :policy, #version = :v");
+    expect(update.ConditionExpression).toBe("#version = :ifMatch AND (#status = :pending OR #status = :active)");
+    expect(update.ExpressionAttributeNames).not.toHaveProperty("#maxIssueLifetimeEverSeconds");
+    expect(update.ExpressionAttributeValues).not.toHaveProperty(":max");
+    expectNoUnusedPlaceholders(without);
+    expectNoUnusedPlaceholders(buildUpdateCaPolicyTransaction("control", { ...base, displayName: null }));
+    const withMax = buildUpdateCaPolicyTransaction("control", { ...base, maxIssueLifetimeEverSeconds: 5 });
+    expect(withMax[1]!.item.Update!.UpdateExpression).toBe(
+      "SET #policy = :policy, #maxIssueLifetimeEverSeconds = :max, #version = :v",
+    );
+    expect(withMax[1]!.item.Update!.ConditionExpression).toContain("#maxIssueLifetimeEverSeconds <= :max");
+    expectNoUnusedPlaceholders(withMax);
   });
 });

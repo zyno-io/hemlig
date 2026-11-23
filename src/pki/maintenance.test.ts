@@ -49,6 +49,7 @@ interface World {
   publish?: jest.Mock;
   retireExpired?: jest.Mock;
   disable?: jest.Mock;
+  revokeAncestor?: jest.Mock;
   failLoad?: string;
   /** Count returned by the capacity recount; a thrown error when `failCapacity`. */
   counted?: number;
@@ -106,6 +107,17 @@ const run = async (world: World, remainingMs = () => 300_000) => {
             status: "RETIRED",
             retiredAt: target.notAfter,
             version: "v2",
+          };
+        }),
+      revokeForRevokedAncestor:
+        world.revokeAncestor ??
+        jest.fn(async (target: CaRecord, parent: CaRecord) => {
+          order.push(`ancestor:${target.caId}`);
+          return {
+            ...target,
+            status: "REVOKED",
+            revocationEvidence: `ancestor:${parent.caId}`,
+            version: "v3",
           };
         }),
       disableDrainedKey:
@@ -421,5 +433,99 @@ describe("capacity recount", () => {
     );
     expect(app.capacity.recount).not.toHaveBeenCalled();
     expect(result).toMatchObject({ skipped: expect.any(Number) });
+  });
+});
+
+describe("runMaintenancePass: Hemlig hierarchy", () => {
+  const hemlig = (caId: string, overrides: Partial<CaRecord> = {}) =>
+    ca(caId, {
+      parent: { type: "ca", id: "ca-root" },
+      parentCaId: "ca-root",
+      ...overrides,
+    });
+  const root = (overrides: Partial<CaRecord> = {}) =>
+    ca("ca-root", { kind: "ROOT", parent: undefined, ...overrides });
+
+  it("finishes the distrust walk for a child of a REVOKED root, with an audit event", async () => {
+    const { result, order, app, publish } = await run({
+      cas: [
+        root({ status: "REVOKED" }),
+        hemlig("ca-a"),
+        hemlig("ca-b", { status: "RETIRED", retiredAt: iso(-day) }),
+      ],
+      crls: { "ca-a": crlState(), "ca-b": crlState() },
+    });
+    expect(result).toMatchObject({ revoked: 2, failures: 0 });
+    expect(order).toEqual(
+      expect.arrayContaining(["ancestor:ca-a", "ancestor:ca-b"]),
+    );
+    expect(app.audit.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "pki.ca.revoke",
+        actor: { type: "system", id: "pki-maintenance" },
+        outcome: "succeeded",
+        target: {
+          caId: "ca-a",
+          environment: "prod",
+          parentCaId: "ca-root",
+          reason: "ancestor_revoked",
+          trigger: "maintenance",
+        },
+      }),
+    );
+    // A revoked child's CRL is not published in the same pass.
+    expect(publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ caId: "ca-a" }),
+      expect.anything(),
+    );
+  });
+
+  it("leaves a child of a healthy root alone and tolerates a missed race", async () => {
+    const { result, app } = await run({
+      cas: [root(), hemlig("ca-a")],
+      crls: { "ca-root": crlState(), "ca-a": crlState() },
+    });
+    expect(result).toMatchObject({ revoked: 0, failures: 0 });
+    expect(app.audit.write).not.toHaveBeenCalled();
+    const missed = await run({
+      cas: [root({ status: "REVOKED" }), hemlig("ca-a")],
+      crls: { "ca-a": crlState() },
+      revokeAncestor: jest.fn(async () => undefined),
+    });
+    expect(missed.result).toMatchObject({ revoked: 0, failures: 0 });
+  });
+
+  it("counts a failed flip as a failure", async () => {
+    const { error } = await run({
+      cas: [root({ status: "REVOKED" }), hemlig("ca-a")],
+      crls: { "ca-a": crlState() },
+      revokeAncestor: jest.fn(async () => {
+        throw new Error("boom");
+      }),
+    });
+    expect(error?.message).toMatch(/1 failure/);
+  });
+
+  it("keeps publishing for a RETIRED root with a live child and does not disable its key before the drain point", async () => {
+    const retired = root({
+      status: "RETIRED",
+      retiredAt: iso(-2 * day),
+      maxIssueLifetimeEverSeconds: 365 * 86_400,
+      notAfter: iso(3000 * day),
+    });
+    const { order, result, app } = await run({
+      cas: [retired, hemlig("ca-a")],
+      crls: {
+        "ca-root": crlState({
+          revision: 1,
+          published: published({ revision: 0 }),
+        }),
+        "ca-a": crlState(),
+      },
+    });
+    expect(order).toContain("publish:ca-root");
+    expect(order).not.toContain("drain:ca-root");
+    expect(app.cas.disableDrainedKey).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ revoked: 0, drained: 0, failures: 0 });
   });
 });
