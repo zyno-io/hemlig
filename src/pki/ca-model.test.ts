@@ -392,3 +392,25 @@ describe("response mappers", () => {
     });
   });
 });
+
+describe("EXTERNAL create digest stability (T-A7)", () => {
+  it("keeps the digest of an EXTERNAL_INTERMEDIATE create byte-identical", () => {
+    // Computed on the Phase 6 code. Stored idempotency records hold this digest, so it must never change.
+    const parsed = parseCreateCaRequest({
+      environment: "prod",
+      name: "prod-issuing-1",
+      kind: "EXTERNAL_INTERMEDIATE",
+      keyAlgorithm: "ECDSA_P256",
+      subject: { commonName: "Prod Issuing CA 1", organization: "Example Corp" },
+      requestedConstraints: {
+        nameConstraints: { permitted: { dns: ["example.com"] } },
+        extendedKeyUsages: ["serverAuth"],
+      },
+      policy: { capacity: 100 },
+      displayName: "Prod",
+    });
+    expect(requestDigest("pki.ca.create", parsed)).toBe(
+      "1306d773c2240662578d0b957368f36d013e1ff9bb4dff19b40e5275d974a5ad",
+    );
+  });
+});
