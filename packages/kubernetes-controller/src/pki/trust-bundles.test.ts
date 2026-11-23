@@ -1285,6 +1285,26 @@ test("the root CRL is required only while a listed child can still validate", as
   await revoked.run();
   assert.equal(crlEntry(revoked, ROOT_ID).state, "Stale");
   assert.equal(revoked.ready()?.reason, "CrlStale");
+  // A CA-revoked child past its own notAfter can validate nothing: the root CRL stops being required.
+  const expired = hemligSetup(
+    ["ca-hem1", "ca-hem2"],
+    {
+      "ca-hem1": childView("ca-hem1", {
+        status: "REVOKED",
+        notAfter: "2026-06-02T00:00:00.000Z",
+      }),
+      "ca-hem2": childView("ca-hem2", {
+        status: "REVOKED",
+        notAfter: "2026-06-02T00:00:00.000Z",
+      }),
+    },
+    stalePast,
+  );
+  await expired.run();
+  await expired.scheduler.advance(8 * 86_400_000);
+  await expired.run();
+  assert.equal(crlEntry(expired, ROOT_ID).state, "Stale");
+  assert.equal(expired.ready()?.reason, "Ready");
   // Drained dependents: not required, and the bundle reports CaDrained.
   const drained = hemligSetup(
     ["ca-hem1", "ca-hem2"],

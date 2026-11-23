@@ -68,6 +68,7 @@ import {
   chainInvalid,
   crlInvalid,
   crlPublicationBusy,
+  pkiBadRequest,
   pkiConflict,
   pkiNotFound,
 } from "./errors";
@@ -1648,7 +1649,7 @@ export class CaService {
       }
       const result =
         ca.kind === "ROOT"
-          ? await this.revokeRoot(actor, key, digest, ca, reason)
+          ? await this.revokeRoot(actor, key, digest, ca, reason, invalidityDate)
           : await this.revokeIntermediate(
               actor,
               key,
@@ -1737,11 +1738,16 @@ export class CaService {
             : "entry";
     }
     const crlEntry = mode === "entry";
+    // The bump makes the root's revision at least this: a replay tests a published CRL against it.
+    const crlRevision = crlEntry
+      ? ((await this.pki.getCaCrlState(parentCaId))?.revision ?? 0) + 1
+      : undefined;
     const outcome = await this.pki.revokeIntermediateCa({
       idempotency: this.idempotency(actor, key, "pki.ca.revoke", digest, {
         caId: ca.caId,
         changed: true,
         crlEntry,
+        ...(crlRevision === undefined ? {} : { crlRevision }),
       }),
       ca,
       newVersion: versionId(),
@@ -1781,7 +1787,14 @@ export class CaService {
     digest: string,
     ca: CaRecord,
     reason: RevocationReason,
+    invalidityDate: string | undefined,
   ): Promise<MutationResult | "rerun"> {
+    if (invalidityDate !== undefined) {
+      throw pkiBadRequest(
+        "invalid_invalidity_date",
+        "invalidityDate applies to an INTERMEDIATE, which is listed on its root's CRL.",
+      );
+    }
     let changed = false;
     if (ca.status === "REVOKED") {
       if (
@@ -1821,6 +1834,7 @@ export class CaService {
     flags: {
       changed: boolean;
       crlEntry?: boolean;
+      crlRevision?: number;
       crlPublished?: boolean;
       crlNumber?: number;
       terminalAudit: boolean;
@@ -1846,9 +1860,13 @@ export class CaService {
       ca.revokedAt !== undefined
     ) {
       const parentCrl = await this.pki.getCaCrlState(ca.parentCaId);
+      // `thisUpdate` is floored to the second and `revokedAt` is not: compare against the floored time.
+      const revokedSecond = `${ca.revokedAt.slice(0, 19)}.000Z`;
       if (
         parentCrl?.published !== undefined &&
-        parentCrl.published.thisUpdate >= ca.revokedAt
+        parentCrl.published.thisUpdate >= revokedSecond &&
+        (flags.crlRevision === undefined ||
+          parentCrl.published.revision >= flags.crlRevision)
       ) {
         crlPublished = true;
         crlNumber = parentCrl.published.number;
@@ -1880,6 +1898,9 @@ export class CaService {
     const response = await this.revokeResponse(caId, {
       changed: outcome.result.changed === true,
       crlEntry: outcome.result.crlEntry === true,
+      ...(typeof outcome.result.crlRevision === "number"
+        ? { crlRevision: outcome.result.crlRevision }
+        : {}),
       terminalAudit: outcome.shouldWriteTerminalAudit,
     });
     return response;
@@ -1906,21 +1927,26 @@ export class CaService {
     const revokedCaIds: string[] = [];
     const remaining: string[] = [];
     const settle = async (id: string): Promise<void> => {
-      let child = await this.pki.getCa(id);
-      if (child === undefined || child.parentCaId !== root.caId) {
-        return;
-      }
-      if (child.status === "ACTIVE" || child.status === "RETIRED") {
-        try {
-          await this.revokeForRevokedAncestor(child, root);
-        } catch {
-          // Classified from the reread below.
+      try {
+        let child = await this.pki.getCa(id);
+        if (child === undefined || child.parentCaId !== root.caId) {
+          return;
         }
-        child = await this.pki.getCa(id).catch(() => undefined);
-      }
-      if (child?.status === "REVOKED") {
-        revokedCaIds.push(id);
-      } else if (child?.status === "ACTIVE" || child?.status === "RETIRED") {
+        if (child.status === "ACTIVE" || child.status === "RETIRED") {
+          try {
+            await this.revokeForRevokedAncestor(child, root);
+          } catch {
+            // Classified from the reread below.
+          }
+          child = await this.pki.getCa(id);
+        }
+        if (child?.status === "REVOKED") {
+          revokedCaIds.push(id);
+        } else if (child?.status === "ACTIVE" || child?.status === "RETIRED") {
+          remaining.push(id);
+        }
+      } catch {
+        // A failed read: the child is unknown, so the walk is incomplete and maintenance finishes it.
         remaining.push(id);
       }
     };

@@ -823,9 +823,13 @@ export class TrustBundleReconciler {
           (v): v is PkiCaBundle =>
             v?.crlIssuers.some((i) => i.id === entry.id) === true,
         );
+      // A CA-revoked child is REVOKED and never drains, so it counts only until its own certificate expires.
+      const at = this.deps.scheduler.now();
       return (
         dependents.length === 0 ||
-        dependents.some((v) => v.anchorTrusted && !v.drained)
+        dependents.some(
+          (v) => v.anchorTrusted && !v.drained && Date.parse(v.notAfter) > at,
+        )
       );
     };
     const publishAt = this.deps.scheduler.now();

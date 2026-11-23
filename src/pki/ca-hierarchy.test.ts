@@ -829,6 +829,9 @@ describe("CA revoke of an INTERMEDIATE", () => {
       revokedCaIds: [child.caId],
     });
     expect(again.shouldWriteTerminalAudit).toBe(true);
+    // The recorded revision is the root's, after the bump; the replay still sees the publication.
+    expect(h.state.human.get(key)!.result).toMatchObject({ crlRevision: 1 });
+    expect(again.body.crlNumber).toBe(2);
     expect(
       await errorOf(
         h.service.revoke(admin, key, child.caId, { reason: "caCompromise" }),
@@ -924,6 +927,41 @@ describe("local distrust of a ROOT", () => {
     expect(result.auditTarget.revokedCaIds).toBe(
       [c1.caId, c2.caId, c3.caId].sort().join(","),
     );
+  });
+
+  it("treats a failed read in the walk as incomplete, not as an error", async () => {
+    const { h, root, c1 } = await family();
+    const real = h.pki.getCa.getMockImplementation()!;
+    h.pki.getCa.mockImplementation(async (id: string) => {
+      if (id === c1.caId) {
+        throw new Error("throttled");
+      }
+      return real(id);
+    });
+    const result = await h.service.revoke(admin, h.key(), root.caId, {});
+    expect(result.status).toBe(200);
+    expect(result.body.complete).toBe(false);
+    expect(result.body.revokedCaIds).not.toContain(c1.caId);
+    expect(h.state.cas.get(root.caId)!.status).toBe("REVOKED");
+  });
+
+  it("refuses an invalidity date for a ROOT", async () => {
+    const h = hierarchyHarness();
+    const root = await h.createRoot();
+    expect(
+      await errorOf(
+        h.service.revoke(admin, h.key(), root.caId, {
+          reason: "caCompromise",
+          invalidityDate: new Date(Date.now() - day).toISOString(),
+        }),
+      ),
+    ).toMatchObject({
+      statusCode: 400,
+      details: { reason: "invalid_invalidity_date" },
+      message:
+        "invalidityDate applies to an INTERMEDIATE, which is listed on its root's CRL.",
+    });
+    expect(h.state.cas.get(root.caId)!.status).toBe("ACTIVE");
   });
 
   it("reports an incomplete walk with a 200", async () => {

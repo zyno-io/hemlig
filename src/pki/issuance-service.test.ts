@@ -864,6 +864,26 @@ describe("a Hemlig INTERMEDIATE under a ROOT", () => {
     expect(h.state.commits).toHaveLength(1);
   });
 
+  it("replays an administrator issuance under a REVOKED parent as ancestor_revoked", async () => {
+    const h = await issuanceHarness({ parent: root() });
+    const request = {
+      certificateSigningRequestPem: h.defaultCsr,
+      useCsrNames: true,
+    };
+    await h.issuance.issueForAdmin(admin, "key-admin-0003", caId, request);
+    h.state.parent = root("REVOKED");
+    expect(
+      await errorOf(
+        h.issuance.issueForAdmin(admin, "key-admin-0003", caId, request),
+      ),
+    ).toMatchObject({
+      statusCode: 409,
+      code: "issuance_revoked",
+      safeReason: "ancestor_revoked",
+    });
+    expect(h.state.ca.status).toBe("ACTIVE");
+  });
+
   it("replays with the child ACTIVE and the parent REVOKED as ancestor_revoked, and a REVOKED child as ca_revoked", async () => {
     const h = await issuanceHarness({ parent: root() });
     await issue(h, { idempotencyKey: "key-ancestor-01" });

@@ -488,6 +488,7 @@ export class CertificateService {
     flags: {
       crlEntry: boolean;
       changed: boolean;
+      crlRevision?: number;
       crlPublished?: boolean;
       crlNumber?: number;
     },
@@ -505,7 +506,10 @@ export class CertificateService {
       (flags.crlEntry &&
         crl?.published !== undefined &&
         cert.revocation !== undefined &&
-        crl.published.thisUpdate >= cert.revocation.at);
+        // `thisUpdate` is floored to the second and `at` is not.
+        crl.published.thisUpdate >= `${cert.revocation.at.slice(0, 19)}.000Z` &&
+        (flags.crlRevision === undefined ||
+          crl.published.revision >= flags.crlRevision));
     const crlNumber =
       flags.crlNumber ??
       (crlPublished === true ? crl?.published?.number : undefined);
@@ -558,6 +562,9 @@ export class CertificateService {
     const flags = {
       crlEntry: outcome.result.crlEntry === true,
       changed: outcome.result.changed === true,
+      ...(typeof outcome.result.crlRevision === "number"
+        ? { crlRevision: outcome.result.crlRevision }
+        : {}),
     };
     const { body, cert } = await this.revokeBody(caId, serial, flags);
     return {
@@ -647,11 +654,17 @@ export class CertificateService {
         crlEntry = (await this.pki.getRevocationEntry(caId, serial)) !== undefined;
       }
       const changed = mode !== "none";
+      // The bump makes the CRL's revision at least this: a replay tests a published CRL against it.
+      const crlRevision =
+        mode === "entry" || (mode === "upgrade" && entryLive)
+          ? ((await this.pki.getCaCrlState(caId))?.revision ?? 0) + 1
+          : undefined;
       const idempotency = this.idempotency(actor, key, digest, {
         caId,
         serial,
         crlEntry,
         changed,
+        ...(crlRevision === undefined ? {} : { crlRevision }),
       });
       let outcome: TransactOutcome;
       if (mode === "none") {

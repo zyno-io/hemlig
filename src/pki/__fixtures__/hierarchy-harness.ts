@@ -412,7 +412,10 @@ export const hierarchyHarness = (options: { now?: Date } = {}) => {
         number: (crl.published?.number ?? 1) + 1,
         objectKey: `crl/${ca.caId}/published`,
         sha256: "0".repeat(64),
-        thisUpdate: clock.now.toISOString(),
+        // Floored to the second, as the real CRL service does.
+        thisUpdate: new Date(
+          Math.floor(clock.now.getTime() / 1000) * 1000,
+        ).toISOString(),
         nextUpdate: new Date(clock.now.getTime() + 86_400_000).toISOString(),
         revision: crl.revision,
         entryCount: state.entries.size,

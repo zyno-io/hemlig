@@ -2139,3 +2139,14 @@ test("rollover from a ROOT omits leaf fields and keeps the kind", async () => {
   assert.equal("leafKeyAlgorithms" in body.policy, false);
   assert.match(result.stderr, /external offline root is strongly recommended/);
 });
+
+test("--kind INTERMEDIATE over a non-INTERMEDIATE rollover base needs --parent, locally", async () => {
+  const result = await execute(
+    ["pki", "ca", "create", "--rollover-from", caId, "--kind", "INTERMEDIATE"],
+    () => ({ status: 200, headers: {}, body: detail }),
+    { ...env, HEMLIG_ENVIRONMENT: undefined },
+  );
+  assert.equal(result.exitCode, 2);
+  assert.match(result.stderr, /needs --parent/);
+  assert.equal(result.requests.filter((r) => r.method === "POST").length, 0);
+});

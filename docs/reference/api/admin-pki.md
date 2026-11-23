@@ -317,7 +317,7 @@ Inline publication is bounded to 5 seconds. When it is busy, late or fails, the 
 | Field | Description |
 | --- | --- |
 | `reason` | `unspecified` (default), `caCompromise`, `affiliationChanged`, `superseded`, `cessationOfOperation` or `privilegeWithdrawn`. `keyCompromise` is `400 invalid_reason` |
-| `invalidityDate` | Only with `caCompromise` (`400 invalidity_date_requires_ca_compromise`). Not in the future (`400 invalid_invalidity_date`) |
+| `invalidityDate` | Only with `caCompromise` (`400 invalidity_date_requires_ca_compromise`). Not in the future (`400 invalid_invalidity_date`). Refused for a `ROOT` with `400 invalid_invalidity_date`: it applies to an `INTERMEDIATE`, which is listed on its root's CRL |
 
 The response is `200` with the CA's version as `ETag`:
 
@@ -327,7 +327,7 @@ The response is `200` with the CA's version as `ETag`:
 | `changed` | `false` when the CA was already `REVOKED` |
 | `crlEntry`, `crlPublished`, `crlNumber` | Whether the root's CRL carries an entry, whether it was published inline, and its number. Always `false` for a `ROOT` |
 | `revokedCaIds` | An `INTERMEDIATE`: its own ID when `changed`. A `ROOT`: every child that is `REVOKED` now, sorted |
-| `complete` | `true` for an `INTERMEDIATE`. For a `ROOT`, `false` while any child is still not `REVOKED` |
+| `complete` | `true` for an `INTERMEDIATE`. For a `ROOT`, `true` when every child the directory listed is `REVOKED`. The listing is eventually consistent, so a child created just before the revoke may be missing from it; issuance under it is refused regardless, and maintenance finishes it |
 
 | State | Effect | `crlEntry` |
 | --- | --- | --- |
@@ -337,7 +337,9 @@ The response is `200` with the CA's version as `ETag`:
 | Already `REVOKED` | No change, `changed: false`. There is no reason upgrade | `false` |
 | `ROOT` | `REVOKED`, key disabled, then each child is flipped one by one. No CRL exists above a root | `false` |
 
-The `revocationSource` of a revoked CA is `HEMLIG`. Its `revocationEvidence` is `local-distrust` for a root, `parent:<rootId>` for a CA revoke and `ancestor:<rootId>` when the distrust walk flipped it. A root revoke repeats safely: if `complete` is `false`, repeat it with the same `Idempotency-Key`. Maintenance finishes any child the walk missed within 15 minutes.
+The `revocationSource` of a revoked CA is `HEMLIG`. Its `revocationEvidence` is `local-distrust` for a root, `parent:<rootId>` for a CA revoke and `ancestor:<rootId>` when the distrust walk flipped it. A root revoke repeats safely: if `complete` is `false`, repeat it with the same `Idempotency-Key`.
+
+`complete` covers the children the directory listed, which is eventually consistent. Issuance under any child is refused regardless, because every issuance and replay checks that no ancestor is `REVOKED`, and maintenance finishes any child the walk missed, including one created just before the revoke, within 15 minutes.
 
 Issuance under a `REVOKED` CA, or under one whose root is `REVOKED`, is `409 ca_not_active`. A replayed issuance is `409 issuance_revoked`, with `ca_revoked` or `ancestor_revoked`. The audit event is `pki.ca.revoke`.
 

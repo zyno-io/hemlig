@@ -1824,7 +1824,7 @@ export async function runPkiCli(
             : kind === "INTERMEDIATE"
               ? base?.parentCaId
               : undefined;
-        if (createKind === undefined && base !== undefined)
+        if (base !== undefined)
           checkCreateKind(
             kind,
             {

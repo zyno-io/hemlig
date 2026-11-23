@@ -250,7 +250,9 @@ hemlig pki ca revoke prod-int-1 --reason caCompromise
 hemlig pki ca revoke prod-root-1 --reason caCompromise
 ```
 
-Issuance under a distrusted root stops at once, because every issuance and replay checks that no ancestor is `REVOKED`. The walk that flips the children is best effort, and maintenance finishes it within 15 minutes. A root revoke reports `revokedCaIds` and `complete`. Repeat it with the same idempotency key while `complete` is `false`.
+Issuance under a distrusted root stops at once, because every issuance and replay checks that no ancestor is `REVOKED`. The walk that flips the children is best effort, and maintenance finishes it within 15 minutes.
+
+A root revoke reports `revokedCaIds` and `complete`. `complete` means every child the directory listed is `REVOKED`; the listing is eventually consistent, so maintenance also finishes any child created just before the revoke. Repeat the revoke with the same idempotency key while `complete` is `false`.
 
 A retired root keeps signing its CRL and drains only after its longest intermediate lifetime has passed. Rolling a hierarchy is in [Roll over a CA](../operations/pki-ca-rollover.md#hemlig-hierarchy).
 
