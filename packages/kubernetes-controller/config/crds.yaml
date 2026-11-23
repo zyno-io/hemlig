@@ -330,7 +330,7 @@ spec:
                   type: object
                   required: [name]
                   properties:
-                    name: { type: string, minLength: 1, maxLength: 165, pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" }
+                    name: { type: string, minLength: 1, maxLength: 165, pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" }
               x-kubernetes-validations:
                 - rule: "self.consumerRef == oldSelf.consumerRef && has(self.consumerNamespace) == has(oldSelf.consumerNamespace) && (!has(self.consumerNamespace) || self.consumerNamespace == oldSelf.consumerNamespace) && self.target.name == oldSelf.target.name"
                   message: consumerRef, consumerNamespace and target are immutable

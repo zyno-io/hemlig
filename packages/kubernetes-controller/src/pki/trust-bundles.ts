@@ -364,6 +364,23 @@ const isIdentityRejection = (error: unknown): boolean => {
   );
 };
 
+const errorStatus = (error: unknown): string => {
+  const hemlig = asHemlig(error);
+  return hemlig === undefined
+    ? String(k8sStatus(error) ?? "unknown")
+    : `${hemlig.status}${hemlig.code === undefined ? "" : ` ${hemlig.code}`}`;
+};
+
+/** A fallback entry whose mounted copy may have expired since it was recorded. */
+const refreshedEntry = (
+  entry: TrustBundleCrlStatus,
+  nowMs: number,
+): TrustBundleCrlStatus =>
+  (entry.state === "Current" || entry.state === "Stale") &&
+  entry.nextUpdate !== undefined
+    ? { ...entry, state: freshness(entry.nextUpdate, nowMs) }
+    : entry;
+
 const sortedUnique = (ids: Iterable<string>): string[] =>
   [...new Set(ids)].sort();
 
@@ -552,17 +569,23 @@ export class TrustBundleReconciler {
   }
 
   private async fetchBundle(
+    key: string,
     id: string,
     registered: RegisteredConsumer,
   ): Promise<Fetched> {
     try {
       const raw = await this.remote(registered.client.getCaBundle(id));
       const view = validView(id, raw);
-      return view === undefined
-        ? { kind: "partial", slow: true }
-        : { kind: "ok", view };
+      if (view === undefined) {
+        log(`${key} ca ${id} bundle failed (invalid)`);
+        return { kind: "partial", slow: true };
+      }
+      return { kind: "ok", view };
     } catch (error) {
-      if (isIdentityRejection(error)) return { kind: "abort" };
+      if (isIdentityRejection(error)) {
+        log(`${key} ca ${id} bundle failed (${errorStatus(error)})`);
+        return { kind: "abort" };
+      }
       const hemlig = asHemlig(error);
       if (hemlig?.status === 404 && hemlig.details?.reason === "ca_not_found") {
         return { kind: "notFound" };
@@ -570,6 +593,7 @@ export class TrustBundleReconciler {
       if (hemlig?.status === 409 && hemlig.code === "ca_not_active") {
         return { kind: "notActive" };
       }
+      log(`${key} ca ${id} bundle failed (${errorStatus(error)})`);
       return { kind: "partial", slow: !isTransient(error) };
     }
   }
@@ -612,7 +636,8 @@ export class TrustBundleReconciler {
     let targetKnown = true;
     try {
       targetCm = await this.readConfigMap(namespace, target);
-    } catch {
+    } catch (error) {
+      log(`${key} configmap ${target} read failed (${errorStatus(error)})`);
       targetKnown = false;
       markPartial(false);
     }
@@ -638,11 +663,15 @@ export class TrustBundleReconciler {
     const notFound: string[] = [];
     const notActive: string[] = [];
     for (const id of fetchIds) {
-      const result = await this.fetchBundle(id, registered);
+      const result = await this.fetchBundle(key, id, registered);
       if (result.kind === "abort") return abort();
       if (result.kind === "ok") views.set(id, result.view);
-      else if (result.kind === "partial") markPartial(result.slow);
-      else if (specIds.includes(id)) {
+      else if (result.kind === "partial") {
+        markPartial(result.slow);
+        // A transient failure means Hemlig is struggling: do not hold the
+        // consumer slot for the remaining CAs.
+        if (!result.slow) break;
+      } else if (specIds.includes(id)) {
         (result.kind === "notFound" ? notFound : notActive).push(id);
       }
     }
@@ -654,6 +683,11 @@ export class TrustBundleReconciler {
       if (view === undefined) continue;
       if (USABLE.has(view.status)) usable.push(id);
       else notActive.push(id);
+    }
+
+    // A complete pass that would leave nothing usable never wipes the mounts.
+    if (!partial && usable.length === 0 && prevAccepted.length > 0) {
+      markPartial(true);
     }
 
     // 7. The target ConfigMap.
@@ -755,11 +789,11 @@ export class TrustBundleReconciler {
     for (const [id, entry] of oldCrls) {
       if (crlIds.has(id)) continue;
       if (!complete) {
-        carried.push(entry);
+        carried.push(refreshedEntry(entry, now));
         continue;
       }
       if (!(await this.deleteOwned(key, namespace, entry.configMap, owner))) {
-        carried.push(entry);
+        carried.push(refreshedEntry(entry, now));
         markPartial(false);
       }
     }
@@ -858,11 +892,16 @@ export class TrustBundleReconciler {
       slow: flags.slow === true,
       abort: flags.abort === true,
     });
+    const previous =
+      input.previous === undefined
+        ? make("Missing")
+        : refreshedEntry(input.previous, now);
     let cm: ConfigMapLike | undefined;
     try {
       cm = await this.readConfigMap(namespace, name);
-    } catch {
-      return result(input.previous ?? make("Missing"), { partial: true });
+    } catch (error) {
+      log(`${key} configmap ${name} read failed (${errorStatus(error)})`);
+      return result(previous, { partial: true });
     }
     if (cm !== undefined && !isOwnedByTrustBundle(cm.metadata, owner)) {
       return result(make("Conflict"));
@@ -871,7 +910,7 @@ export class TrustBundleReconciler {
     const fromStored = (): TrustBundleCrlStatus =>
       stored !== undefined
         ? make(freshness(stored.nextUpdate, now), stored)
-        : (input.previous ?? make("Missing"));
+        : previous;
     let response;
     try {
       response = await this.remote(
@@ -887,6 +926,7 @@ export class TrustBundleReconciler {
       ) {
         return result(make("Missing", stored));
       }
+      log(`${key} crl ${id} fetch failed (${errorStatus(error)})`);
       if (isIdentityRejection(error)) {
         return result(fromStored(), { abort: true });
       }
@@ -957,7 +997,8 @@ export class TrustBundleReconciler {
     let cm: ConfigMapLike | undefined;
     try {
       cm = await this.readConfigMap(namespace, name);
-    } catch {
+    } catch (error) {
+      log(`${key} configmap ${name} read failed (${errorStatus(error)})`);
       return false;
     }
     if (cm === undefined) return true;
@@ -966,7 +1007,12 @@ export class TrustBundleReconciler {
       await this.deps.core.deleteNamespacedConfigMap({
         name,
         namespace,
-        body: { preconditions: { uid: cm.metadata?.uid } },
+        body: {
+          preconditions: {
+            uid: cm.metadata?.uid,
+            resourceVersion: cm.metadata?.resourceVersion,
+          },
+        },
       });
       log(`${key} configmap ${name} deleted`);
       return true;

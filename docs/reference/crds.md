@@ -235,11 +235,11 @@ The first matching row wins. The message names at most five CA IDs.
 | `ConsumerReferenceNotPermitted` | False | The consumer does not allow references from this namespace | Set `allowCrossNamespaceReferences: true` on the consumer, or use a consumer in the bundle's namespace |
 | `ConsumerNotReady` | False | The consumer is not ready, or Hemlig rejected its identity | Fix the consumer first |
 | `ProviderNotPermitted` | False | The namespace labels do not match the provider's `allowedNamespaces` | Label the namespace |
-| `ConfigMapConflict` | False | The target ConfigMap exists and the bundle does not own it. Nothing is written to it | Choose another `target.name`, or delete the foreign ConfigMap |
+| `ConfigMapConflict` | False | The target ConfigMap, or a CRL ConfigMap (`<target>-crl-<id>`), exists and the bundle does not own it. Nothing is written to it | Remove or rename the foreign ConfigMap, or create a new bundle with another `target.name` (`target.name` is immutable) |
 | `ConfigMapRejected` | False | The target was not written: over 1,048,576 bytes, or the API server refused it. The previous content stays mounted | Remove CAs from `caIds`, or read the controller logs |
 | `CaNotFound` | False | A listed CA does not exist, or is in another environment | Fix `caIds` |
 | `CaNotActive` | False | A listed CA is `PENDING_CERTIFICATE` or `FAILED` | Activate the CA, or remove it from `caIds` |
-| `CrlRejected` | False | A CRL ConfigMap could not be written (too large, refused) or is a foreign ConfigMap. The mounted copy is kept | Use `crlFormat: der`, or read the controller logs |
+| `CrlRejected` | False | A CRL is too large for a ConfigMap, or the API server refused it. The mounted copy is kept | Use `crlFormat: der`, or read the controller logs |
 | `CrlMissing` | False | Hemlig has no CRL yet for a required issuer, for example a root CRL not uploaded | [Upload the root CRL](../guide/pki.md) |
 | `CrlStale` | False | A required mounted CRL is past its `nextUpdate` | Check that Hemlig publishes it, or that the root CRL was uploaded |
 | `RemoteError` | False | Hemlig could not be asked, or answered unexpectedly, and the bundle was not `Ready` before. A transient error keeps a `Ready` bundle `Ready` | None for transient errors. Check the controller logs |

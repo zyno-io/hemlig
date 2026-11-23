@@ -128,6 +128,7 @@ Your application must also reload the file. Refreshes use conditional GETs, so a
 - While the target is rejected, a newly listed CA gets nothing, but the CAs already mounted keep refreshing their CRLs.
 - A ConfigMap changed by hand is put back at the next refresh. A deleted CA's CRL ConfigMap is removed.
 - The target name is at most 165 characters, so every CRL ConfigMap name stays valid.
+- If every listed CA becomes unavailable, the bundle keeps the last mounted content and reports `CaNotFound` or `CaNotActive`.
 
 Constants are in [Limits and timings](../reference/limits.md#controller).
 

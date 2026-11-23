@@ -468,7 +468,7 @@ kubectl -n pki5 get certificaterequest -o json | jq '.items[] | select(.metadata
 
 ## Gate PKI-6: mounted full-chain revocation
 
-Run after PKI-5 in the same cluster and namespace `pki5`, with `acc-root`, `$CA_ID` and `$EXT_ID` from PKI-2 and the PKI-4 shell (`consumer.crt`, the `issue` function, `api2.json`). Run it last: it revokes `acc-issuing-1` at the root. To shorten the waits, upgrade the chart with `--set trustBundles.refreshIntervalMilliseconds=60000`. The verifying pod needs OpenSSL 3; the example installs it in `alpine:3.20`, which needs package egress.
+Run after PKI-5 in the same cluster and namespace `pki5`, with `acc-root`, `$CA_ID` and `$EXT_ID` from PKI-2 and the PKI-4 shell (`consumer.crt`, the `issue` function, `api2.json`). Run it last: it revokes `acc-issuing-1` at the root. Before applying the CRD, run `helm upgrade --reuse-values --set trustBundles.refreshIntervalMilliseconds=60000`. The verifying pod needs OpenSSL 3; the example installs it in `alpine:3.20`, which needs package egress.
 
 ```sh
 kubectl apply -f packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io-pki.yaml
@@ -566,7 +566,7 @@ sleep 30; kubectl -n pki5 get hmltrustbundle foreign; kubectl -n pki5 get config
 | Issuance | `api6` gives `409 ca_not_active`, reason `revoked`; the replay gives `409 issuance_revoked`, reason `ca_revoked` | |
 | CRDs | The API server accepted the CRD and rejects the patch with `consumerRef, consumerNamespace and target are immutable` | A CEL rule failed. Only a real API server proves it |
 | Ownership | `foreign` is `Ready=False` `ConfigMapConflict`, and `foreign-trust` still holds `keep` | A foreign ConfigMap was overwritten |
-| Audit | No events for `pki.bundle.get` or `pki.crl.get`; `pki.certificate.revoke` and `pki.external-ca.upload-crl` (with `revokedCaIds`) succeeded; no object contains `-----BEGIN` | |
+| Audit | No `succeeded` events for `pki.bundle.get` or `pki.crl.get` from the consumer actor since the gate started (the admin route shares `pki.crl.get`, and PKI-2 created such events); `pki.certificate.revoke` and `pki.external-ca.upload-crl` (with `revokedCaIds`) succeeded; no object contains `-----BEGIN` | |
 
 ## Teardown
 

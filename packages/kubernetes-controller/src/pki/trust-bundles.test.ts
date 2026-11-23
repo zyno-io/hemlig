@@ -716,12 +716,15 @@ test("rollover: both CRLs stay mounted, then the old one is deleted by uid", asy
   assert.equal(r.ready()?.reason, "CaDrained");
   // Cut over.
   const oldUid = cm(r, crlName("ca-old")).metadata.uid;
+  const oldVersion = cm(r, crlName("ca-old")).metadata.resourceVersion;
   r.edit({ caIds: ["ca-new"] });
   await r.run();
   const deletes = r.core.callsOf("delete");
   assert.equal(deletes.length, 1);
   assert.equal(deletes[0]?.name, crlName("ca-old"));
-  assert.deepEqual(deletes[0]?.body, { preconditions: { uid: oldUid } });
+  assert.deepEqual(deletes[0]?.body, {
+    preconditions: { uid: oldUid, resourceVersion: oldVersion },
+  });
   assert.equal(cm(r, crlName("ca-old")), undefined);
   assert.ok(cm(r, crlName(EXT)) !== undefined);
   assert.equal(cm(r, "trust").data["chain.crt"], pemOf("ca-new"));
@@ -986,4 +989,46 @@ test("logs never carry PEM, DER, base64 or server messages", async () => {
   assert.ok(!text.includes("-----BEGIN"));
   assert.ok(!text.includes(bytes.toString("base64").slice(0, 16)));
   assert.ok(!text.includes("SECRET server message"));
+});
+
+test("an expired mounted copy shows Stale from the previous entry during an outage", async () => {
+  const r = setup({}, ["ca-aaa"], { withExt: false });
+  r.server.crls.set(
+    "ca-aaa",
+    crlFixture(40, "1", "2026-06-08T00:00:00.000Z", 1),
+  );
+  await r.run();
+  assert.equal(crlEntry(r, "ca-aaa").state, "Current");
+  r.server.crls.set("ca-aaa", fault(503, "service_unavailable"));
+  r.edit({ crlFormat: "pem" });
+  await r.scheduler.advance(8 * 86_400_000);
+  await r.run();
+  assert.equal(crlEntry(r, "ca-aaa").state, "Stale");
+  assert.equal(r.ready()?.reason, "CrlStale");
+});
+
+test("one transient CA failure stops the remaining bundle fetches", async () => {
+  const r = setup({}, ["ca-aaa", "ca-bbb", "ca-ccc"], { withExt: false });
+  r.server.views.set("ca-aaa", fault(503, "service_unavailable"));
+  await r.run();
+  const fetches = r.transport.requests.filter((q) =>
+    q.url.pathname.endsWith("/bundle"),
+  );
+  assert.equal(fetches.length, 1);
+  assert.equal(cm(r, "trust"), undefined);
+});
+
+test("a pass with no usable CA never wipes the mounted bundle", async () => {
+  const r = setup();
+  await r.run();
+  const version = cm(r, "trust").metadata.resourceVersion;
+  r.server.views.set("ca-aaa", fault(404, "not_found", "ca_not_found"));
+  await r.run();
+  assert.equal(cm(r, "trust").metadata.resourceVersion, version);
+  assert.ok(cm(r, "trust").data["chain.crt"].includes(pemOf("ca-aaa")));
+  assert.equal(r.core.callsOf("delete").length, 0);
+  assert.deepEqual(r.bundle().status.acceptedCaIds, ["ca-aaa"]);
+  assert.equal(r.bundle().status.crls.length, 2);
+  assert.equal(r.ready()?.reason, "CaNotFound");
+  assert.ok(r.queue.scheduledDelay(r.key) !== undefined);
 });

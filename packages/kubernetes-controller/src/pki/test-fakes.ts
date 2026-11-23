@@ -366,7 +366,7 @@ export class FakeCore {
   public async deleteNamespacedConfigMap(input: {
     name: string;
     namespace: string;
-    body?: { preconditions?: { uid?: string } };
+    body?: { preconditions?: { uid?: string; resourceVersion?: string } };
   }) {
     this.configMapCalls.push({
       op: "delete",
@@ -378,6 +378,10 @@ export class FakeCore {
     if (current === undefined) throw apiError(404);
     const uid = input.body?.preconditions?.uid;
     if (uid !== undefined && uid !== current.metadata.uid) throw apiError(409);
+    const version = input.body?.preconditions?.resourceVersion;
+    if (version !== undefined && version !== current.metadata.resourceVersion) {
+      throw apiError(409);
+    }
     this.configMaps.delete(`${input.namespace}/${input.name}`);
   }
 }

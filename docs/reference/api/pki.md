@@ -218,7 +218,8 @@ A failure writes one `failed` event with the caller, environment and `caId` or `
 
 | Route | Code | Status | `details.reason` | Trust bundle |
 | --- | --- | --- | --- | --- |
-| both | `not_found` | 404 | `ca_not_found` | `CaNotFound` |
+| bundle | `not_found` | 404 | `ca_not_found` | `CaNotFound` |
+| CRL | `not_found` | 404 | `ca_not_found` | CRL `Missing`, `CrlMissing` |
 | bundle | `ca_not_active` | 409 | `pending_certificate`, `failed` | `CaNotActive` |
 | bundle | `service_unavailable` | 503 | none. The CA record is incomplete | Retried |
 | CRL | `not_found` | 404 | `external_ca_not_found` | CRL `Missing` |
