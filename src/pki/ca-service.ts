@@ -1649,7 +1649,14 @@ export class CaService {
       }
       const result =
         ca.kind === "ROOT"
-          ? await this.revokeRoot(actor, key, digest, ca, reason, invalidityDate)
+          ? await this.revokeRoot(
+              actor,
+              key,
+              digest,
+              ca,
+              reason,
+              invalidityDate,
+            )
           : await this.revokeIntermediate(
               actor,
               key,
