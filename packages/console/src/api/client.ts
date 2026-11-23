@@ -1,6 +1,7 @@
 import type { RuntimeConfig } from "../config";
 import { ApiError, errorFromResponse } from "./errors";
 import * as s from "./schemas";
+import * as p from "./pki-schemas";
 import type { ZodType } from "zod";
 
 export interface TokenSource {
@@ -16,6 +17,8 @@ interface RequestOptions {
   readonly body?: unknown;
   readonly idempotencyKey?: string;
   readonly ifMatch?: string;
+  /** Overrides the default `application/json` accept header. */
+  readonly accept?: string;
 }
 
 export class HemligApi {
@@ -366,6 +369,314 @@ export class HemligApi {
     });
   }
 
+  // ------------------------------------------------------------- PKI
+  //
+  // Mirrors the client's PKI methods (names and arguments, minus the token).
+  // Every PKI read is audited server-side: callers use `PKI_QUERY_OPTIONS`.
+  // The console never sends `If-None-Match`: the deployed CORS policy does not
+  // allow it.
+
+  public listPkiCas(input: {
+    environment: string;
+    cursor?: string;
+  }): Promise<p.PkiCaListPage> {
+    return this.request(p.pkiCaListPage, "/v1/admin/pki/cas", {
+      query: { environment: input.environment, cursor: input.cursor },
+    });
+  }
+
+  public getPkiCa(caId: string): Promise<p.PkiCaDetail> {
+    return this.request(p.pkiCaDetail, pkiCa(caId));
+  }
+
+  public createPkiCa(
+    input: p.PkiCreateCaInput,
+    idempotencyKey: string,
+  ): Promise<p.PkiCreateCaResponse> {
+    return this.request(p.pkiCreateCaResponse, "/v1/admin/pki/cas", {
+      method: "POST",
+      body: input,
+      idempotencyKey,
+    });
+  }
+
+  public activatePkiCa(
+    caId: string,
+    input: p.PkiActivateCaInput,
+    idempotencyKey: string,
+  ): Promise<p.PkiCaDetail> {
+    return this.request(p.pkiCaDetail, `${pkiCa(caId)}/certificate`, {
+      method: "POST",
+      body: input,
+      idempotencyKey,
+    });
+  }
+
+  public retirePkiCa(caId: string, idempotencyKey: string): Promise<p.PkiCaDetail> {
+    return this.request(p.pkiCaDetail, `${pkiCa(caId)}/retire`, {
+      method: "POST",
+      idempotencyKey,
+    });
+  }
+
+  /** Abandons a `PENDING_CERTIFICATE` CA. */
+  public deletePkiCa(
+    caId: string,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<p.PkiCaDetail> {
+    return this.request(p.pkiCaDetail, pkiCa(caId), {
+      method: "DELETE",
+      idempotencyKey,
+      ifMatch: version,
+    });
+  }
+
+  public destroyPkiCaKey(
+    caId: string,
+    idempotencyKey: string,
+  ): Promise<p.PkiCaDetail> {
+    return this.request(p.pkiCaDetail, `${pkiCa(caId)}/destroy-key`, {
+      method: "POST",
+      idempotencyKey,
+    });
+  }
+
+  public publishPkiCrl(
+    caId: string,
+    idempotencyKey: string,
+  ): Promise<p.PkiCrlPublishResponse> {
+    return this.request(p.pkiCrlPublishResponse, `${pkiCa(caId)}/crl`, {
+      method: "POST",
+      idempotencyKey,
+    });
+  }
+
+  /** The DER CRL of a CA or an external root, as exact bytes. */
+  public async getAdminCrl(
+    issuerId: string,
+  ): Promise<{ bytes: Uint8Array; etag?: string }> {
+    const response = await this.fetchResponse(
+      `/v1/admin/pki/crls/${encode(issuerId)}`,
+      { accept: "application/pkix-crl, application/json" },
+    );
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const etag = response.headers.get("etag");
+    return etag === null ? { bytes } : { bytes, etag };
+  }
+
+  public listExternalCas(
+    input: { cursor?: string } = {},
+  ): Promise<p.PkiExternalCaListPage> {
+    return this.request(p.pkiExternalCaListPage, "/v1/admin/pki/external-cas", {
+      query: { cursor: input.cursor },
+    });
+  }
+
+  public uploadExternalCaCrl(
+    extId: string,
+    crl: string,
+    idempotencyKey: string,
+  ): Promise<p.PkiUploadCrlResponse> {
+    return this.request(
+      p.pkiUploadCrlResponse,
+      `/v1/admin/pki/external-cas/${encode(extId)}/crl`,
+      { method: "POST", body: { crl }, idempotencyKey },
+    );
+  }
+
+  public listCaIssuanceGrants(
+    caId: string,
+    input: { cursor?: string } = {},
+  ): Promise<p.PkiIssuanceGrantListPage> {
+    return this.request(
+      p.pkiIssuanceGrantListPage,
+      `${pkiCa(caId)}/issuance-grants`,
+      { query: { cursor: input.cursor } },
+    );
+  }
+
+  public listAdminIssuanceGrants(
+    consumerId: string,
+    input: { includeDeleted?: boolean; cursor?: string } = {},
+  ): Promise<p.PkiIssuanceGrantListPage> {
+    return this.request(
+      p.pkiIssuanceGrantListPage,
+      pkiGrants(consumerId),
+      {
+        query: {
+          includeDeleted: input.includeDeleted ? "true" : undefined,
+          cursor: input.cursor,
+        },
+      },
+    );
+  }
+
+  public getAdminIssuanceGrant(
+    consumerId: string,
+    name: string,
+  ): Promise<p.PkiIssuanceGrant> {
+    return this.request(p.pkiIssuanceGrant, pkiGrant(consumerId, name));
+  }
+
+  public createIssuanceGrant(
+    consumerId: string,
+    input: p.PkiCreateGrantInput,
+    idempotencyKey: string,
+  ): Promise<p.PkiIssuanceGrant> {
+    return this.request(p.pkiIssuanceGrant, pkiGrants(consumerId), {
+      method: "POST",
+      body: input,
+      idempotencyKey,
+    });
+  }
+
+  /** Writes nothing and takes no idempotency key. */
+  public validateIssuanceGrantCreate(
+    consumerId: string,
+    input: p.PkiCreateGrantInput,
+  ): Promise<p.PkiGrantValidationResult> {
+    return this.request(p.pkiGrantValidationResult, pkiGrants(consumerId), {
+      method: "POST",
+      query: { validateOnly: "true" },
+      body: input,
+    });
+  }
+
+  /** A `PUT` replaces the whole grant. */
+  public updateIssuanceGrant(
+    consumerId: string,
+    name: string,
+    version: string,
+    input: p.PkiGrantInput,
+    idempotencyKey: string,
+  ): Promise<p.PkiIssuanceGrant> {
+    return this.request(p.pkiIssuanceGrant, pkiGrant(consumerId, name), {
+      method: "PUT",
+      body: input,
+      idempotencyKey,
+      ifMatch: version,
+    });
+  }
+
+  /** `If-Match` is required here too, although nothing is written. */
+  public validateIssuanceGrantUpdate(
+    consumerId: string,
+    name: string,
+    version: string,
+    input: p.PkiGrantInput,
+  ): Promise<p.PkiGrantValidationResult> {
+    return this.request(
+      p.pkiGrantValidationResult,
+      pkiGrant(consumerId, name),
+      {
+        method: "PUT",
+        query: { validateOnly: "true" },
+        body: input,
+        ifMatch: version,
+      },
+    );
+  }
+
+  public deleteIssuanceGrant(
+    consumerId: string,
+    name: string,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<p.PkiIssuanceGrant> {
+    return this.request(p.pkiIssuanceGrant, pkiGrant(consumerId, name), {
+      method: "DELETE",
+      idempotencyKey,
+      ifMatch: version,
+    });
+  }
+
+  /** Evaluates the stored grant; there is no route for a draft. */
+  public evaluateIssuanceGrant(
+    consumerId: string,
+    name: string,
+    input: p.PkiEvaluateInput,
+  ): Promise<p.PkiEvaluateResponse> {
+    return this.request(
+      p.pkiEvaluateResponse,
+      `${pkiGrant(consumerId, name)}/evaluate`,
+      { method: "POST", body: input },
+    );
+  }
+
+  public listPkiCertificates(
+    caId: string,
+    input: { status?: string; expiringBefore?: string; cursor?: string } = {},
+  ): Promise<p.PkiCertificateListPage> {
+    return this.request(
+      p.pkiCertificateListPage,
+      `${pkiCa(caId)}/certificates`,
+      {
+        query: {
+          status: input.status,
+          expiringBefore: input.expiringBefore,
+          cursor: input.cursor,
+        },
+      },
+    );
+  }
+
+  public getPkiCertificate(
+    caId: string,
+    serial: string,
+  ): Promise<p.PkiCertificateDetail> {
+    return this.request(
+      p.pkiCertificateDetail,
+      `${pkiCa(caId)}/certificates/${encode(serial)}`,
+    );
+  }
+
+  public revokePkiCertificate(
+    caId: string,
+    serial: string,
+    input: { reason?: p.PkiLeafRevocationReason; invalidityDate?: string },
+    idempotencyKey: string,
+  ): Promise<p.PkiRevokeCertificateResponse> {
+    return this.request(
+      p.pkiRevokeCertificateResponse,
+      `${pkiCa(caId)}/certificates/${encode(serial)}/revoke`,
+      { method: "POST", body: input, idempotencyKey },
+    );
+  }
+
+  public listConsumerPkiCertificates(
+    consumerId: string,
+    input: {
+      issuanceGrant?: string;
+      includeExpired?: boolean;
+      cursor?: string;
+    } = {},
+  ): Promise<p.PkiCertificateListPage> {
+    return this.request(
+      p.pkiCertificateListPage,
+      `/v1/admin/pki/consumers/${encode(consumerId)}/certificates`,
+      {
+        query: {
+          issuanceGrant: input.issuanceGrant,
+          includeExpired: input.includeExpired ? "true" : undefined,
+          cursor: input.cursor,
+        },
+      },
+    );
+  }
+
+  public revokeConsumerPkiCertificates(
+    consumerId: string,
+    input: p.PkiBulkRevokeInput,
+    idempotencyKey: string,
+  ): Promise<p.PkiBulkRevokeResponse> {
+    return this.request(
+      p.pkiBulkRevokeResponse,
+      `/v1/admin/pki/consumers/${encode(consumerId)}/certificates/revoke`,
+      { method: "POST", body: input, idempotencyKey },
+    );
+  }
+
   private async request<T>(
     schema: ZodType<T>,
     path: string,
@@ -385,7 +696,9 @@ export class HemligApi {
         url.searchParams.set(name, value);
       }
     }
-    const headers: Record<string, string> = { accept: "application/json" };
+    const headers: Record<string, string> = {
+      accept: options.accept ?? "application/json",
+    };
     const token = await this.tokens.accessToken();
     if (token !== undefined) {
       headers.authorization = `Bearer ${token}`;
@@ -435,3 +748,9 @@ export class HemligApi {
 }
 
 const encode = (value: string): string => encodeURIComponent(value);
+
+const pkiCa = (caId: string): string => `/v1/admin/pki/cas/${encode(caId)}`;
+const pkiGrants = (consumerId: string): string =>
+  `/v1/admin/pki/consumers/${encode(consumerId)}/issuance-grants`;
+const pkiGrant = (consumerId: string, name: string): string =>
+  `${pkiGrants(consumerId)}/${encode(name)}`;

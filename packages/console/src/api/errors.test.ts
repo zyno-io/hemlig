@@ -45,4 +45,52 @@ describe("error mapping", () => {
     );
     expect(error.correlationId).toBe("01J");
   });
+
+  it("parses details and exposes the reason", async () => {
+    const error = await errorFromResponse(
+      jsonResponse(409, {
+        error: {
+          code: "conflict",
+          message: "taken",
+          correlationId: "c",
+          details: { reason: "name_in_use", path: "name", retryAfterSeconds: 3 },
+        },
+      }),
+    );
+    expect(error.reason).toBe("name_in_use");
+    expect(error.details).toMatchObject({ path: "name" });
+    expect(error.retryAfterSeconds).toBe(3);
+  });
+
+  it("prefers the Retry-After header over details.retryAfterSeconds", async () => {
+    const response = new Response(
+      JSON.stringify({
+        error: {
+          code: "issuance_rate_limited",
+          message: "slow",
+          correlationId: "c",
+          details: { retryAfterSeconds: 3 },
+        },
+      }),
+      { status: 429, headers: { "retry-after": "17" } },
+    );
+    expect((await errorFromResponse(response)).retryAfterSeconds).toBe(17);
+  });
+
+  it("keeps an unknown code and leaves the reason undefined without details", async () => {
+    const error = await errorFromResponse(
+      jsonResponse(400, {
+        error: { code: "something_new", message: "m", correlationId: "c" },
+      }),
+    );
+    expect(error.code).toBe("something_new");
+    expect(error.reason).toBeUndefined();
+    expect(error.retryAfterSeconds).toBeUndefined();
+  });
+
+  it("still maps a 401 to the synthetic unauthorized code", async () => {
+    const error = await errorFromResponse(new Response("", { status: 401 }));
+    expect(error.code).toBe("unauthorized");
+    expect(error.details).toBeUndefined();
+  });
 });

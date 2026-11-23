@@ -1,7 +1,7 @@
 import { ref, type Ref } from "vue";
 import { ApiError } from "../api/errors";
 
-export type MutationFamily = "secret" | "consumer";
+export type MutationFamily = "secret" | "consumer" | "pki";
 
 export type MutationPhase =
   | { readonly kind: "idle" }
@@ -80,6 +80,19 @@ export const useGuardedMutation = <TInput, TResult>(
         // resubmitting silently would defeat optimistic concurrency, so the
         // draft is preserved and the decision handed to the administrator.
         phase.value = { kind: "stale", error };
+        return undefined;
+      }
+
+      if (options.family === "pki") {
+        // PKI routes replay by key. Only a transport failure, 500 or 503 is
+        // ambiguous; every other error, including each 409 (`name_in_use`,
+        // `key_not_disabled`, `grant_exists`...), is a definitive refusal.
+        if (error.outcomeUnknown) {
+          phase.value = { kind: "unknown", error, reconciling: false };
+          canRetry.value = true;
+        } else {
+          phase.value = { kind: "failed", error };
+        }
         return undefined;
       }
 
