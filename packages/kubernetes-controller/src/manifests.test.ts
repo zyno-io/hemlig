@@ -66,10 +66,9 @@ test("the chart RBAC rules sit inside the rbac.create block", () => {
 
 test("the approval template is gated and grants both signer patterns", () => {
   const text = read(`${chart}/templates/cert-manager-approval.yaml`);
-  assert.ok(
-    text.startsWith(
-      "{{- if .Values.certManager.approval.grantDefaultApprover }}",
-    ),
+  assert.match(
+    text,
+    /^\{\{- \$approval := include "hemlig-controller\.approval" \. \| fromJson \}\}\n\{\{- if \$approval\.grant \}\}/,
   );
   assert.ok(text.trimEnd().endsWith("{{- end }}"));
   assert.match(text, /verbs: \["approve"\]/);
@@ -120,7 +119,7 @@ test("both deployments set HEMLIG_PKI_CONCURRENCY", () => {
   );
   assert.match(
     read(`${chart}/templates/deployment.yaml`),
-    /HEMLIG_PKI_CONCURRENCY\s*\n\s*value: \{\{ \.Values\.certManager\.maxConcurrentRequests \| quote \}\}/,
+    /HEMLIG_PKI_CONCURRENCY\s*\n\s*value: \{\{ include "hemlig-controller\.maxConcurrentRequests" \. \| quote \}\}/,
   );
 });
 
@@ -131,6 +130,6 @@ test("both deployments set HEMLIG_PKI_BUNDLE_INTERVAL_MS", () => {
   );
   assert.match(
     read(`${chart}/templates/deployment.yaml`),
-    /HEMLIG_PKI_BUNDLE_INTERVAL_MS\s*\n\s*value: \{\{ \.Values\.trustBundles\.refreshIntervalMilliseconds \| int64 \| quote \}\}/,
+    /HEMLIG_PKI_BUNDLE_INTERVAL_MS\s*\n\s*value: \{\{ include "hemlig-controller\.bundleIntervalMs" \. \| quote \}\}/,
   );
 });

@@ -215,14 +215,21 @@ export class FakeCustom {
     plural: string;
     namespace: string;
     name: string;
-    body: { value: unknown }[];
+    body: { op?: string; path?: string; value: unknown }[];
   }) {
     this.calls.push({ method: "patchStatus", ...input });
     const stored = this.store.get(
       this.key(input.plural, input.namespace, input.name),
     );
     if (stored === undefined) throw apiError(404);
-    stored.status = structuredClone(input.body[0]!.value);
+    for (const op of input.body) {
+      if (op.op === "test" && op.path === "/metadata/uid") {
+        if (stored.metadata.uid !== op.value) throw apiError(422);
+      }
+    }
+    stored.status = structuredClone(
+      (input.body.find((op) => op.op !== "test") ?? input.body[0]!).value,
+    );
     stored.metadata.resourceVersion = String(this.version++);
   }
   public async patchClusterCustomObjectStatus(input: {

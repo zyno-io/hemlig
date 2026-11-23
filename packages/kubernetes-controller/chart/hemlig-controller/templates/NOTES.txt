@@ -16,11 +16,12 @@ present.
 
 trust bundles: a HemligTrustBundle writes the anchors, intermediates and CRLs of
 the CAs it lists to ConfigMaps in its namespace. It refreshes every
-{{ .Values.trustBundles.refreshIntervalMilliseconds | int64 }} ms, needs the crds/hemlig.zyno.io-pki.yaml CRDs, and works
+{{ include "hemlig-controller.bundleIntervalMs" . }} ms, needs the crds/hemlig.zyno.io-pki.yaml CRDs, and works
 without cert-manager.
-{{- if .Values.certManager.approval.grantDefaultApprover }}
+{{- $approval := include "hemlig-controller.approval" . | fromJson }}
+{{- if $approval.grant }}
 
-ServiceAccount {{ .Values.certManager.approval.namespace }}/{{ .Values.certManager.approval.serviceAccount }} may approve CertificateRequests for the
+ServiceAccount {{ $approval.namespace }}/{{ $approval.serviceAccount }} may approve CertificateRequests for the
 hemligissuers.hemlig.zyno.io/* and hemligclusterissuers.hemlig.zyno.io/* signers. Every
 request that references a Hemlig issuer is therefore approved, and the Hemlig
 IssuanceGrant is the authorization boundary. Set

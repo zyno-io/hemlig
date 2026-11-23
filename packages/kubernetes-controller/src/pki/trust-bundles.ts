@@ -765,6 +765,7 @@ export class TrustBundleReconciler {
 
     // 9. One CRL ConfigMap per issuer.
     const entries: TrustBundleCrlStatus[] = [];
+    let skipCrlFetches = false;
     for (const id of sortedUnique(crlIds)) {
       const outcome = await this.refreshCrl({
         key,
@@ -778,9 +779,12 @@ export class TrustBundleReconciler {
         id,
         source: sourceOf(id),
         previous: oldCrls.get(id),
+        skipFetch: skipCrlFetches,
       });
       if (outcome.abort) return abort();
       if (outcome.partial) markPartial(outcome.slow);
+      // After one transient failure do not hold the consumer slot for the rest.
+      if (outcome.transient) skipCrlFetches = true;
       entries.push(outcome.entry);
     }
 
@@ -788,7 +792,8 @@ export class TrustBundleReconciler {
     const carried: TrustBundleCrlStatus[] = [];
     for (const [id, entry] of oldCrls) {
       if (crlIds.has(id)) continue;
-      if (!complete) {
+      // `partial` may have turned true during the CRL loop.
+      if (!complete || partial) {
         carried.push(refreshedEntry(entry, now));
         continue;
       }
@@ -809,9 +814,10 @@ export class TrustBundleReconciler {
         (view.status === "REVOKED" || view.drained)
       );
     };
-    const allEntries = [...entries, ...carried].sort((a, b) =>
-      a.id < b.id ? -1 : 1,
-    );
+    const publishAt = this.deps.scheduler.now();
+    const allEntries = [...entries, ...carried]
+      .map((entry) => refreshedEntry(entry, publishAt))
+      .sort((a, b) => (a.id < b.id ? -1 : 1));
     const oldReady = old?.conditions?.find((c) => c.type === "Ready");
     const keep =
       oldReady?.status === "True" &&
@@ -832,7 +838,7 @@ export class TrustBundleReconciler {
     });
     const condition =
       "keep" in ready ? ready.keep : this.condition(bundle, ready);
-    await this.writeStatus(key, bundle, {
+    const written = await this.writeStatus(key, bundle, {
       ...(bundle.metadata.generation === undefined
         ? {}
         : { observedGeneration: bundle.metadata.generation }),
@@ -842,6 +848,7 @@ export class TrustBundleReconciler {
       crls: allEntries,
       conditions: [condition],
     });
+    if (!written) return { kind: "done" };
     return slow
       ? { kind: "retry", policy: "slow" }
       : partial
@@ -861,11 +868,13 @@ export class TrustBundleReconciler {
     readonly id: string;
     readonly source: "GENERATED" | "UPLOADED";
     readonly previous: TrustBundleCrlStatus | undefined;
+    readonly skipFetch?: boolean;
   }): Promise<{
     entry: TrustBundleCrlStatus;
     partial: boolean;
     slow: boolean;
     abort: boolean;
+    transient: boolean;
   }> {
     const { key, bundle, namespace, owner, target, format, now, id, source } =
       input;
@@ -885,8 +894,14 @@ export class TrustBundleReconciler {
     });
     const result = (
       entry: TrustBundleCrlStatus,
-      flags: { partial?: boolean; slow?: boolean; abort?: boolean } = {},
+      flags: {
+        partial?: boolean;
+        slow?: boolean;
+        abort?: boolean;
+        transient?: boolean;
+      } = {},
     ) => ({
+      transient: flags.transient === true,
       entry,
       partial: flags.partial === true,
       slow: flags.slow === true,
@@ -907,10 +922,19 @@ export class TrustBundleReconciler {
       return result(make("Conflict"));
     }
     const stored = cm === undefined ? undefined : storedCrl(cm, id, format);
-    const fromStored = (): TrustBundleCrlStatus =>
-      stored !== undefined
-        ? make(freshness(stored.nextUpdate, now), stored)
-        : previous;
+    // A confirmed-absent ConfigMap is Missing. A copy that does not verify in
+    // the current format may still verify in the other one (a format switch).
+    const fromStored = (): TrustBundleCrlStatus => {
+      if (cm === undefined) return make("Missing");
+      const copy =
+        stored ?? storedCrl(cm, id, format === "der" ? "pem" : "der");
+      return copy === undefined
+        ? make("Missing")
+        : make(freshness(copy.nextUpdate, now), copy);
+    };
+    if (input.skipFetch === true) {
+      return result(fromStored(), { partial: true });
+    }
     let response;
     try {
       response = await this.remote(
@@ -931,7 +955,11 @@ export class TrustBundleReconciler {
         return result(fromStored(), { abort: true });
       }
       const slow = !isTransient(error);
-      return result(fromStored(), { partial: true, slow });
+      return result(fromStored(), {
+        partial: true,
+        slow,
+        transient: !slow,
+      });
     }
     let der: Buffer;
     let meta: CrlMeta;
@@ -1028,14 +1056,18 @@ export class TrustBundleReconciler {
     key: string,
     bundle: HemligTrustBundle,
     status: TrustBundleStatus,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    const nowMs = this.deps.scheduler.now();
     const next: TrustBundleStatus = {
       ...status,
+      ...(status.crls === undefined
+        ? {}
+        : { crls: status.crls.map((entry) => refreshedEntry(entry, nowMs)) }),
       ...(bundle.metadata.generation === undefined
         ? {}
         : { observedGeneration: bundle.metadata.generation }),
     };
-    if (isDeepStrictEqual(bundle.status, next)) return;
+    if (isDeepStrictEqual(bundle.status, next)) return true;
     try {
       await this.deps.custom.patchNamespacedCustomObjectStatus({
         group: HEMLIG_GROUP,
@@ -1043,10 +1075,20 @@ export class TrustBundleReconciler {
         namespace: bundle.metadata.namespace as string,
         plural: TRUST_BUNDLE_PLURAL,
         name: bundle.metadata.name as string,
-        body: [{ op: "add", path: "/status", value: next }],
+        body: [
+          { op: "test", path: "/metadata/uid", value: bundle.metadata.uid },
+          { op: "add", path: "/status", value: next },
+        ],
       });
     } catch (error) {
-      if (isNotFound(error)) return;
+      if (isNotFound(error)) return true;
+      const code = k8sStatus(error);
+      if (code === 409 || code === 422) {
+        // The bundle was recreated: the new object has its own events.
+        log(`${key} status patch refused (${code})`);
+        this.queue.add(key);
+        return false;
+      }
       throw error;
     }
     const ready = next.conditions?.find((c) => c.type === "Ready");
@@ -1054,5 +1096,6 @@ export class TrustBundleReconciler {
     if (ready?.status !== old?.status || ready?.reason !== old?.reason) {
       log(`${key} Ready=${ready?.status} ${ready?.reason}`);
     }
+    return true;
   }
 }

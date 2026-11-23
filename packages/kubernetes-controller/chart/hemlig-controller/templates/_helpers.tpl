@@ -38,3 +38,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- required "serviceAccount.name is required when serviceAccount.create is false" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/* Safe access for values blocks that releases created before Phase 5/6 lack (helm upgrade --reuse-values). */}}
+{{- define "hemlig-controller.approval" -}}
+{{- $cm := .Values.certManager | default dict -}}
+{{- $ap := $cm.approval | default dict -}}
+{{- dict "grant" (ternary $ap.grantDefaultApprover true (hasKey $ap "grantDefaultApprover")) "serviceAccount" ($ap.serviceAccount | default "cert-manager") "namespace" ($ap.namespace | default "cert-manager") | toJson -}}
+{{- end -}}
+
+{{- define "hemlig-controller.maxConcurrentRequests" -}}
+{{- (.Values.certManager | default dict).maxConcurrentRequests | default 4 | int64 -}}
+{{- end -}}
+
+{{- define "hemlig-controller.bundleIntervalMs" -}}
+{{- (.Values.trustBundles | default dict).refreshIntervalMilliseconds | default 300000 | int64 -}}
+{{- end -}}

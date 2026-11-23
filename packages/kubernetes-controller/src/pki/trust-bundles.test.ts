@@ -468,20 +468,32 @@ test("an externally revoked CA keeps its anchor and the bundle stays Ready", asy
   const r = setup();
   r.server.views.set(
     "ca-aaa",
-    caView("ca-aaa", {
-      status: "REVOKED",
-      crlIssuers: [{ id: "ca-aaa", source: "GENERATED" }],
-    }),
+    caView("ca-aaa", { status: "REVOKED", crlIssuers: withExt("ca-aaa") }),
   );
-  // The revoked CA's own CRL is no longer required.
+  // The revoked CA's own CRL is no longer required; the external one still is.
   r.server.crls.set("ca-aaa", fault(404, "not_found", "crl_missing"));
   await r.run();
   assert.equal(cm(r, "trust").data["ca.crt"], rootPem);
   assert.ok(cm(r, "trust").data["chain.crt"].includes(pemOf("ca-aaa")));
   assert.deepEqual(r.bundle().status.acceptedCaIds, ["ca-aaa"]);
   assert.equal(crlEntry(r, "ca-aaa").state, "Missing");
+  assert.ok(cm(r, crlName(EXT)) !== undefined);
+  assert.equal(crlEntry(r, EXT).state, "Current");
   assert.equal(r.ready()?.status, "True");
   assert.equal(r.ready()?.reason, "Ready");
+});
+
+test("a revoked CA still needs its external CRL", async () => {
+  const r = setup();
+  r.server.views.set(
+    "ca-aaa",
+    caView("ca-aaa", { status: "REVOKED", crlIssuers: withExt("ca-aaa") }),
+  );
+  r.server.crls.set("ca-aaa", fault(404, "not_found", "crl_missing"));
+  r.server.crls.set(EXT, fault(404, "not_found", "crl_missing"));
+  await r.run();
+  assert.equal(crlEntry(r, EXT).state, "Missing");
+  assert.equal(r.ready()?.reason, "CrlMissing");
 });
 
 test("distrust wins across CAs", async () => {
@@ -1031,4 +1043,129 @@ test("a pass with no usable CA never wipes the mounted bundle", async () => {
   assert.equal(r.bundle().status.crls.length, 2);
   assert.equal(r.ready()?.reason, "CaNotFound");
   assert.ok(r.queue.scheduledDelay(r.key) !== undefined);
+});
+
+test("a confirmed-absent CRL ConfigMap stays Missing through a transient failure", async () => {
+  const r = setup({}, ["ca-aaa"], { withExt: false });
+  r.server.crls.set("ca-aaa", fault(503, "service_unavailable"));
+  await r.run();
+  assert.equal(cm(r, crlName("ca-aaa")), undefined);
+  assert.equal(crlEntry(r, "ca-aaa").state, "Missing");
+  // A stored copy that verifies in neither format is Missing too.
+  r.server.crls.set(
+    "ca-aaa",
+    crlFixture(40, "1", "2027-01-01T00:00:00.000Z", 1),
+  );
+  await r.scheduler.advance(300_000);
+  assert.equal(crlEntry(r, "ca-aaa").state, "Current");
+  cm(r, crlName("ca-aaa")).binaryData["crl.der"] =
+    Buffer.from("evil").toString("base64");
+  r.server.crls.set("ca-aaa", fault(503, "service_unavailable"));
+  await r.run();
+  assert.equal(crlEntry(r, "ca-aaa").state, "Missing");
+});
+
+test("rollover cleanup never deletes once the pass turned partial", async () => {
+  const r = setup({}, ["ca-aaa", "ca-bbb"], { withExt: false });
+  await r.run();
+  assert.ok(cm(r, crlName("ca-aaa")) !== undefined);
+  r.server.crls.set("ca-bbb", fault(503, "service_unavailable"));
+  r.edit({ caIds: ["ca-bbb"] });
+  await r.run();
+  assert.equal(r.core.callsOf("delete").length, 0);
+  assert.ok(cm(r, crlName("ca-aaa")) !== undefined);
+  assert.ok(
+    r.bundle().status.crls.some((c: { id: string }) => c.id === "ca-aaa"),
+  );
+  assert.ok(r.queue.scheduledDelay(r.key) !== undefined);
+});
+
+test("one transient CRL failure skips the remaining CRL fetches", async () => {
+  const r = setup({}, ["ca-aaa", "ca-bbb", "ca-ccc"], { withExt: false });
+  r.server.crls.set("ca-aaa", fault(503, "service_unavailable"));
+  await r.run();
+  const fetches = r.transport.requests.filter((q) =>
+    q.url.pathname.startsWith("/v1/pki/crls/"),
+  );
+  assert.equal(fetches.length, 1);
+  assert.equal(cm(r, crlName("ca-bbb")), undefined);
+  assert.equal(r.bundle().status.crls.length, 3);
+  assert.ok(r.queue.scheduledDelay(r.key) !== undefined);
+});
+
+test("the status patch is guarded by the bundle uid and a recreated bundle re-queues", async () => {
+  const r = setup({}, ["ca-aaa"], { withExt: false });
+  const inner = r.server.handler;
+  let swapped = false;
+  r.transport.handler = (request) => {
+    if (!swapped && request.url.pathname.endsWith("/bundle")) {
+      swapped = true;
+      r.custom.update("hemligtrustbundles", "app", "bundle", (o) => {
+        o.metadata.uid = "recreated-uid";
+      });
+    }
+    return inner(request);
+  };
+  await r.run();
+  const patches = r.custom.calls.filter((c) => c.method === "patchStatus");
+  assert.equal(patches.length, 2);
+  const first = patches[0]?.body as {
+    op: string;
+    path: string;
+    value: unknown;
+  }[];
+  assert.deepEqual(first[0], {
+    op: "test",
+    path: "/metadata/uid",
+    value: "bundle-uid",
+  });
+  assert.equal(first[1]?.op, "add");
+  assert.equal(
+    (patches[1]?.body as { value: unknown }[])[0]?.value,
+    "recreated-uid",
+  );
+  assert.equal(r.ready()?.reason, "Ready");
+});
+
+test("freshness is recomputed at publish time on every path", async () => {
+  const r = setup({}, ["ca-aaa"], { withExt: false });
+  r.server.crls.set(
+    "ca-aaa",
+    crlFixture(40, "1", "2026-06-01T00:00:01.000Z", 1),
+  );
+  const inner = r.server.handler;
+  r.transport.handler = (request) => {
+    if (request.url.pathname.startsWith("/v1/pki/crls/")) {
+      r.scheduler.time += 5_000;
+    }
+    return inner(request);
+  };
+  await r.run();
+  assert.equal(crlEntry(r, "ca-aaa").state, "Stale");
+  assert.equal(r.ready()?.reason, "CrlStale");
+
+  const x = setup({}, ["ca-aaa"], { withExt: false });
+  x.server.crls.set(
+    "ca-aaa",
+    crlFixture(40, "1", "2026-06-02T00:00:00.000Z", 1),
+  );
+  await x.run();
+  assert.equal(crlEntry(x, "ca-aaa").state, "Current");
+  await x.scheduler.advance(2 * 86_400_000);
+  x.registry.entries.delete("app/consumer");
+  await x.run();
+  assert.equal(x.ready()?.reason, "ConsumerNotReady");
+  assert.equal(crlEntry(x, "ca-aaa").state, "Stale");
+
+  const y = setup({}, ["ca-aaa"], { withExt: false });
+  y.server.crls.set(
+    "ca-aaa",
+    crlFixture(40, "1", "2026-06-02T00:00:00.000Z", 1),
+  );
+  await y.run();
+  await y.scheduler.advance(2 * 86_400_000);
+  y.server.views.set("ca-aaa", fault(403, "identity_not_active"));
+  await y.run();
+  assert.equal(y.ready()?.reason, "ConsumerNotReady");
+  assert.equal(crlEntry(y, "ca-aaa").state, "Stale");
 });
