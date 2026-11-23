@@ -49,6 +49,8 @@ For each CRL a verifier needs, the bundle writes one more ConfigMap named `<targ
 
 Each ConfigMap has the label `hemlig.zyno.io/managed-by: trust-bundle`, an owner annotation, and an owner reference to the bundle, so deleting the bundle deletes them. CRL ConfigMaps also carry annotations for the issuer, source, SHA-256, number and validity. The full list is in the [CRD reference](../reference/crds.md#hemligtrustbundle-namespaced).
 
+A Hemlig root is an anchor in `ca.crt`, and a Hemlig intermediate adds its own CRL and its root's CRL as two `GENERATED` slots. Listing a root alone gives its anchor and its CRL, with no chain. A locally distrusted root leaves `ca.crt` through every listed CA, and its CRL stops being required once no listed child can still validate.
+
 The controller never overwrites a ConfigMap it does not own. A foreign target gives `ConfigMapConflict` and is left as it is.
 
 ## Mount it

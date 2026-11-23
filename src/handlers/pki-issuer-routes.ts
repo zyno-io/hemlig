@@ -189,7 +189,11 @@ export const pkiIssuerRoutes: PkiIssuerRoute[] = [
         throw caNotActive(caStatusReason[ca.status]);
       }
       const crl = await app.pki.getCaCrlState(caId);
-      return json(200, caBundleView(ca, crl));
+      const parent =
+        ca.kind === "INTERMEDIATE" && ca.parentCaId !== undefined
+          ? await app.pki.getCa(ca.parentCaId)
+          : undefined;
+      return json(200, caBundleView(ca, crl, parent));
     },
     (params) => ({ caId: params[0] as string }),
   ),
