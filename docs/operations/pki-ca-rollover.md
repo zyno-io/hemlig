@@ -14,7 +14,7 @@ Retiring, draining or destroying a CA's key does not stop a copied key from sign
 - Hemlig parent (`INTERMEDIATE` under a Hemlig root): `hemlig pki ca revoke prod-issuing-1 --reason caCompromise`. See [A Hemlig root and intermediates](../guide/pki.md#a-hemlig-root-and-intermediates).
 - External offline root: revoke the intermediate in the root's CRL and upload that CRL. See [Revoke an intermediate](pki-offline-root.md#revoke-an-intermediate) and [If the intermediate's key is compromised](../guide/pki.md#if-the-intermediate-s-key-is-compromised).
 
-Then check that a relying party rejects at depth 1: see [Verify the revocation](#verify-the-revocation). Do the steps below afterwards, to move traffic to a healthy CA.
+Then check that a relying party rejects at depth 1: see [Verify the revocation](#verify-the-revocation). Then do steps 1 to 6 below to move traffic to a healthy CA, and skip [Retire the old CA](#retire-the-old-ca): retiring needs an ACTIVE CA, and a revoked CA never drains. Keep the revoked CA in every bundle's `spec.caIds`, so its anchor and CRL stay mounted and chains it issued keep failing on the CRL.
 :::
 
 **Role:** administrator with the PKI CA role and the PKI operator role (to migrate grants), and the root key holder. **Before you start:** an active `prod-issuing-1` and the [offline root recipe](pki-offline-root.md). Allow about an hour.
@@ -47,13 +47,23 @@ In the console, "Roll over" on the CA pre-fills the same settings. It increments
 
    Expected output: a file for the new CA's CRL (for example `issuing2.der`) next to the old CA's. Do not migrate grants until every workload shows it.
 
-5. Issue a test leaf under the new CA and verify it with full-chain CRL checking against the files mounted in a running pod (`ca.crt`, `chain.crt` and the CRLs), converted with `openssl crl -inform DER`. Using separately downloaded CRLs proves nothing about what workloads mount.
+5. Issue a test leaf under the new CA and verify it with full-chain CRL checking against the files mounted in a running pod. Copy them out first, then convert the CRLs. Using separately downloaded CRLs proves nothing about what workloads mount.
 
    ```sh
-   hemlig pki cert issue prod-issuing-2 --csr test.csr --use-csr-names --out leaf.pem --chain-out chain.pem
-   openssl verify -x509_strict -crl_check_all -CAfile root.pem -untrusted chain.pem \
+   kubectl exec <pod> -- cat /trust/ca.crt > ca.crt
+   kubectl exec <pod> -- cat /trust/chain.crt > chain.crt
+   kubectl exec <pod> -- cat /trust/crls/issuing2.der > issuing2.der
+   kubectl exec <pod> -- cat /trust/crls/root.der > root.der
+
+   openssl crl -inform DER -in issuing2.der -out issuing2.crl.pem
+   openssl crl -inform DER -in root.der -out root.crl.pem
+
+   hemlig pki cert issue prod-issuing-2 --csr test.csr --use-csr-names --out leaf.pem
+   openssl verify -x509_strict -crl_check_all -CAfile ca.crt -untrusted chain.crt \
      -CRLfile issuing2.crl.pem -CRLfile root.crl.pem leaf.pem
    ```
+
+   Use the file names that `ls /trust/crls/` showed in step 4. Expected output: `leaf.pem: OK`.
 
 6. Migrate each issuance grant to the new CA, then check that the old CA lists no grants.
 

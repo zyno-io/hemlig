@@ -13,7 +13,9 @@ const silentServer = async (): Promise<{
   const closed = new Promise<void>((resolve) => {
     markClosed = resolve;
   });
+  const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
+    sockets.add(socket);
     socket.on("error", () => {});
     // Read, so that the peer's close is observed.
     socket.resume();
@@ -23,11 +25,14 @@ const silentServer = async (): Promise<{
   return {
     port: (server.address() as net.AddressInfo).port,
     closed,
-    stop: () => server.close(),
+    stop: () => {
+      server.close();
+      for (const socket of sockets) socket.destroy();
+    },
   };
 };
 
-test("timeoutMs destroys a stalled request and rejects with a transport error", async () => {
+test("timeoutMs destroys a stalled request and rejects with a transport error", { timeout: 30_000 }, async () => {
   const peer = await silentServer();
   try {
     const transport = new NodeHttpsTransport({ timeoutMs: 100 });

@@ -151,25 +151,30 @@ export class GrantService {
     if (typeof consumerId !== "string" || typeof name !== "string") {
       throw serviceUnavailable("The stored idempotency record is incomplete.");
     }
-    // A delete records the generation it removed. The name may since have been recreated, so the
-    // response comes from that record and never from a read-back by name.
-    const deleted = outcome.result.deleted;
+    // A mutation records the generation it wrote. The name may since have been changed, deleted or
+    // recreated by someone else, so the response comes from that record, never from a read-back by name.
+    const recorded = outcome.result.record ?? outcome.result.deleted;
     if (
-      typeof deleted === "object" &&
-      deleted !== null &&
-      (deleted as { uid?: unknown }).uid === outcome.result.uid
+      typeof recorded === "object" &&
+      recorded !== null &&
+      (recorded as { uid?: unknown }).uid === outcome.result.uid
     ) {
       return this.success(
-        deleted as IssuanceGrantRecord,
+        recorded as IssuanceGrantRecord,
         status,
         [],
         {},
         outcome.shouldWriteTerminalAudit,
       );
     }
+    // A receipt that predates the record: read by name. A delete must find its tombstone, since a live
+    // grant is a different generation (or a stale read) and must not be returned as the result.
     const grant = await this.pki.getGrant(consumerId, name);
     if (grant === undefined) {
       throw serviceUnavailable("The stored idempotency record is incomplete.");
+    }
+    if (stored.operationType === "pki.grant.delete" && grant.status !== "DELETED") {
+      throw serviceUnavailable("The deletion could not be confirmed.");
     }
     return this.success(grant, status, [], {}, outcome.shouldWriteTerminalAudit);
   }
@@ -434,6 +439,7 @@ export class GrantService {
           consumerId,
           name,
           uid: grant.uid,
+          record: grant,
         }),
         grant,
         caVersion: v.ca.version,
@@ -532,6 +538,8 @@ export class GrantService {
         idempotency: this.idempotency(actor, key, "pki.grant.update", digest, {
           consumerId,
           name,
+          uid: next.uid,
+          record: next,
         }),
         grant: next,
         ifMatch,
@@ -643,7 +651,7 @@ export class GrantService {
         consumerId,
         name,
         uid: current.uid,
-        deleted,
+        record: deleted,
       }),
       consumerId,
       name,

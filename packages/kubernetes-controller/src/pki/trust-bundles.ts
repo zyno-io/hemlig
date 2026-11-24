@@ -390,6 +390,8 @@ const sortedUnique = (ids: Iterable<string>): string[] =>
 export class TrustBundleReconciler {
   /** Per bundle uid: the first issuer a pass skipped after a transient CRL failure. */
   private readonly crlCursor = new Map<string, string>();
+  /** `${bundleUid}/${issuerId}` to the sha256 of a verified CRL that could not be mounted. */
+  private readonly supersededBy = new Map<string, string>();
 
   public constructor(
     private readonly deps: PkiDeps,
@@ -962,14 +964,32 @@ export class TrustBundleReconciler {
       return result(make("Conflict"));
     }
     const stored = cm === undefined ? undefined : storedCrl(cm, id, format);
+    const supersedeKey =
+      bundle.metadata.uid === undefined
+        ? undefined
+        : `${bundle.metadata.uid}/${id}`;
     // A confirmed-absent ConfigMap is Missing. A copy that does not verify in
     // the current format may still verify in the other one (a format switch).
     const fromStored = (): TrustBundleCrlStatus => {
       if (cm === undefined) return make("Missing");
       const copy =
         stored ?? storedCrl(cm, id, format === "der" ? "pem" : "der");
-      return copy === undefined
-        ? make("Missing")
+      if (copy === undefined) return make("Missing");
+      // A newer verified CRL could not be mounted earlier: the copy stays Stale, without a
+      // `nextUpdate` that would refresh it to Current. After a restart the previous entry says so.
+      const prev = input.previous;
+      const superseding =
+        supersedeKey === undefined
+          ? undefined
+          : this.supersededBy.get(supersedeKey);
+      const knownSuperseded =
+        (superseding !== undefined && superseding !== copy.sha256) ||
+        (prev !== undefined &&
+          prev.state === "Stale" &&
+          prev.nextUpdate === undefined &&
+          prev.number === copy.number);
+      return knownSuperseded
+        ? { ...make("Stale"), number: copy.number, thisUpdate: copy.thisUpdate }
         : make(freshness(copy.nextUpdate, now), copy);
     };
     if (input.skipFetch === true) {
@@ -1042,10 +1062,12 @@ export class TrustBundleReconciler {
       return result(make("Rejected", stored));
     }
     if (cm !== undefined && this.upToDate(cm, desired, bundle)) {
+      if (supersedeKey !== undefined) this.supersededBy.delete(supersedeKey);
       return result(make(freshness(meta.nextUpdate, now), meta));
     }
     const written = await this.put(key, namespace, name, cm, desired);
     if (written === "written") {
+      if (supersedeKey !== undefined) this.supersededBy.delete(supersedeKey);
       log(`${key} crl ${id} number=${meta.number}`);
       return result(make(freshness(meta.nextUpdate, now), meta));
     }
@@ -1060,6 +1082,7 @@ export class TrustBundleReconciler {
         ? undefined
         : (stored ?? storedCrl(cm, id, format === "der" ? "pem" : "der"));
     if (mounted !== undefined && mounted.sha256 !== sha256) {
+      if (supersedeKey !== undefined) this.supersededBy.set(supersedeKey, sha256);
       return result(
         {
           ...make("Stale"),

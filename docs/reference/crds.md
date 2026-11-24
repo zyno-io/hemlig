@@ -243,7 +243,7 @@ The first matching row wins. The message names at most five CA IDs.
 | `CrlMissing` | False | Hemlig has no CRL yet for a required issuer, for example a root CRL not uploaded | [Upload the root CRL](../guide/pki.md) |
 | `CrlStale` | False | A required mounted CRL is past its `nextUpdate` | Check that Hemlig publishes it, or that the root CRL was uploaded |
 | `RemoteError` | False | Hemlig could not be asked, or answered unexpectedly, and the bundle was not `Ready` before. A transient error keeps a `Ready` bundle `Ready` | None for transient errors. Check the controller logs |
-| `CaDrained` | True | Every listed CA is usable, and at least one retired CA is drained | Remove the drained CA from `caIds` when no mount needs it |
+| `CaDrained` | True | Every listed CA is usable, and at least one accepted CA is drained (not necessarily the one you plan to remove) | Check that `hemlig pki ca get <ca>` shows `drained: true` for the CA you want to remove, then remove it from `caIds` when no mount needs it |
 | `Ready` | True | The target and every CRL are written and current | None |
 
 A revoked CA stays in the target, so its anchor keeps verifying older chains. Its own CRL and a drained CA's CRL are not required, so they never raise `CrlStale` or `CrlMissing`.

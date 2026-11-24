@@ -94,10 +94,16 @@ Expected output: `leaf.pem: OK`. A revoked leaf prints `certificate revoked` at 
 
 Set `crlFormat: pem` and each CRL ConfigMap holds `crl.pem` in `data`, with `-----BEGIN X509 CRL-----` and 64-column lines. Envoy and nginx each read one CRL file, so build a combined file, and rebuild it whenever the projection changes. Concatenating once at startup leaves the daemon on a stale snapshot, and a reload only rereads that stale file.
 
-Kubelet updates a projected volume through an atomic symlink swap of the directory, so watch the directory's content, not one file's modification time. A sidecar that compares a checksum, rebuilds atomically and reloads:
+Kubelet updates a projected volume through an atomic symlink swap of the directory, so watch the directory's content, not one file's modification time. Build the file once before nginx starts, because nginx fails to start when `ssl_crl` names a missing file. Do it in an initContainer or the entrypoint, then run a sidecar that only handles updates:
 
 ```sh
-last=""
+# initContainer or entrypoint, before nginx starts
+cat /trust/crls/*.pem > /run/crl.pem.tmp && mv /run/crl.pem.tmp /run/crl.pem
+```
+
+```sh
+# sidecar: compares a checksum, rebuilds atomically and reloads
+last="$(cat /trust/crls/*.pem | sha256sum)"
 while true; do
   sum=$(cat /trust/crls/*.pem | sha256sum)
   if [ "$sum" != "$last" ]; then
@@ -121,7 +127,7 @@ kubectl -n payments get hmltrustbundle payments-trust -o jsonpath='{.status.crls
 
 `READY` is `True` when the target and every required CRL are written and current. `status.acceptedCaIds` lists the CAs whose material is mounted, and each `status.crls` entry has a `state`: `Current`, `Stale`, `Missing`, `Rejected` or `Conflict`. The reasons and fixes are in [CRDs](../reference/crds.md#hemligtrustbundle-condition-ready).
 
-A revoked CA stays in the bundle with its anchor, so chains issued earlier still fail on the CRL rather than on a missing root. A drained retired CA gives `Ready=True` with reason `CaDrained`, which tells you it can be removed.
+A revoked CA stays in the bundle with its anchor, so chains issued earlier still fail on the CRL rather than on a missing root. A drained retired CA gives `Ready=True` with reason `CaDrained`, but that reason is set when any accepted CA is drained. Before you remove a CA from `caIds`, check that `hemlig pki ca get <ca>` shows `drained: true` for that CA.
 
 ## Roll over a CA
 

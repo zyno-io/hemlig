@@ -336,6 +336,75 @@ describe("update and delete", () => {
     expect(result.etag).not.toBe(existing.version);
   });
 
+  it("replays an update as the generation it wrote, not a later change by someone else", async () => {
+    const { h, pki } = await setup();
+    const { name: _name, ...update } = body({ displayName: "Mine" });
+    const first = await h.grants.update(admin, "key-upd-00010", consumerId, "web", "pkv-grant-1", update);
+    const call = pki.updateGrant.mock.calls[0]![0] as {
+      idempotency: { requestDigest: string; result: Record<string, unknown> };
+    };
+    // Another operator disables the grant (v3) before the retry arrives.
+    h.state.grants.set("web", {
+      ...(h.state.grants.get("web") as IssuanceGrantRecord),
+      status: "DISABLED",
+      version: "pkv-v3",
+    });
+    h.deps.repository.getIdempotency.mockResolvedValueOnce({
+      operationType: "pki.grant.update",
+      requestDigest: call.idempotency.requestDigest,
+      status: "SUCCEEDED",
+      result: call.idempotency.result,
+    });
+    const replayed = await h.grants.update(admin, "key-upd-00010", consumerId, "web", "pkv-grant-1", update);
+    expect(replayed.etag).toBe(first.etag);
+    expect(replayed.body.version).toBe(first.etag);
+    expect(replayed.body.status).toBe("ACTIVE");
+    expect(pki.updateGrant).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays a create as the generation it wrote, not a later update", async () => {
+    const { h, created, pki } = await setup();
+    const first = await create(h);
+    const call = pki.createGrant.mock.calls[0]![0] as {
+      idempotency: { requestDigest: string; result: Record<string, unknown> };
+    };
+    h.state.grants.set("api", { ...created[0]!, version: "pkv-later", status: "DISABLED" });
+    h.deps.repository.getIdempotency.mockResolvedValueOnce({
+      operationType: "pki.grant.create",
+      requestDigest: call.idempotency.requestDigest,
+      status: "SUCCEEDED",
+      result: call.idempotency.result,
+    });
+    const replayed = await create(h);
+    expect(replayed.etag).toBe(first.etag);
+    expect(replayed.body.status).toBe("ACTIVE");
+  });
+
+  it("refuses to confirm a delete from a receipt without a record when the grant is live", async () => {
+    const { h, pki } = await setup();
+    pki.deleteGrant.mockClear();
+    // The digest is recomputed by the service, so capture it from a real delete first.
+    await h.grants.delete(admin, "key-del-00020", consumerId, "web", "pkv-grant-1");
+    const call = pki.deleteGrant.mock.calls[0]![0] as {
+      idempotency: { requestDigest: string };
+    };
+    h.state.grants.set("web", {
+      ...(h.state.grants.get("web") as IssuanceGrantRecord),
+      status: "ACTIVE",
+      uid: "pkg-other",
+      version: "pkv-new",
+    });
+    h.deps.repository.getIdempotency.mockResolvedValueOnce({
+      operationType: "pki.grant.delete",
+      requestDigest: call.idempotency.requestDigest,
+      status: "SUCCEEDED",
+      result: { consumerId, name: "web" },
+    });
+    expect(
+      await errorOf(h.grants.delete(admin, "key-del-00020", consumerId, "web", "pkv-grant-1")),
+    ).toMatchObject({ statusCode: 503 });
+  });
+
   it("answers 412 before and after the commit", async () => {
     const { h, pki } = await setup();
     const { name: _name, ...update } = body();

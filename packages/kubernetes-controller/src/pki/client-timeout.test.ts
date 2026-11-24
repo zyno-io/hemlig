@@ -5,7 +5,7 @@ import forge from "node-forge";
 import { agentClient } from "../v1beta";
 
 const selfSigned = (): { cert: Buffer; key: Buffer } => {
-  const pair = forge.pki.rsa.generateKeyPair({ bits: 1024, e: 0x10001 });
+  const pair = forge.pki.rsa.generateKeyPair({ bits: 2048, e: 0x10001 });
   const cert = forge.pki.createCertificate();
   cert.publicKey = pair.publicKey;
   cert.serialNumber = "01";
@@ -21,13 +21,15 @@ const selfSigned = (): { cert: Buffer; key: Buffer } => {
   };
 };
 
-test("a stalled PKI call is aborted at the transport, closing its socket", async () => {
+test("a stalled PKI call is aborted at the transport, closing its socket", { timeout: 60_000 }, async () => {
   let markClosed: () => void = () => {};
   const closed = new Promise<void>((resolve) => {
     markClosed = resolve;
   });
   // Accepts the connection and never answers.
+  const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
+    sockets.add(socket);
     socket.on("error", () => {});
     // Read, so that the peer's close is observed.
     socket.resume();
@@ -38,9 +40,14 @@ test("a stalled PKI call is aborted at the transport, closing its socket", async
     const { port } = server.address() as net.AddressInfo;
     const { cert, key } = selfSigned();
     const client = agentClient(`https://127.0.0.1:${port}`, cert, key, 100);
-    await assert.rejects(client.getCaBundle("ca-aaa"));
+    // The key is accepted, so the connection is made and the call fails by the deadline, not earlier.
+    await assert.rejects(client.getCaBundle("ca-aaa"), (error: NodeJS.ErrnoException) => {
+      assert.equal(error.code, "ETIMEDOUT");
+      return true;
+    });
     await closed;
   } finally {
     server.close();
+    for (const socket of sockets) socket.destroy();
   }
 });

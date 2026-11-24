@@ -194,6 +194,41 @@ describe("IssuanceGrantEditor edit mode", () => {
     wrapper.unmount();
   });
 
+  it("keeps edits made during an unknown outcome dirty, and a 412 after the retry takes the rebase path", async () => {
+    let calls = 0;
+    const api = fake({
+      updateIssuanceGrant: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new ApiError(503, "service_unavailable", "down");
+        }
+        if (calls === 2) {
+          return baseGrant({ version: "v2" });
+        }
+        throw new ApiError(412, "precondition_failed", "stale");
+      }),
+    });
+    const { wrapper } = await mountEditor(api);
+    await wrapper.get('[data-testid="grant-display-name"]').setValue("first");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+    // An edit while the outcome is unknown.
+    await wrapper.get('[data-testid="grant-display-name"]').setValue("second");
+    const retry = wrapper.findAll("button").find((b) => b.text().includes("Retry with the same key"));
+    await retry?.trigger("click");
+    await flushPromises();
+    expect(api.updateIssuanceGrant).toHaveBeenCalledTimes(2);
+    // The draft still differs from what was saved, so it is dirty.
+    expect(wrapper.findComponent({ name: "GrantEvaluateTester" }).props("dirty")).toBe(true);
+    expect((wrapper.get('[data-testid="grant-display-name"]').element as HTMLInputElement).value).toBe("second");
+    // The next save carries the adopted version (v2), is refused, and reaches the rebase panel.
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+    expect(api.updateIssuanceGrant.mock.calls[2]?.[2]).toBe("v2");
+    expect(wrapper.text()).toContain("Your draft is intact");
+    wrapper.unmount();
+  });
+
   it("exposes bulk revoke after a retried delete succeeds", async () => {
     let calls = 0;
     const api = fake({

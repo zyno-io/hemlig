@@ -373,6 +373,8 @@ const save = async (): Promise<void> => {
   if (editing && version.value === undefined) {
     return;
   }
+  // What was sent. Edits made while the outcome is unknown stay dirty, also on a later retry.
+  submittedSnapshot = draftSnapshot(draft);
   await applySaved(
     await saveMutation.submit(
       editing
@@ -380,25 +382,29 @@ const save = async (): Promise<void> => {
         : { body: draftToCreateRequest(draft) },
     ),
     editing,
+    submittedSnapshot,
   );
 };
+
+let submittedSnapshot: string | undefined;
 
 // A retry replays the same key, so its success must be handled exactly like a
 // first-time success (adopting the returned version).
 const retrySave = async (): Promise<void> => {
-  await applySaved(await saveMutation.retry(), isEdit.value);
+  await applySaved(await saveMutation.retry(), isEdit.value, submittedSnapshot);
 };
 
 const applySaved = async (
   result: PkiIssuanceGrant | undefined,
   editing: boolean,
+  sent: string | undefined,
 ): Promise<void> => {
   if (result === undefined) {
     return;
   }
   staleNote.value = undefined;
   savedGrant.value = result;
-  baseline.value = draftSnapshot(draft);
+  baseline.value = sent ?? draftSnapshot(draft);
   // The response is the fresh grant; storing it avoids another audited read.
   queryClient.setQueryData(pkiKeys.grant(props.consumerId, result.name), result);
   await invalidateGrantLists();

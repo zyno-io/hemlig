@@ -19,6 +19,7 @@ import {
   pemCertificateBlocks,
   readyFor,
   storedCrl,
+  TrustBundleReconciler,
   type ReadyInput,
 } from "./trust-bundles";
 import {
@@ -1139,6 +1140,27 @@ test("a verified newer CRL that cannot be mounted leaves the old copy non-curren
   await r.run();
   assert.equal(crlEntry(r, "ca-aaa").state, "Current");
   assert.equal(r.ready()?.status, "True");
+});
+
+test("a superseded mounted CRL stays Stale and not Ready when a later pass cannot fetch", async () => {
+  const r = setup({}, ["ca-aaa"], { withExt: false });
+  await r.run();
+  r.server.crls.set("ca-aaa", crlFixture(41, "2", "2027-01-01T00:00:00.000Z", 3));
+  r.core.forbidConfigMaps.add(crlName("ca-aaa"));
+  await r.scheduler.advance(300_000);
+  await r.run();
+  assert.equal(crlEntry(r, "ca-aaa").state, "Stale");
+  // The next pass cannot fetch at all: the old copy must not look Current again.
+  r.server.crls.set("ca-aaa", fault(503, "service_unavailable"));
+  await r.scheduler.advance(300_000);
+  await r.run();
+  assert.equal(crlEntry(r, "ca-aaa").state, "Stale");
+  assert.notEqual(r.ready()?.status, "True");
+  // A restarted reconciler still knows, from the status entry alone.
+  const restarted = new TrustBundleReconciler(r.deps, r.queue);
+  await restarted.reconcile(r.key, { tryAcquire: () => () => {} });
+  assert.equal(crlEntry(r, "ca-aaa").state, "Stale");
+  assert.notEqual(r.ready()?.status, "True");
 });
 
 test("the status patch is guarded by the bundle uid and a recreated bundle re-queues", async () => {
