@@ -798,6 +798,7 @@ export class CertificateService {
         newestFirst: false,
         limit: pageLimit,
         ...(startKey === undefined ? {} : { start: startKey }),
+        shouldStop: () => this.now().getTime() > deadline,
       });
       const certs = await mapLimit(page.pointers, bulkConcurrency, (pointer) =>
         this.pki.getCertificate(pointer.caId, pointer.serial),

@@ -198,12 +198,13 @@ Grant updates read the grant, send the change with its `If-Match` version, and o
 
 ## Roll over a CA
 
-Never rename or replace a CA resource. Roll over in four runs:
+Never rename or replace a CA resource. Roll over in five runs:
 
 1. Add a second CA resource with a new name and DN, and apply. Sign and activate it as above.
 2. Add the new `caId` to your [trust bundles](trust-bundles.md).
-3. Change each grant's `caId` to the new CA and apply. This migrates the grants in place.
-4. Unprotect and remove the old CA resource. Destroy retires it once no grant references it.
+3. Add the successor's CRL ConfigMap to every workload's projected volume and roll the workloads out. A projection lists each ConfigMap explicitly, so step 2 does not change what pods mount. Verify inside a running pod with `kubectl exec <pod> -- ls /trust/crls/`. See steps 4 and 5 of [Roll over a CA](../operations/pki-ca-rollover.md#move-trust-and-grants).
+4. Change each grant's `caId` to the new CA and apply. This migrates the grants in place. Do not run this until step 3 is verified, or workloads receive leaves whose CRL they do not mount.
+5. Unprotect and remove the old CA resource. Destroy retires it once no grant references it.
 
 Then follow [Roll over a CA](../operations/pki-ca-rollover.md) to wait for drain and destroy the old key with the CLI.
 

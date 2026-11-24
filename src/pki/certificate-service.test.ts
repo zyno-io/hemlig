@@ -342,6 +342,20 @@ describe("CertificateService.bulkRevoke", () => {
     ).toHaveLength(2);
   });
 
+  it("returns complete=false when the deadline passes during the read", async () => {
+    const { h, pki, service } = await world({ "ca-aaa-one": 1 });
+    pki.listConsumerPointersPage.mockImplementation(
+      async (_id: string, options: { shouldStop?: () => boolean }) => {
+        h.clock.now = new Date(h.clock.now.getTime() + 60_000);
+        expect(options.shouldStop?.()).toBe(true);
+        return { pointers: [], lastEvaluatedKey: { n: 1 } };
+      },
+    );
+    const result = await service.bulkRevoke(admin, "key-bulk-00099", "consumer-one", {});
+    expect(result.complete).toBe(false);
+    expect(pki.putHumanIdempotency).not.toHaveBeenCalled();
+  });
+
   it("makes progress when each page takes 7 seconds, and a rerun finishes", async () => {
     const { h, pki, service } = await world({ "ca-aaa-one": 3 });
     const all = (await pki.listConsumerPointersPage("c", {} as never)).pointers;

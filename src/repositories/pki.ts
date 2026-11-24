@@ -3627,6 +3627,13 @@ export class PkiRepository {
     certificates: IssuedCertificateRecord[];
     lastEvaluatedKey?: Record<string, unknown>;
   }> {
+    if (
+      options.before !== undefined &&
+      options.after !== undefined &&
+      options.before <= options.after
+    ) {
+      return { certificates: [] };
+    }
     const names: Record<string, string> = { "#pk": "pkiDirectoryPk" };
     const values: Record<string, unknown> = {
       ":pk": `PKI_CERTS#${caId(id)}`,
@@ -3679,6 +3686,7 @@ export class PkiRepository {
       newestFirst: boolean;
       limit: number;
       start?: Record<string, unknown>;
+      shouldStop?: () => boolean;
     },
   ): Promise<{
     pointers: ConsumerCertificatePointer[];
@@ -3728,6 +3736,9 @@ export class PkiRepository {
       forward: !options.newestFirst,
       limit: options.limit,
       ...(options.start === undefined ? {} : { start: options.start }),
+      ...(options.shouldStop === undefined
+        ? {}
+        : { shouldStop: options.shouldStop }),
     });
     return {
       pointers: page.items.map(toPointer),
@@ -3863,13 +3874,20 @@ export class PkiRepository {
     forward?: boolean;
     limit: number;
     start?: Record<string, unknown>;
+    /** Checked before each further round trip; when true, return what was found with the resume cursor. */
+    shouldStop?: () => boolean;
   }): Promise<{
     items: Record<string, unknown>[];
     lastEvaluatedKey?: Record<string, unknown>;
   }> {
     const found: Record<string, unknown>[] = [];
     let start = options.start;
+    let firstTrip = true;
     for (;;) {
+      if (!firstTrip && start !== undefined && options.shouldStop?.() === true) {
+        return { items: found, lastEvaluatedKey: start };
+      }
+      firstTrip = false;
       const remaining = options.limit - found.length;
       const names = { ...options.key.names, ...options.filter?.names };
       let response;
@@ -3893,7 +3911,9 @@ export class PkiRepository {
             },
             ...(options.consistent === true ? { ConsistentRead: true } : {}),
             ...(options.forward === false ? { ScanIndexForward: false } : {}),
-            Limit: remaining,
+            // DynamoDB applies Limit before FilterExpression, so a filtered read would crawl 100 items per round trip.
+            // Without Limit it evaluates whole 1 MB pages; the surplus is trimmed below.
+            ...(options.filter === undefined ? { Limit: remaining } : {}),
             ...(start === undefined ? {} : { ExclusiveStartKey: start }),
           }),
         );
@@ -3907,12 +3927,23 @@ export class PkiRepository {
         }
         throw error;
       }
+      start = response.LastEvaluatedKey;
       for (const item of response.Items ?? []) {
         if (typeof item.pk === "string" && item.pk.startsWith("PKI_")) {
+          if (found.length >= options.limit) {
+            // Trimmed surplus: resume right after the last kept item.
+            const last = found[found.length - 1] as Record<string, unknown>;
+            const keys = [
+              "pk",
+              "sk",
+              ...(options.index === undefined ? [] : PKI_DIRECTORY_ATTRIBUTES),
+            ];
+            start = Object.fromEntries(keys.map((key) => [key, last[key]]));
+            break;
+          }
           found.push(item);
         }
       }
-      start = response.LastEvaluatedKey;
       if (found.length >= options.limit || start === undefined) {
         return {
           items: found,

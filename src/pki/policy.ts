@@ -770,6 +770,23 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
       { type: finalViolation.type, value: finalViolation.value },
     );
   }
+  if (cnCanonical && sans.dns.length === 0) {
+    // OpenSSL applies DNS name constraints to the subject CN when there is no dNSName SAN.
+    const cnCheck = checkNameConstraints(
+      "dns",
+      cnCanonical.value,
+      ca.nameConstraints,
+    );
+    if (!cnCheck.ok) {
+      return deny(
+        10,
+        "final-name-check",
+        "name_constraint_violation",
+        cnCheck.detail,
+        { type: "commonName", value: cnCanonical.value },
+      );
+    }
+  }
   const total = sans.dns.length + sans.ip.length + sans.uri.length;
   const limit = Math.min(compiled?.maxSans ?? MAX_SANS, MAX_SANS);
   if (total > limit) {
