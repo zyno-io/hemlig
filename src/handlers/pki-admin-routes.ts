@@ -2,7 +2,7 @@ import type { APIGatewayProxyStructuredResultV2 } from "aws-lambda";
 import { ApiError, badRequest } from "../domain/errors";
 import { json } from "../http/responses";
 import type { MutationResult } from "../pki/service-types";
-import { pkiBadRequest } from "../pki/errors";
+import { deniedNameFields, pkiBadRequest } from "../pki/errors";
 import { humanOperation } from "../services/operations";
 import type { PkiAdminContext, PkiAdminRoute } from "./pki-admin";
 import {
@@ -129,7 +129,7 @@ const withDeniedTarget = async <T>(
           actor: context.actor,
           operation: context.operation,
           sourceIp: sourceIp(context),
-          target: { ...target, deniedNameType: type, deniedName: name },
+          target: { ...target, ...deniedNameFields({ type, value: name }) },
         });
       }
     }

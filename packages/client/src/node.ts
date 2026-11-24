@@ -7,8 +7,23 @@ import {
 } from "./index";
 
 /** Node-only mTLS transport. Import from `@zyno-io/hemlig-client/node`. */
+export interface NodeHttpsTransportOptions extends https.AgentOptions {
+  /**
+   * A deadline for the whole request, in milliseconds. When it passes, the request is destroyed (the socket is
+   * closed) and the call rejects with a transport error. Unset means no deadline.
+   */
+  readonly timeoutMs?: number;
+}
+
 export class NodeHttpsTransport implements HemligTransport {
-  public constructor(private readonly options: https.AgentOptions = {}) {}
+  private readonly options: https.AgentOptions;
+  private readonly timeoutMs: number | undefined;
+
+  public constructor(options: NodeHttpsTransportOptions = {}) {
+    const { timeoutMs, ...agentOptions } = options;
+    this.options = agentOptions;
+    this.timeoutMs = timeoutMs;
+  }
 
   public async request(request: TransportRequest): Promise<TransportResponse> {
     const body =
@@ -51,6 +66,18 @@ export class NodeHttpsTransport implements HemligTransport {
         },
       );
       response.on("error", reject);
+      if (this.timeoutMs !== undefined) {
+        const timeoutMs = this.timeoutMs;
+        const timer = setTimeout(() => {
+          response.destroy(
+            Object.assign(new Error(`request timed out after ${timeoutMs}ms`), {
+              code: "ETIMEDOUT",
+            }),
+          );
+        }, timeoutMs);
+        // The timer ends with the request.
+        response.once("close", () => clearTimeout(timer));
+      }
       if (body !== undefined) {
         response.write(body);
       }

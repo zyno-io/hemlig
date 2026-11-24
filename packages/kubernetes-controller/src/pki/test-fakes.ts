@@ -259,6 +259,8 @@ export class FakeCore {
   public readonly configMapCalls: ConfigMapCall[] = [];
   /** Names the fake API server refuses with 422. */
   public readonly rejectConfigMaps = new Set<string>();
+  /** Names the fake API server refuses with 403, as an RBAC gap would. */
+  public readonly forbidConfigMaps = new Set<string>();
   public secretWrites = 0;
   /** The largest values-only payload any create or replace carried. */
   public maxWrittenBytes = 0;
@@ -319,6 +321,7 @@ export class FakeCore {
   }
   private checkWrite(name: string, body: any): void {
     if (this.rejectConfigMaps.has(name)) throw apiError(422);
+    if (this.forbidConfigMaps.has(name)) throw apiError(403);
     let bytes = 0;
     for (const value of Object.values<string>(body.data ?? {})) {
       bytes += Buffer.byteLength(value, "utf8");

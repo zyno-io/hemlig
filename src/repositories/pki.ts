@@ -380,6 +380,11 @@ export interface ConsumerIssuanceCommit extends IssuanceCommitBase {
   readonly path: "consumer";
   readonly consumerId: string;
   readonly identityFingerprint: string;
+  /**
+   * The clock re-sampled after signing. The grant and identity expiry conditions compare against it,
+   * so a slow signature cannot commit past `expiresAt`. Defaults to `now`.
+   */
+  readonly commitNow?: Date;
   readonly grant: {
     readonly name: string;
     readonly uid: string;
@@ -500,6 +505,9 @@ export const buildIssuanceCommit = (
 
   const now = commit.now.toISOString();
   const windows = quotaWindows(commit.now);
+  const expiryNow = (
+    commit.path === "consumer" ? (commit.commitNow ?? commit.now) : commit.now
+  ).toISOString();
   const { serial: certSerial, notAfter, issuedAt } = certificate;
   const items: NonNullable<TransactWriteCommandInput["TransactItems"]> = [];
   const slots: IssuanceSlot[] = [];
@@ -617,7 +625,7 @@ export const buildIssuanceCommit = (
           ":uid": grant.uid,
           ":version": grant.version,
           ":active": "ACTIVE",
-          ":now": now,
+          ":now": expiryNow,
         },
       },
     });
@@ -640,7 +648,7 @@ export const buildIssuanceCommit = (
         ExpressionAttributeValues: {
           ":active": "ACTIVE",
           ":api": "api",
-          ":now": now,
+          ":now": expiryNow,
           ":consumerId": consumerId,
         },
       },

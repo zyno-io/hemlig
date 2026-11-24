@@ -1,5 +1,6 @@
 import type { APIGatewayProxyStructuredResultV2 } from "aws-lambda";
 import { ApiError } from "../domain/errors";
+import { deniedNameFields } from "../pki/errors";
 import { json } from "../http/responses";
 import { consumerGrantView } from "../pki/grant-model";
 import { caStatusReason } from "../pki/ca-model";
@@ -85,7 +86,8 @@ const consumerRoute = (
         const type = error.details?.deniedNameType;
         const name = error.details?.deniedName;
         if (typeof type === "string" && typeof name === "string") {
-          state.update({ deniedNameType: type, deniedName: name });
+          // Sanitized again here: the value is caller text and goes into the audit log.
+          state.update({ ...deniedNameFields({ type, value: name }) });
         }
         const scope = `PKI#${sha256Hex(
           stableJson([operation, params[0] ?? "", error.safeReason ?? error.code]),

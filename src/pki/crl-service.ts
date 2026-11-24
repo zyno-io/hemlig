@@ -350,6 +350,7 @@ export class CrlService {
       (current.status !== "ACTIVE" && current.status !== "RETIRED") ||
       current.key.state !== "ACTIVE"
     ) {
+      await this.releaseQuietly(ca.caId, owner);
       return { kind: "superseded" };
     }
     ca = current;
@@ -419,18 +420,24 @@ export class CrlService {
         current?.lease?.owner !== owner ||
         (current.published !== undefined && current.published.number >= number)
       ) {
+        await this.releaseQuietly(ca.caId, owner);
         return { kind: "superseded" };
       }
       // A revocation landed mid-generation: keep `dirtySince` so the next pass republishes.
       outcome = await pki.commitCrlPublication({ ...base, clearDirty: false });
       if (outcome === "conditionFailed" || outcome === "inactive") {
+        await this.releaseQuietly(ca.caId, owner);
         return { kind: "superseded" };
       }
     }
+    // The transaction did not commit, so the lease is still held: release it (owner-checked) so an
+    // immediately following publication does not wait out the lease.
     if (outcome === "replay") {
+      await this.releaseQuietly(ca.caId, owner);
       return { kind: "replay" };
     }
     if (outcome === "inactive") {
+      await this.releaseQuietly(ca.caId, owner);
       return { kind: "superseded" };
     }
     try {
@@ -448,6 +455,11 @@ export class CrlService {
       });
     }
     return { kind: "published", pointer: published };
+  }
+
+  /** Owner-checked release that never replaces the result being returned. */
+  private async releaseQuietly(caId: string, owner: string): Promise<void> {
+    await this.deps.pki.releaseCrlLease(caId, owner).catch(() => undefined);
   }
 
   /** Reports a signing failure to the alarm metrics. */

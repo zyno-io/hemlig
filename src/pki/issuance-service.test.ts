@@ -543,6 +543,29 @@ describe("commit outcomes", () => {
     expect(h.state.commits).toHaveLength(0);
   });
 
+  it("commits the grant and identity expiry checks against the post-signing clock", async () => {
+    const h = await issuanceHarness();
+    const real = h.deps.signerFor;
+    (h.deps as { signerFor: unknown }).signerFor = (ca: typeof h.ca) => {
+      const signer = real(ca);
+      return {
+        algorithm: signer.algorithm,
+        sign: async (tbs: Uint8Array) => {
+          const signature = await signer.sign(tbs);
+          h.clock.now = new Date(h.clock.now.getTime() + 20_000);
+          return signature;
+        },
+      };
+    };
+    const start = h.clock.now.getTime();
+    await issue(h);
+    const commit = h.state.commits[0]!;
+    expect(commit.now.getTime()).toBe(start);
+    expect((commit as { commitNow?: Date }).commitNow?.getTime()).toBe(
+      start + 20_000,
+    );
+  });
+
   it("emits the key metrics when signing fails", async () => {
     const h = await issuanceHarness();
     h.kms.send.mockRejectedValueOnce(

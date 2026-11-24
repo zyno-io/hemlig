@@ -151,6 +151,22 @@ export class GrantService {
     if (typeof consumerId !== "string" || typeof name !== "string") {
       throw serviceUnavailable("The stored idempotency record is incomplete.");
     }
+    // A delete records the generation it removed. The name may since have been recreated, so the
+    // response comes from that record and never from a read-back by name.
+    const deleted = outcome.result.deleted;
+    if (
+      typeof deleted === "object" &&
+      deleted !== null &&
+      (deleted as { uid?: unknown }).uid === outcome.result.uid
+    ) {
+      return this.success(
+        deleted as IssuanceGrantRecord,
+        status,
+        [],
+        {},
+        outcome.shouldWriteTerminalAudit,
+      );
+    }
     const grant = await this.pki.getGrant(consumerId, name);
     if (grant === undefined) {
       throw serviceUnavailable("The stored idempotency record is incomplete.");
@@ -611,15 +627,28 @@ export class GrantService {
       throw preconditionFailed("The grant was changed; reload it and retry.");
     }
     const now = this.now().toISOString();
+    const newVersion = `pkv-${randomUUID()}`;
+    // Exactly what the transaction writes to the tombstone.
+    const deleted: IssuanceGrantRecord = {
+      ...current,
+      status: "DELETED",
+      version: newVersion,
+      deletedAt: now,
+      deletedBy: actor,
+      updatedAt: now,
+      updatedBy: actor,
+    };
     const outcome = await this.pki.deleteGrant({
       idempotency: this.idempotency(actor, key, "pki.grant.delete", digest, {
         consumerId,
         name,
+        uid: current.uid,
+        deleted,
       }),
       consumerId,
       name,
       ifMatch,
-      newVersion: `pkv-${randomUUID()}`,
+      newVersion,
       now,
       actor,
     });
@@ -634,10 +663,6 @@ export class GrantService {
       if (fresh.version !== ifMatch) {
         throw preconditionFailed("The grant was changed; reload it and retry.");
       }
-      throw serviceUnavailable("The grant could not be deleted.");
-    }
-    const deleted = await this.pki.getGrant(consumerId, name);
-    if (deleted === undefined) {
       throw serviceUnavailable("The grant could not be deleted.");
     }
     return this.success(deleted, 200);

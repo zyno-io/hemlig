@@ -133,6 +133,28 @@ describe("consumer PKI routes", () => {
     expect((await issue()).statusCode).toBe(500);
   });
 
+  it("never writes URI credentials from a denied name to the audit log", async () => {
+    issueForConsumer.mockRejectedValue(
+      new ApiError(403, "issuance_denied", "No.", "name_not_permitted", {
+        details: {
+          reason: "name_not_permitted",
+          deniedNameType: "uri",
+          deniedName: "https://u:p@service.example/path?access_token=secret#f",
+        },
+      }),
+    );
+    await issue();
+    expect(JSON.stringify(write.mock.calls)).not.toContain("secret");
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: expect.objectContaining({
+          deniedNameType: "uri",
+          deniedName: "https://service.example/path",
+        }),
+      }),
+    );
+  });
+
   it("writes one failed event with the reason and the denied name", async () => {
     issueForConsumer.mockRejectedValue(
       new ApiError(403, "issuance_denied", "No.", "name_not_permitted", {

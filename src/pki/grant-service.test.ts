@@ -385,4 +385,52 @@ describe("update and delete", () => {
       statusCode: 404,
     });
   });
+
+  it("answers a delete with the deleted generation even if the name is recreated at once", async () => {
+    const { h, pki } = await setup();
+    const original = h.state.grants.get("web")!;
+    const realDelete = pki.deleteGrant.getMockImplementation()!;
+    pki.deleteGrant.mockImplementationOnce(async (input: never) => {
+      const outcome = await realDelete(input);
+      h.state.grants.set("web", {
+        ...original,
+        uid: "pkg-uid-replacement",
+        version: "pkv-replacement",
+        status: "ACTIVE",
+      });
+      return outcome;
+    });
+    const result = await h.grants.delete(admin, "key-del-00003", consumerId, "web", "pkv-grant-1");
+    expect(result.body.uid).toBe(original.uid);
+    expect(result.body.status).toBe("DELETED");
+    expect(result.auditTarget.issuanceGrantUid).toBe(original.uid);
+    const call = pki.deleteGrant.mock.calls[0]![0] as {
+      idempotency: { result: { uid: string } };
+    };
+    expect(call.idempotency.result.uid).toBe(original.uid);
+  });
+
+  it("replays a delete with the deleted generation after the name is recreated", async () => {
+    const { h, pki } = await setup();
+    const original = h.state.grants.get("web")!;
+    await h.grants.delete(admin, "key-del-00004", consumerId, "web", "pkv-grant-1");
+    const recorded = (pki.deleteGrant.mock.calls[0]![0] as {
+      idempotency: { requestDigest: string; result: Record<string, unknown> };
+    }).idempotency;
+    h.state.grants.set("web", {
+      ...original,
+      uid: "pkg-uid-replacement",
+      version: "pkv-replacement",
+    });
+    h.deps.repository.getIdempotency.mockResolvedValueOnce({
+      operationType: "pki.grant.delete",
+      requestDigest: recorded.requestDigest,
+      status: "SUCCEEDED",
+      result: recorded.result,
+    });
+    const replayed = await h.grants.delete(admin, "key-del-00004", consumerId, "web", "pkv-grant-1");
+    expect(replayed.body.uid).toBe(original.uid);
+    expect(replayed.body.status).toBe("DELETED");
+    expect(replayed.shouldWriteTerminalAudit).toBe(false);
+  });
 });
