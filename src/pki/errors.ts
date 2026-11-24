@@ -27,16 +27,41 @@ export interface DeniedNameDetails {
   readonly value: string;
 }
 
+const uriLike = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * A URI without userinfo, query or fragment (`scheme://host[:port]/path`), since those can carry credentials. A value
+ * that does not parse is omitted.
+ */
+const redactUri = (value: string): string | undefined => {
+  try {
+    const url = new URL(value);
+    return `${url.protocol}${url.host === "" ? "" : `//${url.host}`}${url.pathname}`;
+  } catch {
+    return undefined;
+  }
+};
+
 /**
  * The denied name for an error or audit target. Caller text is dropped when it could carry key material or control
- * characters: anything with `-----` or outside printable ASCII.
+ * characters: anything with `-----` or outside printable ASCII. A URI loses its userinfo, query and fragment.
  */
 export const deniedNameFields = (
   denied: DeniedNameDetails,
-): { deniedNameType: string; deniedName: string } | Record<string, never> =>
-  denied.value.includes("-----") || /[^\x20-\x7e]/.test(denied.value)
-    ? {}
-    : { deniedNameType: denied.type, deniedName: denied.value.slice(0, 253) };
+): { deniedNameType: string; deniedName: string } | Record<string, never> => {
+  if (denied.value.includes("-----") || /[^\x20-\x7e]/.test(denied.value)) {
+    return {};
+  }
+  let value = denied.value;
+  if (denied.type === "uri" || uriLike.test(value)) {
+    const redacted = redactUri(value);
+    if (redacted === undefined || /[^\x20-\x7e]/.test(redacted)) {
+      return {};
+    }
+    value = redacted;
+  }
+  return { deniedNameType: denied.type, deniedName: value.slice(0, 253) };
+};
 
 export const issuanceDenied = (
   reason: string,

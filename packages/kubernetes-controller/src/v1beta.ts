@@ -27,7 +27,7 @@ import {
   namespaceMatches,
 } from "./references";
 import { PkiModule } from "./pki/module";
-import { pkiConfigFromEnvironment } from "./pki/types";
+import { pkiConfigFromEnvironment, REMOTE_TIMEOUT_MS } from "./pki/types";
 import {
   isOwnedByImport,
   kubernetesDataToPayload,
@@ -2489,14 +2489,20 @@ const generateRotationCsr = async (
   };
 };
 
-const agentClient = (
+export const agentClient = (
   url: string,
   certificate: Buffer,
   privateKey: Buffer,
+  timeoutMs: number = REMOTE_TIMEOUT_MS,
 ): HemligClient =>
   new HemligClient(
     new URL(url),
-    new NodeHttpsTransport({ cert: certificate, key: privateKey }),
+    new NodeHttpsTransport({
+      cert: certificate,
+      key: privateKey,
+      // Destroys the socket of a call the controller has already given up on.
+      timeoutMs,
+    }),
   );
 
 const generateCsr = (): {

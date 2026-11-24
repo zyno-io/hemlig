@@ -663,6 +663,8 @@ export class IssuanceService {
           ancestors: hemligAncestors(ca),
           consumerId: ctx.consumerId,
           identityFingerprint: ctx.actor.id,
+          // Re-sampled after signing so the expiry conditions see the real commit time.
+          commitNow: this.now(),
           grant: {
             name: grant.name,
             uid: grant.uid,

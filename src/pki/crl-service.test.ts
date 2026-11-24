@@ -359,6 +359,24 @@ describe("CrlService.publish", () => {
     expect(pki.commitCrlPublication).not.toHaveBeenCalled();
   });
 
+  it.each(["replay", "inactive"] as const)(
+    "releases the lease when the commit answers %s",
+    async (outcome) => {
+      const { service, pki, ca } = await setup({
+        commitCrlPublication: jest.fn(async () => outcome),
+      });
+      const result = await service.publish(ca, { trigger: "force" });
+      expect(result.kind).toBe(outcome === "replay" ? "replay" : "superseded");
+      expect(pki.releaseCrlLease).toHaveBeenCalledWith("ca-test-one", owner);
+    },
+  );
+
+  it("does not release the lease after a committed publication", async () => {
+    const { service, pki, ca } = await setup({});
+    expect((await service.publish(ca, { trigger: "force" })).kind).toBe("published");
+    expect(pki.releaseCrlLease).not.toHaveBeenCalled();
+  });
+
   it("ignores the deadline when none is given", async () => {
     const { service, ca } = await setup({});
     clock.now = new Date(clock.now.getTime() + 86_400_000);

@@ -400,6 +400,31 @@ describe("buildIssuanceCommit", () => {
     });
   });
 
+  it("compares the grant and identity expiry to the post-signing clock", () => {
+    const commitNow = new Date(now.getTime() + 5000);
+    const built = buildIssuanceCommit(
+      "control",
+      consumerCommit({ commitNow }),
+    );
+    const checks = (
+      built.input.TransactItems as {
+        ConditionCheck?: {
+          Key: { pk: string };
+          ExpressionAttributeValues: Record<string, unknown>;
+        };
+      }[]
+    ).filter((item) => item.ConditionCheck !== undefined);
+    const withNow = checks.filter(
+      (item) => item.ConditionCheck!.ExpressionAttributeValues[":now"] !== undefined,
+    );
+    expect(withNow).toHaveLength(2);
+    for (const item of withNow) {
+      expect(item.ConditionCheck!.ExpressionAttributeValues[":now"]).toBe(
+        commitNow.toISOString(),
+      );
+    }
+  });
+
   it("omits the agent grant on the direct path", () => {
     const built = buildIssuanceCommit(
       "control",

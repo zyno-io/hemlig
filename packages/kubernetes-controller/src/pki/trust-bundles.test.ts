@@ -19,6 +19,7 @@ import {
   pemCertificateBlocks,
   readyFor,
   storedCrl,
+  TrustBundleReconciler,
   type ReadyInput,
 } from "./trust-bundles";
 import {
@@ -1091,6 +1092,75 @@ test("one transient CRL failure skips the remaining CRL fetches", async () => {
   assert.equal(cm(r, crlName("ca-bbb")), undefined);
   assert.equal(r.bundle().status.crls.length, 3);
   assert.ok(r.queue.scheduledDelay(r.key) !== undefined);
+});
+
+test("a persistently failing first CRL does not starve the later issuers", async () => {
+  const r = setup({}, ["ca-aaa", "ca-bbb", "ca-ccc"], { withExt: false });
+  r.server.crls.set("ca-aaa", fault(503, "service_unavailable"));
+  await r.run();
+  assert.equal(cm(r, crlName("ca-bbb")), undefined);
+  // The next pass resumes at the first skipped issuer.
+  await r.scheduler.advance(300_000);
+  await r.run();
+  assert.ok(cm(r, crlName("ca-bbb")) !== undefined);
+  assert.ok(cm(r, crlName("ca-ccc")) !== undefined);
+  assert.equal(cm(r, crlName("ca-aaa")), undefined);
+  // A new CRL from a later issuer keeps landing while the first stays broken.
+  r.server.crls.set("ca-ccc", crlFixture(41, "2", "2027-01-01T00:00:00.000Z", 3));
+  await r.scheduler.advance(300_000);
+  await r.run();
+  await r.scheduler.advance(300_000);
+  await r.run();
+  assert.equal(
+    cm(r, crlName("ca-ccc")).metadata.annotations["hemlig.zyno.io/crl-number"],
+    "2",
+  );
+});
+
+test("a verified newer CRL that cannot be mounted leaves the old copy non-current and not Ready", async () => {
+  const r = setup({}, ["ca-aaa"], { withExt: false });
+  await r.run();
+  assert.equal(crlEntry(r, "ca-aaa").state, "Current");
+  assert.equal(r.ready()?.status, "True");
+  const before = cm(r, crlName("ca-aaa"));
+  r.server.crls.set("ca-aaa", crlFixture(41, "2", "2027-01-01T00:00:00.000Z", 3));
+  r.core.forbidConfigMaps.add(crlName("ca-aaa"));
+  await r.scheduler.advance(300_000);
+  await r.run();
+  // The old bytes stay mounted, but are known to be superseded.
+  assert.deepEqual(cm(r, crlName("ca-aaa")).binaryData, before.binaryData);
+  assert.notEqual(crlEntry(r, "ca-aaa").state, "Current");
+  assert.equal(crlEntry(r, "ca-aaa").state, "Stale");
+  assert.equal(r.ready()?.status, "False");
+  assert.equal(r.ready()?.reason, "CrlStale");
+  assert.ok(r.queue.scheduledDelay(r.key) !== undefined);
+  // The write succeeds again and the entry recovers.
+  r.core.forbidConfigMaps.clear();
+  await r.scheduler.advance(300_000);
+  await r.run();
+  assert.equal(crlEntry(r, "ca-aaa").state, "Current");
+  assert.equal(r.ready()?.status, "True");
+});
+
+test("a superseded mounted CRL stays Stale and not Ready when a later pass cannot fetch", async () => {
+  const r = setup({}, ["ca-aaa"], { withExt: false });
+  await r.run();
+  r.server.crls.set("ca-aaa", crlFixture(41, "2", "2027-01-01T00:00:00.000Z", 3));
+  r.core.forbidConfigMaps.add(crlName("ca-aaa"));
+  await r.scheduler.advance(300_000);
+  await r.run();
+  assert.equal(crlEntry(r, "ca-aaa").state, "Stale");
+  // The next pass cannot fetch at all: the old copy must not look Current again.
+  r.server.crls.set("ca-aaa", fault(503, "service_unavailable"));
+  await r.scheduler.advance(300_000);
+  await r.run();
+  assert.equal(crlEntry(r, "ca-aaa").state, "Stale");
+  assert.notEqual(r.ready()?.status, "True");
+  // A restarted reconciler still knows, from the status entry alone.
+  const restarted = new TrustBundleReconciler(r.deps, r.queue);
+  await restarted.reconcile(r.key, { tryAcquire: () => () => {} });
+  assert.equal(crlEntry(r, "ca-aaa").state, "Stale");
+  assert.notEqual(r.ready()?.status, "True");
 });
 
 test("the status patch is guarded by the bundle uid and a recreated bundle re-queues", async () => {

@@ -151,9 +151,30 @@ export class GrantService {
     if (typeof consumerId !== "string" || typeof name !== "string") {
       throw serviceUnavailable("The stored idempotency record is incomplete.");
     }
+    // A mutation records the generation it wrote. The name may since have been changed, deleted or
+    // recreated by someone else, so the response comes from that record, never from a read-back by name.
+    const recorded = outcome.result.record ?? outcome.result.deleted;
+    if (
+      typeof recorded === "object" &&
+      recorded !== null &&
+      (recorded as { uid?: unknown }).uid === outcome.result.uid
+    ) {
+      return this.success(
+        recorded as IssuanceGrantRecord,
+        status,
+        [],
+        {},
+        outcome.shouldWriteTerminalAudit,
+      );
+    }
+    // A receipt that predates the record: read by name. A delete must find its tombstone, since a live
+    // grant is a different generation (or a stale read) and must not be returned as the result.
     const grant = await this.pki.getGrant(consumerId, name);
     if (grant === undefined) {
       throw serviceUnavailable("The stored idempotency record is incomplete.");
+    }
+    if (stored.operationType === "pki.grant.delete" && grant.status !== "DELETED") {
+      throw serviceUnavailable("The deletion could not be confirmed.");
     }
     return this.success(grant, status, [], {}, outcome.shouldWriteTerminalAudit);
   }
@@ -418,6 +439,7 @@ export class GrantService {
           consumerId,
           name,
           uid: grant.uid,
+          record: grant,
         }),
         grant,
         caVersion: v.ca.version,
@@ -516,6 +538,8 @@ export class GrantService {
         idempotency: this.idempotency(actor, key, "pki.grant.update", digest, {
           consumerId,
           name,
+          uid: next.uid,
+          record: next,
         }),
         grant: next,
         ifMatch,
@@ -611,15 +635,28 @@ export class GrantService {
       throw preconditionFailed("The grant was changed; reload it and retry.");
     }
     const now = this.now().toISOString();
+    const newVersion = `pkv-${randomUUID()}`;
+    // Exactly what the transaction writes to the tombstone.
+    const deleted: IssuanceGrantRecord = {
+      ...current,
+      status: "DELETED",
+      version: newVersion,
+      deletedAt: now,
+      deletedBy: actor,
+      updatedAt: now,
+      updatedBy: actor,
+    };
     const outcome = await this.pki.deleteGrant({
       idempotency: this.idempotency(actor, key, "pki.grant.delete", digest, {
         consumerId,
         name,
+        uid: current.uid,
+        record: deleted,
       }),
       consumerId,
       name,
       ifMatch,
-      newVersion: `pkv-${randomUUID()}`,
+      newVersion,
       now,
       actor,
     });
@@ -634,10 +671,6 @@ export class GrantService {
       if (fresh.version !== ifMatch) {
         throw preconditionFailed("The grant was changed; reload it and retry.");
       }
-      throw serviceUnavailable("The grant could not be deleted.");
-    }
-    const deleted = await this.pki.getGrant(consumerId, name);
-    if (deleted === undefined) {
       throw serviceUnavailable("The grant could not be deleted.");
     }
     return this.success(deleted, 200);

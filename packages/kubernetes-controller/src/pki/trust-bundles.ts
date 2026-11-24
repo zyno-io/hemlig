@@ -388,6 +388,11 @@ const sortedUnique = (ids: Iterable<string>): string[] =>
   [...new Set(ids)].sort();
 
 export class TrustBundleReconciler {
+  /** Per bundle uid: the first issuer a pass skipped after a transient CRL failure. */
+  private readonly crlCursor = new Map<string, string>();
+  /** `${bundleUid}/${issuerId}` to the sha256 of a verified CRL that could not be mounted. */
+  private readonly supersededBy = new Map<string, string>();
+
   public constructor(
     private readonly deps: PkiDeps,
     private readonly queue: Pick<KeyedWorkQueue, "add">,
@@ -769,7 +774,17 @@ export class TrustBundleReconciler {
     // 9. One CRL ConfigMap per issuer.
     const entries: TrustBundleCrlStatus[] = [];
     let skipCrlFetches = false;
-    for (const id of sortedUnique(crlIds)) {
+    // A pass stops at its first transient failure, so the next one resumes at the first issuer that
+    // was skipped. Otherwise one unreadable CRL would starve every later issuer.
+    const crlOrder = sortedUnique(crlIds);
+    const bundleUid = bundle.metadata.uid;
+    const resumeAt = bundleUid === undefined ? undefined : this.crlCursor.get(bundleUid);
+    const split =
+      resumeAt === undefined ? -1 : crlOrder.findIndex((id) => id >= resumeAt);
+    const rotated =
+      split > 0 ? [...crlOrder.slice(split), ...crlOrder.slice(0, split)] : crlOrder;
+    let nextCursor: string | undefined;
+    for (const [position, id] of rotated.entries()) {
       const outcome = await this.refreshCrl({
         key,
         bundle,
@@ -787,8 +802,15 @@ export class TrustBundleReconciler {
       if (outcome.abort) return abort();
       if (outcome.partial) markPartial(outcome.slow);
       // After one transient failure do not hold the consumer slot for the rest.
-      if (outcome.transient) skipCrlFetches = true;
+      if (outcome.transient && !skipCrlFetches) {
+        skipCrlFetches = true;
+        nextCursor = rotated[position + 1];
+      }
       entries.push(outcome.entry);
+    }
+    if (bundleUid !== undefined) {
+      if (nextCursor === undefined) this.crlCursor.delete(bundleUid);
+      else this.crlCursor.set(bundleUid, nextCursor);
     }
 
     // 10. Entries whose issuer left the bundle.
@@ -942,14 +964,32 @@ export class TrustBundleReconciler {
       return result(make("Conflict"));
     }
     const stored = cm === undefined ? undefined : storedCrl(cm, id, format);
+    const supersedeKey =
+      bundle.metadata.uid === undefined
+        ? undefined
+        : `${bundle.metadata.uid}/${id}`;
     // A confirmed-absent ConfigMap is Missing. A copy that does not verify in
     // the current format may still verify in the other one (a format switch).
     const fromStored = (): TrustBundleCrlStatus => {
       if (cm === undefined) return make("Missing");
       const copy =
         stored ?? storedCrl(cm, id, format === "der" ? "pem" : "der");
-      return copy === undefined
-        ? make("Missing")
+      if (copy === undefined) return make("Missing");
+      // A newer verified CRL could not be mounted earlier: the copy stays Stale, without a
+      // `nextUpdate` that would refresh it to Current. After a restart the previous entry says so.
+      const prev = input.previous;
+      const superseding =
+        supersedeKey === undefined
+          ? undefined
+          : this.supersededBy.get(supersedeKey);
+      const knownSuperseded =
+        (superseding !== undefined && superseding !== copy.sha256) ||
+        (prev !== undefined &&
+          prev.state === "Stale" &&
+          prev.nextUpdate === undefined &&
+          prev.number === copy.number);
+      return knownSuperseded
+        ? { ...make("Stale"), number: copy.number, thisUpdate: copy.thisUpdate }
         : make(freshness(copy.nextUpdate, now), copy);
     };
     if (input.skipFetch === true) {
@@ -1019,18 +1059,46 @@ export class TrustBundleReconciler {
         : { data: { "crl.pem": derToPem(der) } },
     );
     if (configMapPayloadBytes(desired) > CONFIGMAP_MAX_BYTES) {
+      // A newer CRL that cannot be mounted still supersedes the mounted copy.
+      if (supersedeKey !== undefined && stored !== undefined && stored.sha256 !== sha256) {
+        this.supersededBy.set(supersedeKey, sha256);
+      }
       return result(make("Rejected", stored));
     }
     if (cm !== undefined && this.upToDate(cm, desired, bundle)) {
+      if (supersedeKey !== undefined) this.supersededBy.delete(supersedeKey);
       return result(make(freshness(meta.nextUpdate, now), meta));
     }
     const written = await this.put(key, namespace, name, cm, desired);
     if (written === "written") {
+      if (supersedeKey !== undefined) this.supersededBy.delete(supersedeKey);
       log(`${key} crl ${id} number=${meta.number}`);
       return result(make(freshness(meta.nextUpdate, now), meta));
     }
     if (written === "rejected") {
+      // A newer CRL that cannot be mounted still supersedes the mounted copy.
+      if (supersedeKey !== undefined && stored !== undefined && stored.sha256 !== sha256) {
+        this.supersededBy.set(supersedeKey, sha256);
+      }
       return result(make("Rejected", stored));
+    }
+    // A verified newer CRL could not be mounted. The old bytes stay, but the mounted copy is known to
+    // be superseded, so it is not Current. `nextUpdate` is left out so the status refresh keeps it
+    // Stale until a write succeeds.
+    const mounted =
+      cm === undefined
+        ? undefined
+        : (stored ?? storedCrl(cm, id, format === "der" ? "pem" : "der"));
+    if (mounted !== undefined && mounted.sha256 !== sha256) {
+      if (supersedeKey !== undefined) this.supersededBy.set(supersedeKey, sha256);
+      return result(
+        {
+          ...make("Stale"),
+          number: mounted.number,
+          thisUpdate: mounted.thisUpdate,
+        },
+        { partial: true },
+      );
     }
     return result(fromStored(), { partial: true });
   }

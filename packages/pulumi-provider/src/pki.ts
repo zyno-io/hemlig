@@ -1233,6 +1233,12 @@ export class HemligIssuanceGrantProvider
           `Grant ${id} was deleted outside Pulumi: run pulumi refresh.`,
         );
       }
+      // A different uid means the tracked generation was replaced.
+      if (olds.uid !== undefined && fresh.uid !== olds.uid) {
+        throw plainError(
+          `Grant ${id} was deleted and recreated outside Pulumi; run pulumi refresh.`,
+        );
+      }
       // Never silently undo an out-of-band emergency disable or migration.
       if (
         fresh.status === "DISABLED" &&
@@ -1299,6 +1305,10 @@ export class HemligIssuanceGrantProvider
     if (server.status === "DELETED") {
       return {};
     }
+    // The tracked generation is gone if the name now holds a different grant.
+    if (props.uid !== undefined && server.uid !== props.uid) {
+      return {};
+    }
 
     // On refresh the state's status and caId stay put, so update's drift
     // guard still sees an out-of-band disable or migration.
@@ -1358,6 +1368,10 @@ export class HemligIssuanceGrantProvider
         throw failure(`Reading grant ${id} failed`, error);
       }
       if (fresh.status === "DELETED") {
+        return;
+      }
+      // A different uid means the tracked generation is gone; never delete its replacement.
+      if (props.uid !== undefined && fresh.uid !== props.uid) {
         return;
       }
       const version = fresh.version;

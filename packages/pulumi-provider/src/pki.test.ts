@@ -1303,3 +1303,52 @@ test("CA: check allows ROOT and INTERMEDIATE without validitySeconds", async () 
   );
   assert.equal(failedProperties(result).includes("validitySeconds"), false);
 });
+
+test("grant: a 412 then a re-read showing a different uid makes no further DELETE", async () => {
+  let gets = 0;
+  const { client, calls } = fake<HemligGrantClient>({
+    getAdminIssuanceGrant: () =>
+      grantDetail({ uid: (gets += 1) === 1 ? "uid-1" : "uid-2" }),
+    deleteIssuanceGrant: () => {
+      throw http(412, "precondition_failed");
+    },
+  });
+  await grantProvider(client).delete("payments-prod/web", grantState());
+  assert.equal(callsOf(calls, "deleteIssuanceGrant").length, 1);
+
+  const replaced = fake<HemligGrantClient>({
+    getAdminIssuanceGrant: () => grantDetail({ uid: "uid-2" }),
+  });
+  await grantProvider(replaced.client).delete("payments-prod/web", grantState());
+  assert.equal(callsOf(replaced.calls, "deleteIssuanceGrant").length, 0);
+});
+
+test("grant: a 412 then a re-read showing a different uid makes no further PUT", async () => {
+  let gets = 0;
+  const { client, calls } = fake<HemligGrantClient>({
+    getAdminIssuanceGrant: () =>
+      grantDetail({ uid: (gets += 1) === 1 ? "uid-1" : "uid-2" }),
+    updateIssuanceGrant: () => {
+      throw http(412, "precondition_failed");
+    },
+  });
+  await assert.rejects(
+    grantProvider(client).update(
+      "payments-prod/web",
+      grantState(),
+      grantInputs({ displayName: "Web" }),
+    ),
+    /deleted and recreated outside Pulumi; run pulumi refresh/,
+  );
+  assert.equal(callsOf(calls, "updateIssuanceGrant").length, 1);
+});
+
+test("grant: read of a replacement grant (different uid) returns {}", async () => {
+  const { client } = fake<HemligGrantClient>({
+    getAdminIssuanceGrant: () => grantDetail({ uid: "uid-2" }),
+  });
+  assert.deepEqual(
+    await grantProvider(client).read("payments-prod/web", grantState()),
+    {},
+  );
+});
