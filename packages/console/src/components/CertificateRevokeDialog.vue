@@ -68,6 +68,12 @@ const submit = async (): Promise<void> => {
     emit("revoked", result);
   }
 };
+const retry = async (): Promise<void> => {
+  const result = await mutation.retry();
+  if (result !== undefined) {
+    emit("revoked", result);
+  }
+};
 </script>
 
 <template>
@@ -110,7 +116,7 @@ const submit = async (): Promise<void> => {
             :can-retry="mutation.canRetry.value"
             family="pki"
             intent="revoke this certificate"
-            @retry="mutation.retry()"
+            @retry="retry"
             @reload="emit('close')"
           />
         </div>

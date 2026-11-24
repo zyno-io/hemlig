@@ -165,6 +165,58 @@ describe("IssuanceGrantEditor edit mode", () => {
     wrapper.unmount();
   });
 
+  it("adopts the returned version when a retry after an ambiguous save failure succeeds", async () => {
+    let calls = 0;
+    const api = fake({
+      updateIssuanceGrant: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new ApiError(503, "service_unavailable", "down");
+        }
+        return baseGrant({ version: `v${calls}` });
+      }),
+    });
+    const { wrapper } = await mountEditor(api);
+    await wrapper.get('[data-testid="grant-display-name"]').setValue("renamed");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+    const retry = wrapper.findAll("button").find((b) => b.text().includes("Retry with the same key"));
+    expect(retry).toBeDefined();
+    await retry?.trigger("click");
+    await flushPromises();
+    expect(api.updateIssuanceGrant).toHaveBeenCalledTimes(2);
+
+    await wrapper.get('[data-testid="grant-display-name"]').setValue("renamed again");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+    expect(api.updateIssuanceGrant).toHaveBeenCalledTimes(3);
+    expect(api.updateIssuanceGrant.mock.calls[2]?.[2]).toBe("v2");
+    wrapper.unmount();
+  });
+
+  it("exposes bulk revoke after a retried delete succeeds", async () => {
+    let calls = 0;
+    const api = fake({
+      deleteIssuanceGrant: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new ApiError(503, "service_unavailable", "down");
+        }
+        return baseGrant({ status: "DELETED" });
+      }),
+    });
+    const { wrapper } = await mountEditor(api);
+    await wrapper.get('[data-testid="grant-delete-open"]').trigger("click");
+    await wrapper.get('[data-testid="grant-delete-confirm"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="revoke-after-delete"]').exists()).toBe(false);
+    const retry = wrapper.findAll("button").find((b) => b.text().includes("Retry with the same key"));
+    await retry?.trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="revoke-after-delete"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it("shows the stale panel on 412, rebases the draft, and keeps another tab's change", async () => {
     const base = baseGrant();
     const fresh = baseGrant({
