@@ -1059,6 +1059,10 @@ export class TrustBundleReconciler {
         : { data: { "crl.pem": derToPem(der) } },
     );
     if (configMapPayloadBytes(desired) > CONFIGMAP_MAX_BYTES) {
+      // A newer CRL that cannot be mounted still supersedes the mounted copy.
+      if (supersedeKey !== undefined && stored !== undefined && stored.sha256 !== sha256) {
+        this.supersededBy.set(supersedeKey, sha256);
+      }
       return result(make("Rejected", stored));
     }
     if (cm !== undefined && this.upToDate(cm, desired, bundle)) {
@@ -1072,6 +1076,10 @@ export class TrustBundleReconciler {
       return result(make(freshness(meta.nextUpdate, now), meta));
     }
     if (written === "rejected") {
+      // A newer CRL that cannot be mounted still supersedes the mounted copy.
+      if (supersedeKey !== undefined && stored !== undefined && stored.sha256 !== sha256) {
+        this.supersededBy.set(supersedeKey, sha256);
+      }
       return result(make("Rejected", stored));
     }
     // A verified newer CRL could not be mounted. The old bytes stay, but the mounted copy is known to

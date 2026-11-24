@@ -15,11 +15,12 @@ const silentServer = async (): Promise<{
   });
   const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
+    // Only the first connection is the client's: a stray local probe must not resolve `closed`.
+    if (sockets.size === 0) socket.on("close", markClosed);
     sockets.add(socket);
     socket.on("error", () => {});
     // Read, so that the peer's close is observed.
     socket.resume();
-    socket.on("close", markClosed);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return {
@@ -48,8 +49,13 @@ test("timeoutMs destroys a stalled request and rejects with a transport error", 
       },
     );
     assert.ok(Date.now() - started < 5_000);
-    // The socket is closed, not left open behind the rejection.
-    await peer.closed;
+    // The socket is closed, not left open behind the rejection. Bounded, so `finally` always runs.
+    await Promise.race([
+      peer.closed,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("the client socket was not closed")), 5_000).unref(),
+      ),
+    ]);
   } finally {
     peer.stop();
   }

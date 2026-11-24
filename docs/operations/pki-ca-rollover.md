@@ -14,7 +14,9 @@ Retiring, draining or destroying a CA's key does not stop a copied key from sign
 - Hemlig parent (`INTERMEDIATE` under a Hemlig root): `hemlig pki ca revoke prod-issuing-1 --reason caCompromise`. See [A Hemlig root and intermediates](../guide/pki.md#a-hemlig-root-and-intermediates).
 - External offline root: revoke the intermediate in the root's CRL and upload that CRL. See [Revoke an intermediate](pki-offline-root.md#revoke-an-intermediate) and [If the intermediate's key is compromised](../guide/pki.md#if-the-intermediate-s-key-is-compromised).
 
-Then check that a relying party rejects at depth 1: see [Verify the revocation](#verify-the-revocation). Then do steps 1 to 6 below to move traffic to a healthy CA, and skip [Retire the old CA](#retire-the-old-ca): retiring needs an ACTIVE CA, and a revoked CA never drains. Keep the revoked CA in every bundle's `spec.caIds`, so its anchor and CRL stay mounted and chains it issued keep failing on the CRL.
+Then check that a relying party rejects at depth 1: see [Verify the revocation](#verify-the-revocation).
+
+Then move traffic to a healthy CA. Under an external root, do steps 1 to 6 below. Under a Hemlig parent, create the successor as in [Hemlig hierarchy](#hemlig-hierarchy), then do steps 3 to 6. In both cases skip [Retire the old CA](#retire-the-old-ca): retiring needs an ACTIVE CA, and a revoked CA never drains. Keep the revoked CA in every bundle's `spec.caIds`, so its anchor and CRL stay mounted and chains it issued keep failing on the CRL.
 :::
 
 **Role:** administrator with the PKI CA role and the PKI operator role (to migrate grants), and the root key holder. **Before you start:** an active `prod-issuing-1` and the [offline root recipe](pki-offline-root.md). Allow about an hour.

@@ -103,7 +103,7 @@ cat /trust/crls/*.pem > /run/crl.pem.tmp && mv /run/crl.pem.tmp /run/crl.pem
 
 ```sh
 # sidecar: compares a checksum, rebuilds atomically and reloads
-last="$(cat /trust/crls/*.pem | sha256sum)"
+last="$(sha256sum < /run/crl.pem)"   # what the init step actually built
 while true; do
   sum=$(cat /trust/crls/*.pem | sha256sum)
   if [ "$sum" != "$last" ]; then

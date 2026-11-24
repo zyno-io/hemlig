@@ -29,11 +29,12 @@ test("a stalled PKI call is aborted at the transport, closing its socket", { tim
   // Accepts the connection and never answers.
   const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
+    // Only the first connection is the client's: a stray local probe must not resolve `closed`.
+    if (sockets.size === 0) socket.on("close", markClosed);
     sockets.add(socket);
     socket.on("error", () => {});
     // Read, so that the peer's close is observed.
     socket.resume();
-    socket.on("close", markClosed);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
@@ -45,7 +46,13 @@ test("a stalled PKI call is aborted at the transport, closing its socket", { tim
       assert.equal(error.code, "ETIMEDOUT");
       return true;
     });
-    await closed;
+    // Bounded, so `finally` always runs and the listener cannot keep the process alive.
+    await Promise.race([
+      closed,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("the client socket was not closed")), 5_000).unref(),
+      ),
+    ]);
   } finally {
     server.close();
     for (const socket of sockets) socket.destroy();

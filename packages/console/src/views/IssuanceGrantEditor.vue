@@ -408,8 +408,9 @@ const applySaved = async (
   // The response is the fresh grant; storing it avoids another audited read.
   queryClient.setQueryData(pkiKeys.grant(props.consumerId, result.name), result);
   await invalidateGrantLists();
+  // The saved policy is the base a later 412 rebase merges against, in both modes.
+  strictPolicy.value = editableGrant(result);
   if (!editing) {
-    strictPolicy.value = editableGrant(result);
     saveMutation.reset();
     await router.replace({
       name: "consumer-pki-grant",
