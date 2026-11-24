@@ -285,6 +285,7 @@ export default withMermaid(
                 link: "/contributing/docs-site",
               },
               { text: "Releasing", link: "/contributing/releasing" },
+              { text: "k3s testbed", link: "/contributing/testbed" },
             ],
           },
         ],

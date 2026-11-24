@@ -17,6 +17,7 @@ Run these ordered gates in an isolated AWS account to prove what only a real dep
 - An identity-provider registration that can issue an **access token** (not just an ID token) with your audience and `oidcAdminScope`. See [Connect your identity provider](../guide/identity-provider.md).
 - An ACM certificate in `us-east-1` covering the console host. See [Console](../guide/console.md#the-certificate).
 - About two hours, plus the retention wait at [teardown](#teardown).
+- For the Kubernetes gates (PKI-5, PKI-6, PKI-8), a cluster. The [k3s testbed](../contributing/testbed.md) can provide one.
 
 Gates are ordered so failures stop you at the cheapest point. Gate 1 breaks every later gate, so do not skip ahead.
 

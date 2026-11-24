@@ -14,3 +14,7 @@ hemlig-kubernetes-controller-plan.png
 docs/.vitepress/cache
 docs/.vitepress/dist
 .watchman-cookie-*
+
+# Local k3s testbed inventory and fetched kubeconfigs
+testbed/inventory.yml
+testbed/.kube/

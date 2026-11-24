@@ -1,0 +1,6 @@
+# Managed by Ansible (testbed/k3s/up.yml). Local edits are overwritten.
+write-kubeconfig-mode: "0600"
+tls-san:
+  - "{{ testbed_api_address }}"
+disable:
+  - traefik

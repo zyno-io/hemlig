@@ -1,0 +1,24 @@
+# Copy to inventory.yml (gitignored) and edit. See testbed/README.md.
+all:
+  children:
+    testbed:
+      hosts:
+        k3s-testbed:
+          ansible_host: 192.0.2.10 # documentation-range placeholder
+          ansible_user: debian # must be able to sudo
+          # ansible_port: 22
+          # ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+
+          # Optional overrides (defaults are in k3s/up.yml):
+          # k3s_version: v1.36.6+k3s1
+          # cert_manager_version: v1.20.5
+          # Checksum of the cert-manager manifest for cert_manager_version.
+          # The default matches the default version. Set it to the new
+          # sha256 when you change the version, or to "" to skip verification.
+          # cert_manager_manifest_sha256: "<sha256 hex digest>"
+          # Address written into the API certificate (tls-san) and the
+          # fetched kubeconfig. Defaults to ansible_host.
+          # testbed_api_address: k3s-testbed.example.com
+          # Local manifest files applied after cert-manager.
+          # testbed_extra_manifests:
+          #   - /path/to/manifest.yaml

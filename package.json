@@ -67,7 +67,9 @@
     "ministack:verify": "yarn build && node dist/scripts/verify-ministack.js",
     "test": "jest --runInBand",
     "test:all": "yarn build:all && yarn workspaces foreach -A --topological run test",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "testbed:down": "cd testbed && ansible-playbook k3s/down.yml -e confirm=yes",
+    "testbed:up": "cd testbed && ansible-playbook k3s/up.yml"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.152",
