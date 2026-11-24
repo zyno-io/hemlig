@@ -770,8 +770,13 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
       { type: finalViolation.type, value: finalViolation.value },
     );
   }
-  if (cnCanonical && sans.dns.length === 0) {
-    // OpenSSL applies DNS name constraints to the subject CN when there is no dNSName SAN.
+  // OpenSSL applies DNS name constraints to a subject CN when there is no dNSName SAN, skipping names with ":".
+  // A DNS CN is always in `sans.dns` by this step, so only an IPv4 CN can reach this check.
+  if (
+    cnCanonical?.type === "ip" &&
+    !cnCanonical.value.includes(":") &&
+    sans.dns.length === 0
+  ) {
     const cnCheck = checkNameConstraints(
       "dns",
       cnCanonical.value,

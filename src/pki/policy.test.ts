@@ -790,6 +790,22 @@ describe("CA name constraints", () => {
       expect(outcome.ok).toBe(true);
     });
 
+    it("does not apply to an IPv6 common name, which OpenSSL skips", () => {
+      const outcome = run(
+        { sans: { dns: [], ip: ["fd00::1"], uri: [] }, commonName: "fd00::1" },
+        (() => {
+          const grant = baseGrant();
+          return { ...grant, names: { ...grant.names, ip: { allow: ["fd00::/8"] } } };
+        })(),
+        {
+          nameConstraints: {
+            permitted: { dns: ["example.com"], ip: ["fd00::/8"] },
+          },
+        },
+      );
+      expect(outcome.ok).toBe(true);
+    });
+
     it("passes with no common name", () => {
       expect(
         run({ sans: ipOnly }, baseGrant(), { nameConstraints: constraints }).ok,

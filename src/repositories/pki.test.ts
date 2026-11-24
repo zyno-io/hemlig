@@ -1398,7 +1398,9 @@ describe("Phase 4 repository reads and writes", () => {
       });
       expect(page.pointers).toHaveLength(10);
       expect(fake.calls.length).toBeLessThanOrEqual(60);
-      expect(fake.calls.every((call) => call.Limit === undefined)).toBe(true);
+      // The first trip keeps Limit (cheap when most rows match); later trips read whole pages.
+      expect(fake.calls[0]!.Limit).toBe(100);
+      expect(fake.calls.slice(1).every((call) => call.Limit === undefined)).toBe(true);
     });
 
     it("resumes a truncated page with no skips or duplicates", async () => {
@@ -1445,7 +1447,7 @@ describe("Phase 4 repository reads and writes", () => {
         pkiDirectoryPk: rows[1]!.pkiDirectoryPk,
         pkiDirectorySk: rows[1]!.pkiDirectorySk,
       });
-      expect(inputs(send)[0]!.Limit).toBeUndefined();
+      expect(inputs(send)[0]!.Limit).toBe(2);
     });
 
     it("stops before another round trip when shouldStop is true, returning the cursor", async () => {

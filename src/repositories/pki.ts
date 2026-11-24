@@ -3882,12 +3882,13 @@ export class PkiRepository {
   }> {
     const found: Record<string, unknown>[] = [];
     let start = options.start;
-    let firstTrip = true;
+    let trips = 0;
     for (;;) {
-      if (!firstTrip && start !== undefined && options.shouldStop?.() === true) {
+      if (trips > 0 && start !== undefined && options.shouldStop?.() === true) {
         return { items: found, lastEvaluatedKey: start };
       }
-      firstTrip = false;
+      const firstTrip = trips === 0;
+      trips += 1;
       const remaining = options.limit - found.length;
       const names = { ...options.key.names, ...options.filter?.names };
       let response;
@@ -3912,8 +3913,9 @@ export class PkiRepository {
             ...(options.consistent === true ? { ConsistentRead: true } : {}),
             ...(options.forward === false ? { ScanIndexForward: false } : {}),
             // DynamoDB applies Limit before FilterExpression, so a filtered read would crawl 100 items per round trip.
-            // Without Limit it evaluates whole 1 MB pages; the surplus is trimmed below.
-            ...(options.filter === undefined ? { Limit: remaining } : {}),
+            // The first trip keeps Limit (cheap when most rows match); later trips evaluate whole 1 MB pages and the
+            // surplus is trimmed below.
+            ...(options.filter === undefined || firstTrip ? { Limit: remaining } : {}),
             ...(start === undefined ? {} : { ExclusiveStartKey: start }),
           }),
         );
