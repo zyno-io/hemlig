@@ -373,11 +373,26 @@ const save = async (): Promise<void> => {
   if (editing && version.value === undefined) {
     return;
   }
-  const result = await saveMutation.submit(
-    editing
-      ? { body: draftToRequest(draft), version: version.value }
-      : { body: draftToCreateRequest(draft) },
+  await applySaved(
+    await saveMutation.submit(
+      editing
+        ? { body: draftToRequest(draft), version: version.value }
+        : { body: draftToCreateRequest(draft) },
+    ),
+    editing,
   );
+};
+
+// A retry replays the same key, so its success must be handled exactly like a
+// first-time success (adopting the returned version).
+const retrySave = async (): Promise<void> => {
+  await applySaved(await saveMutation.retry(), isEdit.value);
+};
+
+const applySaved = async (
+  result: PkiIssuanceGrant | undefined,
+  editing: boolean,
+): Promise<void> => {
   if (result === undefined) {
     return;
   }
@@ -484,7 +499,14 @@ const confirmDelete = async (): Promise<void> => {
     return;
   }
   confirmingDelete.value = false;
-  const result = await deleteMutation.submit(version.value);
+  await applyDeleted(await deleteMutation.submit(version.value));
+};
+
+const retryDelete = async (): Promise<void> => {
+  await applyDeleted(await deleteMutation.retry());
+};
+
+const applyDeleted = async (result: PkiIssuanceGrant | undefined): Promise<void> => {
   if (result !== undefined) {
     deletedGrant.value = result;
     await queryClient.invalidateQueries({ queryKey: ["pki", "consumer-grants", props.consumerId] });
@@ -560,7 +582,7 @@ const toggle = <T extends string>(values: T[], value: T): void => {
           :can-retry="deleteMutation.canRetry.value"
           family="pki"
           intent="delete this grant"
-          @retry="deleteMutation.retry()"
+          @retry="retryDelete"
           @reload="reloadDelete"
         />
 
@@ -827,7 +849,7 @@ const toggle = <T extends string>(values: T[], value: T): void => {
             :can-retry="saveMutation.canRetry.value"
             family="pki"
             intent="save this grant"
-            @retry="saveMutation.retry()"
+            @retry="retrySave"
             @reload="reloadStale"
           />
           <button

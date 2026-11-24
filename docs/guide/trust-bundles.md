@@ -73,6 +73,8 @@ volumes:
             items: [{ key: crl.der, path: crls/root.der }]
 ```
 
+A projection lists each ConfigMap by name. Adding a CA to `spec.caIds` creates its CRL ConfigMap, but running pods mount it only after you add it to the projection and roll the workload out. Check with `kubectl exec <pod> -- ls /trust/crls/`.
+
 Never use `subPath` for these files. Kubelet does not refresh a `subPath` mount, so a revocation would never arrive. Make the CRL sources `optional`, or update the mounts before you remove a CA from the bundle, because removing it deletes its CRL ConfigMap.
 
 ## Verify
@@ -90,11 +92,23 @@ Expected output: `leaf.pem: OK`. A revoked leaf prints `certificate revoked` at 
 
 ## PEM for Envoy and nginx
 
-Set `crlFormat: pem` and each CRL ConfigMap holds `crl.pem` in `data`, with `-----BEGIN X509 CRL-----` and 64-column lines. Envoy and nginx each read one CRL file, so concatenate the PEM files when the container starts:
+Set `crlFormat: pem` and each CRL ConfigMap holds `crl.pem` in `data`, with `-----BEGIN X509 CRL-----` and 64-column lines. Envoy and nginx each read one CRL file, so build a combined file, and rebuild it whenever the projection changes. Concatenating once at startup leaves the daemon on a stale snapshot, and a reload only rereads that stale file.
+
+Kubelet updates a projected volume through an atomic symlink swap of the directory, so watch the directory's content, not one file's modification time. A sidecar that compares a checksum, rebuilds atomically and reloads:
 
 ```sh
-cat /trust/crls/*.pem > /run/crl.pem
+last=""
+while true; do
+  sum=$(cat /trust/crls/*.pem | sha256sum)
+  if [ "$sum" != "$last" ]; then
+    cat /trust/crls/*.pem > /run/crl.pem.tmp && mv /run/crl.pem.tmp /run/crl.pem \
+      && nginx -s reload && last="$sum"
+  fi
+  sleep 30
+done
 ```
+
+The temporary file and `mv` keep a reader from ever seeing a partial file. The sidecar needs a shared process namespace or equivalent to signal the daemon. Envoy can instead watch the combined file through a filesystem SDS config.
 
 PEM is a third larger than DER, so it fits fewer entries in a 1 MiB ConfigMap, about 9,600 revoked certificates. A CRL that does not fit is `CrlRejected` and the previous copy stays mounted.
 
