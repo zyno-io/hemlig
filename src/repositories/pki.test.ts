@@ -1337,6 +1337,135 @@ describe("Phase 4 repository reads and writes", () => {
     });
   });
 
+  it("returns an empty page without querying when before <= after", async () => {
+    const send = jest.fn();
+    await expect(
+      setupPhase4(send).queryCertificatesPage("ca-prod-one", {
+        after: "2026-11-22T00:00:00.000Z",
+        before: "2026-11-21T00:00:00.000Z",
+        status: "ISSUED",
+        limit: 100,
+      }),
+    ).resolves.toEqual({ certificates: [] });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  describe("filtered reads against a Limit-then-filter stand-in", () => {
+    const pointer = (i: number, live: boolean) => {
+      const serial = i.toString(16).padStart(8, "0");
+      const issued = live ? "2026-11-22T00:00:00.000Z" : "2026-08-01T00:00:00.000Z";
+      return {
+        pk: "PKI_CONSUMER#payments-prod",
+        sk: `CERT#${issued}#ca-aaa#${serial}${live ? "" : ""}`,
+        caId: "ca-aaa",
+        serial,
+        notAfter: live ? "2026-12-22T00:00:00.000Z" : "2026-08-02T00:00:00.000Z",
+        issuedAt: issued,
+      };
+    };
+    // Applies Limit (when sent) before the filter, and caps a page at 1000 evaluated items to stand in for 1 MB.
+    const standIn = (items: Record<string, unknown>[]) => {
+      const calls: Record<string, any>[] = [];
+      const client = {
+        send: async (command: { input: Record<string, any> }) => {
+          const input = command.input;
+          calls.push(input);
+          const start = input.ExclusiveStartKey === undefined ? 0 : items.findIndex((item) => item.sk === input.ExclusiveStartKey.sk) + 1;
+          const evaluated = items.slice(start, start + Math.min(input.Limit ?? 1000, 1000));
+          const after = input.ExpressionAttributeValues[":notAfter"] as string;
+          const matched = evaluated.filter((item) => (item.notAfter as string) > after);
+          const last = start + evaluated.length - 1;
+          return {
+            Items: matched,
+            ...(last < items.length - 1 ? { LastEvaluatedKey: { pk: items[last]!.pk, sk: items[last]!.sk } } : {}),
+          };
+        },
+      };
+      return { calls, client };
+    };
+    const repo = (client: unknown) =>
+      new PkiRepository(client as never, { tableName: "t", directoryIndex: "pki-directory" } as never);
+    const now = "2026-11-23T00:00:00.000Z";
+
+    it("reaches 10 live pointers behind 50,000 expired ones in a few round trips", async () => {
+      const expired = Array.from({ length: 50_000 }, (_, i) => pointer(i + 16, false));
+      const live = Array.from({ length: 10 }, (_, i) => pointer(0xff000000 + i, true));
+      const fake = standIn([...expired, ...live]);
+      const page = await repo(fake.client).listConsumerPointersPage("payments-prod", {
+        notAfterAfter: now,
+        newestFirst: false,
+        limit: 100,
+      });
+      expect(page.pointers).toHaveLength(10);
+      expect(fake.calls.length).toBeLessThanOrEqual(60);
+      // The first trip keeps Limit (cheap when most rows match); later trips read whole pages.
+      expect(fake.calls[0]!.Limit).toBe(100);
+      expect(fake.calls.slice(1).every((call) => call.Limit === undefined)).toBe(true);
+    });
+
+    it("resumes a truncated page with no skips or duplicates", async () => {
+      const items = Array.from({ length: 25 }, (_, i) => pointer(i + 16, true));
+      const fake = standIn(items);
+      const seen: string[] = [];
+      let start: Record<string, unknown> | undefined;
+      do {
+        const page = await repo(fake.client).listConsumerPointersPage("payments-prod", {
+          notAfterAfter: now,
+          newestFirst: false,
+          limit: 10,
+          ...(start === undefined ? {} : { start }),
+        });
+        expect(page.pointers.length).toBeLessThanOrEqual(10);
+        seen.push(...page.pointers.map((p) => p.serial));
+        start = page.lastEvaluatedKey;
+      } while (start !== undefined);
+      expect(seen).toEqual(items.map((item) => item.serial));
+    });
+
+    it("includes the index keys in a truncated cursor on an index query", async () => {
+      const rows = Array.from({ length: 5 }, (_, i) => ({
+        pk: `PKI_CERT#ca-prod-one#0${i}`,
+        sk: "PROFILE",
+        pkiDirectoryPk: "PKI_CERTS#ca-prod-one",
+        pkiDirectorySk: `2026-12-0${i + 1}T00:00:00.000Z#0${i}`,
+        status: "ISSUED",
+      }));
+      const send = jest.fn().mockResolvedValue({ Items: rows });
+      const page = await (
+        setupPhase4(send) as unknown as {
+          queryLoop: (o: unknown) => Promise<{ lastEvaluatedKey?: unknown }>;
+        }
+      ).queryLoop({
+        index: "pki-directory",
+        key: { expression: "#pk = :pk", names: { "#pk": "pkiDirectoryPk" }, values: { ":pk": "x" } },
+        filter: { expression: "#status = :s", names: { "#status": "status" }, values: { ":s": "ISSUED" } },
+        limit: 2,
+      });
+      expect(page.lastEvaluatedKey).toEqual({
+        pk: rows[1]!.pk,
+        sk: "PROFILE",
+        pkiDirectoryPk: rows[1]!.pkiDirectoryPk,
+        pkiDirectorySk: rows[1]!.pkiDirectorySk,
+      });
+      expect(inputs(send)[0]!.Limit).toBe(2);
+    });
+
+    it("stops before another round trip when shouldStop is true, returning the cursor", async () => {
+      const expired = Array.from({ length: 5_000 }, (_, i) => pointer(i + 16, false));
+      const fake = standIn(expired);
+      let trips = 0;
+      const page = await repo(fake.client).listConsumerPointersPage("payments-prod", {
+        notAfterAfter: now,
+        newestFirst: false,
+        limit: 100,
+        shouldStop: () => (trips += 1) > 2,
+      });
+      expect(fake.calls).toHaveLength(3);
+      expect(page.pointers).toEqual([]);
+      expect(page.lastEvaluatedKey).toBeDefined();
+    });
+  });
+
   it("lists consumer pointers newest first with its filters", async () => {
     const send = jest.fn().mockResolvedValue({ Items: [] });
     await setupPhase4(send).listConsumerPointersPage("payments", {

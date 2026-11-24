@@ -766,6 +766,62 @@ describe("CA name constraints", () => {
     });
   });
 
+  describe("an IPv4 common name", () => {
+    const ipOnly = { dns: [], ip: ["10.20.0.7"], uri: [] };
+
+    it("is denied with no DNS SAN under a DNS-constrained CA", () => {
+      const outcome = run({ sans: ipOnly, commonName: "10.20.0.7" }, baseGrant(), {
+        nameConstraints: constraints,
+      });
+      expect(denial(outcome)).toMatchObject({
+        reason: "name_constraint_violation",
+      });
+    });
+
+    it("passes when a permitted DNS SAN is present", () => {
+      const outcome = run(
+        {
+          sans: { dns: ["api.payments.example.com"], ip: ["10.20.0.7"], uri: [] },
+          commonName: "10.20.0.7",
+        },
+        baseGrant(),
+        { nameConstraints: { permitted: { dns: ["payments.example.com"] } } },
+      );
+      expect(outcome.ok).toBe(true);
+    });
+
+    it("does not apply to an IPv6 common name, which OpenSSL skips", () => {
+      const outcome = run(
+        { sans: { dns: [], ip: ["fd00::1"], uri: [] }, commonName: "fd00::1" },
+        (() => {
+          const grant = baseGrant();
+          return { ...grant, names: { ...grant.names, ip: { allow: ["fd00::/8"] } } };
+        })(),
+        {
+          nameConstraints: {
+            permitted: { dns: ["example.com"], ip: ["fd00::/8"] },
+          },
+        },
+      );
+      expect(outcome.ok).toBe(true);
+    });
+
+    it("passes with no common name", () => {
+      expect(
+        run({ sans: ipOnly }, baseGrant(), { nameConstraints: constraints }).ok,
+      ).toBe(true);
+    });
+
+    it("passes under a CA with no DNS constraints", () => {
+      expect(
+        run({ sans: ipOnly, commonName: "10.20.0.7" }, baseGrant(), {
+          nameConstraints: { permitted: { ip: ["10.0.0.0/8"] } },
+        }).ok,
+      ).toBe(true);
+      expect(run({ sans: ipOnly, commonName: "10.20.0.7" }).ok).toBe(true);
+    });
+  });
+
   it("passes names within the constraints", () => {
     expect(
       plan(run({}, baseGrant(), { nameConstraints: constraints })).sans.dns,

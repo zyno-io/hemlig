@@ -770,6 +770,28 @@ export const evaluateIssuance = (input: PolicyInput): PolicyOutcome => {
       { type: finalViolation.type, value: finalViolation.value },
     );
   }
+  // OpenSSL applies DNS name constraints to a subject CN when there is no dNSName SAN, skipping names with ":".
+  // A DNS CN is always in `sans.dns` by this step, so only an IPv4 CN can reach this check.
+  if (
+    cnCanonical?.type === "ip" &&
+    !cnCanonical.value.includes(":") &&
+    sans.dns.length === 0
+  ) {
+    const cnCheck = checkNameConstraints(
+      "dns",
+      cnCanonical.value,
+      ca.nameConstraints,
+    );
+    if (!cnCheck.ok) {
+      return deny(
+        10,
+        "final-name-check",
+        "name_constraint_violation",
+        cnCheck.detail,
+        { type: "commonName", value: cnCanonical.value },
+      );
+    }
+  }
   const total = sans.dns.length + sans.ip.length + sans.uri.length;
   const limit = Math.min(compiled?.maxSans ?? MAX_SANS, MAX_SANS);
   if (total > limit) {
