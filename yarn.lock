@@ -4386,6 +4386,9 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@zyno-io/hemlig-cli@workspace:packages/cli"
   dependencies:
+    "@peculiar/asn1-csr": "npm:2.11.1"
+    "@peculiar/asn1-schema": "npm:2.11.1"
+    "@peculiar/asn1-x509": "npm:2.11.1"
     "@types/node": "npm:^24.0.0"
     "@zyno-io/hemlig-client": "workspace:*"
     typescript: "npm:^5.8.3"
