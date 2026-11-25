@@ -406,7 +406,7 @@ Run after PKI-4, on Kind or EKS, with `acc-root` from PKI-2. This gate is manual
 
 Install cert-manager with Helm or the official release manifest (both include the CRDs), then the controller chart from this release with default approval (`certManager.approval.grantDefaultApprover=true`). Use a consumer with a PKI-only AgentGrant, in namespace `pki5`.
 
-This gate and PKI-6 and PKI-7 involve two consumers. The `HemligIssuer` grants (`acc-k8s`, `acc-h1`, `acc-h2`) belong to the **Kubernetes agent consumer** that the `HemligConsumer` (`acc-consumer`) created. Its client identity is in the `HemligConsumer`'s identity Secret (`tls.crt`, `tls.key`). 
+This gate and PKI-6 and PKI-7 involve two consumers. The `HemligIssuer` grants (`acc-k8s`, `acc-h1`, `acc-h2`) belong to the **Kubernetes agent consumer** that the `HemligConsumer` (`acc-consumer`) created. Its client identity is in the `HemligConsumer`'s identity Secret (`tls.crt`, `tls.key`).
 
 The **direct consumer** from gate 6 and PKI-4 holds the `acc-web` grant, and `consumer.crt` and `consumer.key` are its certificate.
 
@@ -474,11 +474,13 @@ kubectl -n pki5 get certificaterequest -o json | jq '.items[] | select(.metadata
 | Encoding | `tls.crt` equals the decoded `status.certificate` of the latest-revision CertificateRequest, and `ca.crt` equals the decoded `status.ca` | The base64 encoding is wrong |
 | Server copy | The leaf block equals `hemlig pki cert get acc-issuing-1 $SERIAL --out`, and the intermediate block equals the CA certificate | The returned chain differs from what Hemlig stored |
 | Denied name | A Certificate for `api.not-granted.example.com` ends `Ready=False` with reason `Failed` and `name_not_permitted` in the message | A denial was retried or hidden |
-| Restart | With the controller scaled to 0 while the Certificate is applied, then scaled back to 1, the request becomes `Ready`, and `hemlig pki cert list --consumer "$AGENT_CONSUMER_ID"` shows one certificate for it. See the note below the table | The idempotency key was not reused |
+| Restart recovery | A Certificate applied while the controller is scaled to 0 becomes `Ready` after it scales back to 1, and `hemlig pki cert list --consumer "$AGENT_CONSUMER_ID"` shows exactly one certificate for its name. See the note below the table | It was issued twice, or never |
 | Approval off (optional) | With `grantDefaultApprover=false`, a request stays `Waiting for approval` until approved | The controller approved by itself |
 | CRDs | The API server accepts both new CRDs, including their CEL immutability rules, and rejects a change of `spec.consumerRef` | A CEL rule failed validation. This is the only gate that proves them |
 
-Issuance takes about a second, so `kubectl rollout restart` rarely lands mid-issuance. For the restart check, scale the controller down instead: `kubectl -n hemlig-system scale deploy/hemlig-controller --replicas=0`, apply a new Certificate (for example `restart`, with the `web` spec and `secretName: restart-tls`), then `--replicas=1`. Wait for `kubectl -n pki5 wait certificate/restart --for=condition=Ready`.
+Issuance takes about a second, so `kubectl rollout restart` rarely lands mid-issuance. For the restart check, scale the controller down instead with `kubectl -n hemlig-system scale deploy/hemlig-controller --replicas=0`.
+
+Apply a new Certificate, for example `restart` with the `web` spec but `secretName: restart-tls` and `commonName` and `dnsNames` set to `restart.pki5.acc.example.com`, so its certificate stands apart from `web`'s renewals. Then scale back with `--replicas=1` and run `kubectl -n pki5 wait certificate/restart --for=condition=Ready`.
 
 ## Gate PKI-6: mounted full-chain revocation
 
@@ -587,7 +589,7 @@ sleep 30; kubectl -n pki5 get hmltrustbundle foreign; kubectl -n pki5 get config
 
 ## Gate PKI-7: a Hemlig root and its intermediates
 
-Run after PKI-6 in the same cluster and namespace `pki5`, with `grant5.json` and `$AGENT_CONSUMER_ID` from PKI-5 and the chart still at `trustBundles.refreshIntervalMilliseconds=60000`. Every key is `WRAPPED` in real KMS. 
+Run after PKI-6 in the same cluster and namespace `pki5`, with `grant5.json` and `$AGENT_CONSUMER_ID` from PKI-5 and the chart still at `trustBundles.refreshIntervalMilliseconds=60000`. Every key is `WRAPPED` in real KMS.
 
 `issue7` authenticates as the agent consumer, because `acc-h1` and `acc-h2` are its grants. Extract its identity from the `HemligConsumer`'s identity Secret first (set `IDENTITY_SECRET` to the `spec.identity.secretName` of `acc-consumer`). This root is a throwaway: in production an external offline root is strongly recommended.
 

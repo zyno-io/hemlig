@@ -1475,7 +1475,7 @@ const captureStderr = (t: TestContext) =>
 
 test("an unexpected reconcile failure logs its name, message and cause code", async (t) => {
   const f = fixture(t);
-  const cause = Object.assign(new Error("getaddrinfo ENOTFOUND api.example"), {
+  const cause = Object.assign(new Error("lookup failed"), {
     code: "ENOTFOUND",
   });
   t.mock.method(HemligClient.prototype, "syncAgent", async () => {
@@ -1487,7 +1487,8 @@ test("an unexpected reconcile failure logs its name, message and cause code", as
   const line = lines.find((entry) => entry.includes("failed unexpectedly"));
   assert.ok(line, lines.join(""));
   assert.match(line, /TypeError: fetch failed/);
-  assert.match(line, /ENOTFOUND/);
+  assert.match(line, /cause: ENOTFOUND lookup failed/);
+  assert.equal(line.trimEnd().includes("\n"), false);
   assert.equal(
     (
       condition(f.consumer, "Ready") as { message?: string } | undefined

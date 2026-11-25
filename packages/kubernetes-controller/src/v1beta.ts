@@ -2248,18 +2248,28 @@ const describeUnexpected = (error: unknown): string => {
   const text = (value: unknown): string =>
     typeof value === "string" ? value : "";
   const parts: string[] = [];
+  const detailOf = (value: unknown): string => {
+    if (typeof value !== "object" || value === null) return "";
+    const { code, message } = value as { code?: unknown; message?: unknown };
+    return [text(code), text(message)].filter(Boolean).join(" ");
+  };
   if (error instanceof Error) {
-    parts.push(`${error.name}: ${error.message}`);
-    const cause = (error as { cause?: unknown }).cause;
-    if (typeof cause === "object" && cause !== null) {
-      const { code, message } = cause as { code?: unknown; message?: unknown };
-      const detail = [text(code), text(message)].filter(Boolean).join(" ");
-      if (detail !== "") parts.push(`cause: ${detail}`);
-    }
+    const code = text((error as { code?: unknown }).code);
+    parts.push(`${error.name}${code ? ` ${code}` : ""}: ${error.message}`);
+    // Node's happy-eyeballs connect raises an AggregateError with an empty
+    // message; the useful detail is on its first inner error.
+    const inner = (error as { errors?: unknown }).errors;
+    const first = detailOf(Array.isArray(inner) ? inner[0] : undefined);
+    if (first !== "") parts.push(`first: ${first}`);
+    const cause = detailOf((error as { cause?: unknown }).cause);
+    if (cause !== "") parts.push(`cause: ${cause}`);
   } else {
     parts.push(typeof error === "string" ? error : typeof error);
   }
-  const joined = parts.join(" (") + (parts.length > 1 ? ")" : "");
+  // One log line: Kubernetes ApiException messages span several lines.
+  const joined = (parts.join(" (") + ")".repeat(Math.max(0, parts.length - 1)))
+    .replace(/\s+/g, " ")
+    .trim();
   return joined.length > MAX_LOGGED_ERROR
     ? `${joined.slice(0, MAX_LOGGED_ERROR)}...`
     : joined;
