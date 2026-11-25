@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readTerminalLine, type TerminalInput } from "./tty";
 
 /** Same syntax screen the CLI applies to every bearer token; not verification. */
 export const JWT_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
@@ -495,16 +496,7 @@ export function parseLoginCode(value: string): { state: string; token: string } 
 }
 
 /** Input stream for the copy-the-code flow; process.stdin satisfies it. */
-export interface CodeInput extends AsyncIterable<string | Uint8Array> {
-  readonly isTTY?: boolean;
-  setRawMode?(mode: boolean): unknown;
-  pause?(): unknown;
-  resume?(): unknown;
-  /** Called when a read is abandoned (timeout) so the process can exit. */
-  destroy?(): unknown;
-}
-
-const BRACKETED_PASTE = ["\x1b[200~", "\x1b[201~"];
+export type CodeInput = TerminalInput;
 
 const cancelled = (): LoginError =>
   new LoginError("login_cancelled", "Login cancelled.");
@@ -520,66 +512,16 @@ export async function readCodeLine(
   input: CodeInput,
   signal?: AbortSignal,
 ): Promise<string> {
-  const raw = input.isTTY === true && typeof input.setRawMode === "function";
-  const iterator = input[Symbol.asyncIterator]();
-  const decoder = new TextDecoder();
-  // Rejects when the caller aborts (timeout), so a stalled stdin cannot outlive it.
-  const aborted = new Promise<never>((_, reject) => {
-    if (signal?.aborted) reject(signal.reason);
-    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+  const line = await readTerminalLine(input, {
+    maxBytes: MAX_LOGIN_CODE_BYTES,
+    cancelled,
+    tooLarge,
+    signal,
   });
-  aborted.catch(() => {});
-  let line = "";
-  let carry = "";
-  if (raw) input.setRawMode!(true);
   try {
-    for (;;) {
-      const next = await Promise.race([iterator.next(), aborted]);
-      if (next.done) {
-        if (raw && line === "") throw cancelled();
-        return line;
-      }
-      const chunk = next.value;
-      let text = carry + (typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true }));
-      carry = "";
-      if (!raw) {
-        const end = text.search(/[\r\n]/);
-        line += end < 0 ? text : text.slice(0, end);
-        if (line.length > MAX_LOGIN_CODE_BYTES) throw tooLarge();
-        if (end >= 0) return line;
-        continue;
-      }
-      for (const marker of BRACKETED_PASTE) text = text.split(marker).join("");
-      // Hold back a possible start of a marker split across chunks.
-      for (let n = Math.min(text.length, 5); n > 0; n--) {
-        const tail = text.slice(-n);
-        if (BRACKETED_PASTE.some((m) => m.startsWith(tail))) {
-          carry = tail;
-          text = text.slice(0, -n);
-          break;
-        }
-      }
-      for (const ch of text) {
-        const point = ch.codePointAt(0)!;
-        if (point === 0x03) throw cancelled();
-        if (point === 0x04) {
-          if (line === "") throw cancelled();
-        } else if (ch === "\r" || ch === "\n") {
-          return line;
-        } else if (point === 0x7f || point === 0x08) {
-          line = line.slice(0, -1);
-        } else if (point >= 0x20) {
-          line += ch;
-          if (line.length > MAX_LOGIN_CODE_BYTES) throw tooLarge();
-        }
-      }
-    }
+    return line.toString("utf8");
   } finally {
-    if (raw) input.setRawMode!(false);
-    input.pause?.();
-    void Promise.resolve(iterator.return?.()).catch(() => {});
-    // An abandoned read leaves the stream open; closing it lets the process exit.
-    if (signal?.aborted) input.destroy?.();
+    line.fill(0);
   }
 }
 

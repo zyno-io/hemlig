@@ -1,0 +1,88 @@
+import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import {
+  bitString, bool, extension, octetString, oid, seq, set, smallInt, tlv,
+} from "./ez-der";
+import { encodeSubject, parseCidr, type Subject } from "./ez-name";
+import { keyIdentifier, OID, toPem } from "./ez-x509";
+
+/** Test helpers: builds PKCS#10 requests like the server's Hemlig CSR, with switches to break them. Not used at runtime. */
+export interface TestCsrOptions {
+  readonly subject?: Subject;
+  readonly curve?: "P-256" | "P-384";
+  readonly rsaBits?: number;
+  readonly ed25519?: boolean;
+  readonly permitted?: { dns?: string[]; ip?: string[]; uri?: string[] };
+  readonly excluded?: { dns?: string[]; ip?: string[]; uri?: string[] };
+  readonly eku?: readonly string[];
+  /** `undefined` means 0; `null` omits pathLen. */
+  readonly pathLen?: number | null;
+  readonly omitSki?: boolean;
+  readonly omitKeyUsage?: boolean;
+  readonly extra?: readonly Buffer[];
+  readonly extraAttribute?: boolean;
+  readonly badSignature?: boolean;
+  readonly keyUsageNonCritical?: boolean;
+}
+
+export interface TestCsr {
+  readonly der: Buffer;
+  readonly pem: string;
+  readonly spkiDer: Buffer;
+  readonly subject: Subject;
+  readonly privateKey: KeyObject;
+}
+
+const subtrees = (group: { dns?: string[]; ip?: string[]; uri?: string[] }): Buffer[] => [
+  ...(group.dns ?? []).map((v) => seq(tlv(0x82, Buffer.from(v, "ascii")))),
+  ...(group.uri ?? []).map((v) => seq(tlv(0x86, Buffer.from(v, "ascii")))),
+  ...(group.ip ?? []).map((v) => {
+    const cidr = parseCidr(v)!;
+    return seq(tlv(0x87, Buffer.concat([cidr.address, cidr.mask])));
+  }),
+];
+
+export const makeTestCsr = (options: TestCsrOptions = {}): TestCsr => {
+  const subject = options.subject ?? { O: "Example Corp", CN: "Prod Issuing CA 1" };
+  const pair = options.ed25519
+    ? generateKeyPairSync("ed25519")
+    : options.rsaBits
+      ? generateKeyPairSync("rsa", { modulusLength: options.rsaBits })
+      : generateKeyPairSync("ec", { namedCurve: options.curve ?? "P-256" });
+  const spkiDer = pair.publicKey.export({ type: "spki", format: "der" });
+  const permitted = options.permitted === undefined ? [] : subtrees(options.permitted);
+  const excluded = options.excluded === undefined ? [] : subtrees(options.excluded);
+  const extensions = [
+    extension(OID.basicConstraints, true, seq(bool(true), ...(options.pathLen === null ? [] : [smallInt(options.pathLen ?? 0)]))),
+    ...(options.omitKeyUsage ? [] : [extension(OID.keyUsage, !options.keyUsageNonCritical, bitString(Buffer.from([0x06]), 1))]),
+    ...(permitted.length + excluded.length > 0
+      ? [extension(OID.nameConstraints, true, seq(...(permitted.length ? [tlv(0xa0, ...permitted)] : []), ...(excluded.length ? [tlv(0xa1, ...excluded)] : [])))]
+      : []),
+    ...(options.eku && options.eku.length > 0 ? [extension(OID.extendedKeyUsage, false, seq(...options.eku.map((e) => oid(e))))] : []),
+    ...(options.omitSki ? [] : [extension(OID.ski, false, octetString(keyIdentifier(spkiDer)))]),
+    ...(options.extra ?? []),
+  ];
+  const info = seq(
+    smallInt(0),
+    encodeSubject(subject),
+    spkiDer,
+    tlv(
+      0xa0,
+      seq(oid(OID.extensionRequest), set(seq(...extensions))),
+      ...(options.extraAttribute ? [seq(oid("1.2.840.113549.1.9.7"), set(tlv(0x0c, Buffer.alloc(2, 0x70))))] : []),
+    ),
+  );
+  const algorithm = options.ed25519
+    ? seq(oid(OID.ed25519))
+    : options.rsaBits
+      ? seq(oid(OID.sha256WithRsa), tlv(0x05))
+      : seq(oid(options.curve === "P-384" ? OID.ecdsaSha384 : OID.ecdsaSha256));
+  const signature = options.ed25519
+    ? sign(null, info, pair.privateKey)
+    : options.rsaBits
+      ? sign("sha256", info, pair.privateKey)
+      : sign(options.curve === "P-384" ? "sha384" : "sha256", info, { key: pair.privateKey, dsaEncoding: "der" });
+  if (options.badSignature) signature[signature.length - 1] = (signature[signature.length - 1] as number) ^ 0xff;
+  const der = seq(info, algorithm, bitString(signature));
+  return { der, pem: toPem(der, "CERTIFICATE REQUEST"), spkiDer, subject, privateKey: pair.privateKey };
+};
+

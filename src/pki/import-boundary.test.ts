@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 // Layer 5: src/pki must not import the identity-root, consumer or notification services.
 const forbidden = [
@@ -125,5 +125,52 @@ describe("PKI transitive import boundary", () => {
     "@aws-sdk/client-apigatewayv2",
   ])("never reaches %s", (target) => {
     expect([...packages]).not.toContain(target);
+  });
+});
+
+// Licensing: the MIT CLI (packages/cli) must never import the AGPL server in `src/` or the root `hemlig` package. The
+// server's tests may import the CLI library (MIT into AGPL), not the other way round.
+describe("the MIT CLI never imports the AGPL server", () => {
+  const cliRoot = resolve(__dirname, "..", "..", "packages", "cli", "src");
+  const cliFiles = readdirSync(cliRoot)
+    .filter((name) => name.endsWith(".ts"))
+    .map((name) => join(cliRoot, name));
+  const specifiers = cliFiles.flatMap((file) =>
+    specifiersOf(readFileSync(file, "utf8")).map((specifier) => ({ file, specifier })),
+  );
+
+  it("scans the CLI sources", () => {
+    expect(cliFiles.map((f) => f.slice(cliRoot.length + 1))).toEqual(
+      expect.arrayContaining(["pki.ts", "ez-x509.ts", "ez-state.ts", "tty.ts"]),
+    );
+  });
+
+  it("has no relative specifier that leaves packages/cli/src", () => {
+    const offenders = specifiers.filter(
+      ({ file, specifier }) =>
+        specifier.startsWith(".") &&
+        !resolve(dirname(file), specifier).startsWith(`${cliRoot}${sep}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("has no package specifier for the root `hemlig` package or its sources", () => {
+    const offenders = specifiers.filter(
+      ({ specifier }) =>
+        specifier === "hemlig" ||
+        specifier.startsWith("hemlig/") ||
+        /(^|\/)src\/(pki|services|handlers|domain)\b/.test(specifier),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps the EZ library free of the client package and of anything but node, @peculiar and itself", () => {
+    const ezLibrary = specifiers.filter(({ file }) => /[\\/](ez-[a-z0-9-]+|tty)\.ts$/.test(file) && !file.endsWith(".test.ts"));
+    expect(ezLibrary.length).toBeGreaterThan(20);
+    const offenders = ezLibrary.filter(
+      ({ specifier }) =>
+        !(specifier.startsWith("node:") || specifier.startsWith("./ez-") || specifier === "./tty" || /^@peculiar\/asn1-(schema|x509|csr)$/.test(specifier)),
+    );
+    expect(offenders).toEqual([]);
   });
 });
