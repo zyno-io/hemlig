@@ -181,8 +181,9 @@ export const acquireLock = async (directory: string, options: LockOptions): Prom
       await handle.close();
     }
   };
-  const locked = (holder: Partial<LockInfo>): EzError =>
-    new EzError(5, "state_locked", "Another hemlig pki ez command holds the lock on this directory.", { holder });
+  const guardPath = join(directory, GUARD_FILE);
+  const locked = (holder: Partial<LockInfo>, file = path): EzError =>
+    new EzError(5, "state_locked", `Another hemlig pki ez command holds the lock on this directory (${file}).`, { holder, lockFile: file });
   try {
     await create();
   } catch (error) {
@@ -195,13 +196,33 @@ export const acquireLock = async (directory: string, options: LockOptions): Prom
       typeof h.nonce === "string" &&
       !(options.isAlive ?? processAlive)(h.pid);
     if (!stale(holder)) throw locked(holder);
-    const guardPath = join(directory, GUARD_FILE);
+    const openGuard = async (): Promise<fs.FileHandle> => {
+      const handle = await fs.open(guardPath, "wx", 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(info));
+        await handle.sync();
+      } catch (writeError) {
+        await handle.close().catch(() => undefined);
+        await fs.unlink(guardPath).catch(() => undefined);
+        throw writeError;
+      }
+      return handle;
+    };
     let guard: fs.FileHandle;
     try {
-      guard = await fs.open(guardPath, "wx", 0o600);
+      guard = await openGuard();
     } catch (guardError) {
-      if ((guardError as NodeJS.ErrnoException).code === "EEXIST") throw locked(holder);
-      throw guardError;
+      if ((guardError as NodeJS.ErrnoException).code !== "EEXIST") throw guardError;
+      // A breaker that died holding the guard: the same stale rule applies to the guard itself.
+      const guardHolder = await readHolder(guardPath);
+      if (!stale(guardHolder) || (await readHolder(guardPath)).nonce !== guardHolder.nonce) throw locked(guardHolder, guardPath);
+      await fs.unlink(guardPath).catch(() => undefined);
+      try {
+        guard = await openGuard();
+      } catch (retryError) {
+        if ((retryError as NodeJS.ErrnoException).code === "EEXIST") throw locked(await readHolder(guardPath), guardPath);
+        throw retryError;
+      }
     }
     try {
       const again = await readHolder(path);

@@ -12,9 +12,10 @@ import { validateCsr, validateRootCertificate, type EzKeyAlgorithm } from "../..
 import { buildExternalIntermediateCsr } from "./asn1/csr";
 import { parseCertificate } from "./asn1/certificate";
 import { verifyActivationChain } from "./chain";
+import { ExternalCaService } from "./external-ca-service";
 import { verifyRootCrl } from "./crl-verify";
 import { buildCaSubject } from "./subject";
-import type { CaRecord, NameConstraintSet, PkiKeyAlgorithm } from "./types";
+import type { CaRecord, ExternalCaRecord, NameConstraintSet, PkiKeyAlgorithm } from "./types";
 
 const haveOpenssl = spawnSync("openssl", ["version"]).status === 0;
 if (!haveOpenssl) {
@@ -193,6 +194,86 @@ describe("EZ library against the server's validators", () => {
     expect(matches(viaFresh.root, viaFresh.rootSubject.key)).toBe(false);
     // (Driving CaService.activate and ExternalCaService.uploadCrl needs the full DynamoDB/KMS mock harness of
     // ca-service.test.ts; the matching above is the exact predicate at ca-service.ts:1121-1128.)
+  });
+});
+
+describe("ExternalCaService.uploadCrl with EZ-built root CRLs", () => {
+  const actor = { type: "human" as const, id: "admin-1" };
+  const idem = (n: number) => `idem-key-${String(n).padStart(4, "0")}`;
+
+  /** The in-file mock harness of external-ca-service.test.ts: record and repository mocks around the real service. */
+  const harness = (ext: ExternalCaRecord, cas: Record<string, CaRecord> = {}) => {
+    const pki = {
+      getExternalCa: jest.fn(async () => ext),
+      getCa: jest.fn(async (id: string) => cas[id]),
+      putHumanIdempotency: jest.fn(async () => "committed"),
+      revokeCaExternally: jest.fn(async () => "revoked"),
+      commitExternalCrl: jest.fn(async () => "committed"),
+    };
+    const service = new ExternalCaService({
+      pki,
+      repository: { getIdempotency: jest.fn(async () => undefined) },
+      objects: { putImmutableOrGet: jest.fn(async () => ({})) },
+      config: { pkiBucketName: "pki" },
+      now: () => new Date(),
+      cursors: { encode: jest.fn(), decode: jest.fn() },
+    } as never);
+    return { service, pki };
+  };
+
+  const build = async () => {
+    const { signer, root } = await newRoot("ECDSA_P384");
+    const ca = await hemligCsr("ECDSA_P256", { nameConstraints: nc, eku: EKU });
+    const [issued] = await signPrepared(signer, [prepareIntermediate(signer, root.certificate, validateCsr(ca.csrDer), { now: new Date() })] as const);
+    const t0 = new Date(Date.now() - 2 * 3_600_000);
+    const crlAt = async (number: number, entries: { serial: string }[] = []) =>
+      (await signPrepared(signer, [prepareCrl(signer, root.certificate, {
+        number, thisUpdate: new Date(t0.getTime() + number * 1000),
+        entries: entries.map((e) => ({ ...e, revokedAt: new Date(t0.getTime() + number * 1000), reason: "keyCompromise" as const })),
+      })] as const))[0];
+    const extId = `ext-${root.certificate.spkiSha256.slice(0, 40)}`;
+    const record = (crl?: { pem: string; der: Buffer; crl: { number?: bigint; thisUpdate: Date; nextUpdate?: Date; sha256: string } }): ExternalCaRecord =>
+      ({
+        extId, certificatePem: root.pem, fingerprint: root.certificate.fingerprint, spkiSha256: root.certificate.spkiSha256,
+        subjectDer: "", subjectAttributes: [], subjectKey: "k", subjectKeyIdentifier: root.certificate.subjectKeyIdentifier!.toString("hex"),
+        notAfter: root.certificate.notAfter.toISOString(), createdAt: "2026-01-01T00:00:00.000Z", dependents: new Set(["ca-listed"]),
+        environments: new Set(["prod"]), version: "pkv-1",
+        ...(crl === undefined ? {} : { crl: {
+          numberHex: crl.crl.number!.toString(16).padStart(40, "0"), thisUpdate: crl.crl.thisUpdate.toISOString(),
+          nextUpdate: crl.crl.nextUpdate!.toISOString(), sha256: crl.crl.sha256, objectKey: "k", uploadedAt: "2026-01-01T00:00:00.000Z", uploadedBy: actor,
+        } }),
+      }) as ExternalCaRecord;
+    const dependent = { caId: "ca-listed", status: "ACTIVE", serial: issued.certificate.serialHex, key: { state: "ACTIVE" }, parent: { type: "external", id: extId } } as unknown as CaRecord;
+    return { extId, crlAt, record, dependent, issued };
+  };
+
+  it("accepts #1, then #2; repeats of #2 are unchanged; #1 after #2 is crl_not_newer", async () => {
+    const { extId, crlAt, record } = await build();
+    const [c1, c2] = [await crlAt(1), await crlAt(2)];
+    const first = harness(record());
+    const r1 = await first.service.uploadCrl(actor, idem(1), extId, { crl: c1.pem });
+    expect(r1.body).toMatchObject({ changed: true, revokedCaIds: [] });
+    expect(first.pki.commitExternalCrl).toHaveBeenCalledTimes(1);
+
+    const second = harness(record(c1));
+    expect((await second.service.uploadCrl(actor, idem(2), extId, { crl: c2.pem })).body).toMatchObject({ changed: true });
+
+    const third = harness(record(c2));
+    const repeat = await third.service.uploadCrl(actor, idem(3), extId, { crl: c2.pem });
+    expect(repeat.body).toMatchObject({ changed: false, revokedCaIds: [] });
+    expect(third.pki.commitExternalCrl).not.toHaveBeenCalled();
+    await expect(third.service.uploadCrl(actor, idem(4), extId, { crl: c1.pem })).rejects.toMatchObject({ statusCode: 409, code: "crl_not_newer" });
+  });
+
+  it("a CRL #3 that lists the intermediate revokes its dependent CA", async () => {
+    const { extId, crlAt, record, dependent, issued } = await build();
+    const c2 = await crlAt(2);
+    const c3 = await crlAt(3, [{ serial: issued.certificate.serialHex }]);
+    const { service, pki } = harness(record(c2), { "ca-listed": dependent });
+    const result = await service.uploadCrl(actor, idem(5), extId, { crl: c3.pem });
+    expect(result.body).toMatchObject({ changed: true, revokedCaIds: ["ca-listed"] });
+    expect(pki.revokeCaExternally).toHaveBeenCalledTimes(1);
+    expect((pki.revokeCaExternally.mock.calls as unknown as unknown[][])[0]![1]).toMatchObject({ reason: "keyCompromise" });
   });
 });
 

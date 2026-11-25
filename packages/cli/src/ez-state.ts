@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { hostname as osHostname } from "node:os";
-import { isAbsolute, join, normalize, resolve } from "node:path";
+import { basename, isAbsolute, join, normalize, resolve } from "node:path";
 import { EzError } from "./ez-error";
 import {
   acquireLock,
@@ -50,6 +50,8 @@ export interface IssuedEntry {
   environment: string | null;
   adminOrigin: string | null;
   subjectDn: string;
+  /** Canonical name key of the subject (case and spaces folded), the unit of the same-subject rule. */
+  subjectKey: string;
   csrSha256: string | null;
   spkiSha256: string;
   certificateFile: string | null;
@@ -232,6 +234,7 @@ const stateSchema: Check = obj({
       environment: nullable(str),
       adminOrigin: nullable(str),
       subjectDn: str,
+      subjectKey: hex(64, 64),
       csrSha256: nullable(hex(64, 64)),
       spkiSha256: hex(64, 64),
       certificateFile: nullable(str),
@@ -323,6 +326,8 @@ export interface SignReservation {
   readonly environment: string | null;
   readonly adminOrigin: string | null;
   readonly subjectDn: string;
+  /** `csr.subject.key` from the validated CSR. */
+  readonly subjectKey: string;
   readonly csrSha256: string | null;
   readonly spkiSha256: string;
   readonly notBefore: Date;
@@ -532,6 +537,7 @@ export class EzStore {
   /** True when a new CRL is due: none yet, or fewer than `beforeDays` remain before nextUpdate. */
   public crlDue(beforeDays = EZ_DEFAULTS.crlRenewBeforeDays, now = this.now()): boolean {
     const current = this.#state.crl.current;
+    if (this.#state.revoked.some((r) => r.listedInCrl === null)) return true;
     return current === null || Date.parse(current.nextUpdate) - now.getTime() < beforeDays * DAY_MS;
   }
 
@@ -607,7 +613,7 @@ export class EzStore {
         throw new EzError(5, "state_conflict", "That serial was already used.", { reason: "serial_reused" });
       }
       const revokedSerials = new Set(this.#state.revoked.map((r) => r.serial));
-      const clash = live.find((e) => e.subjectDn === sign.subjectDn && e.spkiSha256 !== sign.spkiSha256 && !revokedSerials.has(e.serial) && e.caId !== sign.caId);
+      const clash = live.find((e) => e.subjectKey === sign.subjectKey && e.spkiSha256 !== sign.spkiSha256 && !revokedSerials.has(e.serial) && !(sign.caId !== null && e.caId === sign.caId));
       if (clash !== undefined) {
         throw new EzError(5, "issued_conflict", `A live certificate (serial ${clash.serial}) already carries that subject with a different key.`, { serial: clash.serial });
       }
@@ -643,6 +649,7 @@ export class EzStore {
           environment: s.environment,
           adminOrigin: s.adminOrigin,
           subjectDn: s.subjectDn,
+          subjectKey: s.subjectKey,
           csrSha256: s.csrSha256,
           spkiSha256: s.spkiSha256,
           certificateFile: null,
@@ -706,7 +713,8 @@ export class EzStore {
     return cert;
   }
 
-  public async markActivated(serial: string): Promise<void> {
+  public async markActivated(rawSerial: string): Promise<void> {
+    const serial = EzStore.canonicalSerial(rawSerial);
     const entry = this.#state.issued.find((e) => e.serial === serial);
     if (entry === undefined || (entry.status !== "signed" && entry.status !== "activated")) {
       throw new EzError(5, "state_conflict", "Only a signed certificate can be marked activated.", { reason: "not_signed" });
@@ -721,7 +729,8 @@ export class EzStore {
   }
 
   /** Marks a reservation that will never be signed (for example after the operator declined). */
-  public async abandon(serial: string): Promise<void> {
+  public async abandon(rawSerial: string): Promise<void> {
+    const serial = EzStore.canonicalSerial(rawSerial);
     const entry = this.#state.issued.find((e) => e.serial === serial);
     if (entry === undefined || entry.status !== "signing") return;
     await this.#persist((draft) => {
@@ -785,11 +794,26 @@ export class EzStore {
       : !crl.issuerDer.equals(root.subjectDer) || !verifyCrlSignature(crl, root.spkiDer) ? "crl_mismatch"
       : [...listed].some((s) => !revoked.has(s)) ? "crl_unknown_entry"
       : [...revoked].some((s) => !listed.has(s)) ? "crl_missing_revocation"
+      : this.#entriesDiffer(crl) ? "crl_entry_mismatch"
       : undefined;
     if (reason !== undefined) {
       throw new EzError(5, "state_conflict", `CRL ${number} is not the CRL that was reserved (${reason}).`, { reason });
     }
     return crl;
+  }
+
+  /** Each listed entry must carry the recorded reason (absent = unspecified), revocation date and invalidity date. */
+  #entriesDiffer(crl: ParsedCrl): boolean {
+    const wanted = new Map(this.revocationEntries().map((e) => [e.serial, e]));
+    return crl.entries.some((e) => {
+      const w = wanted.get(e.serial);
+      return (
+        w === undefined ||
+        (e.reason ?? "unspecified") !== (w.reason ?? "unspecified") ||
+        e.revokedAt.getTime() !== w.revokedAt.getTime() ||
+        e.invalidityDate?.getTime() !== w.invalidityDate?.getTime()
+      );
+    });
   }
 
   async #adoptCrl(number: number, file: string, crl: ParsedCrl): Promise<void> {
@@ -813,6 +837,11 @@ export class EzStore {
     let local: string | undefined;
     if (server.crl !== undefined && /^[0-9a-fA-F]{1,15}$/.test(server.crl.numberHex)) {
       const n = Number.parseInt(server.crl.numberHex, 16);
+      const currentNumber = this.#state.crl.current?.number ?? 0;
+      if (n > currentNumber && n <= this.#state.crl.lastNumber) {
+        // The server holds a CRL under a number this state allocated but never committed (burned): another signer made it.
+        throw new EzError(5, "state_forked", "The server holds a root CRL under a number this state allocated but never published: two copies of this root are signing.", { number: n });
+      }
       if (n >= 1 && n < this.#state.crl.lastNumber) {
         const bytes = await readIfExists(this.path(crlFileName(n)));
         if (bytes !== undefined) local = sha256Hex(fromPem(bytes.toString("utf8"), "X509 CRL"));
@@ -919,7 +948,16 @@ export class EzStore {
 
   /** With the lock held, no `.tmp` file in the root directory, `crls/` or `issued/` can be live: remove them. */
   async #sweepTemps(): Promise<void> {
-    for (const directory of [this.dir, this.path("crls"), this.path("issued")]) {
+    const esc = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const own = [this.stateFilePath, this.#state.crl.copyFile, this.#state.root.certificateFile, this.#state.key.file ?? ""]
+      .filter((p) => p !== "")
+      .map((p) => esc(basename(p)));
+    const targets: [string, RegExp][] = [
+      [this.dir, new RegExp(`^\\.(?:${own.join("|")})\\.[0-9a-f]{12}\\.tmp$`)],
+      [this.path("crls"), /^\.\d{6}\.crl\.pem\.[0-9a-f]{12}\.tmp$/],
+      [this.path("issued"), /^\.[0-9a-f]+\.pem\.[0-9a-f]{12}\.tmp$/],
+    ];
+    for (const [directory, pattern] of targets) {
       let names: string[];
       try {
         names = await fs.readdir(directory);
@@ -927,7 +965,7 @@ export class EzStore {
         continue;
       }
       for (const name of names) {
-        if (/^\..+\.[0-9a-f]{12}\.tmp$/.test(name)) await fs.unlink(join(directory, name)).catch(() => undefined);
+        if (pattern.test(name)) await fs.unlink(join(directory, name)).catch(() => undefined);
       }
     }
   }
@@ -1030,7 +1068,15 @@ export const compareWithServer = (state: Readonly<EzState>, server: ServerRootVi
   }
   if (server.crl.serials !== undefined) {
     const local = new Set(state.revoked.map((r) => r.serial));
-    const unknown = server.crl.serials.map((s) => s.toLowerCase().replace(/^(00)+(?=.)/, "")).filter((s) => !local.has(s));
+    const unknown = server.crl.serials
+      .map((s) => {
+        try {
+          return EzStore.canonicalSerial(s);
+        } catch {
+          throw invalidResponse("revoked serial");
+        }
+      })
+      .filter((s) => !local.has(s));
     if (unknown.length > 0) {
       throw new EzError(5, "state_behind_server", "The server's root CRL revokes serials this state does not know about.", { serials: unknown });
     }

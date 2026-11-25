@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { KeyObject } from "node:crypto";
+import { createHash, type KeyObject } from "node:crypto";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { EzError } from "./ez-error";
@@ -45,7 +45,7 @@ const tick = () => { clock = new Date(clock.getTime() + 60_000); };
 const crlFor = async (f: F, number: number, thisUpdate: Date, entries = f.store.revocationEntries()) =>
   (await signPrepared(f.signer, [prepareCrl(f.signer, f.store.rootCertificate, { number, thisUpdate, entries })] as const))[0];
 const reserve = (serial: string, caId: string, csr = validateCsr(makeTestCsr().der)) => ({
-  csr, sign: { serial, caId, environment: "prod", adminOrigin: null, subjectDn: `CN=${caId}`, csrSha256: csr.sha256, spkiSha256: csr.spkiSha256, notBefore: clock, notAfter: new Date(clock.getTime() + 400 * 86_400_000) },
+  csr, sign: { serial, caId, environment: "prod", adminOrigin: null, subjectDn: `CN=${caId}`, subjectKey: createHash("sha256").update(caId).digest("hex"), csrSha256: csr.sha256, spkiSha256: csr.spkiSha256, notBefore: clock, notAfter: new Date(clock.getTime() + 400 * 86_400_000) },
 });
 
 // -- 2: commitCrl must be exactly the reserved CRL ----------------------------------------------------------------------
@@ -179,6 +179,29 @@ test("begin refuses a serial that any entry (even abandoned) or a revocation alr
   }
 });
 
+test("same-subject rule uses canonical name keys, and only the same online CA is exempt (offline null/null is not)", async () => {
+  const f = await fixture("subjectkey");
+  try {
+    const csr = (s: { O: string; CN: string }) => validateCsr(makeTestCsr({ subject: s }).der);
+    const a = csr({ O: "Example Corp", CN: "Prod Issuing CA 1" });
+    const upper = csr({ O: "EXAMPLE CORP", CN: "PROD   ISSUING CA 1".replace("   ", " ") });
+    assert.equal(a.subject.key, upper.subject.key);
+    const res = (c: typeof a, serial: string, caId: string | null) => ({
+      serial, caId, environment: null, adminOrigin: null, subjectDn: "x", subjectKey: c.subject.key, csrSha256: c.sha256,
+      spkiSha256: c.spkiSha256, notBefore: clock, notAfter: new Date(clock.getTime() + 400 * 86_400_000),
+    });
+    await f.store.begin({ sign: res(a, "01aa", null) });
+    const [issued] = await signPrepared(f.signer, [prepareIntermediate(f.signer, f.store.rootCertificate, a, { now: clock, serial: Buffer.from([1, 0xaa]) })] as const);
+    await f.store.commitSigned("01aa", issued.der);
+    // Offline (null) against offline (null), a case variant of the subject, another key: refused.
+    await code(f.store.begin({ sign: res(upper, "02bb", null) }), "issued_conflict");
+    // An online CA with a case variant: refused too (the stored entry has no caId to exempt).
+    await code(f.store.begin({ sign: res(upper, "02bb", "ca-9") }), "issued_conflict");
+  } finally {
+    await done(f);
+  }
+});
+
 test("begin refuses a live certificate with the same subject and a different key, unless that one is revoked", async () => {
   const f = await fixture("subject");
   try {
@@ -187,9 +210,9 @@ test("begin refuses a live certificate with the same subject and a different key
     const [issued] = await signPrepared(f.signer, [prepareIntermediate(f.signer, f.store.rootCertificate, a.csr, { now: clock, serial: Buffer.from([1, 0xaa]) })] as const);
     await f.store.commitSigned("01aa", issued.der);
     const b = reserve("02bb", "ca-2");
-    await code(f.store.begin({ sign: { ...b.sign, subjectDn: a.sign.subjectDn } }), "issued_conflict");
+    await code(f.store.begin({ sign: { ...b.sign, subjectKey: a.sign.subjectKey } }), "issued_conflict");
     await f.store.addRevocation({ serial: "01aa", caId: "ca-1", reason: "superseded" });
-    await f.store.begin({ sign: { ...b.sign, subjectDn: a.sign.subjectDn } });
+    await f.store.begin({ sign: { ...b.sign, subjectKey: a.sign.subjectKey } });
   } finally {
     await done(f);
   }
@@ -229,7 +252,7 @@ const crashChild = (f: F, csrDer: Buffer, crashStep: string): void => {
         fault: (s) => { if (armed && s === ${JSON.stringify(crashStep)}) process.exit(137); } });
       const c = validateCsr(Buffer.from(${JSON.stringify(csrDer.toString("base64"))}, "base64"));
       const signer = new SoftwareSigner(createPrivateKey(process.env.EZ_KEY));
-      await store.begin({ sign: { serial: "01aa", caId: "ca-1", environment: null, adminOrigin: null, subjectDn: "CN=ca-1",
+      await store.begin({ sign: { serial: "01aa", caId: "ca-1", environment: null, adminOrigin: null, subjectDn: "CN=ca-1", subjectKey: "a".repeat(64),
         csrSha256: c.sha256, spkiSha256: c.spkiSha256, notBefore: at, notAfter: new Date(at.getTime() + 400 * 86400000) } });
       const [issued] = await signPrepared(signer, [prepareIntermediate(signer, store.rootCertificate, c, { now: at, serial: Buffer.from([1, 0xaa]) })]);
       armed = true;
@@ -395,4 +418,139 @@ test("readTerminalLine: CRLF is one line break", async () => {
   s.write("a\r\nb\r\n");
   assert.equal((await readTerminalLine(s, options)).toString(), "a");
   assert.equal((await readTerminalLine(s, options)).toString(), "b");
+});
+
+test("crlDue is true while any revocation is unpublished", async () => {
+  const f = await fixture("due");
+  try {
+    assert.equal(f.store.crlDue(), false);
+    await f.store.addRevocation({ serial: "01aa", caId: null, reason: "keyCompromise" });
+    assert.equal(f.store.crlDue(), true);
+    tick();
+    const r = (await f.store.begin({ crl: true })).crl!;
+    await f.store.commitCrl(r.number, (await crlFor(f, r.number, r.thisUpdate)).der);
+    assert.equal(f.store.crlDue(), false);
+  } finally {
+    await done(f);
+  }
+});
+
+test("checkServer: a server CRL under a number this state burned is a fork (p5 Q)", async () => {
+  const f = await fixture("burn");
+  try {
+    tick();
+    await f.store.begin({ crl: true });
+    await f.store.close();
+    f.store = await EzStore.open(f.options); // burns #2
+    await code(f.store.checkServer({ crl: { numberHex: "02", sha256: "c".repeat(64) } }), "state_forked");
+  } finally {
+    await done(f);
+  }
+});
+
+test("commitCrl compares each entry's reason and dates, not just the serials (p5 R)", async () => {
+  const f = await fixture("entries");
+  try {
+    await f.store.addRevocation({ serial: "01aa", caId: null, reason: "keyCompromise", invalidityDate: new Date("2026-11-20T00:00:00Z") });
+    const recorded = f.store.revocationEntries()[0]!;
+    tick();
+    const r = (await f.store.begin({ crl: true })).crl!;
+    const wrong = [
+      { ...recorded, reason: "certificateHold" as const },
+      { ...recorded, reason: undefined },
+      { ...recorded, revokedAt: new Date("2030-01-01T00:00:00Z") },
+      { ...recorded, invalidityDate: undefined },
+    ];
+    for (const entry of wrong) {
+      await code(f.store.commitCrl(r.number, (await crlFor(f, r.number, r.thisUpdate, [entry])).der), "state_conflict", "crl_entry_mismatch");
+    }
+    await f.store.commitCrl(r.number, (await crlFor(f, r.number, r.thisUpdate)).der);
+    // unspecified is encoded without a reason code and still matches
+    await f.store.addRevocation({ serial: "02bb", caId: null, reason: "unspecified" });
+    tick();
+    const r2 = (await f.store.begin({ crl: true })).crl!;
+    await f.store.commitCrl(r2.number, (await crlFor(f, r2.number, r2.thisUpdate)).der);
+  } finally {
+    await done(f);
+  }
+});
+
+test("the temp sweep removes only names EZ writes (p5 S)", async () => {
+  const f = await fixture("sweepown");
+  try {
+    await f.store.close();
+    const foreign = [".notes.txt.0123456789ab.tmp", ".hemlig-ez.json.zz.tmp"];
+    const own = [".hemlig-ez.json.0123456789ab.tmp", ".root.pem.0123456789ab.tmp", ".root.crl.pem.0123456789ab.tmp", ".root.key.pem.0123456789ab.tmp"];
+    for (const n of [...foreign, ...own]) await fs.writeFile(join(f.dir, n), "x");
+    await fs.writeFile(join(f.dir, "crls", ".notes.0123456789ab.tmp"), "x");
+    await fs.writeFile(join(f.dir, "crls", ".000009.crl.pem.0123456789ab.tmp"), "x");
+    await fs.writeFile(join(f.dir, "issued", ".readme.0123456789ab.tmp"), "x");
+    await (await EzStore.open(f.options)).close();
+    const left = (await fs.readdir(f.dir)).filter((n) => n.endsWith(".tmp")).sort();
+    assert.deepEqual(left, [...foreign].sort());
+    assert.deepEqual(await fs.readdir(join(f.dir, "crls")), [".notes.0123456789ab.tmp", "000001.crl.pem"].sort());
+    assert.deepEqual(await fs.readdir(join(f.dir, "issued")), [".readme.0123456789ab.tmp"]);
+  } finally {
+    await done(f);
+  }
+});
+
+test("a breaker that died holding the guard does not wedge the directory; a live or unreadable guard is named in the error (p5 T)", async () => {
+  const dir = await fs.mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "ez-guard-"));
+  try {
+    await acquireLock(dir, { command: "old", hostname: "h1", pid: 424242 });
+    const guard = join(dir, `${LOCK_FILE}.break`);
+    // unreadable (empty) guard: cannot be judged stale, error names the file
+    await fs.writeFile(guard, "");
+    await assert.rejects(
+      acquireLock(dir, { command: "new", hostname: "h1", breakStale: true, isAlive: () => false }),
+      (e) => e instanceof EzError && e.code === "state_locked" && e.message.includes(guard),
+    );
+    // live guard holder
+    await fs.writeFile(guard, JSON.stringify({ pid: 111, hostname: "h1", command: "x", startedAt: "z", nonce: "n1" }));
+    await assert.rejects(acquireLock(dir, { command: "new", hostname: "h1", breakStale: true, isAlive: (pid) => pid === 111 }), (e) => e instanceof EzError && e.message.includes(guard));
+    // dead guard holder on this host: broken, lock taken
+    const handle = await acquireLock(dir, { command: "new", hostname: "h1", breakStale: true, isAlive: (pid) => pid !== 111 && pid !== 424242 });
+    assert.deepEqual((await fs.readdir(dir)).sort(), [LOCK_FILE]);
+    await handle.release();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("markActivated, abandon and server serials are canonicalized (p5 U)", async () => {
+  const f = await fixture("canon");
+  try {
+    const a = reserve("01aa", "ca-1");
+    await f.store.begin({ sign: a.sign });
+    const [issued] = await signPrepared(f.signer, [prepareIntermediate(f.signer, f.store.rootCertificate, a.csr, { now: clock, serial: Buffer.from([1, 0xaa]) })] as const);
+    await f.store.commitSigned("1AA", issued.der);
+    await f.store.markActivated("1aa");
+    assert.equal(f.store.state.issued[0]!.status, "activated");
+    await f.store.addRevocation({ serial: "0001aa", caId: null, reason: "superseded" });
+    tick();
+    const r = (await f.store.begin({ crl: true })).crl!;
+    await f.store.commitCrl(r.number, (await crlFor(f, r.number, r.thisUpdate)).der);
+    // the same serial in another spelling is known; a malformed one is an invalid response
+    compareWithServer(f.store.state, { crl: { numberHex: "2", sha256: f.store.state.crl.current!.sha256, serials: ["1AA", "0001aa"] } });
+    assert.throws(() => compareWithServer(f.store.state, { crl: { numberHex: "2", sha256: f.store.state.crl.current!.sha256, serials: ["zz"] } }), (e) => e instanceof EzError && e.code === "invalid_response");
+    await code(f.store.markActivated("zz"), "invalid_input");
+  } finally {
+    await done(f);
+  }
+});
+
+test("three consecutive reads from the real process.stdin (a pipe) lose nothing and print no warning (p6)", () => {
+  const script = `
+    const tty = require(${JSON.stringify(join(__dirname, "tty.js"))});
+    const opts = { maxBytes: 64, cancelled: () => new Error("cancelled"), tooLarge: () => new Error("large") };
+    (async () => {
+      const lines = [];
+      for (let i = 0; i < 3; i++) lines.push((await tty.readTerminalLine(process.stdin, opts)).toString());
+      console.log(JSON.stringify(lines));
+    })().catch((e) => { console.log("ERR " + e.message); process.exit(1); });`;
+  const result = spawnSync(process.execPath, ["-e", script], { input: "alpha\nbeta\r\ngamma\n", encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), JSON.stringify(["alpha", "beta", "gamma"]));
+  assert.equal(result.stderr, "");
 });

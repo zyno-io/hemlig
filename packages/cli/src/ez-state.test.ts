@@ -56,7 +56,7 @@ const rejects = (p: Promise<unknown>, code: string) =>
 const reservation = (f: Fixture, csrDer: Buffer, caId: string | null = "ca-1", serial = "01aa") => {
   const csr = validateCsr(csrDer);
   return { csr, sign: {
-    serial, caId, environment: "prod", adminOrigin: "https://admin.example.com", subjectDn: `CN=${caId ?? "none"}`, csrSha256: csr.sha256,
+    serial, caId, environment: "prod", adminOrigin: "https://admin.example.com", subjectDn: `CN=${caId ?? "none"}`, subjectKey: createHash("sha256").update(caId ?? "none").digest("hex"), csrSha256: csr.sha256,
     spkiSha256: csr.spkiSha256, notBefore: new Date(clock.getTime() - 3_600_000), notAfter: new Date(clock.getTime() + 730 * day),
   } };
 };
