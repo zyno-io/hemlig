@@ -15,6 +15,8 @@ import { EZ_DEFAULTS } from "./ez-profile";
 import {
   CRL_REASON_NAMES,
   DAY_MS,
+  serialHex,
+  serialMagnitude,
   floorSeconds,
   fromPem,
   NEW_REVOCATION_REASONS,
@@ -66,6 +68,8 @@ export interface RevokedEntry {
   revokedAt: string;
   invalidityDate: string | null;
   imported: boolean;
+  /** The first CRL that listed this serial; null until one is committed. */
+  listedInCrl: number | null;
 }
 
 export interface YubiKeyRecord {
@@ -159,7 +163,7 @@ const obj = (shape: Record<string, Check>, optional: readonly string[] = []): Ch
   if (typeof v !== "object" || v === null || Array.isArray(v)) return corrupt(p, "expected an object");
   const record = v as Record<string, unknown>;
   for (const key of Object.keys(record)) {
-    if (!(key in shape)) corrupt(`${p}.${key}`, "unknown key");
+    if (!Object.hasOwn(shape, key)) corrupt(`${p}.${key}`, "unknown key");
   }
   for (const [key, check] of Object.entries(shape)) {
     if (record[key] === undefined) {
@@ -247,6 +251,7 @@ const stateSchema: Check = obj({
       revokedAt: iso,
       invalidityDate: nullable(iso),
       imported: bool,
+      listedInCrl: nullable(int(1)),
     }),
   ),
   deployments: arr(obj({ adminOrigin: str, extId: str, lastUploadedCrlNumber: int(0), lastSeenAt: iso })),
@@ -350,6 +355,18 @@ export class EzStore {
     return this.#state;
   }
 
+  /** Canonical lowercase hex of a positive serial (validated, even length, no redundant leading zero bytes). */
+  public static canonicalSerial(serial: string): string {
+    let canonical: string;
+    try {
+      canonical = serialHex(serialMagnitude(serial));
+    } catch {
+      throw new EzError(2, "invalid_input", "A serial must be hexadecimal.");
+    }
+    if (/^0+$/.test(canonical)) throw new EzError(2, "invalid_input", "A serial must be positive.");
+    return canonical;
+  }
+
   private now(): Date {
     return this.options.now?.() ?? new Date();
   }
@@ -384,14 +401,13 @@ export class EzStore {
       isAlive: options.isAlive,
     });
     try {
-      if (await exists(stateFilePath)) {
-        throw new EzError(5, "already_exists", `${stateFilePath} already exists; nothing was overwritten.`);
-      }
       const targets = artifacts.map((a) => resolveRecordedPath(dir, a.path, a.allowAbsolute === true));
-      for (const target of targets) {
-        if (await exists(target)) {
-          throw new EzError(5, "incomplete_generation", `${target} exists but there is no state file. Delete the partial output and retry.`);
-        }
+      const present: string[] = [];
+      for (const target of [stateFilePath, ...targets]) {
+        if (await exists(target)) present.push(target);
+      }
+      if (present.length > 0) {
+        throw new EzError(5, "already_exists", `Refusing to overwrite existing files: ${present.join(", ")}. Nothing was changed.`, { files: present });
       }
       const state: EzState = {
         format: STATE_FORMAT,
@@ -584,10 +600,16 @@ export class EzStore {
     }
     let resumed: IssuedEntry | undefined;
     if (input.sign !== undefined) {
-      const sign = input.sign;
+      const sign = { ...input.sign, serial: EzStore.canonicalSerial(input.sign.serial) };
+      input = { ...input, sign };
       const live = this.#state.issued.filter((e) => e.status !== "abandoned");
-      if (live.some((e) => e.serial === sign.serial)) {
-        throw new EzError(5, "state_conflict", "That serial was already issued.", { reason: "serial_reused" });
+      if (this.#state.issued.some((e) => e.serial === sign.serial) || this.#state.revoked.some((r) => r.serial === sign.serial)) {
+        throw new EzError(5, "state_conflict", "That serial was already used.", { reason: "serial_reused" });
+      }
+      const revokedSerials = new Set(this.#state.revoked.map((r) => r.serial));
+      const clash = live.find((e) => e.subjectDn === sign.subjectDn && e.spkiSha256 !== sign.spkiSha256 && !revokedSerials.has(e.serial) && e.caId !== sign.caId);
+      if (clash !== undefined) {
+        throw new EzError(5, "issued_conflict", `A live certificate (serial ${clash.serial}) already carries that subject with a different key.`, { serial: clash.serial });
       }
       if (sign.caId !== null) {
         const same = live.filter((e) => e.caId === sign.caId);
@@ -643,7 +665,8 @@ export class EzStore {
   }
 
   /** Writes `issued/<serial>.pem` no-clobber, then moves the entry to `signed`. */
-  public async commitSigned(serial: string, certificateDer: Buffer): Promise<IssuedEntry> {
+  public async commitSigned(rawSerial: string, certificateDer: Buffer): Promise<IssuedEntry> {
+    const serial = EzStore.canonicalSerial(rawSerial);
     const entry = this.#state.issued.find((e) => e.serial === serial);
     if (entry === undefined || entry.status !== "signing") {
       throw new EzError(5, "state_conflict", "No reservation for that serial.", { reason: "not_reserved" });
@@ -718,7 +741,7 @@ export class EzStore {
     if (input.imported !== true && !NEW_REVOCATION_REASONS.includes(input.reason)) {
       throw new EzError(2, "invalid_input", `${input.reason} is not an allowed revocation reason.`);
     }
-    const serial = input.serial.toLowerCase().replace(/^(00)+(?=.)/, "");
+    const serial = EzStore.canonicalSerial(input.serial);
     if (this.#state.revoked.some((r) => r.serial === serial)) return { added: false };
     const at = this.now();
     if (input.invalidityDate !== undefined && input.invalidityDate.getTime() > at.getTime()) {
@@ -732,6 +755,7 @@ export class EzStore {
         revokedAt: floorSeconds(at).toISOString(),
         invalidityDate: input.invalidityDate === undefined ? null : floorSeconds(input.invalidityDate).toISOString(),
         imported: input.imported === true,
+        listedInCrl: null,
       });
     });
     return { added: true };
@@ -746,18 +770,24 @@ export class EzStore {
     await this.#adoptCrl(number, file, crl);
   }
 
+  /** The CRL must be exactly the reserved one: its number, its thisUpdate, and every revocation (no more, no fewer). */
   #verifyCrl(number: number, der: Buffer): ParsedCrl {
     const crl = parseCrl(der);
     const root = this.rootCertificate;
-    const known = new Set(this.#state.revoked.map((r) => r.serial));
-    if (
-      crl.number !== BigInt(number) ||
-      crl.nextUpdate === undefined ||
-      !crl.issuerDer.equals(root.subjectDer) ||
-      !verifyCrlSignature(crl, root.spkiDer) ||
-      crl.entries.some((e) => !known.has(e.serial))
-    ) {
-      throw new EzError(5, "state_conflict", `CRL ${number} does not match the root or the revocation list.`, { reason: "crl_mismatch" });
+    const state = this.#state;
+    const listed = new Set(crl.entries.map((e) => e.serial));
+    const revoked = new Set(state.revoked.map((r) => r.serial));
+    const reason =
+      state.pending?.crlNumber !== number ? "crl_not_reserved"
+      : number <= (state.crl.current?.number ?? 0) ? "crl_not_newer"
+      : crl.number !== BigInt(number) || crl.nextUpdate === undefined ? "crl_mismatch"
+      : crl.thisUpdate.toISOString() !== state.crl.lastThisUpdate ? "crl_this_update"
+      : !crl.issuerDer.equals(root.subjectDer) || !verifyCrlSignature(crl, root.spkiDer) ? "crl_mismatch"
+      : [...listed].some((s) => !revoked.has(s)) ? "crl_unknown_entry"
+      : [...revoked].some((s) => !listed.has(s)) ? "crl_missing_revocation"
+      : undefined;
+    if (reason !== undefined) {
+      throw new EzError(5, "state_conflict", `CRL ${number} is not the CRL that was reserved (${reason}).`, { reason });
     }
     return crl;
   }
@@ -766,6 +796,7 @@ export class EzStore {
     await writeAtomic(this.path(this.#state.crl.copyFile, true), Buffer.from(toPem(crl.der, "X509 CRL")), 0o644, this.options);
     await this.fault("commitCrl:copy");
     await this.#persist((draft) => {
+      for (const r of draft.revoked) r.listedInCrl ??= number;
       draft.crl.current = {
         number,
         file,
@@ -775,6 +806,19 @@ export class EzStore {
       };
       this.#clearPending(draft, "crlNumber");
     });
+  }
+
+  /** `compareWithServer`, plus the local `crls/<n>` hash when the server's CRL number is below ours. */
+  public async checkServer(server: ServerRootView): Promise<void> {
+    let local: string | undefined;
+    if (server.crl !== undefined && /^[0-9a-fA-F]{1,15}$/.test(server.crl.numberHex)) {
+      const n = Number.parseInt(server.crl.numberHex, 16);
+      if (n >= 1 && n < this.#state.crl.lastNumber) {
+        const bytes = await readIfExists(this.path(crlFileName(n)));
+        if (bytes !== undefined) local = sha256Hex(fromPem(bytes.toString("utf8"), "X509 CRL"));
+      }
+    }
+    compareWithServer(this.#state, server, local);
   }
 
   /** Records that a CRL number reached a deployment, for `status` and `upload-crl`. */
@@ -802,7 +846,8 @@ export class EzStore {
     // A signing entry: no file means the certificate only ever existed in memory; a verified file rolls forward.
     for (const entry of this.#state.issued.filter((e) => e.status === "signing")) {
       const file = issuedFileName(entry.serial);
-      const pem = await readIfExists(this.path(file));
+      let pem = await readIfExists(this.path(file));
+      if (pem === undefined) pem = await this.#rescueTemp(entry, file);
       if (pem === undefined) {
         await this.#persist((draft) => {
           (draft.issued.find((x) => x.serial === entry.serial) as IssuedEntry).status = "abandoned";
@@ -831,6 +876,7 @@ export class EzStore {
         await this.#persist((draft) => this.#clearPending(draft, "crlNumber"));
       }
     }
+    await this.#sweepTemps();
     // A crash between the immutable CRL and its copy leaves a stale copy; rewrite it from the current CRL.
     const current = this.#state.crl.current;
     if (current !== null) {
@@ -839,6 +885,49 @@ export class EzStore {
       const wanted = await readIfExists(this.path(current.file));
       if (wanted !== undefined && (existing === undefined || !existing.equals(wanted))) {
         await writeAtomic(copy, wanted, 0o644, this.options);
+      }
+    }
+  }
+
+  /**
+   * A hard crash between writing and linking `issued/<serial>.pem` can leave the signed certificate as a temp file. If it
+   * verifies for this reservation it is linked into place (so it is never lost); otherwise it is ignored.
+   */
+  async #rescueTemp(entry: IssuedEntry, file: string): Promise<Buffer | undefined> {
+    const directory = this.path("issued");
+    let names: string[];
+    try {
+      names = await fs.readdir(directory);
+    } catch {
+      return undefined;
+    }
+    const pattern = new RegExp(`^\\.${entry.serial}\\.pem\\.[0-9a-f]{12}\\.tmp$`);
+    for (const name of names.filter((n) => pattern.test(n))) {
+      const bytes = await readIfExists(join(directory, name));
+      if (bytes === undefined) continue;
+      try {
+        this.#verifyIssued(entry, fromPem(bytes.toString("utf8"), "CERTIFICATE"));
+      } catch (error) {
+        if (error instanceof EzError) continue;
+        throw error;
+      }
+      await createImmutable(this.path(file), bytes, 0o644, this.options);
+      return bytes;
+    }
+    return undefined;
+  }
+
+  /** With the lock held, no `.tmp` file in the root directory, `crls/` or `issued/` can be live: remove them. */
+  async #sweepTemps(): Promise<void> {
+    for (const directory of [this.dir, this.path("crls"), this.path("issued")]) {
+      let names: string[];
+      try {
+        names = await fs.readdir(directory);
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        if (/^\..+\.[0-9a-f]{12}\.tmp$/.test(name)) await fs.unlink(join(directory, name)).catch(() => undefined);
       }
     }
   }
@@ -875,8 +964,16 @@ export class EzStore {
         conflict("crl_invalid", "The current CRL does not verify under the root or has the wrong number.");
       }
       const revoked = new Set(state.revoked.map((r) => r.serial));
+      const listed = new Set(parsed.entries.map((e) => e.serial));
+      for (const r of state.revoked) {
+        if (r.listedInCrl !== null && r.listedInCrl > crl.current.number) conflict("revoked_ahead", `Serial ${r.serial} is recorded as listed in a CRL newer than the current one.`);
+        if (r.listedInCrl !== null && !listed.has(r.serial)) conflict("crl_missing_revocation", `The current CRL does not list revoked serial ${r.serial}.`);
+      }
       const missing = parsed.entries.filter((e) => !revoked.has(e.serial));
       if (missing.length > 0) conflict("revoked_shrunk", `The revocation list lost ${missing.length} entr${missing.length === 1 ? "y" : "ies"} that the current CRL lists.`);
+    }
+    if (crl.current === null && state.revoked.some((r) => r.listedInCrl !== null)) {
+      conflict("crl_missing_revocation", "Revocations are recorded as listed, but there is no current CRL.");
     }
     // I7 is enforced at `begin`; here only the recorded times must be consistent.
     if (crl.current !== null && Date.parse(crl.current.thisUpdate) > Date.parse(crl.lastThisUpdate)) {
@@ -892,12 +989,17 @@ export class EzStore {
 export interface ServerRootView {
   /** The external CA record's certificate fingerprint, when the root is registered. */
   readonly fingerprint?: string;
-  /** The stored root CRL: number as hex (any padding) and sha256. */
-  readonly crl?: { readonly numberHex: string; readonly sha256: string };
+  /** The stored root CRL: number as hex (any padding), sha256 and, if known, the revoked serials it lists. */
+  readonly crl?: { readonly numberHex: string; readonly sha256: string; readonly serials?: readonly string[] };
 }
 
-/** Compares the local state with the server's view; throws the section 6.3 online conflicts. */
-export const compareWithServer = (state: Readonly<EzState>, server: ServerRootView): void => {
+const invalidResponse = (what: string): EzError => new EzError(7, "invalid_response", `The server's ${what} is malformed.`);
+
+/**
+ * Compares the local state with the server's view; throws the section 6.3 online conflicts. `localSha256AtServerNumber`
+ * is the sha256 of the local `crls/<server number>` file, for when the server is behind the local state.
+ */
+export const compareWithServer = (state: Readonly<EzState>, server: ServerRootView, localSha256AtServerNumber?: string): void => {
   if (server.fingerprint !== undefined && server.fingerprint !== state.root.fingerprint) {
     throw new EzError(5, "root_mismatch", "The server has a different certificate for this root key.", {
       server: server.fingerprint,
@@ -905,6 +1007,9 @@ export const compareWithServer = (state: Readonly<EzState>, server: ServerRootVi
     });
   }
   if (server.crl === undefined) return;
+  if (!/^[0-9a-fA-F]{1,40}$/.test(server.crl.numberHex)) throw invalidResponse("CRL number");
+  if (!/^[0-9a-fA-F]{64}$/.test(server.crl.sha256)) throw invalidResponse("CRL hash");
+  const serverSha = server.crl.sha256.toLowerCase();
   const serverNumber = BigInt(`0x${server.crl.numberHex}`);
   if (serverNumber > BigInt(state.crl.lastNumber)) {
     throw new EzError(5, "state_behind_server", "The server holds a newer root CRL than this state knows: the state file is out of date or was restored from a backup.", {
@@ -913,13 +1018,24 @@ export const compareWithServer = (state: Readonly<EzState>, server: ServerRootVi
     });
   }
   const current = state.crl.current;
-  if (current !== null && serverNumber === BigInt(current.number) && server.crl.sha256 !== current.sha256) {
+  if (current !== null && serverNumber === BigInt(current.number) && serverSha !== current.sha256) {
     throw new EzError(5, "state_forked", "The server's root CRL has the same number as this state's but different content: two copies of this root are signing.", {
       number: current.number,
     });
   }
+  if (serverNumber < BigInt(state.crl.lastNumber) && localSha256AtServerNumber !== undefined && localSha256AtServerNumber !== serverSha) {
+    throw new EzError(5, "state_forked", "The server's older root CRL is not one this state signed under that number: two copies of this root are signing.", {
+      number: serverNumber.toString(),
+    });
+  }
+  if (server.crl.serials !== undefined) {
+    const local = new Set(state.revoked.map((r) => r.serial));
+    const unknown = server.crl.serials.map((s) => s.toLowerCase().replace(/^(00)+(?=.)/, "")).filter((s) => !local.has(s));
+    if (unknown.length > 0) {
+      throw new EzError(5, "state_behind_server", "The server's root CRL revokes serials this state does not know about.", { serials: unknown });
+    }
+  }
 };
-
 // ---------------------------------------------------------------------------------------------------------------------
 // Initial state for generate-ca / adopt-ca
 // ---------------------------------------------------------------------------------------------------------------------

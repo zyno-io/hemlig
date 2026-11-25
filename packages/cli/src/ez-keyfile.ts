@@ -35,11 +35,12 @@ export const assertPassphrasePolicy = (passphrase: Buffer | string): void => {
 /** Encrypts a PKCS#8 DER private key. The input buffer is zeroed. */
 export const encryptPkcs8 = (pkcs8Der: Buffer, passphrase: Buffer | string): string => {
   const secret = toBuffer(passphrase);
-  assertPassphrasePolicy(secret);
-  const salt = randomBytes(16);
-  const iv = randomBytes(16);
-  const key = pbkdf2Sync(secret, salt, KEY_FILE_ITERATIONS, 32, "sha256");
+  let key: Buffer | undefined;
   try {
+    assertPassphrasePolicy(secret);
+    const salt = randomBytes(16);
+    const iv = randomBytes(16);
+    key = pbkdf2Sync(secret, salt, KEY_FILE_ITERATIONS, 32, "sha256");
     const cipher = createCipheriv("aes-256-cbc", key, iv);
     const encrypted = Buffer.concat([cipher.update(pkcs8Der), cipher.final()]);
     const der = seq(
@@ -57,7 +58,7 @@ export const encryptPkcs8 = (pkcs8Der: Buffer, passphrase: Buffer | string): str
     );
     return toPem(der, "ENCRYPTED PRIVATE KEY");
   } finally {
-    key.fill(0);
+    key?.fill(0);
     pkcs8Der.fill(0);
   }
 };

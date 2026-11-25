@@ -12,6 +12,10 @@ export interface TerminalInput extends AsyncIterable<string | Uint8Array> {
   resume?(): unknown;
   /** Called when a read is abandoned (timeout) so the process can exit. */
   destroy?(): unknown;
+  /** Node streams: an iterator that leaves the stream open when the read ends, so it can be read again. */
+  iterator?(options: { destroyOnReturn: boolean }): AsyncIterator<string | Uint8Array>;
+  /** Node streams: pushes bytes read past the end of the line back for the next reader. */
+  unshift?(chunk: Buffer): unknown;
 }
 
 const BRACKETED_PASTE = ["\x1b[200~", "\x1b[201~"];
@@ -38,7 +42,9 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
     throw (options.notTerminal ?? options.cancelled)();
   }
   const { signal } = options;
-  const iterator = input[Symbol.asyncIterator]();
+  // A Node stream must not be destroyed when one line has been read: passphrase prompts read twice, and stdin may carry more.
+  const iterator = typeof input.iterator === "function" ? input.iterator({ destroyOnReturn: false }) : input[Symbol.asyncIterator]();
+  let leftover = "";
   const decoder = new TextDecoder();
   // Rejects when the caller aborts (timeout), so a stalled stdin cannot outlive it.
   const aborted = new Promise<never>((_, reject) => {
@@ -78,7 +84,10 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
       if (!raw) {
         const end = text.search(/[\r\n]/);
         push(end < 0 ? text : text.slice(0, end));
-        if (end >= 0) return finish();
+        if (end >= 0) {
+          leftover = text.slice(text[end] === "\r" && text[end + 1] === "\n" ? end + 2 : end + 1);
+          return finish();
+        }
         continue;
       }
       for (const marker of BRACKETED_PASTE) text = text.split(marker).join("");
@@ -91,12 +100,16 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
           break;
         }
       }
-      for (const ch of text) {
+      const chars = [...text];
+      for (const [position, ch] of chars.entries()) {
         const point = ch.codePointAt(0)!;
         if (point === 0x03) throw options.cancelled();
         if (point === 0x04) {
           if (size === 0) throw options.cancelled();
         } else if (ch === "\r" || ch === "\n") {
+          const rest = chars.slice(position + 1);
+          if (ch === "\r" && rest[0] === "\n") rest.shift();
+          leftover = rest.join("");
           return finish();
         } else if (point === 0x7f || point === 0x08) {
           const last = typed.pop();
@@ -111,6 +124,7 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
     }
   } finally {
     if (raw) input.setRawMode!(false);
+    if (leftover !== "" && typeof input.unshift === "function") input.unshift(Buffer.from(leftover, "utf8"));
     input.pause?.();
     void Promise.resolve(iterator.return?.()).catch(() => {});
     // An abandoned read leaves the stream open; closing it lets the process exit.

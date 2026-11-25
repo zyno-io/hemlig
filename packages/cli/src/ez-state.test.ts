@@ -56,7 +56,7 @@ const rejects = (p: Promise<unknown>, code: string) =>
 const reservation = (f: Fixture, csrDer: Buffer, caId: string | null = "ca-1", serial = "01aa") => {
   const csr = validateCsr(csrDer);
   return { csr, sign: {
-    serial, caId, environment: "prod", adminOrigin: "https://admin.example.com", subjectDn: "O=x, CN=y", csrSha256: csr.sha256,
+    serial, caId, environment: "prod", adminOrigin: "https://admin.example.com", subjectDn: `CN=${caId ?? "none"}`, csrSha256: csr.sha256,
     spkiSha256: csr.spkiSha256, notBefore: new Date(clock.getTime() - 3_600_000), notAfter: new Date(clock.getTime() + 730 * day),
   } };
 };
@@ -96,7 +96,7 @@ test("create: files, modes, no temp leftovers; reopen loads the same state", asy
   }
 });
 
-test("create never overwrites: existing state is already_exists, a partial directory is incomplete_generation", async () => {
+test("create never overwrites: any existing target is already_exists and is listed", async () => {
   const f = await fixture();
   try {
     await f.store.close();
@@ -104,7 +104,10 @@ test("create never overwrites: existing state is already_exists, a partial direc
     const { revision: _r, updatedAt: _u, format: _f, version: _v, ...initial } = state;
     await rejects(EzStore.create(f.options, initial, []), "already_exists");
     await fs.rm(join(f.dir, "hemlig-ez.json"));
-    await rejects(EzStore.create(f.options, initial, [{ path: "root.pem", data: Buffer.from("x") }]), "incomplete_generation");
+    await assert.rejects(
+      EzStore.create(f.options, initial, [{ path: "root.pem", data: Buffer.from("x") }]),
+      (e) => e instanceof EzError && e.code === "already_exists" && /root\.pem/.test(e.message) && !/delete/i.test(e.message),
+    );
     assert.equal(await fs.readFile(join(f.dir, "root.pem"), "utf8").then((t) => t.startsWith("-----BEGIN CERTIFICATE")), true, "nothing overwritten");
   } finally {
     await cleanup(f);

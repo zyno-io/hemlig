@@ -164,18 +164,35 @@ describe("EZ library against the server's validators", () => {
     expect(v[2]!.nextUpdate.getTime() - v[2]!.thisUpdate.getTime()).toBe(180 * 86_400_000);
   });
 
-  it("a reissued root that keeps its SKI, key and subject keeps its identity for the server", async () => {
-    const { key, signer, root } = await newRoot("ECDSA_P384");
+  it("a reissued root keeps its identity for the server's external_ca_mismatch rule, and a root with a fresh SKI does not", async () => {
+    const { signer, root } = await newRoot("ECDSA_P384");
     const [again] = await signPrepared(signer, [prepareRoot(signer, {
       subject: root.certificate.subjectDer, now: new Date(), subjectKeyIdentifier: root.certificate.subjectKeyIdentifier,
     })] as const);
-    const a = parseCertificate(root.der);
-    const b = parseCertificate(again.der);
-    expect(b.subjectKeyIdentifier?.toString("hex")).toBe(a.subjectKeyIdentifier?.toString("hex"));
-    expect(Buffer.from(b.spkiDer).equals(Buffer.from(a.spkiDer))).toBe(true);
-    expect(Buffer.from(b.subjectDer).equals(Buffer.from(a.subjectDer))).toBe(true);
+    const [fresh] = await signPrepared(signer, [prepareRoot(signer, { subject: root.certificate.subjectDer, now: new Date() })] as const);
+    // An intermediate signed under the original root is what the server holds a record for.
+    const ca = await hemligCsr("ECDSA_P256");
+    const csr = validateCsr(ca.csrDer);
+    const [issued] = await signPrepared(signer, [prepareIntermediate(signer, root.certificate, csr, { now: new Date() })] as const);
+    const original = activate(ca, root.der, issued.der);
+    // ca-service.ts: ext id from the root SPKI, then the record must match subjectKey and SKI hex.
+    const extId = (r: { spkiSha256: string }) => `ext-${r.spkiSha256.slice(0, 40)}`;
+    const matches = (r: ReturnType<typeof activate>["root"], rootSubjectKey: string) =>
+      extId(r) === extId(original.root) &&
+      rootSubjectKey === original.rootSubject.key &&
+      r.subjectKeyIdentifier?.toString("hex") === original.root.subjectKeyIdentifier?.toString("hex");
+    // The server activates a CA under the reissued root (new serial and fingerprint, same key, subject and SKI)...
+    const [reissuedIssued] = await signPrepared(signer, [prepareIntermediate(signer, again.certificate, csr, { now: new Date() })] as const);
+    const viaReissued = activate(ca, again.der, reissuedIssued.der);
     expect(again.certificate.fingerprint).not.toBe(root.certificate.fingerprint);
-    expect(key.spkiDer.equals(signer.spkiDer)).toBe(true);
+    expect(matches(viaReissued.root, viaReissued.rootSubject.key)).toBe(true);
+    // ...whereas a root that does not keep the SKI would be rejected as external_ca_mismatch.
+    const [freshIssued] = await signPrepared(signer, [prepareIntermediate(signer, fresh.certificate, csr, { now: new Date() })] as const);
+    const viaFresh = activate(ca, fresh.der, freshIssued.der);
+    expect(viaFresh.root.spkiSha256).toBe(original.root.spkiSha256);
+    expect(matches(viaFresh.root, viaFresh.rootSubject.key)).toBe(false);
+    // (Driving CaService.activate and ExternalCaService.uploadCrl needs the full DynamoDB/KMS mock harness of
+    // ca-service.test.ts; the matching above is the exact predicate at ca-service.ts:1121-1128.)
   });
 });
 

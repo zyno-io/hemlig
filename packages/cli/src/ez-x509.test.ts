@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import test from "node:test";
-import { bitString, bool, children, extension, explicit, octetString, oid, parseDer, seq, smallInt, time, uint } from "./ez-der";
+import { bitString, bool, children, extension, explicit, octetString, oid, parseDer, seq, set, smallInt, time, tlv, uint } from "./ez-der";
 import { EzError } from "./ez-error";
 import { prepareCrl, prepareIntermediate, prepareRoot, signPrepared } from "./ez-issue";
-import { encodeSubject, formatIp, parseCidr, parseIp, parseSubject } from "./ez-name";
+import { assertRestrictedName, encodeSubject, formatIp, parseCidr, parseIp, parseSubject } from "./ez-name";
 import { SoftwareSigner, generateSoftwareKey, normalizeEcdsa, signBatch } from "./ez-signer";
 import { makeTestCsr } from "./ez-testkit";
 import {
   EXTENSION_PROFILE_REASONS, OID, assembleCertificate, buildCrlTbs, computeIntermediateValidity, fromPem, keyIdentifier,
-  parseCrl, parseKeyUsageBits, parseBasicConstraints, randomSerial, selfCheckCrl, toPem, validateCsr,
+  displaySafe, summarizeCsr, parseCrl, parseKeyUsageBits, parseBasicConstraints, randomSerial, selfCheckCrl, toPem, validateCsr,
   validateRootCertificate, verifyCrlSignature, signatureAlgorithmForSpki, type EzKeyAlgorithm,
 } from "./ez-x509";
 
@@ -84,14 +84,15 @@ test("signBatch calls the confirmation first; an abort signs nothing", async () 
 });
 
 test("normalizeEcdsa converts raw r||s to DER and passes DER through", () => {
-  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const der = sign("sha256", Buffer.from("m"), { key: privateKey, dsaEncoding: "der" });
   const raw = sign("sha256", Buffer.from("m"), { key: privateKey, dsaEncoding: "ieee-p1363" });
   assert.equal(raw.length, 64);
   assert.ok(normalizeEcdsa(der, 32).equals(der));
   const converted = normalizeEcdsa(raw, 32);
   assert.equal(converted[0], 0x30);
-  assert.ok(sign("sha256", Buffer.from("m"), { key: privateKey, dsaEncoding: "der" }).length > 0);
+  assert.ok(verify("sha256", Buffer.from("m"), { key: publicKey, dsaEncoding: "der" }, converted), "the converted signature verifies");
+  assert.ok(verify("sha256", Buffer.from("m"), { key: publicKey, dsaEncoding: "der" }, normalizeEcdsa(der, 32)));
   rejectsWith(() => normalizeEcdsa(Buffer.alloc(10, 1), 32), "signature_self_check_failed");
 });
 
@@ -223,12 +224,77 @@ test("validateCsr: rejections", () => {
   rejectsWith(() => validateCsr(nc.der, { extendedKeyUsages: [] }), "csr_constraints_mismatch");
 });
 
-test("validateCsr: IPv6 name constraints compare by address and mask bytes, not text", () => {
+test("validateCsr: IPv6 name constraints compare by address and mask bytes, not text; host bits are refused", () => {
   const t = makeTestCsr({ permitted: { ip: ["2001:db8::/32", "10.1.2.3/8"] } });
+  // The testkit clears host bits (10.1.2.3/8 is sent as 10.0.0.0/8), so text forms differ but the bytes agree.
   validateCsr(t.der, { nameConstraints: { permitted: { ip: ["2001:0DB8:0:0:0:0:0:0/32", "10.0.0.0/8"] } } });
+  // The record side may carry host bits; they are cleared before comparing.
+  validateCsr(t.der, { nameConstraints: { permitted: { ip: ["2001:db8::1/32", "10.9.9.9/8"] } } });
   rejectsWith(() => validateCsr(t.der, { nameConstraints: { permitted: { ip: ["2001:db8::/33", "10.0.0.0/8"] } } }), "csr_constraints_mismatch");
-  // The list form the server stores is accepted too.
   validateCsr(t.der, { nameConstraints: { permitted: [{ type: "ip", value: "2001:db8::/32" }, { type: "ip", value: "10.0.0.0/8" }] } });
+  // A CSR whose iPAddress constraint has host bits set (10.1.2.3/8 on the wire) is refused, not silently masked.
+  const hostBits = seq(explicit(0, seq(seq(tlv(0x87, Buffer.from("0a010203ff000000", "hex"))))));
+  rejectsWith(() => validateCsr(makeTestCsr({ ncRaw: hostBits }).der), "csr_unexpected_extension");
+});
+
+const ncOf = (...parts: Buffer[]) => seq(...parts);
+const dnsSubtree = (bytes: Buffer) => seq(tlv(0x82, bytes));
+
+test("name constraints: strict host forms, decoded as latin1 so display equals the signed bytes", () => {
+  const bad = (value: Buffer) => rejectsWith(() => validateCsr(makeTestCsr({ ncRaw: ncOf(explicit(0, dnsSubtree(value))) }).der), "csr_unexpected_extension");
+  bad(Buffer.from([0x62, 0xe1, 0x64, 0x2e, 0x63, 0x6f, 0x6d])); // high bit: 'b\xE1d.com' used to display as "bad.com"
+  bad(Buffer.from("\x1b[1A\x1b[2K\rexample.com", "latin1"));
+  bad(Buffer.alloc(0));
+  bad(Buffer.from("a..b"));
+  bad(Buffer.from("a b.com"));
+  bad(Buffer.from("a.com."));
+  bad(Buffer.from("..a.com"));
+  bad(Buffer.from("a_b.com"));
+  // The same through the testkit's own encoder (the original probe).
+  rejectsWith(() => validateCsr(makeTestCsr({ permitted: { dns: ["example.com"] }, excluded: { dns: ["b\u00e1d.example.com"] } }).der), "csr_unexpected_extension");
+  rejectsWith(() => validateCsr(makeTestCsr({ permitted: { dns: [""] } }).der), "csr_unexpected_extension");
+  rejectsWith(() => validateCsr(makeTestCsr({ permitted: { uri: ["a b"] } }).der), "csr_unexpected_extension");
+  const ok = validateCsr(makeTestCsr({ permitted: { dns: [".Example.com", "a-b.example.org"], uri: ["host.example.com"] } }).der);
+  assert.deepEqual(ok.nameConstraints!.permitted.map((e) => e.value), [".example.com", "a-b.example.org", "host.example.com"]);
+  // Record-side values obey the same rule.
+  rejectsWith(() => validateCsr(makeTestCsr().der, { nameConstraints: { permitted: { dns: ["a b"] } } }), "invalid_input");
+});
+
+test("name constraints: structure is strict (one [0], then one [1], non-empty, no duplicates)", () => {
+  const sub = (v: string) => dnsSubtree(Buffer.from(v));
+  const bad = (raw: Buffer) => rejectsWith(() => validateCsr(makeTestCsr({ ncRaw: raw }).der), "csr_unexpected_extension");
+  bad(ncOf(explicit(0, sub("evil.com")), explicit(0, sub("example.com")))); // the probe: two [0]
+  bad(ncOf(explicit(1, sub("a.com")), explicit(1, sub("b.com"))));
+  bad(ncOf(explicit(1, sub("a.com")), explicit(0, sub("b.com")))); // wrong order
+  bad(ncOf(explicit(0)));
+  bad(ncOf());
+  bad(ncOf(explicit(0, sub("a.com"), sub("A.com"))));
+  bad(ncOf(explicit(0, seq(tlv(0x81, Buffer.from("x@example.com"))))));
+  const good = validateCsr(makeTestCsr({ ncRaw: ncOf(explicit(0, sub("a.com")), explicit(1, sub("b.a.com"))) }).der);
+  assert.equal(good.nameConstraints!.excluded.length, 1);
+});
+
+test("hostile strings are never shown raw: subjects are restricted and summaries escape", () => {
+  const withCn = (cn: string) => seq(set(seq(oid("2.5.4.3"), tlv(0x0c, Buffer.from(cn, "latin1")))));
+  rejectsWith(() => assertRestrictedName(withCn("\x1b[2J\rpwned"), "hemlig"), "subject_invalid");
+  rejectsWith(() => assertRestrictedName(withCn("caf\xe9"), "hemlig"), "subject_invalid");
+  assert.equal(displaySafe("a\x1b[0m\r\n\x7f\u00e9b"), "a\\x1b[0m\\x0d\\x0a\\x7f\\xe9b");
+  const csr = validateCsr(makeTestCsr({ permitted: { dns: ["example.com"] } }).der);
+  assert.deepEqual(summarizeCsr(csr).nameConstraints!.permitted, ["dns:example.com"]);
+});
+
+test("EKU is parsed strictly: trailing data after the SEQUENCE is refused", () => {
+  const eku = Buffer.concat([seq(oid(OID.serverAuth)), seq(oid("1.3.6.1.5.5.7.3.3"))]);
+  rejectsWith(() => validateCsr(makeTestCsr({ extra: [extension(OID.extendedKeyUsage, false, eku)] }).der), "csr_unexpected_extension");
+  rejectsWith(() => validateCsr(makeTestCsr({ extra: [extension(OID.extendedKeyUsage, false, seq())] }).der), "csr_unexpected_extension");
+});
+
+test("prepareIntermediate refuses a CSR whose subject is the root's, whatever the caller checked", async () => {
+  const { signer, root } = await newRoot();
+  const csr = validateCsr(makeTestCsr({ subject }).der);
+  rejectsWith(() => prepareIntermediate(signer, root.certificate, csr, { now }), "csr_subject_is_root");
+  const folded = validateCsr(makeTestCsr({ subject: { O: "example   corp".replace("   ", " "), CN: "EXAMPLE EZ ROOT CA 1" } }).der);
+  rejectsWith(() => prepareIntermediate(signer, root.certificate, folded, { now }), "csr_subject_is_root");
 });
 
 test("validateCsr: RSA and Ed25519 request keys", () => {

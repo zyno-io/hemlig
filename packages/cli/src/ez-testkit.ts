@@ -22,6 +22,8 @@ export interface TestCsrOptions {
   readonly extraAttribute?: boolean;
   readonly badSignature?: boolean;
   readonly keyUsageNonCritical?: boolean;
+  /** Replaces the NameConstraints extension value with these exact bytes. */
+  readonly ncRaw?: Buffer;
 }
 
 export interface TestCsr {
@@ -54,7 +56,9 @@ export const makeTestCsr = (options: TestCsrOptions = {}): TestCsr => {
   const extensions = [
     extension(OID.basicConstraints, true, seq(bool(true), ...(options.pathLen === null ? [] : [smallInt(options.pathLen ?? 0)]))),
     ...(options.omitKeyUsage ? [] : [extension(OID.keyUsage, !options.keyUsageNonCritical, bitString(Buffer.from([0x06]), 1))]),
-    ...(permitted.length + excluded.length > 0
+    ...(options.ncRaw !== undefined
+      ? [extension(OID.nameConstraints, true, options.ncRaw)]
+      : permitted.length + excluded.length > 0
       ? [extension(OID.nameConstraints, true, seq(...(permitted.length ? [tlv(0xa0, ...permitted)] : []), ...(excluded.length ? [tlv(0xa1, ...excluded)] : [])))]
       : []),
     ...(options.eku && options.eku.length > 0 ? [extension(OID.extendedKeyUsage, false, seq(...options.eku.map((e) => oid(e))))] : []),

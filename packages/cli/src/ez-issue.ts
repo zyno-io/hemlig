@@ -1,5 +1,5 @@
 import { EzError } from "./ez-error";
-import { encodeSubject, type Subject } from "./ez-name";
+import { assertRestrictedName, encodeSubject, type Subject } from "./ez-name";
 import { EZ_DEFAULTS } from "./ez-profile";
 import { signBatch, type RootSigner, type SignConfirmation, type SignEvents, type SignItem } from "./ez-signer";
 import {
@@ -108,6 +108,9 @@ export const prepareIntermediate = (
 ): Prepared<IssuedCertificate> => {
   assertSignerMatchesRoot(signer, root);
   const issuer = issuerReference(root);
+  if (assertRestrictedName(root.subjectDer, "external").key === csr.subject.key) {
+    throw new EzError(5, "csr_subject_is_root", "The intermediate's subject must differ from the root's.");
+  }
   const validity =
     options.validity ??
     computeIntermediateValidity({

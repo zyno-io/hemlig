@@ -1,7 +1,7 @@
 import { createHash, createPublicKey, randomBytes, verify as cryptoVerify } from "node:crypto";
 import { AsnConvert } from "@peculiar/asn1-schema";
 import { CertificationRequest } from "@peculiar/asn1-csr";
-import { Certificate, CertificateList, ExtendedKeyUsage } from "@peculiar/asn1-x509";
+import { Certificate, CertificateList } from "@peculiar/asn1-x509";
 import {
   bigUint,
   bitString,
@@ -839,8 +839,18 @@ export const nameConstraintsEqual = (a: NameConstraintsValue, b: NameConstraints
   JSON.stringify(sortKeys(a.permitted)) === JSON.stringify(sortKeys(b.permitted)) &&
   JSON.stringify(sortKeys(a.excluded)) === JSON.stringify(sortKeys(b.excluded));
 
-const dnsEntry = (value: string): NameConstraintEntry => ({ type: "dns", value: value.toLowerCase(), key: value.toLowerCase() });
-const uriEntry = (value: string): NameConstraintEntry => ({ type: "uri", value: value.toLowerCase(), key: value.toLowerCase() });
+/** A DNS-style host constraint: non-empty labels of [A-Za-z0-9-], with one optional leading dot. */
+const HOST_PATTERN = /^\.?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$/;
+export const isValidHostConstraint = (value: string): boolean => value.length <= 253 && HOST_PATTERN.test(value);
+
+const hostEntry = (type: "dns" | "uri", value: string): NameConstraintEntry => {
+  if (!isValidHostConstraint(value)) {
+    throw new DerError(`Invalid ${type} name constraint.`);
+  }
+  return { type, value: value.toLowerCase(), key: value.toLowerCase() };
+};
+const dnsEntry = (value: string): NameConstraintEntry => hostEntry("dns", value);
+const uriEntry = (value: string): NameConstraintEntry => hostEntry("uri", value);
 const ipEntry = (cidr: { address: Buffer; mask: Buffer; prefix: number }): NameConstraintEntry => ({
   type: "ip",
   value: `${formatIp(cidr.address)}/${cidr.prefix}`,
@@ -864,8 +874,13 @@ const normalizeGroup = (group: ConstraintGroup | undefined): NameConstraintEntry
         (values ?? []).map((value): [string, string] => [type, value]),
       );
   return pairs.map(([type, value]) => {
-    if (type === "dns") return dnsEntry(value);
-    if (type === "uri") return uriEntry(value);
+    if (type === "dns" || type === "uri") {
+      try {
+        return type === "dns" ? dnsEntry(value) : uriEntry(value);
+      } catch {
+        throw new EzError(2, "invalid_input", `Invalid ${type} name constraint.`);
+      }
+    }
     if (type === "ip") {
       const cidr = parseCidr(value);
       if (cidr === undefined) throw new EzError(2, "invalid_input", `Invalid CIDR ${value}.`);
@@ -880,13 +895,22 @@ export const normalizeNameConstraints = (input: NameConstraintsInput | null | un
   excluded: normalizeGroup(input?.excluded),
 });
 
-const decodeSubtrees = (container: Tlv): NameConstraintEntry[] =>
+const decodeSubtrees = (container: Tlv): NameConstraintEntry[] => {
+  const entries = decodeSubtreeList(container);
+  if (entries.length === 0) throw new DerError("Empty subtree list in NameConstraints.");
+  if (new Set(entries.map((e) => `${e.type}:${e.key}`)).size !== entries.length) {
+    throw new DerError("Duplicate name constraint.");
+  }
+  return entries;
+};
+
+const decodeSubtreeList = (container: Tlv): NameConstraintEntry[] =>
   children(container).map((subtree) => {
     if (subtree.tag !== TAG.sequence) throw new DerError("Malformed GeneralSubtree.");
     const [base, ...limits] = children(subtree);
     if (base === undefined || limits.length > 0) throw new DerError("GeneralSubtree minimum and maximum are not supported.");
-    if (base.tag === 0x82) return dnsEntry(base.value.toString("ascii"));
-    if (base.tag === 0x86) return uriEntry(base.value.toString("ascii"));
+    if (base.tag === 0x82) return dnsEntry(base.value.toString("latin1"));
+    if (base.tag === 0x86) return uriEntry(base.value.toString("latin1"));
     if (base.tag === 0x87) {
       const length = base.value.length;
       if (length !== 8 && length !== 32) throw new DerError("Malformed iPAddress constraint.");
@@ -896,6 +920,7 @@ const decodeSubtrees = (container: Tlv): NameConstraintEntry[] =>
       while (prefix < address.length * 8 && (mask[prefix >> 3] as number) & (0x80 >> (prefix & 7))) prefix++;
       const cidr = parseCidr(`${formatIp(address)}/${prefix}`);
       if (cidr === undefined || !cidr.mask.equals(mask)) throw new DerError("Non-contiguous iPAddress mask.");
+      if (!cidr.address.equals(address)) throw new DerError("iPAddress constraint has host bits set.");
       return ipEntry(cidr);
     }
     throw new DerError("Unsupported GeneralName type in a name constraint.");
@@ -906,11 +931,11 @@ export const parseNameConstraints = (value: Buffer): NameConstraintsValue => {
   if (root.tag !== TAG.sequence) throw new DerError("Malformed NameConstraints.");
   let permitted: NameConstraintEntry[] = [];
   let excluded: NameConstraintEntry[] = [];
-  for (const part of children(root)) {
-    if (part.tag === 0xa0) permitted = decodeSubtrees(part);
-    else if (part.tag === 0xa1) excluded = decodeSubtrees(part);
-    else throw new DerError("Malformed NameConstraints.");
-  }
+  const parts = children(root);
+  let index = 0;
+  if (parts[index]?.tag === 0xa0) permitted = decodeSubtrees(parts[index++] as Tlv);
+  if (parts[index]?.tag === 0xa1) excluded = decodeSubtrees(parts[index++] as Tlv);
+  if (index !== parts.length) throw new DerError("Malformed NameConstraints (order, duplicates or unknown field).");
   return { permitted, excluded };
 };
 
@@ -1107,7 +1132,9 @@ export const validateCsr = (input: Buffer | string, expectations: CsrExpectation
           break;
         case OID.extendedKeyUsage: {
           if (e.critical) unexpected("ExtendedKeyUsage must not be critical.");
-          const parsed = [...AsnConvert.parse(e.value, ExtendedKeyUsage)] as string[];
+          const ekuRoot = parseDer(e.value);
+          if (ekuRoot.tag !== TAG.sequence) throw new DerError("Malformed ExtendedKeyUsage.");
+          const parsed = children(ekuRoot).map((o) => decodeOid(o));
           if (parsed.length === 0 || parsed.some((o) => EKU_OIDS[o] === undefined) || new Set(parsed).size !== parsed.length) {
             unexpected("ExtendedKeyUsage may only list serverAuth and clientAuth.");
           }
@@ -1310,16 +1337,20 @@ export interface CsrSummary {
   readonly warnings: readonly string[];
 }
 
+/** Escapes anything outside printable ASCII, so a hostile value can never move the cursor or forge a display line. */
+export const displaySafe = (text: string): string =>
+  text.replace(/[^\x20-\x7e]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+
 export const summarizeCsr = (csr: ValidatedCsr): CsrSummary => ({
-  subject: describeName(csr.subject),
+  subject: displaySafe(describeName(csr.subject)),
   keyAlgorithm: csr.keyInfo.algorithm,
   spkiSha256: csr.spkiSha256,
   nameConstraints:
     csr.nameConstraints === undefined
       ? undefined
       : {
-          permitted: csr.nameConstraints.permitted.map((e) => `${e.type}:${e.value}`),
-          excluded: csr.nameConstraints.excluded.map((e) => `${e.type}:${e.value}`),
+          permitted: csr.nameConstraints.permitted.map((e) => displaySafe(`${e.type}:${e.value}`)),
+          excluded: csr.nameConstraints.excluded.map((e) => displaySafe(`${e.type}:${e.value}`)),
         },
   extendedKeyUsages: csr.extendedKeyUsages,
   warnings: csr.warnings,

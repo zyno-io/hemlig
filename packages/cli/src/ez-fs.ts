@@ -148,7 +148,21 @@ const processAlive = (pid: number): boolean => {
   }
 };
 
-/** `open(wx)` lock held for the whole command, network calls included. Local disks and removable media only. */
+const GUARD_FILE = `${LOCK_FILE}.break`;
+
+const readHolder = async (path: string): Promise<Partial<LockInfo>> => {
+  try {
+    return JSON.parse((await fs.readFile(path)).toString("utf8")) as Partial<LockInfo>;
+  } catch {
+    return {};
+  }
+};
+
+/**
+ * `open(wx)` lock held for the whole command, network calls included. Local disks and removable media only. Breaking
+ * a stale lock is serialized by a second `wx` guard file and re-checks the holder's nonce under the guard, so two
+ * breakers (or a breaker and a fresh acquirer) can never both end up holding the lock.
+ */
 export const acquireLock = async (directory: string, options: LockOptions): Promise<LockHandle> => {
   const path = join(directory, LOCK_FILE);
   const info: LockInfo = {
@@ -158,46 +172,58 @@ export const acquireLock = async (directory: string, options: LockOptions): Prom
     startedAt: (options.now?.() ?? new Date()).toISOString(),
     nonce: randomBytes(16).toString("hex"),
   };
-  for (let attempt = 0; ; attempt++) {
+  const create = async (): Promise<void> => {
+    const handle = await fs.open(path, "wx", 0o600);
     try {
-      const handle = await fs.open(path, "wx", 0o600);
+      await handle.writeFile(JSON.stringify(info));
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  };
+  const locked = (holder: Partial<LockInfo>): EzError =>
+    new EzError(5, "state_locked", "Another hemlig pki ez command holds the lock on this directory.", { holder });
+  try {
+    await create();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const holder = await readHolder(path);
+    const stale = (h: Partial<LockInfo>): boolean =>
+      options.breakStale === true &&
+      h.hostname === options.hostname &&
+      typeof h.pid === "number" &&
+      typeof h.nonce === "string" &&
+      !(options.isAlive ?? processAlive)(h.pid);
+    if (!stale(holder)) throw locked(holder);
+    const guardPath = join(directory, GUARD_FILE);
+    let guard: fs.FileHandle;
+    try {
+      guard = await fs.open(guardPath, "wx", 0o600);
+    } catch (guardError) {
+      if ((guardError as NodeJS.ErrnoException).code === "EEXIST") throw locked(holder);
+      throw guardError;
+    }
+    try {
+      const again = await readHolder(path);
+      // Still the same dead holder? Otherwise someone else has taken (or re-created) the lock.
+      if (again.nonce !== holder.nonce || !stale(again)) throw locked(again);
+      await fs.unlink(path);
       try {
-        await handle.writeFile(JSON.stringify(info));
-        await handle.sync();
-      } finally {
-        await handle.close();
+        await create();
+      } catch (createError) {
+        if ((createError as NodeJS.ErrnoException).code === "EEXIST") throw locked(await readHolder(path));
+        throw createError;
       }
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      let holder: Partial<LockInfo> = {};
-      try {
-        holder = JSON.parse((await fs.readFile(path)).toString("utf8")) as Partial<LockInfo>;
-      } catch {
-        // unreadable holder: report it as unknown
-      }
-      const stale =
-        options.breakStale === true &&
-        attempt === 0 &&
-        holder.hostname === options.hostname &&
-        typeof holder.pid === "number" &&
-        !(options.isAlive ?? processAlive)(holder.pid);
-      if (stale) {
-        await fs.unlink(path).catch(() => undefined);
-        continue;
-      }
-      throw new EzError(5, "state_locked", "Another hemlig pki ez command holds the lock on this directory.", { holder });
+    } finally {
+      await guard.close();
+      await fs.unlink(guardPath).catch(() => undefined);
     }
   }
   return {
     info,
     release: async () => {
-      try {
-        const current = JSON.parse((await fs.readFile(path)).toString("utf8")) as Partial<LockInfo>;
-        if (current.nonce === info.nonce) await fs.unlink(path);
-      } catch {
-        // already gone
-      }
+      const current = await readHolder(path);
+      if (current.nonce === info.nonce) await fs.unlink(path).catch(() => undefined);
     },
   };
 };
