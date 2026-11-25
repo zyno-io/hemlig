@@ -10,6 +10,7 @@ import {
   DEFAULT_LOGIN_TIMEOUT_MS,
   defaultConfigDir,
   loginViaConsole,
+  loginViaCode,
   openInBrowser,
   removeCachedToken,
   writeCachedLogin,
@@ -52,7 +53,7 @@ type Command = (typeof commands)[number];
 
 const help = {
   usage:
-    "hemlig secret <command> [options] | hemlig pki <ca|external-ca|grant|cert|consumer> <command> [options] | hemlig consumer <list|get|identities|revoke-identity> [options] | hemlig login [--console-url <url>] [--no-browser] | hemlig logout | hemlig idempotency-key",
+    "hemlig secret <command> [options] | hemlig pki <ca|external-ca|grant|cert|consumer> <command> [options] | hemlig consumer <list|get|identities|revoke-identity> [options] | hemlig login [--console-url <url>] [--no-browser] [--no-localhost|--localhost] | hemlig logout | hemlig idempotency-key",
   commands,
   consumerCommands: {
     list: "List consumers in --environment. Optional --cursor from the previous page's nextCursor.",
@@ -65,7 +66,7 @@ const help = {
   pki: pkiHelp,
   topLevelCommands: {
     login:
-      "Authorize via the web console's SSO session and cache a short-lived admin token. Opens a browser; never prompts.",
+      "Authorize via the web console's SSO session and cache a short-lived admin token. Opens a browser. The localhost callback never prompts; --no-localhost (default over SSH) asks for a login code.",
     logout: "Delete the cached login token.",
     "idempotency-key": "Print a newly minted UUID operation key.",
   },
@@ -73,6 +74,10 @@ const help = {
     "--console-url":
       "Console HTTPS origin for login; defaults to HEMLIG_CONSOLE_URL.",
     "--no-browser": "login only: print the URL instead of opening a browser.",
+    "--no-localhost":
+      "login only: no local callback listener; copy the login code shown by the console and paste it into the terminal. Default when SSH_CONNECTION or SSH_TTY is set.",
+    "--localhost":
+      "login only: use the 127.0.0.1 callback listener even in an SSH session. Cannot be combined with --no-localhost.",
     "--admin-url":
       "Administrator origin; defaults to HEMLIG_ADMIN_URL, then the API recorded by hemlig login when the cached login is the token source.",
     "--environment":
@@ -149,6 +154,8 @@ export async function runCli(
           "admin-url": { type: "string" },
           "console-url": { type: "string" },
           "no-browser": { type: "boolean" },
+          "no-localhost": { type: "boolean" },
+          localhost: { type: "boolean" },
           environment: { type: "string" },
           "token-file": { type: "string" },
           "secret-id": { type: "string" },
@@ -193,9 +200,20 @@ export async function runCli(
     }
     if (parsed.positionals.length === 1 && parsed.positionals[0] === "login") {
       for (const name of seen) {
-        if (name !== "console-url" && name !== "no-browser")
+        if (
+          name !== "console-url" &&
+          name !== "no-browser" &&
+          name !== "no-localhost" &&
+          name !== "localhost"
+        )
           usage("An option is not supported by login.");
       }
+      if (parsed.values["no-localhost"] && parsed.values.localhost)
+        usage("--no-localhost and --localhost cannot be combined.");
+      const overSsh = Boolean(env.SSH_CONNECTION || env.SSH_TTY);
+      const noLocalhost =
+        parsed.values["no-localhost"] === true ||
+        (parsed.values.localhost !== true && overSsh);
       const consoleOrigin = httpsOrigin(
         parsed.values["console-url"] ?? env.HEMLIG_CONSOLE_URL,
         "Supply --console-url or HEMLIG_CONSOLE_URL.",
@@ -207,16 +225,36 @@ export async function runCli(
           `Open this URL to sign in to the Hemlig CLI:\n${target}\nConfirm the browser shows code ${code}\n`,
         );
       };
-      const result = await loginViaConsole({
-        consoleOrigin,
-        timeoutMs: dependencies.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
-        now,
-        fetch: dependencies.fetch ?? globalThis.fetch,
-        open: parsed.values["no-browser"]
+      // With the copy-the-code flow over SSH a browser opened here would be on the remote host.
+      const open =
+        parsed.values["no-browser"] || (noLocalhost && overSsh)
           ? undefined
-          : (dependencies.openBrowser ?? openInBrowser),
-        announce: url,
-      });
+          : (dependencies.openBrowser ?? openInBrowser);
+      const timeoutMs = dependencies.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS;
+      const fetchImpl = dependencies.fetch ?? globalThis.fetch;
+      const result = noLocalhost
+        ? await loginViaCode({
+            consoleOrigin,
+            timeoutMs,
+            now,
+            fetch: fetchImpl,
+            open,
+            announce: url,
+            prompt: async () => {
+              await stderr(
+                "Paste the login code from the console, then press Enter:\n",
+              );
+            },
+            stdin,
+          })
+        : await loginViaConsole({
+            consoleOrigin,
+            timeoutMs,
+            now,
+            fetch: fetchImpl,
+            open,
+            announce: url,
+          });
       await writeCachedLogin(configDir, {
         token: result.token,
         consoleOrigin: consoleOrigin.origin,

@@ -9,6 +9,10 @@ import { useAppStore } from "../stores/app";
  * listening on a loopback port. The CLI never performs OAuth itself. The token
  * travels in a top-level form POST body, never in a URL and never through
  * fetch (browsers restrict fetch to local-network targets).
+ *
+ * With `mode=code` (remote/SSH sessions, where this browser's 127.0.0.1 is not
+ * the CLI's machine) nothing is sent anywhere: the token is shown as a
+ * `hemlig1.<state>.<jwt>` code for the operator to copy into the terminal.
  */
 const store = useAppStore();
 const route = useRoute();
@@ -32,10 +36,16 @@ const state = computed(() => {
     ? raw
     : undefined;
 });
-const valid = computed(
-  () => port.value !== undefined && state.value !== undefined,
+// `mode=code` takes no port; a link with both is malformed.
+const codeMode = computed(() => single(route.query.mode) === "code");
+const valid = computed(() =>
+  codeMode.value
+    ? route.query.port === undefined && state.value !== undefined
+    : port.value !== undefined && state.value !== undefined,
 );
-const target = computed(() => `127.0.0.1:${port.value}`);
+const target = computed(() =>
+  codeMode.value ? "Paste into terminal" : `127.0.0.1:${port.value}`,
+);
 
 const signedInAs = computed(
   () =>
@@ -91,6 +101,28 @@ onBeforeUnmount(() => {
 const phase = ref<"idle" | "sending" | "cancelled">("idle");
 const error = ref<string | undefined>();
 
+/** Revealed login code; kept only in this ref, never in the URL, a form or a log. */
+const REVEAL_MS = 5 * 60 * 1000;
+const revealed = ref<string | undefined>();
+const copyNote = ref<string | undefined>();
+let revealTimer: ReturnType<typeof setTimeout> | undefined;
+const hide = (): void => {
+  clearTimeout(revealTimer);
+  revealed.value = undefined;
+  copyNote.value = undefined;
+  if (phase.value === "sending") phase.value = "idle";
+};
+onBeforeUnmount(hide);
+const copy = async (): Promise<void> => {
+  if (revealed.value === undefined) return;
+  try {
+    await navigator.clipboard.writeText(revealed.value);
+    copyNote.value = "Copied.";
+  } catch {
+    copyNote.value = "Could not copy automatically. Select the code and copy it manually.";
+  }
+};
+
 const authorize = async (): Promise<void> => {
   if (!valid.value || !armed.value || phase.value === "sending") return;
   error.value = undefined;
@@ -99,6 +131,13 @@ const authorize = async (): Promise<void> => {
     const token = await store.accessToken(RENEW_WITHIN_MS);
     if (token === undefined) {
       throw new Error("This console session has no access token to hand over.");
+    }
+    if (codeMode.value) {
+      revealed.value = `hemlig1.${state.value!}.${token}`;
+      phase.value = "idle";
+      clearTimeout(revealTimer);
+      revealTimer = setTimeout(hide, REVEAL_MS);
+      return;
     }
     const form = document.createElement("form");
     form.method = "POST";
@@ -124,6 +163,7 @@ const authorize = async (): Promise<void> => {
 };
 
 const cancel = (): void => {
+  hide();
   phase.value = "cancelled";
 };
 </script>
@@ -140,7 +180,7 @@ const cancel = (): void => {
       <section v-if="!valid" class="notice notice-danger max-w-xl" role="alert">
         <p class="notice-title">This CLI sign-in link is invalid.</p>
         <p class="mt-1">
-          The port or state is missing or malformed. Run
+          The port, mode or state is missing or malformed. Run
           <code>hemlig login</code> again.
         </p>
       </section>
@@ -175,8 +215,47 @@ const cancel = (): void => {
           <dt>Signed in as</dt>
           <dd class="mono break-all">{{ signedInAs }}</dd>
         </dl>
-        <p class="mt-3 text-[13px] text-ink-2">
+        <p v-if="!codeMode" class="mt-3 text-[13px] text-ink-2">
           The token grants full administrator access until it expires.
+        </p>
+        <div v-if="codeMode && revealed !== undefined" class="mt-3">
+          <div class="notice notice-danger" role="alert">
+            <p class="notice-title">Treat this code like a password.</p>
+            <p class="mt-1">
+              It grants full administrator access until it expires. Paste it
+              only into the terminal showing confirmation code
+              {{ code }}. Never share it.
+            </p>
+          </div>
+          <textarea
+            class="mono mt-3 w-full text-[12px]"
+            data-testid="login-code"
+            readonly
+            rows="6"
+            spellcheck="false"
+            autocomplete="off"
+            :value="revealed"
+            @focus="($event.target as HTMLTextAreaElement).select()"
+          />
+          <div class="mt-2 flex items-center gap-2">
+            <button type="button" class="btn btn-primary" @click="copy">
+              Copy
+            </button>
+            <button type="button" class="btn" @click="hide">Hide</button>
+            <span v-if="copyNote" class="text-[13px] text-ink-2" role="status">{{
+              copyNote
+            }}</span>
+          </div>
+          <p class="mt-2 text-[13px] text-ink-2">
+            This code is cleared from the page after 5 minutes.
+          </p>
+        </div>
+        <p
+          v-else-if="codeMode"
+          class="mt-3 text-[13px] text-ink-2"
+        >
+          Authorizing shows a one-time login code to copy into your terminal.
+          It grants full administrator access until it expires.
         </p>
         <div v-if="error" class="notice notice-danger mt-3" role="alert">
           <p class="notice-title">Could not authorize the CLI.</p>
@@ -186,7 +265,12 @@ const cancel = (): void => {
           <button
             type="button"
             class="btn btn-primary"
-            :disabled="phase === 'sending' || !armed || code === undefined"
+            :disabled="
+              phase === 'sending' ||
+              !armed ||
+              code === undefined ||
+              revealed !== undefined
+            "
             @click="authorize"
           >
             {{ phase === "sending" ? "Authorizing…" : "Authorize" }}

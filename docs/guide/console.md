@@ -112,7 +112,7 @@ Every PKI read and evaluation writes an audit event, unlike routine secret metad
 
 ## CLI authorization
 
-The `/cli-login` page lets a signed-in administrator hand a token to `hemlig login` on this computer; see [CLI sign in](cli.md#sign-in-with-hemlig-login).
+The `/cli-login` page lets a signed-in administrator hand a token to `hemlig login` on this computer, or, with `mode=code` for SSH sessions, copy a one-time login code to paste into the terminal; see [CLI sign in](cli.md#sign-in-with-hemlig-login).
 
 ## Local development
 

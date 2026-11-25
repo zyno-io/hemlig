@@ -463,3 +463,181 @@ export async function loginViaConsole(
     });
   });
 }
+
+/** Prefix of the copy-the-code login code; the version lets the format change later. */
+export const LOGIN_CODE_PREFIX = "hemlig1.";
+/** Longest paste accepted; a JWT is about 2-4 KiB. */
+export const MAX_LOGIN_CODE_BYTES = 16 * 1024;
+
+/** `hemlig1.<state>.<jwt>`; the console implements its own copy of this. */
+export function formatLoginCode(state: string, token: string): string {
+  return `${LOGIN_CODE_PREFIX}${state}.${token}`;
+}
+
+/**
+ * Splits a login code into its state and token. State is base64url and has
+ * no dots, so the token is everything after the next dot. Syntax only: the
+ * caller still checks state and expiry.
+ */
+export function parseLoginCode(value: string): { state: string; token: string } {
+  const bad = (why: string): LoginError =>
+    new LoginError("invalid_code", `The pasted login code is not valid (${why}). Run \`hemlig login\` again.`);
+  const code = value.trim();
+  if (!code.startsWith(LOGIN_CODE_PREFIX)) throw bad("wrong prefix");
+  const rest = code.slice(LOGIN_CODE_PREFIX.length);
+  const dot = rest.indexOf(".");
+  if (dot <= 0) throw bad("missing state");
+  const state = rest.slice(0, dot);
+  const token = rest.slice(dot + 1);
+  if (!/^[A-Za-z0-9_-]+$/.test(state)) throw bad("malformed state");
+  if (!JWT_PATTERN.test(token)) throw bad("malformed token");
+  return { state, token };
+}
+
+/** Input stream for the copy-the-code flow; process.stdin satisfies it. */
+export interface CodeInput extends AsyncIterable<string | Uint8Array> {
+  readonly isTTY?: boolean;
+  setRawMode?(mode: boolean): unknown;
+  pause?(): unknown;
+  resume?(): unknown;
+}
+
+const BRACKETED_PASTE = ["\x1b[200~", "\x1b[201~"];
+
+const cancelled = (): LoginError =>
+  new LoginError("login_cancelled", "Login cancelled.");
+const tooLarge = (): LoginError =>
+  new LoginError("code_too_large", "The pasted input is too large to be a login code.");
+
+/**
+ * Reads one line. On a terminal it runs in raw mode with no echo: canonical
+ * mode truncates a line at 1024 bytes on macOS and the code is longer. Without
+ * a terminal it takes the first line of the stream, or all of it at EOF.
+ */
+export async function readCodeLine(input: CodeInput): Promise<string> {
+  const raw = input.isTTY === true && typeof input.setRawMode === "function";
+  const iterator = input[Symbol.asyncIterator]();
+  const decoder = new TextDecoder();
+  let line = "";
+  let carry = "";
+  if (raw) input.setRawMode!(true);
+  try {
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) {
+        if (raw && line === "") throw cancelled();
+        return line;
+      }
+      const chunk = next.value;
+      let text = carry + (typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true }));
+      carry = "";
+      if (!raw) {
+        const end = text.search(/[\r\n]/);
+        line += end < 0 ? text : text.slice(0, end);
+        if (line.length > MAX_LOGIN_CODE_BYTES) throw tooLarge();
+        if (end >= 0) return line;
+        continue;
+      }
+      for (const marker of BRACKETED_PASTE) text = text.split(marker).join("");
+      // Hold back a possible start of a marker split across chunks.
+      for (let n = Math.min(text.length, 5); n > 0; n--) {
+        const tail = text.slice(-n);
+        if (BRACKETED_PASTE.some((m) => m.startsWith(tail))) {
+          carry = tail;
+          text = text.slice(0, -n);
+          break;
+        }
+      }
+      for (const ch of text) {
+        const point = ch.codePointAt(0)!;
+        if (point === 0x03) throw cancelled();
+        if (point === 0x04) {
+          if (line === "") throw cancelled();
+        } else if (ch === "\r" || ch === "\n") {
+          return line;
+        } else if (point === 0x7f || point === 0x08) {
+          line = line.slice(0, -1);
+        } else if (point >= 0x20) {
+          line += ch;
+          if (line.length > MAX_LOGIN_CODE_BYTES) throw tooLarge();
+        }
+      }
+    }
+  } finally {
+    if (raw) input.setRawMode!(false);
+    input.pause?.();
+    void Promise.resolve(iterator.return?.()).catch(() => {});
+  }
+}
+
+export interface CodeLoginOptions {
+  readonly consoleOrigin: URL;
+  readonly timeoutMs: number;
+  readonly now: () => number;
+  readonly open: ((url: string) => void | Promise<void>) | undefined;
+  readonly fetch: typeof fetch;
+  readonly announce: (url: string, code: string) => void | Promise<void>;
+  /** Prints the "paste the code" prompt after the URL is announced. */
+  readonly prompt: () => void | Promise<void>;
+  readonly stdin: CodeInput;
+}
+
+/**
+ * Copy-the-code sign-in (`--no-localhost`) for sessions where the browser cannot reach this machine's
+ * loopback (SSH). No listener: the console shows `hemlig1.<state>.<jwt>` and
+ * the operator pastes it here. The state binds the code to this attempt.
+ */
+export async function loginViaCode(
+  options: CodeLoginOptions,
+): Promise<LoginResult> {
+  const state = randomBytes(32).toString("base64url");
+  const url = new URL("/cli-login", options.consoleOrigin);
+  url.searchParams.set("mode", "code");
+  url.searchParams.set("state", state);
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new LoginError(
+            "login_timeout",
+            "Timed out waiting for the login code. Run `hemlig login` again.",
+          ),
+        ),
+      options.timeoutMs,
+    );
+  });
+  timeout.catch(() => {});
+  try {
+    const read = (async () => {
+      await options.announce(url.toString(), confirmationCode(state));
+      try {
+        await options.open?.(url.toString());
+      } catch {
+        // The URL has been printed; a failed opener must not abort the wait.
+      }
+      await options.prompt();
+      return readCodeLine(options.stdin);
+    })();
+    const pasted = await Promise.race([read, timeout]);
+    const parsed = parseLoginCode(pasted);
+    if (!constantTimeEqual(parsed.state, state)) {
+      throw new LoginError(
+        "state_mismatch",
+        "The pasted code is from a different `hemlig login` attempt; no login was saved.",
+      );
+    }
+    const exp = jwtExpiry(parsed.token);
+    if (exp === undefined || exp * 1000 <= options.now()) {
+      throw new LoginError(
+        "invalid_code",
+        "The pasted token is expired or has no expiry; no login was saved.",
+      );
+    }
+    const adminOrigin = await fetchAdminOrigin(options.consoleOrigin, options.fetch);
+    return { token: parsed.token, expiresAt: new Date(exp * 1000), adminOrigin };
+  } finally {
+    clearTimeout(timer);
+    options.stdin.pause?.();
+  }
+}
