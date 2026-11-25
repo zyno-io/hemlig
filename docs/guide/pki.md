@@ -47,7 +47,7 @@ export HEMLIG_ENVIRONMENT=prod
      --permit-dns example.com --csr-out issuing.csr
    ```
 
-2. **Sign it offline** with the root, then issue the root's first CRL. The recipe is in [Offline root recipe](../operations/pki-offline-root.md).
+2. **Sign it offline** with the root, then issue the root's first CRL. With the EZ tooling this is one command, `hemlig pki ez sign-cert prod-issuing-1`, which also activates the CA (step 3); see [Offline root](../operations/pki-offline-root.md#ez-hemlig-pki-ez). The OpenSSL recipe is in the same page.
 3. **Activate** with the signed certificate, the root certificate and the root CRL:
 
    ```sh
@@ -187,7 +187,13 @@ When a role is unset, any administrator may perform those operations. See [Confi
 
 Relying parties check your root's CRL as well as the CA's. Hemlig stores the latest root CRL you upload and revokes any CA that CRL lists, whatever the reason, including `certificateHold`. A hold is permanent in Hemlig: removing it later does not restore the CA.
 
-Refresh the root CRL before its `nextUpdate`:
+Refresh the root CRL before its `nextUpdate`. With EZ:
+
+```sh
+hemlig pki ez renew-crl --if-due
+```
+
+With the OpenSSL recipe:
 
 ```sh
 openssl ca -config root-ca.cnf -gencrl -out root.crl.pem
@@ -204,7 +210,7 @@ Download a CRL, for either a CA or a root, with `hemlig pki ca crl get`. A [trus
 
 ## If the intermediate's key is compromised
 
-Revoke the intermediate at the root (`openssl ca -revoke`), regenerate the root CRL and upload it. Hemlig marks the CA `REVOKED` and disables its key. A [trust bundle](trust-bundles.md) picks up the new root CRL on its next refresh, so workloads reject the revoked CA's certificates. Then roll over to a new CA; see [Roll over a CA](../operations/pki-ca-rollover.md).
+Revoke the intermediate at the root (`hemlig pki ez revoke-cert prod-issuing-1 --reason caCompromise`, or `openssl ca -revoke` with the recipe), regenerate the root CRL and upload it. Hemlig marks the CA `REVOKED` and disables its key. A [trust bundle](trust-bundles.md) picks up the new root CRL on its next refresh, so workloads reject the revoked CA's certificates. Then roll over to a new CA; see [Roll over a CA](../operations/pki-ca-rollover.md).
 
 If the CA is a Hemlig `INTERMEDIATE`, run `hemlig pki ca revoke <ca> --reason caCompromise` instead. Hemlig revokes it, disables its key, writes it into its root's generated CRL and publishes that CRL at once. Bundles that list the root deliver the new CRL on their next refresh.
 

@@ -187,7 +187,7 @@ export default withMermaid(
                 link: "/operations/flux-rollout",
               },
               {
-                text: "PKI: offline root recipe",
+                text: "PKI: offline root (EZ and OpenSSL)",
                 link: "/operations/pki-offline-root",
               },
               {

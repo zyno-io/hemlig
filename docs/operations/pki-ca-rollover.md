@@ -29,7 +29,7 @@ Then move traffic to a healthy CA. Under an external root, do steps 1 to 6 below
    hemlig pki ca create --rollover-from prod-issuing-1 --csr-out issuing2.csr
    ```
 
-2. Have the root sign it, then activate it as in [Offline root recipe](pki-offline-root.md#sign-a-hemlig-csr).
+2. Have the root sign it and activate it: `hemlig pki ez sign-cert prod-issuing-2 --environment prod` does both (see [Offline root](pki-offline-root.md#sign-a-ca)), or follow the [OpenSSL recipe](pki-offline-root.md#sign-a-hemlig-csr).
 
 In the console, "Roll over" on the CA pre-fills the same settings. It increments the trailing number of the name and common name, and disables Create while the subject DN equals the old CA's. In Pulumi, add a second `certificateAuthority` resource with a new name and DN: never rename or replace the old one, because the provider refuses immutable changes. See [Manage PKI with Pulumi](../guide/pulumi-pki.md#roll-over-a-ca).
 
