@@ -34,3 +34,12 @@ test("terminal: ^C, ^D on empty and EOF cancel; oversize is refused; pipes can b
   await assert.rejects(readTerminalLine(input(["x".repeat(17)]), options), /large/);
   await assert.rejects(readTerminalLine(input(["x\n"]), { ...options, allowPipe: false, notTerminal: () => new Error("terminal_required") }), /terminal_required/);
 });
+
+test("terminal: echo reports typed characters and erasures, never for a secret read", async () => {
+  const echoed: string[] = [];
+  const term = input(["ab\x7fc\r"], true);
+  assert.equal((await readTerminalLine(term, { ...options, echo: (t) => void echoed.push(t) })).toString(), "ac");
+  assert.deepEqual(echoed, ["a", "b", "\b \b", "c"]);
+  // without an echo callback nothing is reported (the secret path)
+  assert.equal((await readTerminalLine(input(["secret\r"], true), options)).toString(), "secret");
+});

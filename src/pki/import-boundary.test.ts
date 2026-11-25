@@ -140,7 +140,9 @@ describe("the MIT CLI never imports the AGPL server", () => {
   const specifiers = cliFiles.flatMap((file) =>
     [...readFileSync(file, "utf8").matchAll(importPattern)].map((m) => ({ file, specifier: m[1] ?? m[2] ?? m[3] ?? "" })),
   );
-  const isLibrary = (file: string): boolean => /[\\/](ez-[a-z0-9-]+|tty)\.ts$/.test(file) && !file.endsWith(".test.ts");
+  // The command layer (`ez.ts`, `ez-online.ts`) and the API test double (`ez-fake.ts`) talk to the client package on purpose.
+  const isLibrary = (file: string): boolean =>
+    /[\\/](ez-[a-z0-9-]+|tty)\.ts$/.test(file) && !file.endsWith(".test.ts") && !/[\\/]ez-(online|fake)\.ts$/.test(file);
 
   it("scans the CLI sources, recursively", () => {
     expect(cliFiles.map((f) => f.slice(cliRoot.length + 1))).toEqual(

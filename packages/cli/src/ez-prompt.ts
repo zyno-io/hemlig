@@ -139,19 +139,33 @@ export class Prompter {
     }
   }
 
+  async #confirmInput(): Promise<{ input: TerminalInput | undefined; opened: boolean }> {
+    if (isTerminal(this.#stdin)) return { input: this.#stdin, opened: false };
+    const input = await this.#openTerminal?.();
+    return { input: input !== undefined && isTerminal(input) ? input : undefined, opened: input !== undefined };
+  }
+
+  /** Fails with `terminal_required` now, before any review is shown, when a typed confirm could not be read later. */
+  public async requireConfirmTerminal(action: string): Promise<void> {
+    const { input, opened } = await this.#confirmInput();
+    if (opened) (input ?? undefined)?.destroy?.();
+    if (input === undefined) {
+      throw new EzError(
+        2,
+        "terminal_required",
+        `${action} needs the operator to type "${CONFIRM_WORD}" at a terminal; there is no unattended mode and --yes does not skip it.`,
+      );
+    }
+  }
+
   /**
    * The typed confirmation: the caller has printed the review; the operator must type exactly `confirm` at the keyboard.
    * Anything else exits 2 `confirmation_declined`; ^C or EOF exits 9 `prompt_cancelled`. With stdin piped it uses the
    * controlling terminal, and with none it exits 2 `terminal_required`: signing and revoking are never unattended.
    */
   public async confirm(action: string): Promise<void> {
-    let input: TerminalInput | undefined = this.#stdin;
-    let opened = false;
-    if (!isTerminal(input)) {
-      input = await this.#openTerminal?.();
-      opened = true;
-    }
-    if (input === undefined || !isTerminal(input)) {
+    const { input, opened } = await this.#confirmInput();
+    if (input === undefined) {
       throw new EzError(
         2,
         "terminal_required",

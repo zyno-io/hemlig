@@ -327,6 +327,11 @@ const pemOf = (der: Buffer, label: string): string => toPem(der, label);
 /** The form runs only on a terminal and without --yes; the typed confirm is never skipped. */
 const formWanted = (ctx: Ctx): boolean => ctx.prompter.interactive && !flag(ctx.values, "yes");
 
+const terminalColumns = (): number => {
+  const columns = process.stderr.columns;
+  return typeof columns === "number" && columns >= 40 ? columns : 80;
+};
+
 const runSettingsForm = async (ctx: Ctx, title: string, fields: FormField[]): Promise<Record<string, string>> => {
   if (!formWanted(ctx)) {
     const error = firstFormError(fields);
@@ -339,7 +344,7 @@ const runSettingsForm = async (ctx: Ctx, title: string, fields: FormField[]): Pr
     }
     return Object.fromEntries(fields.map((f) => [f.id, f.value]));
   }
-  return runForm({ title, fields, prompter: ctx.prompter, color: ctx.color, columns: process.stderr.columns });
+  return runForm({ title, fields, prompter: ctx.prompter, color: ctx.color, columns: terminalColumns() });
 };
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -740,6 +745,7 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
     const crlPreview = needCrl ? { number: state.crl.lastNumber + 1, nextUpdate: new Date(store.nextCrlThisUpdate(now).getTime() + crlValidity * DAY_MS) } : undefined;
 
     if (needCert || needCrl) {
+      await ctx.prompter.requireConfirmTerminal("sign");
       await ctx.say(
         needCert
           ? renderSignReview({ caId, environment: environment === "" ? "(not given)" : environment, source, csr, serial, notBefore: validity.notBefore, notAfter: validity.notAfter, root: rootLabel(root), crl: crlPreview, expectedSpki: expectedSpki !== undefined || !offline })
@@ -790,7 +796,7 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
     const common = {
       command: "sign-cert",
       caId,
-      environment,
+      environment: environment === "" ? null : environment,
       serial: certParsed.serialHex,
       fingerprint: certParsed.fingerprint,
       notBefore: certParsed.notBefore.toISOString(),
@@ -1011,6 +1017,7 @@ const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
     const now = ctx.clock();
     let issuedCrl: IssueResult["crl"];
     if (needSign) {
+      await ctx.prompter.requireConfirmTerminal("revoke");
       await ctx.say(
         renderRevokeReview({
           caId: entry.caId,

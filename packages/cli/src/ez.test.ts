@@ -312,6 +312,7 @@ test("sign-cert: --yes never skips the confirm; a pipe needs a terminal; a wrong
     });
     assert.equal(piped.exitCode, 2);
     assert.equal(piped.error.code, "terminal_required");
+    assert.doesNotMatch(piped.stderr, /Review:/, "refused before anything was shown");
     // a wrong passphrase after a valid confirm: exit 3, still nothing written
     const wrong = await run(["sign-cert", record.caId, "--dir", dir, "--environment", "prod", "--yes"], {
       server: s,
