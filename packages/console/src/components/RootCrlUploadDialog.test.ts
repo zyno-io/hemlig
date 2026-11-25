@@ -4,6 +4,21 @@ import { describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../stores/app";
 import RootCrlUploadDialog from "./RootCrlUploadDialog.vue";
 
+
+// A Map-backed localStorage: Node's own experimental localStorage can shadow jsdom's.
+const installStorage = (): void => {
+  const data = new Map<string, string>();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (k: string) => data.get(k) ?? null,
+      setItem: (k: string, v: string) => void data.set(k, v),
+      removeItem: (k: string) => void data.delete(k),
+      clear: () => data.clear(),
+    },
+  });
+};
+
 const block = (label: string): string =>
   `-----BEGIN ${label}-----\nAAAA\n-----END ${label}-----\n`;
 
@@ -70,5 +85,34 @@ describe("RootCrlUploadDialog", () => {
     );
     await upload(wrapper, block("X509 CRL"));
     expect(wrapper.get('[data-testid="crl-result"]').text()).toContain("already current");
+  });
+});
+
+describe("RootCrlUploadDialog EZ tab", () => {
+  const ext = `ext-${"b".repeat(40)}`;
+  const mountEz = () => {
+    installStorage();
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    return mount(RootCrlUploadDialog, { props: { extId: ext }, global: { plugins: [pinia] } });
+  };
+
+  it("shows the renew and upload commands and hides the upload button", async () => {
+    const wrapper = mountEz();
+    expect(wrapper.find('[data-testid="crl-ez"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain(`hemlig pki ez renew-crl --if-due --expect-ext-id ${ext}`);
+    expect(wrapper.text()).toContain(`hemlig pki ez upload-crl --expect-ext-id ${ext}`);
+    expect(wrapper.find('[data-testid="crl-upload"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="crl-tab-manual"]').trigger("click");
+    expect(wrapper.find('[data-testid="crl-manual"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="crl-upload"]').exists()).toBe(true);
+  });
+
+  it("falls back to Manual for a malformed ext ID", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const wrapper = mount(RootCrlUploadDialog, { props: { extId: "ext-1" }, global: { plugins: [pinia] } });
+    expect(wrapper.find('[role="tablist"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="crl-upload"]').exists()).toBe(true);
   });
 });
