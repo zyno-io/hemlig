@@ -30,6 +30,21 @@ export interface TerminalLineOptions {
   /** Without a terminal, take the first line of the stream (default). When false, a non-terminal input is refused via `notTerminal`. */
   readonly allowPipe?: boolean;
   readonly notTerminal?: () => Error;
+  /**
+   * Called with each accepted character, and with `\b \b` when one is erased, so a prompt that is not secret can show
+   * what is typed (raw mode echoes nothing). Absent for secrets.
+   */
+  readonly echo?: (text: string) => void;
+  /**
+   * Terminal reads only: bytes that arrive in the same chunk after the Enter key are dropped instead of pushed back, so
+   * typeahead or a paste can never become the answer to a later prompt.
+   */
+  readonly discardLeftover?: boolean;
+  /**
+   * Terminal reads only: the read arms once input has been quiet for this many milliseconds. Anything received before
+   * that is dropped, and each such chunk restarts the wait, so buffered or still-arriving typeahead is never the answer.
+   */
+  readonly armMs?: number;
 }
 
 export const isTerminal = (input: TerminalInput): boolean =>
@@ -70,6 +85,8 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
     }
   };
   let carry = "";
+  const armMs = options.armMs ?? 0;
+  let armedAt = Date.now() + armMs;
   if (raw) input.setRawMode!(true);
   try {
     for (;;) {
@@ -79,6 +96,11 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
         return finish();
       }
       const chunk = next.value;
+      if (raw && Date.now() < armedAt) {
+        // Not armed yet: this input was typed ahead. Drop it and wait for the line to go quiet.
+        armedAt = Date.now() + armMs;
+        continue;
+      }
       let text = carry + (typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true }));
       carry = "";
       if (!raw) {
@@ -116,15 +138,17 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
           if (last !== undefined) {
             size -= last.length;
             last.fill(0);
+            options.echo?.("\b \b");
           }
         } else if (point >= 0x20) {
           push(ch);
+          options.echo?.(ch);
         }
       }
     }
   } finally {
     if (raw) input.setRawMode!(false);
-    if (leftover !== "" && typeof input.unshift === "function") input.unshift(Buffer.from(leftover, "utf8"));
+    if (leftover !== "" && !(raw && options.discardLeftover === true) && typeof input.unshift === "function") input.unshift(Buffer.from(leftover, "utf8"));
     input.pause?.();
     void Promise.resolve(iterator.return?.()).catch(() => {});
     // An abandoned read leaves the stream open; closing it lets the process exit.

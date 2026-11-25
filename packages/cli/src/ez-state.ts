@@ -535,7 +535,7 @@ export class EzStore {
   }
 
   /** True when a new CRL is due: none yet, or fewer than `beforeDays` remain before nextUpdate. */
-  public crlDue(beforeDays = EZ_DEFAULTS.crlRenewBeforeDays, now = this.now()): boolean {
+  public crlDue(beforeDays: number = EZ_DEFAULTS.crlRenewBeforeDays, now = this.now()): boolean {
     const current = this.#state.crl.current;
     if (this.#state.revoked.some((r) => r.listedInCrl === null)) return true;
     return current === null || Date.parse(current.nextUpdate) - now.getTime() < beforeDays * DAY_MS;

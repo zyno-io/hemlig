@@ -31,7 +31,8 @@ import {
   usage,
   type CliDependencies,
 } from "./common";
-import { pkiHelp, runPkiCli } from "./pki";
+import { pkiFirstPositional, pkiHelp, runPkiCli } from "./pki";
+import { runEzCli } from "./ez";
 import {
   ConsumerInputError,
   consumerCommands,
@@ -53,7 +54,7 @@ type Command = (typeof commands)[number];
 
 const help = {
   usage:
-    "hemlig secret <command> [options] | hemlig pki <ca|external-ca|grant|cert|consumer> <command> [options] | hemlig consumer <list|get|identities|revoke-identity> [options] | hemlig login [--console-url <url>] [--no-browser] [--no-localhost|--localhost] | hemlig logout | hemlig idempotency-key",
+    "hemlig secret <command> [options] | hemlig pki <ca|external-ca|grant|cert|consumer|ez> <command> [options] | hemlig consumer <list|get|identities|revoke-identity> [options] | hemlig login [--console-url <url>] [--no-browser] [--no-localhost|--localhost] | hemlig logout | hemlig idempotency-key",
   commands,
   consumerCommands: {
     list: "List consumers in --environment. Optional --cursor from the previous page's nextCursor.",
@@ -102,7 +103,7 @@ const help = {
       "Per-request timeout (1–300000 milliseconds); default 30000.",
   },
   output:
-    "One JSON receipt on stdout; one JSON error on stderr. No prompts or automatic retries. Exception: login prints its sign-in URL and confirmation code on stderr on success, and with --no-localhost (default over SSH) also prints a prompt on stderr and reads the login code from stdin.",
+    "One JSON receipt on stdout; one JSON error on stderr. No prompts or automatic retries. Exceptions: login prints its sign-in URL and confirmation code on stderr on success, and with --no-localhost (default over SSH) also prints a prompt on stderr and reads the login code from stdin; pki ez prompts on stderr for passphrases and the typed confirm and reads them from the terminal.",
   exitCodes: {
     "0": "Success",
     "2": "Usage or invalid local input",
@@ -132,11 +133,17 @@ export async function runCli(
   const now = dependencies.now ?? Date.now;
   const configDir = dependencies.configDir ?? defaultConfigDir(env);
   const pkiAt = pkiTokenIndex(args);
-  if (pkiAt >= 0)
-    return runPkiCli(
-      [...args.slice(0, pkiAt), ...args.slice(pkiAt + 1)],
-      dependencies,
-    );
+  if (pkiAt >= 0) {
+    const rest = [...args.slice(0, pkiAt), ...args.slice(pkiAt + 1)];
+    const first = pkiFirstPositional(rest);
+    // `pki ez` has its own flag set and prompts, so it is routed before the strict `pki` parser sees it.
+    if (first >= 0 && rest[first] === "ez")
+      return runEzCli(
+        [...rest.slice(0, first), ...rest.slice(first + 1)],
+        dependencies,
+      );
+    return runPkiCli(rest, dependencies);
+  }
   let idempotencyKey: string | undefined;
   let ifMatch: string | undefined;
   let mutationAttempted = false;

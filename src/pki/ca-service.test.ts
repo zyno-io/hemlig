@@ -15,6 +15,10 @@ import {
 } from "./__fixtures__/testkit";
 import type { CaRecord } from "./types";
 import { buildCaSubject } from "./subject";
+// The EZ library is MIT and lives in the CLI package; this AGPL-side test builds activation artifacts with it.
+import { prepareCrl, prepareIntermediate, prepareRoot, signPrepared } from "../../packages/cli/src/ez-issue";
+import { SoftwareSigner, generateSoftwareKey } from "../../packages/cli/src/ez-signer";
+import { validateCsr } from "../../packages/cli/src/ez-x509";
 
 const actor = { type: "human" as const, id: "admin-1" };
 const now = new Date();
@@ -800,5 +804,181 @@ describe("CaService update, abandon, retire, destroy-key", () => {
     });
     await h.service.destroyKey(actor, "idem-key-0001", "ca-test-one");
     expect(h.pki.destroyKey).toHaveBeenCalled();
+  });
+});
+
+describe("CaService activation with EZ-built artifacts", () => {
+  const nc = {
+    nameConstraints: { permitted: { dns: ["example.com"] } },
+    extendedKeyUsages: ["serverAuth"],
+  };
+
+  const ezRoot = async () => {
+    const signer = new SoftwareSigner(
+      generateSoftwareKey("ECDSA_P384").privateKey,
+    );
+    const [root] = await signPrepared(signer, [
+      prepareRoot(signer, {
+        subject: { O: "Test Corp", CN: "EZ Test Root" },
+        now,
+      }),
+    ] as const);
+    return { signer, root };
+  };
+
+  /** The root CRL as EZ signs it: number, optional revocations. */
+  const ezCrl = async (
+    ez: Awaited<ReturnType<typeof ezRoot>>,
+    number: number,
+    entries: { serial: string }[] = [],
+  ) => {
+    const [crl] = await signPrepared(ez.signer, [
+      prepareCrl(ez.signer, ez.root.certificate, {
+        number,
+        thisUpdate: new Date(now.getTime() - 3_600_000),
+        entries: entries.map((e) => ({
+          serial: e.serial,
+          revokedAt: new Date(now.getTime() - 60_000),
+          reason: "keyCompromise" as const,
+        })),
+      }),
+    ] as const);
+    return crl;
+  };
+
+  /** A pending CA created by the service, and the certificate EZ signs for its CSR. */
+  const pending = async (
+    harness: ReturnType<typeof setup>,
+    ez: Awaited<ReturnType<typeof ezRoot>>,
+  ) => {
+    await harness.service.create(
+      actor,
+      "idem-key-0001",
+      body({ requestedConstraints: nc }),
+    );
+    const ca = harness.store.ca!;
+    const csr = validateCsr(ca.csrPem!, {
+      rootSubjectDer: ez.root.certificate.subjectDer,
+    });
+    const [cert] = await signPrepared(ez.signer, [
+      prepareIntermediate(ez.signer, ez.root.certificate, csr, { now }),
+    ] as const);
+    return { ca, cert };
+  };
+
+  it("activates an EZ-signed intermediate with the EZ root and CRL 1 (new external record, constraints kept)", async () => {
+    const ez = await ezRoot();
+    const harness = setup();
+    const { ca, cert } = await pending(harness, ez);
+    const crl = await ezCrl(ez, 1);
+    const result = await harness.service.activate(
+      actor,
+      "idem-key-0002",
+      ca.caId,
+      {
+        certificatePem: cert.pem,
+        chainPem: ez.root.pem,
+        rootCrl: crl.pem,
+      },
+    );
+    expect(result.status).toBe(200);
+    const input = harness.pki.activateCa.mock.calls[0]![0] as Record<
+      string,
+      any
+    >;
+    expect(input.fields.acceptBroaderConstraints).toBeUndefined();
+    expect(input.fields.serial).toBe(cert.certificate.serialHex);
+    expect(input.fields.parent).toEqual({
+      type: "external",
+      id: `ext-${ez.root.certificate.spkiSha256.slice(0, 40)}`,
+    });
+    expect(input.external.kind).toBe("create");
+    expect(input.external.record.crl.numberHex).toMatch(/01$/);
+    expect(input.external.record.subjectKeyIdentifier).toBe(
+      ez.root.certificate.subjectKeyIdentifier!.toString("hex"),
+    );
+  });
+
+  it("returns upload_first when an EZ CRL 2 is sent with activation for a root the server already has", async () => {
+    const ez = await ezRoot();
+    const first = setup();
+    const one = await pending(first, ez);
+    await first.service.activate(actor, "idem-key-0002", one.ca.caId, {
+      certificatePem: one.cert.pem,
+      chainPem: ez.root.pem,
+      rootCrl: (await ezCrl(ez, 1)).pem,
+    });
+    const record = (first.pki.activateCa.mock.calls[0]![0] as any).external
+      .record;
+    const crl2 = await ezCrl(ez, 2);
+    const second = setup({
+      pki: { getExternalCa: jest.fn(async () => record) },
+    });
+    const two = await pending(second, ez);
+    expect(
+      await errorOf(
+        second.service.activate(actor, "idem-key-0003", two.ca.caId, {
+          certificatePem: two.cert.pem,
+          chainPem: ez.root.pem,
+          rootCrl: crl2.pem,
+        }),
+      ),
+    ).toMatchObject({
+      code: "crl_invalid",
+      details: { reason: "upload_first" },
+    });
+    expect(second.pki.activateCa).not.toHaveBeenCalled();
+  });
+
+  it("joins the existing external record when the activation carries no root CRL (the flow EZ uses once the root is registered)", async () => {
+    const ez = await ezRoot();
+    const first = setup();
+    const one = await pending(first, ez);
+    await first.service.activate(actor, "idem-key-0002", one.ca.caId, {
+      certificatePem: one.cert.pem,
+      chainPem: ez.root.pem,
+      rootCrl: (await ezCrl(ez, 1)).pem,
+    });
+    const record = (first.pki.activateCa.mock.calls[0]![0] as any).external
+      .record;
+    const crl1 = await ezCrl(ez, 1);
+    const second = setup({
+      pki: { getExternalCa: jest.fn(async () => record) },
+    });
+    (second.deps.objects.getBytes as jest.Mock).mockResolvedValue(
+      Buffer.from(crl1.der),
+    );
+    record.crl.sha256 = require("node:crypto")
+      .createHash("sha256")
+      .update(crl1.der)
+      .digest("hex");
+    const two = await pending(second, ez);
+    await second.service.activate(actor, "idem-key-0003", two.ca.caId, {
+      certificatePem: two.cert.pem,
+      chainPem: ez.root.pem,
+    });
+    expect((second.pki.activateCa.mock.calls[0]![0] as any).external).toMatchObject(
+      { kind: "update" },
+    );
+  });
+
+  it("refuses with revoked_by_parent when the EZ root CRL already lists the new certificate", async () => {
+    const ez = await ezRoot();
+    const harness = setup();
+    const { ca, cert } = await pending(harness, ez);
+    const crl = await ezCrl(ez, 1, [{ serial: cert.certificate.serialHex }]);
+    expect(
+      await errorOf(
+        harness.service.activate(actor, "idem-key-0002", ca.caId, {
+          certificatePem: cert.pem,
+          chainPem: ez.root.pem,
+          rootCrl: crl.pem,
+        }),
+      ),
+    ).toMatchObject({
+      code: "ca_not_active",
+      details: { reason: "revoked_by_parent" },
+    });
+    expect(harness.pki.activateCa).not.toHaveBeenCalled();
   });
 });

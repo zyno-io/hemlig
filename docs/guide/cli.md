@@ -245,6 +245,51 @@ Consumer IDs and grant names match `[a-z][a-z0-9-]{2,63}`. Mutations take an opt
 
 A PKI failure's `error` object also carries `apiCode` and `apiDetails` (for example `{"reason": "ca_not_active"}`), the API's code and machine-readable reason. The message is never copied from the API.
 
+### Offline root (`pki ez`)
+
+`hemlig pki ez` creates and runs the offline root that signs `EXTERNAL_INTERMEDIATE` CAs. It replaces the [manual OpenSSL recipe](../operations/pki-offline-root.md#manual-openssl) with commands that validate the CSR, sign the certificate, keep the root CRL current and activate the CA. The root key is a software key in an encrypted file. It needs no OpenSSL binary and no extra package.
+
+| Command                       | What it does                                                                  | Network |
+| ----------------------------- | ----------------------------------------------------------------------------- | ------- |
+| `pki ez generate-ca`          | Creates the root key, the self-signed root, CRL number 1 and the state file    | No      |
+| `pki ez sign-cert <ca>`       | Fetches the pending CA's CSR, shows it, signs it, syncs the root CRL, activates | Yes     |
+| `pki ez sign-cert <ca> --offline` | Signs a CSR file and writes the files to carry to an online machine         | No      |
+| `pki ez activate <ca>`        | Uploads the root CRL and activates from the offline files; no state, no key    | Yes     |
+| `pki ez revoke-cert`          | Revokes an intermediate: records it, signs a new CRL and uploads it            | Yes     |
+| `pki ez renew-crl`            | Signs a new root CRL and uploads it (the recurring step)                       | Yes     |
+| `pki ez upload-crl`           | Uploads the current root CRL (a retry, or another deployment)                  | Yes     |
+| `pki ez status`               | Shows the local state, deployments and a comparison with the server            | Optional |
+
+Common options:
+
+- `--dir DIR` is the root directory and defaults to the current directory. Relative file flags are relative to it. `--state-file NAME` (default `hemlig-ez.json`) and `--break-stale-lock` also apply.
+- Online commands take `--admin-url`, `--token-file` and `--timeout-ms`, and use the cached `hemlig login`. `--environment` (or `HEMLIG_ENVIRONMENT`) is needed to resolve a CA by name and to check the CA's environment.
+- `generate-ca` takes `--subject`, `--key-algorithm` (`ECDSA_P384` by default, `ECDSA_P256`, `RSA_3072`, `RSA_4096`), `--validity 20y`, `--intermediate-validity 730d`, `--crl-validity 180d`, `--path-len N`, and `--key-file`, `--cert-file` and `--crl-file` (default `root.key.pem`, `root.pem`, `root.crl.pem`).
+- `sign-cert` takes `--validity`, `--crl-validity`, `--renew-before 45d` and `--key FILE`. Offline it also takes `--csr FILE`, `--expect-spki-sha256 HEX`, `--out`, `--chain-out` and `--crl-out`.
+- `activate` takes `--certificate FILE`, `--chain FILE` and optional `--crl FILE`.
+- `revoke-cert` takes a `<ca>` or `--serial HEX`, a required `--reason` and optional `--invalidity-date`. Offline it takes `--offline --crl-out FILE`.
+- `renew-crl` takes `--if-due` (renew only inside the renewal window), `--renew-before`, `--crl-validity` and `--expect-ext-id ext-...`, which refuses a deployment whose external root is another one.
+
+Files in `--dir`: the state file, the encrypted key, `root.pem`, the CRL copy, `crls/` (every CRL ever signed), `issued/` (every certificate ever signed) and a lock file while a command runs. The state file records the CRL numbers, issued serials and revocations, so a second copy of the directory forks the root. Keep one active copy and back the directory up.
+
+**Settings form.** On a terminal, `generate-ca` and `sign-cert` show a numbered list of the settings: key algorithm, validities, file names and, for `generate-ca`, the subject. Type a number to edit a row, or press Enter to accept. Flags pre-fill the form. `--yes`, or a stdin that is not a terminal, skips it. The key derivation (PBKDF2-HMAC-SHA256, 1,000,000 iterations) is shown and cannot be edited.
+
+**Passphrase.** The key file passphrase is typed at the terminal with no echo, twice for a new key, and must be at least 12 bytes. `--passphrase-stdin` reads it from the first line of a pipe instead, and is refused when stdin is a terminal. A passphrase is never taken from an argument or an environment variable.
+
+**Typed confirmation.** Before `sign-cert` signs (online or offline) and before `revoke-cert` revokes, the command prints the details to stderr and asks you to type `confirm`. For a signature it shows the CA ID, environment, subject, name constraints, extended key usage, key algorithm and SPKI SHA-256, validity, serial and the root that signs. For a revocation it shows the CA, serial and reason.
+
+Anything else, Ctrl-C or end of input aborts with no change. `--yes` does not skip it. With a piped stdin (for example `--passphrase-stdin`) the word is read from the controlling terminal, and with none the command exits 2 `terminal_required`.
+
+**Online signing.** `sign-cert` checks the CSR before it asks for anything: its signature, the key against the CA record's SPKI, the subject, the name constraints and extended key usages against the record, and an extension list limited to what a Hemlig CA requests. It then finds the root on the server, compares the CRL numbers with the local state, and checks the clock against the server's.
+
+A rerun after a failure reuses the signed certificate and replays the activation with the same idempotency key, so it asks for no confirmation and no passphrase unless the CRL also needs signing.
+
+**Offline signing.** Pass `--expect-spki-sha256` with the value the console shows for the CA. It binds the CSR file to the CA: without it the command warns and the receipt carries `csr_unbound`. The receipt's `next` lists the `pki ez activate` command to run on the online machine with the certificate, the root and the CRL.
+
+**Root CRL.** The CRL is renewed when fewer than 45 days remain (and always after a revocation). `sign-cert` renews it in the same signing step. A root the server has not seen is registered by the first activation, which carries CRL number 1; afterwards the CLI uploads the CRL first and activates without it.
+
+Receipts have one `data` object, and `next` lists follow-up commands. A failure in the middle of a run adds an `ez` object to the error with `completed` (the finished steps), `files` and `rerun`. The state file, not the receipt, is the source of truth.
+
 ## ETags and idempotency
 
 Every update, payload write and archive needs `--if-match`. Pass the `etag` field of the last receipt, or a quoted strong ETag. Weak ETags and `*` are rejected.
@@ -267,7 +312,9 @@ After a lost response, read the secret to see what happened. Do not mint a new k
 
 ## Output
 
-Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr (with `--no-localhost` it also prints a prompt on stderr and reads the login code from stdin), and `hemlig pki ca create`, which prints a `warning:` line for an Ed25519 key or a `ROOT`. There are no banners or tables, and no prompts apart from that login code. `--help` also prints JSON.
+Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr (with `--no-localhost` it also prints a prompt on stderr and reads the login code from stdin), `hemlig pki ca create`, which prints a `warning:` line for an Ed25519 key or a `ROOT`.
+
+`hemlig pki ez` also prints its settings form, review and prompts on stderr, and reads passphrases and the typed `confirm` from the terminal. There are no banners or tables, and no other prompts. `--help` also prints JSON.
 
 | Field            | Meaning                                                     |
 | ---------------- | ----------------------------------------------------------- |
@@ -315,5 +362,15 @@ For a mutation, `outcome` says what happened:
 | 9    | Local input, token file, stdin or output I/O failure                              |
 
 For `hemlig login --no-localhost`: an invalid or mismatched code exits `2`, a timeout `8`, and Ctrl-C `9`.
+
+`hemlig pki ez` reports its own conditions with these codes, in the same envelope:
+
+| Exit | Codes                                                                                                                                                                                                                                                                                                                         |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2    | `invalid_input`, `subject_invalid`, `csr_invalid`, `csr_unexpected_extension`, `crl_invalid`, `pem_invalid`, `der_invalid`, `certificate_invalid`, `key_file_invalid`, `key_invalid`, `key_storage_unsupported`, `passphrase_mismatch`, `terminal_required`, `confirmation_declined`, `unknown_serial`                          |
+| 3    | `passphrase_invalid`, plus API 401 and 403                                                                                                                                                                                                                                                                                      |
+| 5    | `already_exists`, `state_missing`, `state_locked`, `state_conflict`, `state_behind_server`, `state_forked`, `root_mismatch`, `key_mismatch`, `root_profile_invalid`, `root_not_valid`, `validity_too_short`, `csr_key_mismatch`, `csr_subject_mismatch`, `csr_subject_is_root`, `csr_constraints_mismatch`, `issued_conflict`, `revocation_pending`, `revocation_conflict`, `environment_mismatch`, `ca_not_external`, `ca_not_pending`, `ca_activated_elsewhere`, `revocation_not_applied`, `clock_skew`, `clock_regressed`, plus API 409 |
+| 7    | `signature_self_check_failed`, `invalid_response`                                                                                                                                                                                                                                                                              |
+| 9    | `state_io_error`, `state_corrupt`, `input_io_error`, `prompt_cancelled`                                                                                                                                                                                                                                                        |
 
 Exit codes map to API statuses. The API's own code names are in [Errors](../reference/api/errors.md).

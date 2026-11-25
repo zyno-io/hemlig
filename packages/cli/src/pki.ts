@@ -288,7 +288,7 @@ const commandSpecs: Record<string, CommandSpec> = {
 
 export const pkiHelp = {
   usage:
-    "hemlig pki ca <list|get|create|activate|update|retire|revoke|destroy-key|delete> | hemlig pki ca crl <publish|get> | hemlig pki external-ca <list|get|upload-crl> | hemlig pki grant <list|get|create|update|delete|evaluate|migrate> | hemlig pki cert <list|get|issue|revoke> | hemlig pki consumer revoke-certificates",
+    "hemlig pki ca <list|get|create|activate|update|retire|revoke|destroy-key|delete> | hemlig pki ca crl <publish|get> | hemlig pki external-ca <list|get|upload-crl> | hemlig pki grant <list|get|create|update|delete|evaluate|migrate> | hemlig pki cert <list|get|issue|revoke> | hemlig pki consumer revoke-certificates | hemlig pki ez <generate-ca|sign-cert|activate|revoke-cert|renew-crl|upload-crl|status>",
   commands: {
     "ca list": "--environment [--cursor]",
     "ca get <ca>": "[--environment] (needed only when <ca> is a name)",
@@ -332,6 +332,8 @@ export const pkiHelp = {
     "consumer revoke-certificates <consumer>":
       "[--grant N] [--reason R] [--idempotency-key]; repeats with the same key until complete",
   },
+  "ez <command>":
+    "Offline-root automation: hemlig pki ez --help. Creates and operates the offline root that signs EXTERNAL_INTERMEDIATE CAs.",
   references:
     "A <ca> is a ca-<uuid> ID, or a name resolved in --environment (HEMLIG_ENVIRONMENT).",
   files:
@@ -402,6 +404,16 @@ const stringFlags = [
   "chain-out",
   "ca-out",
 ];
+
+/** Index of the first positional argument, skipping the values of value-taking flags; -1 if there is none. */
+export function pkiFirstPositional(args: readonly string[]): number {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (!arg.startsWith("-")) return index;
+    if (!arg.includes("=") && stringFlags.includes(arg.slice(2))) index += 1;
+  }
+  return -1;
+}
 
 const parseOptions = (
   args: readonly string[],
@@ -668,7 +680,7 @@ const policyOf = (ca: PkiCaDetail): PkiCaPolicyInput => ({
   crlValiditySeconds: ca.policy.crlValiditySeconds,
 });
 
-async function resolveCa(
+export async function resolveCa(
   client: HemligClient,
   token: string,
   reference: string,

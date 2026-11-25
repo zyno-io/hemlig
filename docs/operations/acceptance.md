@@ -319,6 +319,17 @@ aws lambda invoke --function-name "$DEP-pki-maintenance" /tmp/pki-maintenance.js
 | Maintenance | `{"status":"ok",…,"failures":0}`. Within 15 minutes `hml-acc-pki-generated-crl-stale`, `-external-crl-stale` and `-external-crl-missing` show `OK` | `AccessDenied` on S3 or KMS: the role's grants are wrong |
 | Audit | Succeeded events for `pki.ca.create`, `pki.ca.activate`, two `pki.external-ca.upload-crl` (the new CRL and its identical retry), and `pki.crl.get`. Failed `pki.external-ca.upload-crl` events with reason codes `crl_not_newer` and, twice, `bad_signature`. No object contains `-----BEGIN` | |
 
+**EZ variant.** To check the EZ tooling instead of the recipe, replace steps 1 and 2 with the commands below and run steps 3 to 6 unchanged, using `ez-root/root.pem` and `ez-root/root.crl.pem` where the steps name `root.pem` and `root.crl.pem`. Step 5's second upload becomes `hemlig pki ez renew-crl --dir ez-root`. The later gates need the recipe's `acc-root`, so keep it too.
+
+```sh
+hemlig pki ez generate-ca --dir ez-root --subject 'CN=Hemlig Acceptance EZ Root,O=Example Corp'
+hemlig pki ca create --name acc-issuing-1 --key-algorithm ECDSA_P256 \
+  --subject 'CN=Hemlig Acceptance Issuing CA 1,O=Example Corp' --permit-dns acc.example.com --csr-out issuing.csr
+hemlig pki ez sign-cert acc-issuing-1 --dir ez-root --environment prod
+```
+
+Expected output: the review lists the CA, constraints and root; typing anything but `confirm` aborts with exit 2 and changes nothing; after `confirm` the CA is `ACTIVE`.
+
 Keep `acc-root` for PKI-4 to PKI-6.
 
 ## Gate PKI-3: a PKI certificate never authenticates to the delivery API
