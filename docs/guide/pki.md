@@ -6,7 +6,7 @@ pageType: explanation
 
 # PKI: certificate authorities and CRLs
 
-Hemlig can hold an intermediate certificate authority (CA) that your offline root signs, and publishes that CA's certificate revocation lists (CRLs). It can also act as a root and sign its own intermediates; see [A Hemlig root and intermediates](#a-hemlig-root-and-intermediates).
+Hemlig can hold an intermediate certificate authority (CA) that your offline root signs (`EXTERNAL_INTERMEDIATE`), and publishes that CA's certificate revocation lists (CRLs). It can also hold a root and sign intermediates under it (`ROOT` and `INTERMEDIATE`); see [A Hemlig root and intermediates](#a-hemlig-root-and-intermediates).
 
 Consumers get leaf certificates through issuance grants. [cert-manager](cert-manager.md) can request and renew them unattended. [Trust bundles](trust-bundles.md) deliver CA anchors, intermediates and CRLs to Kubernetes. This page covers the CA lifecycle, grants, issuance, revocation and CRLs.
 
@@ -29,7 +29,7 @@ flowchart LR
   ca --> crl
 ```
 
-The CA is an `EXTERNAL_INTERMEDIATE`: its path length is 0, so it can sign leaf certificates but not other CAs. Its key is wrapped by KMS and decrypted only to sign.
+The CA is an intermediate signed by your offline root (`EXTERNAL_INTERMEDIATE`): its path length is 0, so it can sign leaf certificates but not other CAs. Its key is wrapped by KMS and decrypted only to sign.
 
 ## Create, sign and activate
 
@@ -209,6 +209,8 @@ Revoke the intermediate at the root (`openssl ca -revoke`), regenerate the root 
 If the CA is a Hemlig `INTERMEDIATE`, run `hemlig pki ca revoke <ca> --reason caCompromise` instead. Hemlig revokes it, disables its key, writes it into its root's generated CRL and publishes that CRL at once. Bundles that list the root deliver the new CRL on their next refresh.
 
 ## A Hemlig root and intermediates
+
+The console names the three kinds "Intermediate signed by your offline root" (`EXTERNAL_INTERMEDIATE`), "Intermediate signed by a Hemlig root" (`INTERMEDIATE`) and "Root held by Hemlig" (`ROOT`).
 
 ::: warning An external offline root is strongly recommended
 A Hemlig `ROOT` key is `WRAPPED` and online. Anyone who can use the PKI roles' decrypt can copy it and mint certificates inside its constraints. The only remedy is local distrust, which reaches only relying parties that use Hemlig trust bundles. Use a Hemlig root for test, lab or short-lived internal hierarchies, and keep production roots offline with the [recipe](../operations/pki-offline-root.md).

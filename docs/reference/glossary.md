@@ -456,7 +456,7 @@ See: [Status reasons](crds.md#status-reasons).
 
 ### PKI CA
 
-A certificate authority Hemlig holds the key for. Today it is an external intermediate, signed by your offline root.
+A certificate authority Hemlig holds the key for. It is an intermediate signed by your offline root (`EXTERNAL_INTERMEDIATE`), an intermediate signed by a Hemlig root (`INTERMEDIATE`), or a root held by Hemlig (`ROOT`).
 
 See: [PKI](../guide/pki.md).
 

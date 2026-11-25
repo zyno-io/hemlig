@@ -7,7 +7,6 @@ import MutationState from "../components/MutationState.vue";
 import { ApiError } from "../api/errors";
 import {
   CA_KEY_ALGORITHMS,
-  CA_KINDS,
   ED25519_WARNING,
   EXTERNAL_ROOT_RECOMMENDATION,
   LEAF_KEY_ALGORITHMS,
@@ -53,10 +52,20 @@ const DEFAULT_VALIDITY: Partial<Record<PkiCaKind, string>> = {
 };
 
 const KIND_LABEL: Record<PkiCaKind, string> = {
-  EXTERNAL_INTERMEDIATE: "External intermediate (recommended)",
-  INTERMEDIATE: "Intermediate under a Hemlig root",
-  ROOT: "Hemlig root (online root, not recommended)",
+  EXTERNAL_INTERMEDIATE: "Intermediate signed by your offline root (recommended)",
+  INTERMEDIATE: "Intermediate signed by a Hemlig root",
+  ROOT: "Root held by Hemlig (not recommended)",
 };
+
+const KIND_HINT: Record<PkiCaKind, string> = {
+  EXTERNAL_INTERMEDIATE:
+    "Hemlig creates the key and a CSR. You sign the CSR with your root and paste back the certificate.",
+  INTERMEDIATE: "Hemlig signs it with a root it already holds.",
+  ROOT: "Hemlig creates a self-signed root online. Prefer an offline root.",
+};
+
+/** Display order of the kind picker (recommended first); independent of the API enum order. */
+const KIND_DISPLAY_ORDER: readonly PkiCaKind[] = ["EXTERNAL_INTERMEDIATE", "INTERMEDIATE", "ROOT"];
 
 type SubtreeText = Record<keyof PkiNameSubtrees, string>;
 const emptySubtrees = (): SubtreeText => ({ dns: "", ip: "", uri: "" });
@@ -443,9 +452,12 @@ const SUBTREE_GROUPS = [
         <section class="card card-body space-y-3">
           <h2 class="section-title">Kind</h2>
           <fieldset class="space-y-1">
-            <label v-for="kind in CA_KINDS" :key="kind" class="flex items-center gap-2 text-[13px]">
-              <input v-model="form.kind" type="radio" name="kind" :value="kind" />
-              {{ KIND_LABEL[kind] }}
+            <label v-for="kind in KIND_DISPLAY_ORDER" :key="kind" class="flex items-start gap-2 text-[13px]" :data-testid="`kind-${kind}`">
+              <input v-model="form.kind" type="radio" name="kind" :value="kind" class="mt-[3px]" />
+              <span>
+                {{ KIND_LABEL[kind] }}
+                <span class="block text-[13px] text-ink-2">{{ KIND_HINT[kind] }}</span>
+              </span>
             </label>
           </fieldset>
           <div v-if="isRoot" class="notice notice-warning" data-testid="root-callout">

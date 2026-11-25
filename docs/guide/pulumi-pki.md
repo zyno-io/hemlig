@@ -19,7 +19,7 @@ Declare a [PKI](pki.md) certificate authority and its issuance grants in a Pulum
 
 ## 1. Declare the CA
 
-An external CA is created in two phases. The first apply creates it `PENDING_CERTIFICATE` and outputs a CSR. You sign the CSR offline, put the signed certificate in config, and the second apply activates the CA.
+An intermediate signed by your offline root (`EXTERNAL_INTERMEDIATE`) is created in two phases. The first apply creates it `PENDING_CERTIFICATE` and outputs a CSR. You sign the CSR offline, put the signed certificate in config, and the second apply activates the CA.
 
 ```ts
 import * as pulumi from "@pulumi/pulumi";

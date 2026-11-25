@@ -113,6 +113,23 @@ const fill = async (wrapper: W, name: string, cn: string): Promise<void> => {
 };
 
 describe("CaCreate", () => {
+  it("lists the kinds by who signs them, recommended first, each with a hint", async () => {
+    const wrapper = await mountView({ createPkiCa: vi.fn() });
+    const labels = wrapper.findAll("[data-testid^=kind-]").map((label) => label.text());
+    expect(labels).toEqual([
+      expect.stringContaining("Intermediate signed by your offline root (recommended)"),
+      expect.stringContaining("Intermediate signed by a Hemlig root"),
+      expect.stringContaining("Root held by Hemlig (not recommended)"),
+    ]);
+    expect(labels[0]).toContain("You sign the CSR with your root and paste back the certificate.");
+    expect(labels[1]).toContain("Hemlig signs it with a root it already holds.");
+    expect(labels[2]).toContain("Prefer an offline root.");
+    const values = wrapper
+      .findAll<HTMLInputElement>('input[name="kind"]')
+      .map((radio) => radio.element.value);
+    expect(values).toEqual(["EXTERNAL_INTERMEDIATE", "INTERMEDIATE", "ROOT"]);
+  });
+
   it("pre-fills a rollover and blocks a reused DN", async () => {
     const createPkiCa = vi.fn(async () => detail({ caId: "ca-new", name: "prod-issuing-2" }));
     const wrapper = await mountView(

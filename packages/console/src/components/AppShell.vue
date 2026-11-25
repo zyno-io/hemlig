@@ -41,25 +41,28 @@ const switchEnvironment = (event: Event): void => {
 };
 
 const tabs = computed(() => {
-  const items: { name: string; label: string; to: RouteLocationRaw }[] = [];
+  const items: { name: string; label: string; to: RouteLocationRaw; envScoped?: boolean }[] = [];
   // These two are meaningless without a known environment to scope into, and
   // there may genuinely be none yet on a fresh deployment.
   if (currentEnv.value !== undefined) {
     items.push(
       {
         name: "secrets",
+        envScoped: true,
         label: "Secrets",
         to: { name: "secrets", params: { env: currentEnv.value } },
       },
       {
-        name: "consumers",
-        label: "Consumers",
-        to: { name: "consumers", params: { env: currentEnv.value } },
-      },
-      {
         name: "pki",
+        envScoped: true,
         label: "PKI",
         to: { name: "pki", params: { env: currentEnv.value } },
+      },
+      {
+        name: "consumers",
+        envScoped: true,
+        label: "Consumers",
+        to: { name: "consumers", params: { env: currentEnv.value } },
       },
     );
   }
@@ -119,16 +122,22 @@ const active = (name: string): boolean =>
         </label>
 
         <nav class="primary-nav" aria-label="Primary">
-          <RouterLink
-            v-for="tab in tabs"
-            :key="tab.name"
-            :to="tab.to"
-            class="nav-link"
-            :class="{ 'nav-link-active': active(tab.name) }"
-            :aria-current="active(tab.name) ? 'page' : undefined"
-          >
-            {{ tab.label }}
-          </RouterLink>
+          <template v-for="(tab, index) in tabs" :key="tab.name">
+            <span
+              v-if="index > 0 && tabs[index - 1]!.envScoped && !tab.envScoped"
+              class="nav-separator"
+              data-testid="nav-separator"
+              aria-hidden="true"
+            />
+            <RouterLink
+              :to="tab.to"
+              class="nav-link"
+              :class="{ 'nav-link-active': active(tab.name) }"
+              :aria-current="active(tab.name) ? 'page' : undefined"
+            >
+              {{ tab.label }}
+            </RouterLink>
+          </template>
         </nav>
 
         <div class="topbar-end">
@@ -246,6 +255,15 @@ const active = (name: string): boolean =>
 }
 
 /* The scrolling nav clips outward rings; draw focus inside the link. */
+.nav-separator {
+  flex-shrink: 0;
+  align-self: center;
+  width: 1px;
+  height: 16px;
+  margin: 0 6px;
+  background: var(--border);
+}
+
 .nav-link:focus-visible {
   outline-offset: -2px;
 }
