@@ -3,7 +3,7 @@ import test from "node:test";
 import { EzError } from "./ez-error";
 import { FakeTerminal, pipeInput } from "./ez-fake";
 import { firstFormError, renderForm, runForm, type FormField } from "./ez-form";
-import { Prompter } from "./ez-prompt";
+import { Prompter, consumeConfirmation } from "./ez-prompt";
 
 const fields = (): FormField[] => [
   { id: "ro", label: "Fixed", kind: "readonly", value: "never edited" },
@@ -100,4 +100,14 @@ test("prompter: new passphrases are checked against the policy, then confirmed",
   const piped = new Prompter({ stdin: pipeInput("a long enough passphrase\n"), write: () => {} });
   assert.equal((await piped.passphrase({ create: true, fromStdin: true })).toString(), "a long enough passphrase");
   await assert.rejects(new Prompter({ stdin: pipeInput("short\n"), write: () => {} }).passphrase({ create: true, fromStdin: true }), (e) => e instanceof EzError && e.code === "invalid_input");
+});
+
+test("a confirmation is single-use and only valid for its own action; arming waits for the line to go quiet", async () => {
+  const mk = (...keys: (string | number)[]) => new Prompter({ stdin: new FakeTerminal(...keys), write: () => {}, confirmArmMs: 100 });
+  const token = await mk(150, "confirm\r").confirm("sign");
+  assert.equal(consumeConfirmation(token, "revoke"), false);
+  assert.equal(consumeConfirmation(token, "sign"), true);
+  assert.equal(consumeConfirmation(token, "sign"), false);
+  // typeahead that keeps arriving restarts the wait: the later "confirm" is still inside the window of the junk before it
+  await assert.rejects(mk("junk\r", 60, "confirm\r").confirm("sign"), (e) => e instanceof EzError && e.code === "prompt_cancelled");
 });

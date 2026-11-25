@@ -41,8 +41,8 @@ export interface TerminalLineOptions {
    */
   readonly discardLeftover?: boolean;
   /**
-   * Terminal reads only: keystrokes that arrive within this many milliseconds of the read starting are dropped, so
-   * input typed before the prompt was shown (already buffered) is never taken as the answer.
+   * Terminal reads only: the read arms once input has been quiet for this many milliseconds. Anything received before
+   * that is dropped, and each such chunk restarts the wait, so buffered or still-arriving typeahead is never the answer.
    */
   readonly armMs?: number;
 }
@@ -85,7 +85,8 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
     }
   };
   let carry = "";
-  const armedAt = Date.now() + (options.armMs ?? 0);
+  const armMs = options.armMs ?? 0;
+  let armedAt = Date.now() + armMs;
   if (raw) input.setRawMode!(true);
   try {
     for (;;) {
@@ -95,7 +96,11 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
         return finish();
       }
       const chunk = next.value;
-      if (raw && Date.now() < armedAt) continue;
+      if (raw && Date.now() < armedAt) {
+        // Not armed yet: this input was typed ahead. Drop it and wait for the line to go quiet.
+        armedAt = Date.now() + armMs;
+        continue;
+      }
       let text = carry + (typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true }));
       carry = "";
       if (!raw) {

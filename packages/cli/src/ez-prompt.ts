@@ -32,6 +32,12 @@ export interface Confirmation {
 export const isConfirmation = (value: unknown): value is Confirmation =>
   typeof value === "object" && value !== null && minted.has(value);
 
+/** Spends a confirmation: true once, and only for the action it was typed for. */
+export const consumeConfirmation = (value: unknown, action: string): boolean => {
+  if (!isConfirmation(value) || value.action !== action) return false;
+  return minted.delete(value);
+};
+
 const cancelled = (): EzError => new EzError(9, "prompt_cancelled", "The prompt was cancelled.");
 const tooLarge = (): EzError => new EzError(2, "invalid_input", "That input is too long.");
 

@@ -21,7 +21,7 @@ import {
   type OnlineSession,
 } from "./ez-online";
 import { assertCrlValidityDays, EZ_DEFAULTS, parseDuration } from "./ez-profile";
-import { isConfirmation, Prompter, type Confirmation } from "./ez-prompt";
+import { consumeConfirmation, Prompter, type Confirmation } from "./ez-prompt";
 import { renderCrlReview, renderRevokeReview, renderSignReview, rootLabel } from "./ez-review";
 import { generateSoftwareKey, SoftwareSigner, signBatch } from "./ez-signer";
 import {
@@ -425,7 +425,8 @@ const issue = async (ctx: Ctx, store: EzStore, signer: SoftwareSigner, plan: Iss
       confirm: () => {
         // The review and the typed confirm happened before anything was reserved; this makes it impossible to sign without them.
         const gated = certAt >= 0 || unlistedRevocations(store).length > 0;
-        if (gated && !isConfirmation(confirmation)) {
+        // Single use, and only for the operation it was typed for: a certificate is "sign", a revoking CRL is "revoke".
+        if (gated && !consumeConfirmation(confirmation, certAt >= 0 ? "sign" : "revoke")) {
           throw new EzError(2, "confirmation_declined", "Signing was attempted without the typed confirmation.");
         }
       },
