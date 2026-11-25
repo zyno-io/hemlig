@@ -149,11 +149,11 @@ test("generate-ca refuses existing files, weak passphrases and a missing subject
   }
 });
 
-test("generate-ca on a terminal: the form edits settings, the passphrase is asked twice, mismatch is refused", async () => {
+test("generate-ca on a terminal: the form edits settings, the passphrase is asked twice, a mismatch is asked again and refused after three", async () => {
   const dir = await tempDir();
   try {
-    // 2 = subject, 4 = key algorithm (choice 2 = ECDSA_P256), 9 = intermediate validity, then accept.
-    const term = new FakeTerminal("2\r", "CN=Form Root,O=Test\r", "4\r", "2\r", "9\r", "365d\r", "\r", `${PASS}\r`, `${PASS}\r`);
+    // 2 = subject, 4 = key algorithm (choice 2 = ECDSA_P256), 13 = intermediate validity, then accept.
+    const term = new FakeTerminal("2\r", "CN=Form Root,O=Test\r", "4\r", "2\r", "13\r", "365d\r", "\r", `${PASS}\r`, `${PASS}\r`);
     const result = await run(["generate-ca", "--dir", dir], { stdin: term });
     assert.equal(result.exitCode, 0, result.stderr);
     const state = await readState(dir);
@@ -168,10 +168,11 @@ test("generate-ca on a terminal: the form edits settings, the passphrase is aske
 
     const dir2 = await tempDir();
     const mismatch = await run(["generate-ca", "--dir", dir2, "--subject", "CN=M", "--key-algorithm", "ECDSA_P256"], {
-      stdin: new FakeTerminal("\r", `${PASS}\r`, `${PASS}x\r`),
+      stdin: new FakeTerminal("\r", `${PASS}\r`, `${PASS}x\r`, `${PASS}\r`, `${PASS}y\r`, `${PASS}\r`, `${PASS}z\r`),
     });
     assert.equal(mismatch.exitCode, 2);
     assert.equal(mismatch.error.code, "passphrase_mismatch");
+    assert.equal(mismatch.stderr.match(/Try again/g)?.length, 2);
     assert.deepEqual(await fs.readdir(dir2), []);
     await cleanup(dir2);
   } finally {

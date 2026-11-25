@@ -45,6 +45,8 @@ export interface CliDependencies {
    */
   /** `hemlig pki ez`: milliseconds after the confirm prompt during which keystrokes are discarded (default 300; tests use 0). */
   readonly confirmArmMs?: number;
+  /** `hemlig pki ez generate-ca` (tests): called after the backup key file is written and before it is verified. */
+  readonly afterBackupWritten?: (path: string) => void | Promise<void>;
   readonly openTerminal?: () => Promise<
     | (AsyncIterable<string | Uint8Array> & {
         readonly isTTY?: boolean;
@@ -407,6 +409,8 @@ export interface FailureContext {
     readonly completed: readonly string[];
     readonly files?: Readonly<Record<string, string>>;
     readonly rerun?: string;
+    /** What to do instead of a plain rerun (set when a rerun would be wrong). */
+    readonly recovery?: string;
   };
 }
 

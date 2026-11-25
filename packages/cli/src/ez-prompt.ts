@@ -41,6 +41,9 @@ export const consumeConfirmation = (value: unknown, action: string): boolean => 
 const cancelled = (): EzError => new EzError(9, "prompt_cancelled", "The prompt was cancelled.");
 const tooLarge = (): EzError => new EzError(2, "invalid_input", "That input is too long.");
 
+/** Terminal entries (new passphrase, PIN length) asked again after a rejected value, before giving up. */
+export const PROMPT_ATTEMPTS = 3;
+
 export class Prompter {
   readonly #stdin: TerminalInput;
   readonly #write: PrompterOptions["write"];
@@ -138,7 +141,8 @@ export class Prompter {
 
   /**
    * The root key passphrase. `fromStdin` reads the first line of a pipe; otherwise the terminal is prompted, twice for a
-   * new key (a mismatch exits 2 `passphrase_mismatch`; the policy is applied before the second prompt). The caller
+   * new key (the policy is applied before the second prompt). At the terminal a too-short or mismatched entry is
+   * asked again, up to PROMPT_ATTEMPTS times; a pipe fails at once (exit 2 `invalid_input` / `passphrase_mismatch`). The caller
    * zeroes the returned buffer.
    */
   public async passphrase(options: { readonly create: boolean; readonly fromStdin: boolean; readonly label?: string }): Promise<Buffer> {
@@ -152,19 +156,78 @@ export class Prompter {
       }
       return line;
     }
-    const first = await this.secret(options.label ?? (options.create ? "New root key passphrase (12+ characters): " : "Root key passphrase: "));
-    if (!options.create) return first;
-    try {
-      assertPassphrasePolicy(first);
-      const second = await this.secret("Repeat the passphrase: ");
-      const same = first.length === second.length && timingSafeEqual(first, second);
-      second.fill(0);
-      if (!same) throw new EzError(2, "passphrase_mismatch", "The two passphrases differ.");
-      return first;
-    } catch (error) {
-      first.fill(0);
-      throw error;
+    if (!options.create) return this.secret(options.label ?? "Root key passphrase: ");
+    for (let attempt = 1; ; attempt++) {
+      const first = await this.secret(options.label ?? "New root key passphrase (12+ characters): ");
+      try {
+        assertPassphrasePolicy(first);
+        const second = await this.secret("Repeat the passphrase: ");
+        const same = first.length === second.length && timingSafeEqual(first, second);
+        second.fill(0);
+        if (!same) throw new EzError(2, "passphrase_mismatch", "The two passphrases differ.");
+        return first;
+      } catch (error) {
+        first.fill(0);
+        if (!(error instanceof EzError) || attempt >= PROMPT_ATTEMPTS) throw error;
+        await this.#write(`${error.message} Try again.\n`);
+      }
     }
+  }
+
+  /**
+   * A YubiKey PIN (6 to 8 characters): from the terminal without echo, or the next line of a pipe with `--pin-stdin`.
+   * The caller zeroes the buffer.
+   */
+  public async pin(options: { readonly fromStdin: boolean; readonly label: string }): Promise<Buffer> {
+    for (let attempt = 1; ; attempt++) {
+      const value = options.fromStdin ? await this.pipeLine(16) : await this.secret(options.label, 16);
+      if (value.length >= 6 && value.length <= 8) return value;
+      value.fill(0);
+      const message = "A YubiKey PIN is 6 to 8 characters.";
+      if (options.fromStdin || attempt >= PROMPT_ATTEMPTS) throw new EzError(2, "invalid_input", message);
+      await this.#write(`${message} Try again.\n`);
+    }
+  }
+
+  /**
+   * A typed acknowledgement read from the keyboard (never a pipe): the operator must type `phrase` exactly. Used for
+   * actions that cannot be undone, such as writing a key into a YubiKey (the phrase is its serial number). Anything else
+   * exits 2 `confirmation_declined`; there is no flag that skips it.
+   */
+  public async acknowledge(phrase: string, label: string): Promise<void> {
+    const { input, opened } = await this.#confirmInput();
+    if (input === undefined) {
+      throw new EzError(2, "terminal_required", `This step needs the operator to type "${phrase}" at a terminal; there is no unattended mode.`);
+    }
+    try {
+      const typed = await this.#terminalLine(input, label, this.#prefixEcho(phrase), 128, this.#armMs);
+      if (typed.toString("utf8") !== phrase) {
+        throw new EzError(2, "confirmation_declined", "Not acknowledged; nothing was written and no state changed.");
+      }
+    } finally {
+      if (opened) input.destroy?.();
+    }
+  }
+
+  /** Echoes keystrokes only while what is typed is still a prefix of `word`, so a mistyped secret is never shown. */
+  #prefixEcho(word: string): (text: string) => void {
+    let typedSoFar = "";
+    let shown = 0;
+    return (text: string): void => {
+      if (text === "\b \b") {
+        typedSoFar = typedSoFar.slice(0, -1);
+        if (shown > typedSoFar.length) {
+          shown -= 1;
+          void this.#write(text);
+        }
+        return;
+      }
+      typedSoFar += text;
+      if (word.startsWith(typedSoFar) && shown === typedSoFar.length - 1) {
+        shown += 1;
+        void this.#write(text);
+      }
+    };
   }
 
   async #confirmInput(): Promise<{ input: TerminalInput | undefined; opened: boolean }> {
@@ -201,24 +264,7 @@ export class Prompter {
       );
     }
     try {
-      // Echo only while the input is a prefix of the word, so a mistyped passphrase is never shown.
-      let typedSoFar = "";
-      let shown = 0;
-      const echo = (text: string): void => {
-        if (text === "\b \b") {
-          typedSoFar = typedSoFar.slice(0, -1);
-          if (shown > typedSoFar.length) {
-            shown -= 1;
-            void this.#write(text);
-          }
-          return;
-        }
-        typedSoFar += text;
-        if (CONFIRM_WORD.startsWith(typedSoFar) && shown === typedSoFar.length - 1) {
-          shown += 1;
-          void this.#write(text);
-        }
-      };
+      const echo = this.#prefixEcho(CONFIRM_WORD);
       const typed = await this.#terminalLine(input, `Type "${CONFIRM_WORD}" to ${action}; anything else aborts: `, echo, 64, this.#armMs);
       if (typed.toString("utf8") !== CONFIRM_WORD) {
         throw new EzError(2, "confirmation_declined", `Not confirmed; nothing was ${action === "revoke" ? "revoked" : "signed"} and no state changed.`);

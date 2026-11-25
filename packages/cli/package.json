@@ -11,6 +11,8 @@
   },
   "files": [
     "dist",
+    "!dist/ez-yubikey-smoke.*",
+    "!dist/ez-yubikey-testkit.*",
     "README.md",
     "LICENSE"
   ],
@@ -20,7 +22,8 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test dist/*.test.js"
+    "test": "node --test dist/*.test.js",
+    "smoke:yubikey": "node dist/ez-yubikey-smoke.js"
   },
   "dependencies": {
     "@peculiar/asn1-csr": "2.11.1",
