@@ -139,11 +139,13 @@ Enroll a [direct consumer](../reference/glossary.md#direct-consumer) through the
 
 The delivery domain has no mutual TLS until the first truststore publish succeeds, which the first enrollment triggers. Until then any client certificate, or none, completes TLS and the consumer Lambda answers `403 identity_not_active`. If enrollment returns `503` "API Gateway has not accepted the new truststore version yet." for more than a minute, read the warning in `/aws/lambda/hml-acc-admin`.
 
+The first enrollment also triggers the first truststore attach, and the domain is `UPDATING` for several minutes (about 5.5 minutes observed). Enrollment returns `503` "API Gateway has not confirmed an available truststore version." until it finishes. Retry the same request until it returns `201`.
+
 | Certificate | Pass | Fail means |
 | --- | --- | --- |
 | The issued, active client certificate | `200` with the payload | Truststore or enrollment is broken |
 | The same certificate after revoking it | Rejected on the very next request | Revocation is a strongly consistent DynamoDB read, so there should be no propagation wait |
-| A certificate from an unrelated CA | Rejected at TLS | The truststore admits foreign CAs |
+| A certificate from an unrelated CA | Rejected by API Gateway: `403` with body `{"message":"Forbidden"}` (the handshake completes and the Lambda is never invoked). A request with no certificate fails the handshake | A Hemlig `error` envelope means the request reached the Lambda: the truststore admits foreign CAs |
 
 Also confirm the default `execute-api` endpoints are disabled on both APIs: a request to either API's raw `execute-api` URL must fail.
 
@@ -400,7 +402,15 @@ issue api2 0002 >/dev/null; issue api3 0003 >/dev/null; issue api4 0004; grep -i
 
 ## Gate PKI-5: cert-manager renews unattended
 
-Run after PKI-4, on Kind or EKS, with `acc-root` from PKI-2. This gate is manual: no Kind job exists in CI. Install cert-manager with Helm and its CRDs, then the controller chart from this release with default approval (`certManager.approval.grantDefaultApprover=true`). Use a consumer with a PKI-only AgentGrant, in namespace `pki5`.
+Run after PKI-4, on Kind or EKS, with `acc-root` from PKI-2. This gate is manual: no Kind job exists in CI.
+
+Install cert-manager with Helm or the official release manifest (both include the CRDs), then the controller chart from this release with default approval (`certManager.approval.grantDefaultApprover=true`). Use a consumer with a PKI-only AgentGrant, in namespace `pki5`.
+
+This gate and PKI-6 and PKI-7 involve two consumers. The `HemligIssuer` grants (`acc-k8s`, `acc-h1`, `acc-h2`) belong to the **Kubernetes agent consumer** that the `HemligConsumer` (`acc-consumer`) created. Its client identity is in the `HemligConsumer`'s identity Secret (`tls.crt`, `tls.key`). 
+
+The **direct consumer** from gate 6 and PKI-4 holds the `acc-web` grant, and `consumer.crt` and `consumer.key` are its certificate.
+
+Set `$AGENT_CONSUMER_ID` to the agent consumer's ID; `$CONSUMER_ID` stays the direct consumer.
 
 Delete the `HemligTrustBundle` CRD before this gate (`kubectl delete crd hemligtrustbundles.hemlig.zyno.io`): the issuer must run without it. PKI-6 applies it again.
 
@@ -412,7 +422,7 @@ cat > grant5.json <<'EOF2'
   "lifetime": { "defaultSeconds": 3600, "maxSeconds": 3600, "minSeconds": 600 },
   "quotas": { "perHour": 10, "perDay": 100 } }
 EOF2
-hemlig pki grant create "$CONSUMER_ID" acc-k8s --ca acc-issuing-1 --file grant5.json
+hemlig pki grant create "$AGENT_CONSUMER_ID" acc-k8s --ca acc-issuing-1 --file grant5.json
 kubectl apply -f - <<'EOF2'
 apiVersion: hemlig.zyno.io/v1alpha1
 kind: HemligIssuer
@@ -464,13 +474,18 @@ kubectl -n pki5 get certificaterequest -o json | jq '.items[] | select(.metadata
 | Encoding | `tls.crt` equals the decoded `status.certificate` of the latest-revision CertificateRequest, and `ca.crt` equals the decoded `status.ca` | The base64 encoding is wrong |
 | Server copy | The leaf block equals `hemlig pki cert get acc-issuing-1 $SERIAL --out`, and the intermediate block equals the CA certificate | The returned chain differs from what Hemlig stored |
 | Denied name | A Certificate for `api.not-granted.example.com` ends `Ready=False` with reason `Failed` and `name_not_permitted` in the message | A denial was retried or hidden |
-| Restart | After `kubectl rollout restart` of the controller during a pending issuance, the request still becomes `Ready`, and `hemlig pki cert list --consumer` shows one certificate for it | The idempotency key was not reused |
+| Restart | With the controller scaled to 0 while the Certificate is applied, then scaled back to 1, the request becomes `Ready`, and `hemlig pki cert list --consumer "$AGENT_CONSUMER_ID"` shows one certificate for it. See the note below the table | The idempotency key was not reused |
 | Approval off (optional) | With `grantDefaultApprover=false`, a request stays `Waiting for approval` until approved | The controller approved by itself |
 | CRDs | The API server accepts both new CRDs, including their CEL immutability rules, and rejects a change of `spec.consumerRef` | A CEL rule failed validation. This is the only gate that proves them |
 
+Issuance takes about a second, so `kubectl rollout restart` rarely lands mid-issuance. For the restart check, scale the controller down instead: `kubectl -n hemlig-system scale deploy/hemlig-controller --replicas=0`, apply a new Certificate (for example `restart`, with the `web` spec and `secretName: restart-tls`), then `--replicas=1`. Wait for `kubectl -n pki5 wait certificate/restart --for=condition=Ready`.
+
 ## Gate PKI-6: mounted full-chain revocation
 
-Run after PKI-5 in the same cluster and namespace `pki5`, with `acc-root`, `$CA_ID` and `$EXT_ID` from PKI-2 and the PKI-4 shell (`consumer.crt`, the `issue` function, `api2.json`). It revokes `acc-issuing-1` at the root, so only PKI-7 follows it. Before applying the CRD, run `helm upgrade --reuse-values --set trustBundles.refreshIntervalMilliseconds=60000`. The verifying pod needs OpenSSL 3; the example installs it in `alpine:3.20`, which needs package egress.
+Run after PKI-5 in the same cluster and namespace `pki5`, with `acc-root`, `$CA_ID` and `$EXT_ID` from PKI-2 and the PKI-4 shell (`consumer.crt` of the direct consumer, the `issue` function, `api2.json`). `issue api6` uses the direct consumer from PKI-4 and its `acc-web` grant, not the agent consumer.
+ It revokes `acc-issuing-1` at the root, so only PKI-7 follows it.
+
+Before applying the CRD, run `helm upgrade --reuse-values --set trustBundles.refreshIntervalMilliseconds=60000`. The verifying pod needs OpenSSL 3; the example installs it in `alpine:3.20`, which needs package egress.
 
 ```sh
 kubectl apply -f packages/kubernetes-controller/chart/hemlig-controller/crds/hemlig.zyno.io-pki.yaml
@@ -572,9 +587,13 @@ sleep 30; kubectl -n pki5 get hmltrustbundle foreign; kubectl -n pki5 get config
 
 ## Gate PKI-7: a Hemlig root and its intermediates
 
-Run after PKI-6 in the same cluster and namespace `pki5`, with the PKI-4 shell (`consumer.crt`, `consumer.key`, `$CONSUMER_ID`), `grant5.json` from PKI-5 and the chart still at `trustBundles.refreshIntervalMilliseconds=60000`. Every key is `WRAPPED` in real KMS. This root is a throwaway: in production an external offline root is strongly recommended.
+Run after PKI-6 in the same cluster and namespace `pki5`, with `grant5.json` and `$AGENT_CONSUMER_ID` from PKI-5 and the chart still at `trustBundles.refreshIntervalMilliseconds=60000`. Every key is `WRAPPED` in real KMS. 
+
+`issue7` authenticates as the agent consumer, because `acc-h1` and `acc-h2` are its grants. Extract its identity from the `HemligConsumer`'s identity Secret first (set `IDENTITY_SECRET` to the `spec.identity.secretName` of `acc-consumer`). This root is a throwaway: in production an external offline root is strongly recommended.
 
 ```sh
+kubectl -n pki5 get secret "$IDENTITY_SECRET" -o jsonpath='{.data.tls\.crt}' | base64 -d > agent.crt
+kubectl -n pki5 get secret "$IDENTITY_SECRET" -o jsonpath='{.data.tls\.key}' | base64 -d > agent.key
 # 1. A root, two intermediates, and one refused as broader than the root
 hemlig pki ca create --kind ROOT --name acc-hroot-1 --key-algorithm ECDSA_P384 \
   --subject 'CN=Hemlig Acceptance Root CA 1,O=Example Corp' --permit-dns acc.example.com 2> hroot.err
@@ -591,8 +610,8 @@ hemlig pki cert list acc-hroot-1 | jq -c '.data.certificates[] | {childCaId, sta
 openssl x509 -in hroot.pem -noout -text | grep -A1 'Basic Constraints'
 openssl verify -x509_strict -CAfile hroot.pem hint2.pem
 # 2. Grants, issuers, certificates, a bundle and a verifying pod
-hemlig pki grant create "$CONSUMER_ID" acc-h1 --ca acc-hint-1 --file grant5.json
-hemlig pki grant create "$CONSUMER_ID" acc-h2 --ca acc-hint-2 --file grant5.json
+hemlig pki grant create "$AGENT_CONSUMER_ID" acc-h1 --ca acc-hint-1 --file grant5.json
+hemlig pki grant create "$AGENT_CONSUMER_ID" acc-h2 --ca acc-hint-2 --file grant5.json
 kubectl apply -f - <<EOF4
 apiVersion: hemlig.zyno.io/v1alpha1
 kind: HemligIssuer
@@ -666,14 +685,14 @@ hemlig pki cert revoke acc-hroot-1 "$(hemlig pki ca get acc-hint-1 | jq -r .data
 issue7() { openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$2.key" \
     -subj "/CN=$2.pki5.acc.example.com" -addext "subjectAltName=DNS:$2.pki5.acc.example.com" -out "$2.csr" 2>/dev/null
   jq -n --rawfile csr "$2.csr" '{certificateSigningRequestPem:$csr, usages:["digital signature","server auth"]}' > "$2.json"
-  curl -sS --cert consumer.crt --key consumer.key -H 'content-type: application/json' -H "idempotency-key: pki7-$3" \
+  curl -sS --cert agent.crt --key agent.key -H 'content-type: application/json' -H "idempotency-key: pki7-$3" \
     --data @"$2.json" "https://api.acc.example.com/v1/pki/issuance-grants/$1/certificates"; }
 issue7 acc-h1 h7a 0701
 # 4. Local distrust of the root
 issue7 acc-h2 h7b 0702 | jq -r .serial
 kubectl -n pki5 exec pki7-verify -- cp /trust/ca.crt /tmp/saved-ca.crt
-hemlig pki ca revoke acc-hroot-1 --reason caCompromise | jq '.data | {changed, revokedCaIds, complete}'; T1=$(date +%s)
-curl -sS --cert consumer.crt --key consumer.key -H 'content-type: application/json' -H 'idempotency-key: pki7-0702' \
+hemlig pki ca revoke acc-hroot-1 --reason caCompromise | jq '.data | {changed, crlEntry, crlPublished, revokedCaIds, complete}'; T1=$(date +%s)
+curl -sS --cert agent.crt --key agent.key -H 'content-type: application/json' -H 'idempotency-key: pki7-0702' \
   --data @h7b.json https://api.acc.example.com/v1/pki/issuance-grants/acc-h2/certificates
 until kubectl -n pki5 exec pki7-verify -- sh -c '! grep -q "BEGIN CERTIFICATE" /trust/ca.crt'; do [ $(( $(date +%s) - T1 )) -ge 600 ] && break; sleep 15; done; echo "elapsed=$(( $(date +%s) - T1 ))"
 check7 pki7b; echo "exit=$?"
@@ -694,7 +713,7 @@ kubectl -n pki5 get hemligtrustbundle acc-htrust -o jsonpath='{.status}' | jq '{
 | CA revoke | `changed`, `crlEntry` and `crlPublished` are `true`, `revokedCaIds: [$H1_ID]`; `elapsed` is at most the refresh interval plus 120 s; `check7 pki7a` reports `error 23 at 1 depth lookup: certificate revoked`; `pki7b` stays `OK` | The generated root CRL was not published or not delivered |
 | Leaf route | `cert revoke` on the child's serial exits 5, `apiCode conflict`, reason `use_ca_revoke` | |
 | Issuance | `h7a` gives `409 ca_not_active`, reason `revoked` | |
-| Distrust | `changed: true`, `revokedCaIds` lists `$H1_ID` and `$H2_ID`, `complete: true`; `acc-hint-2` shows `REVOKED`, `DISABLED`, `ancestor:$ROOT_ID` | |
+| Distrust | `changed: true`, `revokedCaIds` lists `$H1_ID` and `$H2_ID`, `complete: true`; `acc-hint-2` shows `REVOKED`, `DISABLED`, `ancestor:$ROOT_ID`. The root's receipt has `crlEntry: false` and `crlPublished: false`: a `ROOT` is locally distrusted and has no parent CRL, which is expected | |
 | Replay | The `pki7-0702` replay gives `409 issuance_revoked`, reason `ca_revoked` (or `ancestor_revoked` if it raced the child walk) | A leaf under a distrusted root was delivered again |
 | Anchor removed | `elapsed` is at most the refresh interval plus 120 s; `check7 pki7b` fails with a non-zero `exit=`; `check7 pki7b /tmp/saved-ca.crt` prints `OK`, so only the anchor's removal rejects it; `acceptedCaIds` still lists both CAs | The distrusted root stayed in `ca.crt` |
 | New issuance | `h7c` gives `409 ca_not_active`, reason `revoked` or `ancestor_revoked` | |
