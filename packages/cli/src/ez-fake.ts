@@ -11,9 +11,10 @@ export class FakeTerminal implements TerminalInput {
   public readonly isTTY = true;
   public readonly rawModes: boolean[] = [];
   public destroyed = false;
-  readonly #queue: string[];
+  readonly #queue: (string | number)[];
 
-  public constructor(...input: string[]) {
+  /** Strings are keystroke chunks; a number waits that many milliseconds before the next chunk arrives. */
+  public constructor(...input: (string | number)[]) {
     this.#queue = [...input];
   }
 
@@ -30,7 +31,10 @@ export class FakeTerminal implements TerminalInput {
   }
   public iterator(): AsyncIterator<string> {
     return {
-      next: async () => (this.#queue.length > 0 ? { done: false, value: this.#queue.shift() as string } : { done: true, value: undefined }),
+      next: async () => {
+        while (typeof this.#queue[0] === "number") await new Promise((resolve) => setTimeout(resolve, this.#queue.shift() as number));
+        return this.#queue.length > 0 ? { done: false, value: this.#queue.shift() as string } : { done: true, value: undefined };
+      },
       return: async () => ({ done: true, value: undefined }),
     };
   }
@@ -39,7 +43,7 @@ export class FakeTerminal implements TerminalInput {
   }
   /** Keystrokes still unread. */
   public get remaining(): string[] {
-    return [...this.#queue];
+    return this.#queue.filter((x): x is string => typeof x === "string");
   }
 }
 

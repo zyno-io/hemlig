@@ -18,7 +18,19 @@ export interface PrompterOptions {
   readonly write: (text: string) => void | Promise<void>;
   /** Opens the controlling terminal when stdin is a pipe; used only for the typed `confirm`. */
   readonly openTerminal?: () => Promise<TerminalInput | undefined>;
+  /** Keystrokes arriving this soon after the confirm prompt is shown are discarded (default 300 ms). */
+  readonly confirmArmMs?: number;
 }
+
+const minted = new WeakSet<object>();
+
+/** Proof that the operator typed `confirm`; only `Prompter.confirm` can produce one. */
+export interface Confirmation {
+  readonly action: string;
+}
+
+export const isConfirmation = (value: unknown): value is Confirmation =>
+  typeof value === "object" && value !== null && minted.has(value);
 
 const cancelled = (): EzError => new EzError(9, "prompt_cancelled", "The prompt was cancelled.");
 const tooLarge = (): EzError => new EzError(2, "invalid_input", "That input is too long.");
@@ -27,6 +39,7 @@ export class Prompter {
   readonly #stdin: TerminalInput;
   readonly #write: PrompterOptions["write"];
   readonly #openTerminal: PrompterOptions["openTerminal"];
+  readonly #armMs: number;
   #pipeIterator: AsyncIterator<string | Uint8Array> | undefined;
   #pipeBuffer = "";
   #pipeEnded = false;
@@ -35,6 +48,7 @@ export class Prompter {
     this.#stdin = options.stdin;
     this.#write = options.write;
     this.#openTerminal = options.openTerminal;
+    this.#armMs = options.confirmArmMs ?? 300;
   }
 
   /** True when stdin is a terminal: the form and the secret prompts are available. */
@@ -46,7 +60,13 @@ export class Prompter {
     await this.#write(text);
   }
 
-  async #terminalLine(input: TerminalInput, label: string, secret: boolean, maxBytes = MAX_LINE_BYTES): Promise<Buffer> {
+  async #terminalLine(
+    input: TerminalInput,
+    label: string,
+    echo: "none" | "all" | ((text: string) => void),
+    maxBytes = MAX_LINE_BYTES,
+    armMs = 0,
+  ): Promise<Buffer> {
     await this.#write(label);
     try {
       return await readTerminalLine(input, {
@@ -55,7 +75,9 @@ export class Prompter {
         tooLarge,
         allowPipe: false,
         notTerminal: () => new EzError(2, "terminal_required", "This input needs a terminal."),
-        ...(secret ? {} : { echo: (text: string) => void this.#write(text) }),
+        discardLeftover: true,
+        armMs,
+        ...(echo === "none" ? {} : { echo: echo === "all" ? (text: string) => void this.#write(text) : echo }),
       });
     } finally {
       await this.#write("\n");
@@ -67,13 +89,13 @@ export class Prompter {
     if (!this.interactive) {
       throw new EzError(2, "terminal_required", "A secret is read from the terminal; pass --passphrase-stdin to read it from a pipe.");
     }
-    return this.#terminalLine(this.#stdin, label, true, maxBytes);
+    return this.#terminalLine(this.#stdin, label, "none", maxBytes);
   }
 
   /** One echoed line from the terminal (the settings form). */
   public async text(label: string): Promise<string> {
     if (!this.interactive) throw new EzError(2, "terminal_required", "This input needs a terminal.");
-    const bytes = await this.#terminalLine(this.#stdin, label, false);
+    const bytes = await this.#terminalLine(this.#stdin, label, "all");
     try {
       return bytes.toString("utf8");
     } finally {
@@ -163,7 +185,7 @@ export class Prompter {
    * Anything else exits 2 `confirmation_declined`; ^C or EOF exits 9 `prompt_cancelled`. With stdin piped it uses the
    * controlling terminal, and with none it exits 2 `terminal_required`: signing and revoking are never unattended.
    */
-  public async confirm(action: string): Promise<void> {
+  public async confirm(action: string): Promise<Confirmation> {
     const { input, opened } = await this.#confirmInput();
     if (input === undefined) {
       throw new EzError(
@@ -173,10 +195,31 @@ export class Prompter {
       );
     }
     try {
-      const typed = await this.#terminalLine(input, `Type "${CONFIRM_WORD}" to ${action}; anything else aborts: `, false, 64);
+      // Echo only while the input is a prefix of the word, so a mistyped passphrase is never shown.
+      let typedSoFar = "";
+      let shown = 0;
+      const echo = (text: string): void => {
+        if (text === "\b \b") {
+          typedSoFar = typedSoFar.slice(0, -1);
+          if (shown > typedSoFar.length) {
+            shown -= 1;
+            void this.#write(text);
+          }
+          return;
+        }
+        typedSoFar += text;
+        if (CONFIRM_WORD.startsWith(typedSoFar) && shown === typedSoFar.length - 1) {
+          shown += 1;
+          void this.#write(text);
+        }
+      };
+      const typed = await this.#terminalLine(input, `Type "${CONFIRM_WORD}" to ${action}; anything else aborts: `, echo, 64, this.#armMs);
       if (typed.toString("utf8") !== CONFIRM_WORD) {
         throw new EzError(2, "confirmation_declined", `Not confirmed; nothing was ${action === "revoke" ? "revoked" : "signed"} and no state changed.`);
       }
+      const confirmation: Confirmation = Object.freeze({ action });
+      minted.add(confirmation);
+      return confirmation;
     } finally {
       if (opened) input.destroy?.();
     }

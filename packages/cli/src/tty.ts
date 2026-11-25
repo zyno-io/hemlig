@@ -35,6 +35,16 @@ export interface TerminalLineOptions {
    * what is typed (raw mode echoes nothing). Absent for secrets.
    */
   readonly echo?: (text: string) => void;
+  /**
+   * Terminal reads only: bytes that arrive in the same chunk after the Enter key are dropped instead of pushed back, so
+   * typeahead or a paste can never become the answer to a later prompt.
+   */
+  readonly discardLeftover?: boolean;
+  /**
+   * Terminal reads only: keystrokes that arrive within this many milliseconds of the read starting are dropped, so
+   * input typed before the prompt was shown (already buffered) is never taken as the answer.
+   */
+  readonly armMs?: number;
 }
 
 export const isTerminal = (input: TerminalInput): boolean =>
@@ -75,6 +85,7 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
     }
   };
   let carry = "";
+  const armedAt = Date.now() + (options.armMs ?? 0);
   if (raw) input.setRawMode!(true);
   try {
     for (;;) {
@@ -84,6 +95,7 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
         return finish();
       }
       const chunk = next.value;
+      if (raw && Date.now() < armedAt) continue;
       let text = carry + (typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true }));
       carry = "";
       if (!raw) {
@@ -131,7 +143,7 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
     }
   } finally {
     if (raw) input.setRawMode!(false);
-    if (leftover !== "" && typeof input.unshift === "function") input.unshift(Buffer.from(leftover, "utf8"));
+    if (leftover !== "" && !(raw && options.discardLeftover === true) && typeof input.unshift === "function") input.unshift(Buffer.from(leftover, "utf8"));
     input.pause?.();
     void Promise.resolve(iterator.return?.()).catch(() => {});
     // An abandoned read leaves the stream open; closing it lets the process exit.

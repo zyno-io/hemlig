@@ -45,7 +45,7 @@ export const renderSignReview = (review: SignReview): string => {
     row("Validity", `${review.notBefore.toISOString()} to ${review.notAfter.toISOString()}`),
     row("Serial", review.serial),
     row("Signed by root", `${displaySafe(review.root.subjectDn)} (SHA-256 ${review.root.fingerprint})`),
-    ...(review.crl === undefined ? [] : [row("Also signs", `root CRL number ${review.crl.number}, next update ${review.crl.nextUpdate.toISOString()}`)]),
+    ...(review.crl === undefined ? [] : [row("Also signs", `root CRL number ${review.crl.number}, next update about ${review.crl.nextUpdate.toISOString()}`)]),
     ...(review.expectedSpki ? [] : [row("WARNING", "the key is not pinned: pass --expect-spki-sha256 from the console to bind the CSR to the CA")]),
     ...summary.warnings.filter((w) => w !== "csr_unbound").map((w) => row("Warning", displaySafe(w))),
     "",
@@ -63,6 +63,8 @@ export interface RevokeReview {
   readonly root: { readonly subjectDn: string; readonly fingerprint: string };
   readonly crl: { readonly number: number; readonly nextUpdate: Date };
   readonly alreadyRevoked: boolean;
+  /** Serials recorded earlier but not yet in a signed CRL; this CRL lists them too. */
+  readonly alsoListed?: readonly string[];
 }
 
 export const renderRevokeReview = (review: RevokeReview): string => {
@@ -77,7 +79,10 @@ export const renderRevokeReview = (review: RevokeReview): string => {
     ...(review.invalidityDate === undefined ? [] : [row("Invalidity date", review.invalidityDate.toISOString())]),
     row("Effect", "every certificate this CA issued stops being trusted once the new root CRL is uploaded; revocation is permanent"),
     row("Root", `${displaySafe(review.root.subjectDn)} (SHA-256 ${review.root.fingerprint})`),
-    row("Signs", `root CRL number ${review.crl.number}, next update ${review.crl.nextUpdate.toISOString()}`),
+    row("Signs", `root CRL number ${review.crl.number}, next update about ${review.crl.nextUpdate.toISOString()}`),
+    ...(review.alsoListed === undefined || review.alsoListed.length === 0
+      ? []
+      : [row("Also lists", `${review.alsoListed.join(", ")} (recorded earlier, not yet in a CRL)`)]),
     ...(review.alreadyRevoked ? [row("Note", "already recorded as revoked locally; this re-signs it into a CRL")] : []),
     "",
   ];
@@ -108,7 +113,7 @@ export const renderCrlReview = (input: {
     "=== Review: this will sign a root CRL ===",
     row("Root", `${displaySafe(input.root.subjectDn)} (SHA-256 ${input.root.fingerprint})`),
     row("CRL number", String(input.crl.number)),
-    row("Next update", input.crl.nextUpdate.toISOString()),
+    row("Next update", `about ${input.crl.nextUpdate.toISOString()}`),
     row("Why", input.why),
     "",
   ].join("\n")}\n`;

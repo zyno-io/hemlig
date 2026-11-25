@@ -21,7 +21,7 @@ import {
   type OnlineSession,
 } from "./ez-online";
 import { assertCrlValidityDays, EZ_DEFAULTS, parseDuration } from "./ez-profile";
-import { Prompter } from "./ez-prompt";
+import { isConfirmation, Prompter, type Confirmation } from "./ez-prompt";
 import { renderCrlReview, renderRevokeReview, renderSignReview, rootLabel } from "./ez-review";
 import { generateSoftwareKey, SoftwareSigner, signBatch } from "./ez-signer";
 import {
@@ -379,7 +379,23 @@ interface IssueResult {
 }
 
 /** Reserves, signs as one batch (gated by the typed confirm having happened) and commits. */
-const issue = async (ctx: Ctx, store: EzStore, signer: SoftwareSigner, plan: IssuePlan, confirmed: boolean): Promise<IssueResult> => {
+const unlistedRevocations = (store: EzStore): string[] => store.state.revoked.filter((r) => r.listedInCrl === null).map((r) => r.serial);
+
+/** Only revoke-cert (which shows its own review and asks for `confirm`) may sign a CRL that still has to list a revocation. */
+const assertNoPendingRevocation = (store: EzStore): void => {
+  const pending = unlistedRevocations(store);
+  if (pending.length > 0) {
+    throw new EzError(5, "revocation_pending", "A revocation is recorded but not yet in a signed CRL. Rerun revoke-cert for it, which shows the review and asks you to type confirm.", {
+      serials: pending,
+    });
+  }
+};
+
+/**
+ * Reserves and signs as one batch. A batch that signs a certificate, or a CRL that newly lists a revocation, needs the
+ * `Confirmation` that only `Prompter.confirm` can mint.
+ */
+const issue = async (ctx: Ctx, store: EzStore, signer: SoftwareSigner, plan: IssuePlan, confirmation?: Confirmation): Promise<IssueResult> => {
   const now = ctx.clock();
   const root = store.rootCertificate;
   const began = await store.begin({ sign: plan.cert?.reservation, crl: plan.crl !== undefined });
@@ -408,7 +424,10 @@ const issue = async (ctx: Ctx, store: EzStore, signer: SoftwareSigner, plan: Iss
     const signatures = await signBatch(signer, items.map((p) => p.item), {
       confirm: () => {
         // The review and the typed confirm happened before anything was reserved; this makes it impossible to sign without them.
-        if (!confirmed) throw new EzError(2, "confirmation_declined", "Signing was attempted without the typed confirmation.");
+        const gated = certAt >= 0 || unlistedRevocations(store).length > 0;
+        if (gated && !isConfirmation(confirmation)) {
+          throw new EzError(2, "confirmation_declined", "Signing was attempted without the typed confirmation.");
+        }
       },
     });
     finished = items.map((p, i) => p.finish(signatures[i] as Buffer));
@@ -652,6 +671,7 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
 
   const store = await EzStore.open(storeOptions(ctx, dir));
   try {
+    assertNoPendingRevocation(store);
     const state = store.state;
     const root = store.rootCertificate;
     const session = offline ? undefined : await sessionOf(ctx);
@@ -744,6 +764,7 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
     const needCrl = store.crlDue(renewBefore, now);
     const crlPreview = needCrl ? { number: state.crl.lastNumber + 1, nextUpdate: new Date(store.nextCrlThisUpdate(now).getTime() + crlValidity * DAY_MS) } : undefined;
 
+    let confirmation: Confirmation | undefined;
     if (needCert || needCrl) {
       await ctx.prompter.requireConfirmTerminal("sign");
       await ctx.say(
@@ -751,7 +772,7 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
           ? renderSignReview({ caId, environment: environment === "" ? "(not given)" : environment, source, csr, serial, notBefore: validity.notBefore, notAfter: validity.notAfter, root: rootLabel(root), crl: crlPreview, expectedSpki: expectedSpki !== undefined || !offline })
           : renderCrlReview({ root: rootLabel(root), crl: crlPreview as { number: number; nextUpdate: Date }, why: `the certificate for ${caId} is already signed (serial ${prior.serial}); the root CRL is due` }),
       );
-      await ctx.prompter.confirm("sign");
+      confirmation = await ctx.prompter.confirm("sign");
     }
     let issued: IssueResult = {};
     if (needCert || needCrl) {
@@ -781,7 +802,7 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
             },
             ...(needCrl ? { crl: { validityDays: crlValidity } } : {}),
           },
-          true,
+          confirmation,
         );
       } finally {
         signer.close();
@@ -1003,6 +1024,17 @@ const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
     }
     const entry = target[0] as IssuedEntry;
     const already = state.revoked.find((r) => r.serial === entry.serial);
+    if (already !== undefined) {
+      // The signed CRL carries what is recorded; a different reason or date would be shown but never signed.
+      const recordedDate = already.invalidityDate === null ? undefined : Date.parse(already.invalidityDate);
+      const askedDate = invalidityDate === undefined ? undefined : Math.floor(invalidityDate.getTime() / 1000) * 1000;
+      if (already.reason !== reason || (askedDate !== undefined && askedDate !== recordedDate)) {
+        throw new EzError(5, "revocation_conflict", `Serial ${entry.serial} is already recorded as revoked (reason ${already.reason}${already.invalidityDate === null ? "" : `, invalidity date ${already.invalidityDate}`}); rerun with those values.`, {
+          reason: already.reason,
+          invalidityDate: already.invalidityDate,
+        });
+      }
+    }
     const unlisted = already !== undefined && already.listedInCrl === null;
     const renewBefore = EZ_DEFAULTS.crlRenewBeforeDays;
     const needSign = already === undefined || unlisted || store.crlDue(renewBefore);
@@ -1025,18 +1057,19 @@ const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
           subjectDn: entry.subjectDn,
           serial: entry.serial,
           reason: already?.reason ?? (reason as CrlReasonName),
-          invalidityDate: invalidityDate ?? (already?.invalidityDate == null ? undefined : new Date(already.invalidityDate)),
+          invalidityDate: already === undefined ? invalidityDate : already.invalidityDate === null ? undefined : new Date(already.invalidityDate),
+          alsoListed: unlistedRevocations(store).filter((serial) => serial !== entry.serial),
           root: rootLabel(root),
           crl: { number: state.crl.lastNumber + 1, nextUpdate: new Date(store.nextCrlThisUpdate(now).getTime() + crlValidity * DAY_MS) },
           alreadyRevoked: already !== undefined,
         }),
       );
-      await ctx.prompter.confirm("revoke");
+      const confirmation = await ctx.prompter.confirm("revoke");
       const signer = await unlockSigner(ctx, store);
       try {
         await store.addRevocation({ serial: entry.serial, caId: entry.caId, reason: reason as CrlReasonName, invalidityDate });
         ctx.progress.completed.push("revocation-recorded");
-        issuedCrl = (await issue(ctx, store, signer, { crl: { validityDays: crlValidity } }, true)).crl;
+        issuedCrl = (await issue(ctx, store, signer, { crl: { validityDays: crlValidity } }, confirmation)).crl;
       } finally {
         signer.close();
       }
@@ -1056,6 +1089,14 @@ const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
       return { data: { ...data, crlFile: crlOut }, next: [`hemlig pki external-ca upload-crl ${state.root.extIdHint} --crl ${shellArg(crlOut)}`] };
     }
     if (ext === undefined) {
+      if (entry.caId !== null) {
+        throw new EzError(5, "revocation_not_applied", "The signed CRL was not uploaded: the server you are logged in to does not know this root, so the CA is not revoked there.", {
+          caId: entry.caId,
+          issuedBy: entry.adminOrigin ?? "",
+          session: session.origin.origin,
+          originDiffers: entry.adminOrigin !== null && entry.adminOrigin !== session.origin.origin,
+        });
+      }
       return { data: { ...data, uploaded: false, warnings: ["root_not_registered"] } };
     }
     const sync = await syncRootCrl(session, store, ext, ctx);
@@ -1082,6 +1123,7 @@ const renewCrl = async (ctx: Ctx): Promise<Receipt> => {
   const dir = directoryOf(v);
   const store = await EzStore.open(storeOptions(ctx, dir));
   try {
+    assertNoPendingRevocation(store);
     const state = store.state;
     const session = offline ? undefined : await sessionOf(ctx);
     let ext: Awaited<ReturnType<typeof findExternalRoot>> = undefined;
@@ -1099,7 +1141,7 @@ const renewCrl = async (ctx: Ctx): Promise<Receipt> => {
     if (renew) {
       const signer = await unlockSigner(ctx, store);
       try {
-        renewed = (await issue(ctx, store, signer, { crl: { validityDays: crlValidity } }, true)).crl;
+        renewed = (await issue(ctx, store, signer, { crl: { validityDays: crlValidity } })).crl;
       } finally {
         signer.close();
       }
@@ -1223,6 +1265,7 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
       write: async (text) => {
         await stderr(text);
       },
+      confirmArmMs: dependencies.confirmArmMs,
       openTerminal: (dependencies.openTerminal as (() => Promise<TerminalInput | undefined>) | undefined) ?? openControllingTerminal,
     });
     const ctx: Ctx = {

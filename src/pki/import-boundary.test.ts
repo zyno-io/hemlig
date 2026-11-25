@@ -188,7 +188,7 @@ describe("the MIT CLI never imports the AGPL server", () => {
     expect(library.length).toBeGreaterThan(20);
     const offenders = library.filter(
       ({ specifier }) =>
-        !(specifier.startsWith("node:") || specifier.startsWith("./ez-") || specifier === "./tty" || /^@peculiar\/asn1-(schema|x509|csr)$/.test(specifier)),
+        !(specifier.startsWith("node:") || (specifier.startsWith("./ez-") && specifier !== "./ez-online" && specifier !== "./ez-fake") || specifier === "./tty" || /^@peculiar\/asn1-(schema|x509|csr)$/.test(specifier)),
     );
     expect(offenders).toEqual([]);
   });

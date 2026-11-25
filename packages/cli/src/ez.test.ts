@@ -6,7 +6,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { runCli } from "./index";
 import { FakeServer, FakeTerminal, caIdOf, pendingCa, pipeInput, type FakeCa } from "./ez-fake";
+import { EzError } from "./ez-error";
 import { EzStore, type EzState } from "./ez-state";
+import { Prompter, isConfirmation } from "./ez-prompt";
 import { fromPem, parseCertificate, parseCrl, verifyCertificateSignature, verifyCrlSignature } from "./ez-x509";
 import type { TerminalInput } from "./tty";
 
@@ -29,6 +31,7 @@ interface RunOptions {
   server?: FakeServer;
   openTerminal?: () => Promise<TerminalInput | undefined>;
   env?: NodeJS.ProcessEnv;
+  confirmArmMs?: number;
 }
 
 const run = async (args: string[], options: RunOptions = {}): Promise<Run> => {
@@ -53,6 +56,7 @@ const run = async (args: string[], options: RunOptions = {}): Promise<Run> => {
         },
       } as never),
     openTerminal: options.openTerminal,
+    confirmArmMs: options.confirmArmMs ?? 0,
   });
   const lastLine = (text: string): any => {
     const line = text.trim().split("\n").filter((l) => l.startsWith("{")).pop();
@@ -92,7 +96,7 @@ const server = (...cas: FakeCa[]): FakeServer => {
 };
 
 const signOnline = (dir: string, caId: string, s: FakeServer, keys: string[] = [`confirm\r`, `${PASS}\r`], extra: string[] = []) =>
-  run(["sign-cert", caId, "--dir", dir, "--environment", "prod", "--yes", ...extra], { server: s, stdin: new FakeTerminal(keys.join("")) });
+  run(["sign-cert", caId, "--dir", dir, "--environment", "prod", "--yes", ...extra], { server: s, stdin: new FakeTerminal(...keys) });
 
 const cleanup = (dir: string) => fs.rm(dir, { recursive: true, force: true });
 
@@ -149,8 +153,7 @@ test("generate-ca on a terminal: the form edits settings, the passphrase is aske
   const dir = await tempDir();
   try {
     // 2 = subject, 4 = key algorithm (choice 2 = ECDSA_P256), 9 = intermediate validity, then accept.
-    const keys = ["2\r", "CN=Form Root,O=Test\r", "4\r", "2\r", "9\r", "365d\r", "\r", `${PASS}\r`, `${PASS}\r`].join("");
-    const term = new FakeTerminal(keys);
+    const term = new FakeTerminal("2\r", "CN=Form Root,O=Test\r", "4\r", "2\r", "9\r", "365d\r", "\r", `${PASS}\r`, `${PASS}\r`);
     const result = await run(["generate-ca", "--dir", dir], { stdin: term });
     assert.equal(result.exitCode, 0, result.stderr);
     const state = await readState(dir);
@@ -165,7 +168,7 @@ test("generate-ca on a terminal: the form edits settings, the passphrase is aske
 
     const dir2 = await tempDir();
     const mismatch = await run(["generate-ca", "--dir", dir2, "--subject", "CN=M", "--key-algorithm", "ECDSA_P256"], {
-      stdin: new FakeTerminal(`\r${PASS}\r${PASS}x\r`),
+      stdin: new FakeTerminal("\r", `${PASS}\r`, `${PASS}x\r`),
     });
     assert.equal(mismatch.exitCode, 2);
     assert.equal(mismatch.error.code, "passphrase_mismatch");
@@ -316,7 +319,7 @@ test("sign-cert: --yes never skips the confirm; a pipe needs a terminal; a wrong
     // a wrong passphrase after a valid confirm: exit 3, still nothing written
     const wrong = await run(["sign-cert", record.caId, "--dir", dir, "--environment", "prod", "--yes"], {
       server: s,
-      stdin: new FakeTerminal("confirm\rnot the passphrase!\r"),
+      stdin: new FakeTerminal("confirm\r", "not the passphrase!\r"),
     });
     assert.equal(wrong.exitCode, 3);
     assert.equal(wrong.error.code, "passphrase_invalid");
@@ -518,7 +521,7 @@ test("sign-cert offline: pins the key, needs the confirm, writes the files to ca
     assert.deepEqual(await snapshot(dir), before);
     assert.deepEqual(await fs.readdir(carry), ["ca.csr.pem"]);
     // success
-    const ok = await run([...base, "--expect-spki-sha256", record.spkiSha256, "--chain-out", join(carry, "root.pem"), "--crl-out", join(carry, "root.crl.pem")], { stdin: new FakeTerminal(`confirm\r${PASS}\r`) });
+    const ok = await run([...base, "--expect-spki-sha256", record.spkiSha256, "--chain-out", join(carry, "root.pem"), "--crl-out", join(carry, "root.crl.pem")], { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
     assert.equal(ok.exitCode, 0, ok.stderr);
     assert.equal(ok.json.data.activated, false);
     assert.match(ok.json.next[1], /^hemlig pki ez activate ca-/);
@@ -534,7 +537,7 @@ test("sign-cert offline: pins the key, needs the confirm, writes the files to ca
     // a different CSR for the same CA is a conflict; an existing output is never overwritten
     const other = pendingCa(1);
     await fs.writeFile(csrFile, other.csr.pem);
-    const conflict = await run([...base], { stdin: new FakeTerminal(`confirm\r${PASS}\r`) });
+    const conflict = await run([...base], { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
     assert.equal(conflict.error.code, "issued_conflict");
   } finally {
     await cleanup(dir);
@@ -556,7 +559,7 @@ test("sign-cert offline: unpinned CSRs warn, outputs are not clobbered, private 
     assert.equal(existing.error.code, "already_exists");
     assert.equal(await fs.readFile(out, "utf8"), "precious");
     await fs.unlink(out);
-    const unpinned = await run(["sign-cert", record.caId, "--dir", dir, "--offline", "--csr", csrFile, "--out", out, "--yes"], { stdin: new FakeTerminal(`confirm\r${PASS}\r`) });
+    const unpinned = await run(["sign-cert", record.caId, "--dir", dir, "--offline", "--csr", csrFile, "--out", out, "--yes"], { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
     assert.equal(unpinned.exitCode, 0, unpinned.stderr);
     assert.match(unpinned.stderr, /key is not pinned/);
     assert.deepEqual(unpinned.json.data.warnings, ["csr_unbound"]);
@@ -586,7 +589,7 @@ test("activate: offline-produced files activate a new root with its CRL, and a r
         assert.equal(renewed.exitCode, 0, renewed.stderr);
       }
       const signed = await run(["sign-cert", ca.record.caId, "--dir", dir, "--offline", "--csr", join(carry, `${n}.csr.pem`), "--out", join(carry, `${n}.pem`), "--chain-out", join(carry, `root${n}.pem`), "--crl-out", join(carry, `crl${n}.pem`), "--yes"], {
-        stdin: new FakeTerminal(`confirm\r${PASS}\r`),
+        stdin: new FakeTerminal("confirm\r", `${PASS}\r`),
       });
       assert.equal(signed.exitCode, 0, signed.stderr);
     }
@@ -624,7 +627,7 @@ test("activate refuses a certificate that the chain's root did not sign", async 
     await newRoot(b);
     const ca = pendingCa(1);
     await fs.writeFile(join(carry, "csr.pem"), ca.csr.pem);
-    const signed = await run(["sign-cert", ca.record.caId, "--dir", a, "--offline", "--csr", join(carry, "csr.pem"), "--out", join(carry, "c.pem"), "--yes"], { stdin: new FakeTerminal(`confirm\r${PASS}\r`) });
+    const signed = await run(["sign-cert", ca.record.caId, "--dir", a, "--offline", "--csr", join(carry, "csr.pem"), "--out", join(carry, "c.pem"), "--yes"], { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
     assert.equal(signed.exitCode, 0, signed.stderr);
     const result = await run(["activate", ca.record.caId, "--environment", "prod", "--certificate", join(carry, "c.pem"), "--chain", join(b, "root.pem")], { server: server(ca.record) });
     assert.equal(result.exitCode, 5);
@@ -660,7 +663,7 @@ test("revoke-cert: typed confirm, records, signs CRL 2, uploads and verifies the
       assert.equal(declined.error.code, code, label);
       assert.deepEqual(await snapshot(dir), before, label);
     }
-    const result = await run(["revoke-cert", ca.record.caId, "--dir", dir, "--reason", "caCompromise", "--invalidity-date", "2026-11-20T00:00:00Z"], { server: s, stdin: new FakeTerminal(`confirm\r${PASS}\r`) });
+    const result = await run(["revoke-cert", ca.record.caId, "--dir", dir, "--reason", "caCompromise", "--invalidity-date", "2026-11-20T00:00:00Z"], { server: s, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
     assert.equal(result.exitCode, 0, result.stderr);
     assert.match(result.stderr, /Review: this will REVOKE/);
     assert.match(result.stderr, new RegExp(ca.record.caId));
@@ -687,7 +690,7 @@ test("revoke-cert: a failed upload reruns without signing; revocation_not_applie
     const one = await activated(dir, s, 1);
     const two = await activated(dir, s, 2);
     s.failNext = { suffix: "/crl", after: false };
-    const first = await run(["revoke-cert", one.record.caId, "--dir", dir, "--reason", "keyCompromise"], { server: s, stdin: new FakeTerminal(`confirm\r${PASS}\r`) });
+    const first = await run(["revoke-cert", one.record.caId, "--dir", dir, "--reason", "keyCompromise"], { server: s, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
     assert.equal(first.exitCode, 8);
     const failure = JSON.parse(first.stderr.trim().split("\n").filter((l) => l.startsWith("{")).pop() as string);
     assert.deepEqual(failure.ez.completed.slice(0, 3), ["revocation-recorded", "crl-signed", ]);
@@ -699,7 +702,7 @@ test("revoke-cert: a failed upload reruns without signing; revocation_not_applie
     assert.equal((await readState(dir)).crl.current?.number, 2);
     // a server that does not apply the revocation
     s.ignoreRevocations = true;
-    const ignored = await run(["revoke-cert", two.record.caId, "--dir", dir, "--reason", "superseded"], { server: s, stdin: new FakeTerminal(`confirm\r${PASS}\r`) });
+    const ignored = await run(["revoke-cert", two.record.caId, "--dir", dir, "--reason", "superseded"], { server: s, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
     assert.equal(ignored.exitCode, 5);
     assert.equal(ignored.error.code, "revocation_not_applied");
     // offline by serial
@@ -707,7 +710,7 @@ test("revoke-cert: a failed upload reruns without signing; revocation_not_applie
     const three = await activated(dir, s, 3);
     const serial = (await readState(dir)).issued.find((e) => e.caId === three.record.caId)?.serial as string;
     const out = join(dir, "carry.crl.pem");
-    const offline = await run(["revoke-cert", "--serial", serial, "--dir", dir, "--offline", "--crl-out", out, "--reason", "cessationOfOperation"], { stdin: new FakeTerminal(`confirm\r${PASS}\r`) });
+    const offline = await run(["revoke-cert", "--serial", serial, "--dir", dir, "--offline", "--crl-out", out, "--reason", "cessationOfOperation"], { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
     assert.equal(offline.exitCode, 0, offline.stderr);
     assert.ok(parseCrl(fromPem(await fs.readFile(out, "utf8"), "X509 CRL")).entries.some((e) => e.serial === serial));
     assert.equal((await run(["revoke-cert", "--serial", "deadbeef", "--dir", dir, "--offline", "--crl-out", out, "--reason", "keyCompromise"], { stdin: new FakeTerminal() })).error.code, "unknown_serial");
@@ -826,4 +829,138 @@ test("usage errors exit 2, help is JSON, the lock blocks a second command, EzErr
 
 test("the CA id helper: caIdOf matches the CA id pattern the commands accept", () => {
   assert.match(caIdOf(7), /^ca-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+});
+
+// -- review fixes: typeahead, pending revocations, conflicting reruns ----------------------------------------------
+
+test("typeahead can never answer the confirm: a paste at the form prompt, or keys typed before the prompt, are discarded", async () => {
+  const dir = await tempDir();
+  try {
+    await newRoot(dir);
+    const { record } = pendingCa(1);
+    const s = server(record);
+    const before = await snapshot(dir);
+    // one paste: accepts the form, then "confirm" and the passphrase ride along in the same chunk
+    const pasted = await run(["sign-cert", record.caId, "--dir", dir, "--environment", "prod"], {
+      server: s,
+      stdin: new FakeTerminal(`\rconfirm\r${PASS}\r`),
+    });
+    assert.equal(pasted.exitCode, 9);
+    assert.equal(pasted.error.code, "prompt_cancelled");
+    assert.match(pasted.stderr, /Review: this will sign/);
+    assert.deepEqual(await snapshot(dir), before);
+    // --yes, with the answer already buffered when the prompt appears: dropped by the arm window
+    const early = await run(["sign-cert", record.caId, "--dir", dir, "--environment", "prod", "--yes"], {
+      server: s,
+      stdin: new FakeTerminal("confirm\r", `${PASS}\r`),
+      confirmArmMs: 100,
+    });
+    assert.equal(early.exitCode, 9);
+    assert.deepEqual(await snapshot(dir), before);
+    assert.equal(s.mutations.length, 0);
+    // typed after the prompt is shown: accepted
+    const late = await run(["sign-cert", record.caId, "--dir", dir, "--environment", "prod", "--yes"], {
+      server: s,
+      stdin: new FakeTerminal(150, "confirm\r", `${PASS}\r`),
+      confirmArmMs: 100,
+    });
+    assert.equal(late.exitCode, 0, late.stderr);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("the confirm echoes only what is still a prefix of the word, and its proof cannot be forged", async () => {
+  const out: string[] = [];
+  const prompter = new Prompter({ stdin: new FakeTerminal("confXhunter2\r"), write: (t) => void out.push(t), confirmArmMs: 0 });
+  await assert.rejects(prompter.confirm("sign"), (e) => e instanceof EzError && e.code === "confirmation_declined");
+  const text = out.join("");
+  assert.match(text, /conf/);
+  assert.doesNotMatch(text, /X|hunter2/);
+  const ok = await new Prompter({ stdin: new FakeTerminal("confirm\r"), write: () => {}, confirmArmMs: 0 }).confirm("sign");
+  assert.equal(isConfirmation(ok), true);
+  assert.equal(isConfirmation({ action: "sign" }), false);
+  assert.equal(isConfirmation(Object.freeze({ action: "sign" })), false);
+});
+
+/** Records a revocation in the state without signing a CRL for it (as a crash after the record would). */
+const recordRevocation = async (dir: string, serial: string, caId: string, reason: "keyCompromise" | "superseded" = "keyCompromise") => {
+  const store = await EzStore.open({ dir, command: "test" });
+  try {
+    await store.addRevocation({ serial, caId, reason });
+  } finally {
+    await store.close();
+  }
+};
+
+test("renew-crl and sign-cert refuse to publish an unlisted revocation; revoke-cert finishes it with its own review", async () => {
+  const dir = await tempDir();
+  try {
+    await newRoot(dir);
+    const s = server();
+    const one = await activated(dir, s, 1);
+    const two = pendingCa(2);
+    s.add(two.record);
+    const serial = (await readState(dir)).issued[0]?.serial as string;
+    await recordRevocation(dir, serial, one.record.caId);
+    const before = await snapshot(dir);
+    const renew = await run(["renew-crl", "--dir", dir], { server: s, stdin: new FakeTerminal(`${PASS}\r`) });
+    assert.equal(renew.exitCode, 5);
+    assert.equal(renew.error.code, "revocation_pending");
+    const renewOffline = await run(["renew-crl", "--dir", dir, "--offline", "--crl-out", "x.pem"], { stdin: new FakeTerminal(`${PASS}\r`) });
+    assert.equal(renewOffline.error.code, "revocation_pending");
+    const sign = await signOnline(dir, two.record.caId, s);
+    assert.equal(sign.error.code, "revocation_pending");
+    assert.deepEqual(await snapshot(dir), before);
+    // revoke-cert shows the review, asks for confirm, signs and uploads
+    const done = await run(["revoke-cert", one.record.caId, "--dir", dir, "--reason", "keyCompromise"], { server: s, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(done.exitCode, 0, done.stderr);
+    assert.match(done.stderr, /Review: this will REVOKE/);
+    assert.equal((await readState(dir)).revoked[0]?.listedInCrl, 2);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("a second revoke-cert with a different reason or date is refused, and the review shows what is recorded", async () => {
+  const dir = await tempDir();
+  try {
+    await newRoot(dir);
+    const s = server();
+    const one = await activated(dir, s, 1);
+    const serial = (await readState(dir)).issued[0]?.serial as string;
+    await recordRevocation(dir, serial, one.record.caId, "keyCompromise");
+    const before = await snapshot(dir);
+    for (const extra of [["--reason", "superseded"], ["--reason", "keyCompromise", "--invalidity-date", "2026-01-01T00:00:00Z"]]) {
+      const conflict = await run(["revoke-cert", one.record.caId, "--dir", dir, ...extra], { server: s, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+      assert.equal(conflict.exitCode, 5, extra.join(" "));
+      assert.equal(conflict.error.code, "revocation_conflict");
+      assert.doesNotMatch(conflict.stderr, /Review:/);
+      assert.deepEqual(await snapshot(dir), before);
+    }
+    const same = await run(["revoke-cert", one.record.caId, "--dir", dir, "--reason", "keyCompromise"], { server: s, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(same.exitCode, 0, same.stderr);
+    assert.match(same.stderr, /Reason: +keyCompromise/);
+    // once listed, the same conflict check applies to a later rerun
+    const again = await run(["revoke-cert", one.record.caId, "--dir", dir, "--reason", "superseded"], { server: s, stdin: new FakeTerminal() });
+    assert.equal(again.error.code, "revocation_conflict");
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("revoke-cert does not exit 0 when the logged-in server does not know the root", async () => {
+  const dir = await tempDir();
+  try {
+    await newRoot(dir);
+    const s = server();
+    const one = await activated(dir, s, 1);
+    const elsewhere = new FakeServer();
+    const result = await run(["revoke-cert", one.record.caId, "--dir", dir, "--reason", "keyCompromise"], { server: elsewhere, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(result.exitCode, 5);
+    assert.equal(result.error.code, "revocation_not_applied");
+    assert.equal(elsewhere.mutations.length, 0);
+  } finally {
+    await cleanup(dir);
+  }
 });

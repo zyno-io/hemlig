@@ -43,6 +43,8 @@ export interface CliDependencies {
    * `hemlig pki ez`: opens the controlling terminal for the typed `confirm` when stdin is a pipe (for example with
    * `--passphrase-stdin`). Defaults to `/dev/tty`; resolves to undefined when there is none.
    */
+  /** `hemlig pki ez`: milliseconds after the confirm prompt during which keystrokes are discarded (default 300; tests use 0). */
+  readonly confirmArmMs?: number;
   readonly openTerminal?: () => Promise<
     | (AsyncIterable<string | Uint8Array> & {
         readonly isTTY?: boolean;

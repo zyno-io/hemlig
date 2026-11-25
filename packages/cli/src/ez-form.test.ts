@@ -14,7 +14,7 @@ const fields = (): FormField[] => [
 
 const harness = (...keys: string[]) => {
   const output: string[] = [];
-  const term = new FakeTerminal(keys.join(""));
+  const term = new FakeTerminal(...keys);
   const prompter = new Prompter({ stdin: term, write: (t) => void output.push(t) });
   return { term, prompter, text: () => output.join("") };
 };
@@ -93,7 +93,7 @@ test("prompter: secrets are never echoed, pipe lines are read one at a time, con
 });
 
 test("prompter: new passphrases are checked against the policy, then confirmed", async () => {
-  const mk = (...keys: string[]) => new Prompter({ stdin: new FakeTerminal(keys.join("")), write: () => {} });
+  const mk = (...keys: string[]) => new Prompter({ stdin: new FakeTerminal(...keys), write: () => {} });
   assert.equal((await mk("a long enough passphrase\r", "a long enough passphrase\r").passphrase({ create: true, fromStdin: false })).toString(), "a long enough passphrase");
   await assert.rejects(mk("short\r", "short\r").passphrase({ create: true, fromStdin: false }), (e) => e instanceof EzError && e.code === "invalid_input");
   await assert.rejects(mk("a long enough passphrase\r", "a long enough passphrasX\r").passphrase({ create: true, fromStdin: false }), (e) => e instanceof EzError && e.code === "passphrase_mismatch");
