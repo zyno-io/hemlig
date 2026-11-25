@@ -120,12 +120,34 @@
         checksum: "{{ ('sha256:' ~ cert_manager_manifest_sha256) if cert_manager_manifest_sha256 else omit }}"
         mode: "0600"
 
+    # Server-side apply owns only the fields in the manifest, so the caBundle
+    # that cainjector writes into the webhook configurations is not reverted
+    # on every run. `kubectl diff` exits 1 when there is drift. It cannot
+    # dry-run namespaced objects before their namespace exists, so a fresh
+    # cluster skips the diff and applies directly.
+    - name: Check whether cert-manager is installed
+      ansible.builtin.command: /usr/local/bin/k3s kubectl get namespace cert-manager
+      register: cert_manager_namespace
+      changed_when: false
+      failed_when: false
+
+    - name: Check cert-manager for drift
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl diff --server-side
+        --field-manager=hemlig-testbed --force-conflicts -f
+        {{ testbed_work_dir }}/cert-manager-{{ cert_manager_version }}.yaml
+      register: cert_manager_diff
+      changed_when: false
+      failed_when: cert_manager_diff.rc > 1
+      when: cert_manager_namespace.rc == 0
+
     - name: Apply cert-manager
       ansible.builtin.command: >-
-        /usr/local/bin/k3s kubectl apply -f
+        /usr/local/bin/k3s kubectl apply --server-side
+        --field-manager=hemlig-testbed --force-conflicts -f
         {{ testbed_work_dir }}/cert-manager-{{ cert_manager_version }}.yaml
-      register: cert_manager_apply
-      changed_when: "'created' in cert_manager_apply.stdout or 'configured' in cert_manager_apply.stdout"
+      when: cert_manager_namespace.rc != 0 or cert_manager_diff.rc == 1
+      changed_when: true
 
     - name: Wait for the cert-manager deployments to be Available
       ansible.builtin.command: >-

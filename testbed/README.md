@@ -45,7 +45,7 @@ The kubeconfig is written to `testbed/.kube/<inventory hostname>.yaml` (gitignor
 
 - k3s comes from the official install script at `get.k3s.io`, downloaded to a file and then run. It reinstalls only when the binary is missing or its version differs.
 - Server config is `/etc/rancher/k3s/config.yaml`: kubeconfig mode `0600`, `tls-san` set to `testbed_api_address` (default `ansible_host`), and Traefik disabled. ServiceLB and local-path storage stay on.
-- cert-manager is applied from the official release manifest with `k3s kubectl apply`. The manifest is verified against `cert_manager_manifest_sha256`. Pinning the checksum is recommended; the default matches the default version, so set a new digest when you change `cert_manager_version`, or set it to an empty string to skip verification.
+- cert-manager is applied from the official release manifest with server-side apply (`k3s kubectl apply --server-side`), and only when `kubectl diff` reports drift. This leaves the `caBundle` that cainjector writes into the webhook configurations alone, so reruns stay unchanged. The manifest is verified against `cert_manager_manifest_sha256`. Pinning the checksum is recommended; the default matches the default version, so set a new digest when you change `cert_manager_version`, or set it to an empty string to skip verification.
 - `testbed_extra_manifests` is a list of local manifest files applied after cert-manager. The default is empty.
 
 ## Install the Hemlig controller from this checkout
