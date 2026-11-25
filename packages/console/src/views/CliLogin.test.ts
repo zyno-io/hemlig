@@ -220,6 +220,7 @@ describe("CliLogin", () => {
       `mode=code`,
       `mode=code&port=40000&state=${goodState}`,
       `mode=other&state=${goodState}`,
+      `mode=other&port=40000&state=${goodState}`,
     ]) {
       it(`is invalid for ${query.slice(0, 40)}`, async () => {
         const { wrapper } = await mountAt(query);

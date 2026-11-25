@@ -102,7 +102,7 @@ const help = {
       "Per-request timeout (1–300000 milliseconds); default 30000.",
   },
   output:
-    "One JSON receipt on stdout; one JSON error on stderr. No prompts or automatic retries. Exception: login also prints its sign-in URL and confirmation code on stderr on success.",
+    "One JSON receipt on stdout; one JSON error on stderr. No prompts or automatic retries. Exception: login prints its sign-in URL and confirmation code on stderr on success, and with --no-localhost (default over SSH) also prints a prompt on stderr and reads the login code from stdin.",
   exitCodes: {
     "0": "Success",
     "2": "Usage or invalid local input",

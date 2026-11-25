@@ -31,6 +31,7 @@ function fakeStdin(chunks: string[], opts: { tty?: boolean; hang?: boolean } = {
     isTTY: opts.tty ?? false,
     setRawMode: (m: boolean) => void calls.push(`raw:${m}`),
     pause: () => void calls.push("pause"),
+    destroy: () => void calls.push("destroy"),
     async *[Symbol.asyncIterator]() {
       for (const c of chunks) yield Buffer.from(c);
       if (opts.hang) await new Promise(() => {});
@@ -195,25 +196,41 @@ for (const [name, token] of [
 }
 
 test("loginViaCode: config.json failure saves nothing", async () => {
-  const { input } = fakeStdin([]);
+  let announcedState = "";
+  let release!: (c: string[]) => void;
+  const gate = new Promise<string[]>((r) => (release = r));
+  const input: CodeInput = {
+    async *[Symbol.asyncIterator]() {
+      for (const c of await gate) yield Buffer.from(c);
+    },
+  };
   const { options } = codeOptions(input, {
     fetch: (async () => new Response("no", { status: 500 })) as unknown as typeof fetch,
-    announce: () => {},
-  });
-  const gated = {
-    ...input,
-    async *[Symbol.asyncIterator]() {
-      yield Buffer.from("\n");
+    announce: (url: string) => {
+      announcedState = new URL(url).searchParams.get("state")!;
+      release([`${formatLoginCode(announcedState, validToken)}\n`]);
     },
-  } as CodeInput;
-  await assert.rejects(loginViaCode({ ...options, stdin: gated }), (e) => e instanceof LoginError);
+  });
+  await assert.rejects(
+    loginViaCode(options),
+    (e) => e instanceof LoginError && e.code === "config_fetch_failed",
+  );
 });
 
 test("loginViaCode times out with login_timeout and restores the terminal", async () => {
   const { input, calls } = fakeStdin([], { tty: true, hang: true });
   const { options } = codeOptions(input, { timeoutMs: 50 });
   await assert.rejects(loginViaCode(options), (e) => e instanceof LoginError && e.code === "login_timeout");
+  assert.deepEqual(calls.filter((c) => c.startsWith("raw")), ["raw:true", "raw:false"]);
   assert.ok(calls.includes("pause"));
+  assert.ok(calls.includes("destroy"), "an abandoned read closes stdin so the process can exit");
+});
+
+test("loginViaCode times out on a non-TTY stdin that never delivers and destroys it", async () => {
+  const { input, calls } = fakeStdin([], { hang: true });
+  const { options } = codeOptions(input, { timeoutMs: 50 });
+  await assert.rejects(loginViaCode(options), (e) => e instanceof LoginError && e.code === "login_timeout");
+  assert.ok(calls.includes("destroy"));
 });
 
 // ---- runCli mode selection ----

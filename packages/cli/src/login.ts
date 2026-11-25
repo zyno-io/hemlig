@@ -500,6 +500,8 @@ export interface CodeInput extends AsyncIterable<string | Uint8Array> {
   setRawMode?(mode: boolean): unknown;
   pause?(): unknown;
   resume?(): unknown;
+  /** Called when a read is abandoned (timeout) so the process can exit. */
+  destroy?(): unknown;
 }
 
 const BRACKETED_PASTE = ["\x1b[200~", "\x1b[201~"];
@@ -514,16 +516,25 @@ const tooLarge = (): LoginError =>
  * mode truncates a line at 1024 bytes on macOS and the code is longer. Without
  * a terminal it takes the first line of the stream, or all of it at EOF.
  */
-export async function readCodeLine(input: CodeInput): Promise<string> {
+export async function readCodeLine(
+  input: CodeInput,
+  signal?: AbortSignal,
+): Promise<string> {
   const raw = input.isTTY === true && typeof input.setRawMode === "function";
   const iterator = input[Symbol.asyncIterator]();
   const decoder = new TextDecoder();
+  // Rejects when the caller aborts (timeout), so a stalled stdin cannot outlive it.
+  const aborted = new Promise<never>((_, reject) => {
+    if (signal?.aborted) reject(signal.reason);
+    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+  });
+  aborted.catch(() => {});
   let line = "";
   let carry = "";
   if (raw) input.setRawMode!(true);
   try {
     for (;;) {
-      const next = await iterator.next();
+      const next = await Promise.race([iterator.next(), aborted]);
       if (next.done) {
         if (raw && line === "") throw cancelled();
         return line;
@@ -567,6 +578,8 @@ export async function readCodeLine(input: CodeInput): Promise<string> {
     if (raw) input.setRawMode!(false);
     input.pause?.();
     void Promise.resolve(iterator.return?.()).catch(() => {});
+    // An abandoned read leaves the stream open; closing it lets the process exit.
+    if (signal?.aborted) input.destroy?.();
   }
 }
 
@@ -595,17 +608,16 @@ export async function loginViaCode(
   url.searchParams.set("mode", "code");
   url.searchParams.set("state", state);
   let timer: NodeJS.Timeout | undefined;
+  const controller = new AbortController();
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(
-          new LoginError(
-            "login_timeout",
-            "Timed out waiting for the login code. Run `hemlig login` again.",
-          ),
-        ),
-      options.timeoutMs,
-    );
+    timer = setTimeout(() => {
+      const error = new LoginError(
+        "login_timeout",
+        "Timed out waiting for the login code. Run `hemlig login` again.",
+      );
+      controller.abort(error);
+      reject(error);
+    }, options.timeoutMs);
   });
   timeout.catch(() => {});
   try {
@@ -617,7 +629,7 @@ export async function loginViaCode(
         // The URL has been printed; a failed opener must not abort the wait.
       }
       await options.prompt();
-      return readCodeLine(options.stdin);
+      return readCodeLine(options.stdin, controller.signal);
     })();
     const pasted = await Promise.race([read, timeout]);
     const parsed = parseLoginCode(pasted);

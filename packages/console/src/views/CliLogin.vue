@@ -38,8 +38,14 @@ const state = computed(() => {
 });
 // `mode=code` takes no port; a link with both is malformed.
 const codeMode = computed(() => single(route.query.mode) === "code");
+// Only an absent mode (loopback) or `code` is recognised.
+const modeKnown = computed(
+  () => route.query.mode === undefined || codeMode.value,
+);
 const valid = computed(() =>
-  codeMode.value
+  !modeKnown.value
+    ? false
+    : codeMode.value
     ? route.query.port === undefined && state.value !== undefined
     : port.value !== undefined && state.value !== undefined,
 );
@@ -195,7 +201,11 @@ const cancel = (): void => {
 
       <section v-else class="card card-body max-w-xl">
         <h2 class="section-title">
-          Authorize the Hemlig CLI on this computer?
+          {{
+            codeMode
+              ? "Authorize the Hemlig CLI in your terminal?"
+              : "Authorize the Hemlig CLI on this computer?"
+          }}
         </h2>
         <div class="mt-3">
           <p class="text-[13px] text-ink-2">Confirmation code</p>
@@ -254,7 +264,7 @@ const cancel = (): void => {
           v-else-if="codeMode"
           class="mt-3 text-[13px] text-ink-2"
         >
-          Authorizing shows a one-time login code to copy into your terminal.
+          Authorizing shows a login code to copy into your terminal.
           It grants full administrator access until it expires.
         </p>
         <div v-if="error" class="notice notice-danger mt-3" role="alert">
