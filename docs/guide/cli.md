@@ -45,7 +45,7 @@ Two ways:
 
 ```sh
 export HEMLIG_CONSOLE_URL=https://console.example.com
-hemlig login     # add --no-browser to only print the URL
+hemlig login     # add --no-browser to only print the URL; --no-localhost for SSH
 hemlig logout    # deletes the cached login
 ```
 
@@ -61,6 +61,23 @@ hemlig logout    # deletes the cached login
 | Admin URL         | Defaults to the cached login's API. A different `--admin-url` exits `3` rather than send the token elsewhere.      |
 | Timeout           | 5 minutes waiting for Authorize                                                                                    |
 | Identity provider | No change. The CLI does no OAuth itself.                                                                           |
+
+#### Remote sessions (SSH)
+
+Over SSH, your browser's `127.0.0.1` is not the machine running the CLI, so the localhost callback cannot work. The CLI then uses the copy-the-code sign-in: no listener, and no callback to localhost.
+
+| Flag             | Effect                                                                          |
+| ---------------- | ------------------------------------------------------------------------------- |
+| (none)           | Copy-the-code when `SSH_CONNECTION` or `SSH_TTY` is set; otherwise localhost.   |
+| `--no-localhost` | Force copy-the-code. Opens a browser only when not over SSH and not `--no-browser`. |
+| `--localhost`    | Force the localhost callback. Cannot be combined with `--no-localhost`.         |
+
+1. The CLI prints `<console>/cli-login?mode=code&state=…` and a confirmation code on stderr, then asks for the code.
+2. Open the URL in any browser. Check that the code matches, then click **Authorize**.
+3. The console shows a login code starting `hemlig1.`. Click **Copy**, paste it into the terminal and press Enter. The code is not echoed when stdin is a terminal. `ssh host hemlig login` without `-t` also picks this flow but has no terminal, so the paste would echo; use `ssh -t`.
+4. The CLI checks the code, then prints the same stdout JSON as the localhost flow.
+
+The code is bound to this attempt: a code from another `hemlig login` run is refused and nothing is saved. It is a bearer token for full administrator access until it expires. Paste it only into the terminal showing the matching confirmation code, and never share it. The console clears it after 5 minutes or when you click **Hide**.
 
 How the hand-off is protected is in the [threat model](../security/threat-model.md#access-and-identity).
 
@@ -250,7 +267,7 @@ After a lost response, read the secret to see what happened. Do not mint a new k
 
 ## Output
 
-Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr, and `hemlig pki ca create`, which prints a `warning:` line for an Ed25519 key or a `ROOT`. There are no banners, prompts or tables. `--help` also prints JSON.
+Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr (with `--no-localhost` it also prints a prompt on stderr and reads the login code from stdin), and `hemlig pki ca create`, which prints a `warning:` line for an Ed25519 key or a `ROOT`. There are no banners or tables, and no prompts apart from that login code. `--help` also prints JSON.
 
 | Field            | Meaning                                                     |
 | ---------------- | ----------------------------------------------------------- |
@@ -296,5 +313,7 @@ For a mutation, `outcome` says what happened:
 | 7    | Service failure, unexpected status, malformed response or internal error          |
 | 8    | Network, redirect or timeout failure                                              |
 | 9    | Local input, token file, stdin or output I/O failure                              |
+
+For `hemlig login --no-localhost`: an invalid or mismatched code exits `2`, a timeout `8`, and Ctrl-C `9`.
 
 Exit codes map to API statuses. The API's own code names are in [Errors](../reference/api/errors.md).

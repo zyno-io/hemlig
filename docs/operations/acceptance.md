@@ -69,7 +69,7 @@ aws s3 ls s3://AUDIT_BUCKET/audit/ --recursive | wc -l
 | Check | Pass | Fail means |
 | --- | --- | --- |
 | Status | `204` | `401`: the explicit `OPTIONS` route is not outranking `$default`. Confirm it exists with `AuthorizationType: NONE` |
-| Headers | `access-control-allow-origin: https://acc.example.com`, four methods, four allowed headers, `access-control-expose-headers: etag` | `204` without `allow-origin`: API Gateway ignores integration CORS headers when CORS is configured on the API. The fix is to drop the catch-all for explicit per-route definitions so API Gateway answers preflight itself, then review every route |
+| Headers | `access-control-allow-origin: https://acc.example.com`, `access-control-allow-methods: DELETE,GET,POST,PUT` and `access-control-allow-headers: authorization,content-type,idempotency-key,if-match,if-none-match`. A non-preflight response, even a `401`, carries `access-control-expose-headers: etag,retry-after` | `204` without `allow-origin`: API Gateway ignores integration CORS headers when CORS is configured on the API. The fix is to drop the catch-all for explicit per-route definitions so API Gateway answers preflight itself, then review every route |
 | Audit count | Unchanged | A preflight wrote audit evidence. It must not, because it is a browser capability check |
 | PKI preflight | Repeat the request against `/v1/admin/pki/cas`: same `204` and headers, still no audit object | The PKI admin routes use `ANY`, which catches `OPTIONS`. They must list `GET`, `POST`, `PUT` and `DELETE` |
 

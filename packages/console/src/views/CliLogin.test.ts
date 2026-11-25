@@ -213,4 +213,96 @@ describe("CliLogin", () => {
     expect(submit).not.toHaveBeenCalled();
     expect(wrapper.findAll("button")).toHaveLength(0);
   });
+
+  describe("mode=code", () => {
+    for (const query of [
+      `mode=code&state=short`,
+      `mode=code`,
+      `mode=code&port=40000&state=${goodState}`,
+      `mode=other&state=${goodState}`,
+      `mode=other&port=40000&state=${goodState}`,
+    ]) {
+      it(`is invalid for ${query.slice(0, 40)}`, async () => {
+        const { wrapper } = await mountAt(query);
+        expect(wrapper.text()).toContain("invalid");
+        expect(wrapper.findAll("button")).toHaveLength(0);
+      });
+    }
+
+    const authorizeButton = (wrapper: Awaited<ReturnType<typeof mountAt>>["wrapper"]) =>
+      wrapper.findAll("button").find((b) => b.text() === "Authorize")!;
+
+    it("is valid with a state and no port and shows the paste target", async () => {
+      const { wrapper } = await mountAt(`mode=code&state=${goodState}`);
+      expect(wrapper.text()).toContain("Paste into terminal");
+      expect(wrapper.text()).not.toContain("127.0.0.1");
+      expect(wrapper.get('[data-testid="confirmation-code"]').text()).toBe(
+        await confirmationCode(goodState),
+      );
+      expect(wrapper.text()).toContain("admin@example.test");
+    });
+
+    it("stays disarmed before 1.5 s and reveals nothing on an early click", async () => {
+      const { wrapper, accessToken } = await mountAt(`mode=code&state=${goodState}`);
+      const button = authorizeButton(wrapper);
+      await button.trigger("click");
+      await vi.advanceTimersByTimeAsync(1400);
+      expect(button.attributes("disabled")).toBeDefined();
+      await button.trigger("click");
+      expect(accessToken).not.toHaveBeenCalled();
+      expect(wrapper.find("textarea").exists()).toBe(false);
+    });
+
+    it("reveals hemlig1.<state>.<token> without any form or network call, then copies and hides", async () => {
+      const submit = vi.spyOn(HTMLFormElement.prototype, "submit").mockImplementation(() => {});
+      const fetchSpy = vi.fn();
+      vi.stubGlobal("fetch", fetchSpy);
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+      const { wrapper, accessToken } = await mountAt(`mode=code&state=${goodState}`);
+      await arm();
+      await authorizeButton(wrapper).trigger("click");
+      await flushPromises();
+      expect(accessToken).toHaveBeenCalledWith(5 * 60 * 1000);
+      const area = wrapper.get("textarea");
+      expect(area.element.value).toBe(`hemlig1.${goodState}.hdr.body.sig`);
+      expect(area.attributes("readonly")).toBeDefined();
+      expect(wrapper.text()).toContain("full administrator access");
+      expect(wrapper.text()).toContain(await confirmationCode(goodState));
+      expect(submit).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(document.querySelector("form")).toBeNull();
+
+      await wrapper.findAll("button").find((b) => b.text() === "Copy")!.trigger("click");
+      await flushPromises();
+      expect(writeText).toHaveBeenCalledWith(`hemlig1.${goodState}.hdr.body.sig`);
+
+      await wrapper.findAll("button").find((b) => b.text() === "Hide")!.trigger("click");
+      expect(wrapper.find("textarea").exists()).toBe(false);
+      expect(wrapper.html()).not.toContain("hdr.body.sig");
+      vi.unstubAllGlobals();
+    });
+
+    it("tells the user to copy manually when the clipboard write fails", async () => {
+      const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+      const { wrapper } = await mountAt(`mode=code&state=${goodState}`);
+      await arm();
+      await authorizeButton(wrapper).trigger("click");
+      await flushPromises();
+      await wrapper.findAll("button").find((b) => b.text() === "Copy")!.trigger("click");
+      await flushPromises();
+      expect(wrapper.text()).toContain("copy it manually");
+    });
+
+    it("clears the revealed code after 5 minutes", async () => {
+      const { wrapper } = await mountAt(`mode=code&state=${goodState}`);
+      await arm();
+      await authorizeButton(wrapper).trigger("click");
+      await flushPromises();
+      expect(wrapper.find("textarea").exists()).toBe(true);
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 10);
+      expect(wrapper.find("textarea").exists()).toBe(false);
+    });
+  });
 });

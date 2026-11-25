@@ -19,6 +19,10 @@ export interface CliDependencies {
   readonly env?: NodeJS.ProcessEnv;
   readonly stdin?: AsyncIterable<string | Uint8Array> & {
     readonly isTTY?: boolean;
+    /** Present on a terminal; `hemlig login --no-localhost` reads the code in raw mode. */
+    setRawMode?(mode: boolean): unknown;
+    pause?(): unknown;
+    resume?(): unknown;
   };
   readonly stdout?: (text: string) => void | Promise<void>;
   readonly stderr?: (text: string) => void | Promise<void>;
@@ -272,11 +276,13 @@ export function classifyError(
           ? 8
           : error.code === "login_invalid"
             ? 3
-            : error.code === "config_dir_unsafe"
+            : error.code === "config_dir_unsafe" || error.code === "login_cancelled"
               ? 9
               : error.code === "config_fetch_failed"
                 ? 8
-                : 7,
+                : ["invalid_code", "state_mismatch", "code_too_large"].includes(error.code)
+                  ? 2
+                  : 7,
       code: error.code,
       message: error.message,
     };

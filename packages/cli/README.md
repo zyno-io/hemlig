@@ -2,7 +2,7 @@
 
 `@zyno-io/hemlig-cli` is a small, machine-friendly CLI for the Hemlig
 **administrator API**. It installs the `hemlig` executable (Node.js 24 or later), emits
-exactly one JSON object per invocation, and never prompts or retries.
+exactly one JSON object per invocation, and never retries. It prompts only for the login code in `hemlig login --no-localhost`.
 
 ```sh
 npm install --global @zyno-io/hemlig-cli
@@ -16,11 +16,12 @@ hemlig secret read --secret-id payments/stripe/api-key
 ```
 
 Interactive sign-in reuses your web console SSO session and caches a short-lived
-token (no OAuth in the CLI, no prompts):
+token (no OAuth in the CLI):
 
 ```sh
 export HEMLIG_CONSOLE_URL=https://console.example.com
 hemlig login     # opens a browser; confirm the code shown matches your terminal
+hemlig login --no-localhost   # default over SSH: copy the login code from the console and paste it here
 hemlig logout
 ```
 
