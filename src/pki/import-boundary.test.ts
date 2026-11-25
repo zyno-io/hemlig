@@ -134,8 +134,11 @@ describe("the MIT CLI never imports the AGPL server", () => {
   const cliPackage = resolve(__dirname, "..", "..", "packages", "cli");
   const cliRoot = join(cliPackage, "src");
   const cliFiles = sourceFiles(cliRoot);
+  // Only real import/export-from/require/dynamic-import specifiers, not string literals such as Buffer.from("...").
+  const importPattern =
+    /(?:^|[;\s])(?:import|export)\s[^'"()]*?\bfrom\s*['"]([^'"]+)['"]|(?:^|[^.\w])(?:require|import)\s*\(\s*['"]([^'"]+)['"]|^\s*import\s*['"]([^'"]+)['"]/gm;
   const specifiers = cliFiles.flatMap((file) =>
-    specifiersOf(readFileSync(file, "utf8")).map((specifier) => ({ file, specifier })),
+    [...readFileSync(file, "utf8").matchAll(importPattern)].map((m) => ({ file, specifier: m[1] ?? m[2] ?? m[3] ?? "" })),
   );
   const isLibrary = (file: string): boolean => /[\\/](ez-[a-z0-9-]+|tty)\.ts$/.test(file) && !file.endsWith(".test.ts");
 

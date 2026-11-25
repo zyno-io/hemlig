@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { createHash, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -169,7 +169,7 @@ describe("EZ library against the server's validators", () => {
     const [again] = await signPrepared(signer, [prepareRoot(signer, {
       subject: root.certificate.subjectDer, now: new Date(), subjectKeyIdentifier: root.certificate.subjectKeyIdentifier,
     })] as const);
-    const [fresh] = await signPrepared(signer, [prepareRoot(signer, { subject: root.certificate.subjectDer, now: new Date() })] as const);
+    const [fresh] = await signPrepared(signer, [prepareRoot(signer, { subject: root.certificate.subjectDer, now: new Date(), subjectKeyIdentifier: randomBytes(20) })] as const);
     // An intermediate signed under the original root is what the server holds a record for.
     const ca = await hemligCsr("ECDSA_P256");
     const csr = validateCsr(ca.csrDer);
