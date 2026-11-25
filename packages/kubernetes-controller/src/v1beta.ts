@@ -1958,6 +1958,13 @@ export class HemligV1BetaController {
     error: unknown,
     retained: Pick<ReconciliationStatus, "identity"> = {},
   ): Promise<void> {
+    if (!(error instanceof ReconcileError) && !(error instanceof HemligError)) {
+      // The status message is deliberately generic; without this line an
+      // unexpected failure (e.g. a DNS error reaching the API) is invisible.
+      process.stderr.write(
+        `Hemlig reconcile of ${plural}/${namespace}/${name} failed unexpectedly: ${describeUnexpected(error)}\n`,
+      );
+    }
     const reason =
       error instanceof ReconcileError ? error.reason : "ReconcileFailed";
     const message =
@@ -2233,6 +2240,30 @@ class MqttHintManager {
     this.clients.clear();
   }
 }
+
+const MAX_LOGGED_ERROR = 300;
+
+/** Name, message and cause code/message only; never request, response or header data. */
+const describeUnexpected = (error: unknown): string => {
+  const text = (value: unknown): string =>
+    typeof value === "string" ? value : "";
+  const parts: string[] = [];
+  if (error instanceof Error) {
+    parts.push(`${error.name}: ${error.message}`);
+    const cause = (error as { cause?: unknown }).cause;
+    if (typeof cause === "object" && cause !== null) {
+      const { code, message } = cause as { code?: unknown; message?: unknown };
+      const detail = [text(code), text(message)].filter(Boolean).join(" ");
+      if (detail !== "") parts.push(`cause: ${detail}`);
+    }
+  } else {
+    parts.push(typeof error === "string" ? error : typeof error);
+  }
+  const joined = parts.join(" (") + (parts.length > 1 ? ")" : "");
+  return joined.length > MAX_LOGGED_ERROR
+    ? `${joined.slice(0, MAX_LOGGED_ERROR)}...`
+    : joined;
+};
 
 class ReconcileError extends Error {
   public constructor(
