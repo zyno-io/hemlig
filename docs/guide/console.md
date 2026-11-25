@@ -104,7 +104,13 @@ The kind picker offers three choices. "Intermediate signed by your offline root 
 
 "Intermediate signed by a Hemlig root" is `INTERMEDIATE`.
 
-"Root held by Hemlig (not recommended)" is `ROOT`; selecting it shows the server's recommendation to use an offline root, and asks you to acknowledge it before Create. An intermediate signed by your offline root shows its CSR after creation. Sign it offline, then paste the certificate and the root chain into the CA's activation panel. A root CRL is optional at activation. Without one, the root CRL state is `MISSING` until you upload it.
+"Root held by Hemlig (not recommended)" is `ROOT`; selecting it shows the server's recommendation to use an offline root, and asks you to acknowledge it before Create. An intermediate signed by your offline root shows its CSR after creation.
+
+The activation panel has two tabs, EZ (the default) and Manual. EZ shows copy-ready [`hemlig pki ez`](cli.md#offline-root-pki-ez) commands with the CA's ID and environment filled in: one for the machine that holds the root, and an air-gapped variant that pins the CSR with its SPKI SHA-256, followed by the `activate` command for an online machine.
+
+Manual is the paste-the-certificate form: sign the CSR yourself, then paste the certificate and the root chain.
+
+The root-CRL upload dialog has the same two tabs: EZ shows the `renew-crl` and `upload-crl` commands. The console remembers your last tab in this browser. A root CRL is optional at activation. Without one, the root CRL state is `MISSING` until you upload it.
 
 Retiring a CA asks for the CA name when grants still reference it. Abandoning a pending CA and destroying a disabled key always ask you to type the CA name. A grant's editor validates against the server and tests the saved grant with a dry-run evaluation. An unsaved draft is not tested.
 

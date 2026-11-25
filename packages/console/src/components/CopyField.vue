@@ -7,6 +7,8 @@ const props = defineProps<{
   multiline?: boolean;
   /** The download name. Defaults to a slug of the label plus `.pem`. */
   filename?: string;
+  /** Hide the Download button, for one-line commands. */
+  copyOnly?: boolean;
 }>();
 const copied = ref(false);
 
@@ -36,11 +38,12 @@ const download = (): void => {
     <div class="flex items-center justify-between gap-2">
       <span class="field-label mb-0">{{ label }}</span>
       <span class="flex gap-2">
-        <button class="btn btn-sm" @click="copy">
+        <button type="button" class="btn btn-sm" @click="copy">
           {{ copied ? "Copied" : "Copy" }}
         </button>
         <button
-          v-if="multiline"
+          v-if="multiline && !copyOnly"
+          type="button"
           class="btn btn-sm"
           @click="download"
         >

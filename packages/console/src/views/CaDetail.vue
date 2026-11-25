@@ -308,6 +308,7 @@ const effectiveJson = computed(() =>
           v-if="detail.status === 'PENDING_CERTIFICATE' && detail.kind === 'EXTERNAL_INTERMEDIATE'"
           :ca="detail"
           @activated="cacheCa"
+          @refresh="() => void ca.refetch()"
         />
 
         <div class="flex gap-1" role="tablist">
