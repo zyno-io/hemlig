@@ -1469,3 +1469,44 @@ test("registry: a failing consumer is removed", async (t) => {
   assert.equal(f.controller.consumerRegistry.get("ns/consumer"), undefined);
   assert.deepEqual(changes, [["ns/consumer"]]);
 });
+
+const captureStderr = (t: TestContext) =>
+  t.mock.method(process.stderr, "write", (() => true) as never);
+
+test("an unexpected reconcile failure logs its name, message and cause code", async (t) => {
+  const f = fixture(t);
+  const cause = Object.assign(new Error("lookup failed"), {
+    code: "ENOTFOUND",
+  });
+  t.mock.method(HemligClient.prototype, "syncAgent", async () => {
+    throw new TypeError("fetch failed", { cause });
+  });
+  const write = captureStderr(t);
+  await f.controller.reconcileAll();
+  const lines = write.mock.calls.map((call) => String(call.arguments[0]));
+  const line = lines.find((entry) => entry.includes("failed unexpectedly"));
+  assert.ok(line, lines.join(""));
+  assert.match(line, /TypeError: fetch failed/);
+  assert.match(line, /cause: ENOTFOUND lookup failed/);
+  assert.equal(line.trimEnd().includes("\n"), false);
+  assert.equal(
+    (
+      condition(f.consumer, "Ready") as { message?: string } | undefined
+    )?.message,
+    "The reconciliation attempt failed.",
+  );
+});
+
+test("an expected ReconcileError does not log an unexpected failure", async (t) => {
+  const f = fixture(t);
+  f.consumer.spec.providerRef = "missing-provider";
+  const write = captureStderr(t);
+  await f.controller.reconcileAll();
+  assert.equal(condition(f.consumer, "Ready")?.reason, "ProviderNotFound");
+  assert.equal(
+    write.mock.calls.some((call) =>
+      String(call.arguments[0]).includes("failed unexpectedly"),
+    ),
+    false,
+  );
+});
