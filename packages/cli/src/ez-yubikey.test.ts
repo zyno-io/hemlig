@@ -84,7 +84,7 @@ const assertOnlySlot = async (env: Env, slot: string, serials: number[], before:
     assert.ok(!forbiddenSerials().includes(call.serial ?? 0));
     // The secrets are only ever on stdin: argv is exactly `script --force <file>`.
     // The script arrives on an inherited pipe, so there is no script file at all.
-    assert.deepEqual(call.argv, ["script", "--force", "/dev/fd/3"]);
+    assert.deepEqual(call.argv, ["script", "--force", "-"]);
     assert.equal(call.scriptSha256, YUBIKEY_SCRIPT_SHA256);
   }
   for (const serial of serials) assert.equal(await env.ykman.otherSlots(serial, slot), before[serial]);
@@ -668,7 +668,7 @@ test("no script file is ever written: the script goes to ykman on an inherited p
     assert.equal((await run(env.ykman, base(env.dir), { stdin: importKeys() })).exitCode, 0);
     const calls = await env.ykman.calls();
     assert.ok(calls.length > 0);
-    assert.ok(calls.every((c) => c.scriptPath === "/dev/fd/3" && c.scriptSha256 === YUBIKEY_SCRIPT_SHA256));
+    assert.ok(calls.every((c) => c.scriptPath === "-" && c.scriptSha256 === YUBIKEY_SCRIPT_SHA256));
     assert.deepEqual((await fs.readdir(tmpdir())).filter((f) => f.startsWith("hemlig-ez-") && !tmp.includes(f)), []);
   } finally {
     await env.done();

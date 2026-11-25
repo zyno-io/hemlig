@@ -279,7 +279,7 @@ Files in `--dir`: the state file, the encrypted key, `root.pem`, the CRL copy, `
 
 A root key can live in a YubiKey PIV slot. EZ drives the YubiKey with `ykman script --force` and an embedded yubikit script, so `ykman` 5.x must be on the `PATH` (or set `HEMLIG_YKMAN` to its absolute path).
 
-The script is handed to `ykman` on an inherited pipe (`/dev/fd/3`), so no script file is written (Windows, which has no `/dev/fd`, uses a private temporary file). The PIN, the management key and the key to import travel only on its stdin, never in an argument or the environment. After every signature the CLI verifies the result against the root's public key, exactly as it does for a software key.
+The script is piped to `ykman script -` on its stdin together with the request, so no script file is written. The PIN, the management key and the key to import travel only on that stdin, never in an argument or the environment. After every signature the CLI verifies the result against the root's public key, exactly as it does for a software key.
 
 Two modes, both chosen with `generate-ca --yubikey`:
 

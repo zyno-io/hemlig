@@ -1,7 +1,4 @@
 import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { EzError } from "./ez-error";
 import type { RootSigner, SignEvents, SignItem } from "./ez-signer";
 import { YUBIKEY_SCRIPT } from "./ez-yubikey-script";
@@ -156,26 +153,18 @@ export class YkmanClient {
   }
 
   /**
-   * Runs one request through `ykman script --force`. Secrets travel only on the child's stdin. The script itself is
-   * handed over on an inherited pipe (`/dev/fd/3`), so no script file exists for another process to replace. Windows has
-   * no `/dev/fd`; there the script goes through a private temporary file (best effort).
+   * Runs one request through `ykman script --force -`. The script arrives on the child's stdin with the request
+   * (including any PIN, management key or PKCS#8) prepended as one base64 assignment, so nothing is written to disk and
+   * no secret appears in an argument or the environment. This works the same on every platform.
    */
-  public async call(request: Record<string, unknown>, events: YkmanEvents = {}): Promise<Record<string, unknown>> {
-    if (process.platform !== "win32") return this.#run("/dev/fd/3", { v: 1, ...request }, events);
-    const dir = await fs.mkdtemp(join(tmpdir(), "hemlig-ez-"));
-    try {
-      const script = join(dir, "hemlig_ez_piv.py");
-      await fs.writeFile(script, YUBIKEY_SCRIPT, { mode: 0o600 });
-      return await this.#run(script, { v: 1, ...request }, events, false);
-    } finally {
-      await fs.rm(dir, { recursive: true, force: true });
-    }
+  public call(request: Record<string, unknown>, events: YkmanEvents = {}): Promise<Record<string, unknown>> {
+    return this.#run({ v: 1, ...request }, events);
   }
 
-  #run(script: string, request: Record<string, unknown>, events: YkmanEvents, viaPipe = true): Promise<Record<string, unknown>> {
+  #run(request: Record<string, unknown>, events: YkmanEvents): Promise<Record<string, unknown>> {
     const timeout = this.#timeoutMs ?? (["sign", "generate", "put-key", "put-certificate"].includes(String(request.op)) ? 90_000 : 30_000);
     return new Promise((resolve, reject) => {
-      const child = spawn(this.#path, ["script", "--force", script], { stdio: ["pipe", "pipe", "pipe", ...(viaPipe ? (["pipe"] as const) : [])] });
+      const child = spawn(this.#path, ["script", "--force", "-"], { stdio: ["pipe", "pipe", "pipe"] });
       let stdout = "";
       let stderrBuffer = "";
       let settled = false;
@@ -239,12 +228,8 @@ export class YkmanClient {
         }),
       );
       child.stdin.on("error", () => undefined);
-      if (viaPipe) {
-        const pipe = child.stdio[3] as import("node:stream").Writable;
-        pipe.on("error", () => undefined);
-        pipe.end(YUBIKEY_SCRIPT);
-      }
-      child.stdin.end(`${JSON.stringify(request)}\n`);
+      const encoded = Buffer.from(JSON.stringify(request), "utf8").toString("base64");
+      child.stdin.end(`HEMLIG_EZ_REQUEST_B64 = "${encoded}"\n${YUBIKEY_SCRIPT}`);
     });
   }
 

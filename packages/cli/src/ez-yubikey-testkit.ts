@@ -116,13 +116,16 @@ const atLeast = (f, a, b) => { const v = version(f); return v[0] > a || (v[0] ==
 
 if (argv[0] !== "script" || argv[1] !== "--force" || argv.length !== 3) { process.stderr.write("bad argv\n"); process.exit(64); }
 const scriptPath = argv[2];
-const scriptSource = fs.readFileSync(scriptPath);
-if (scriptPath !== "/dev/fd/3") { process.stderr.write("the script must arrive on /dev/fd/3\n"); process.exit(65); }
+if (scriptPath !== "-") { process.stderr.write("the script must arrive on stdin\n"); process.exit(65); }
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => (input += c));
 process.stdin.on("end", () => {
-  const req = JSON.parse(input.split("\n")[0]);
+  const newline = input.indexOf("\n");
+  const prefix = /^HEMLIG_EZ_REQUEST_B64 = "([A-Za-z0-9+/=]*)"$/.exec(input.slice(0, newline));
+  if (prefix === null) { process.stderr.write("the request must be prepended to the script\n"); process.exit(66); }
+  const scriptSource = input.slice(newline + 1);
+  const req = JSON.parse(Buffer.from(prefix[1], "base64").toString("utf8"));
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   const call = { argv, scriptSha256: crypto.createHash("sha256").update(scriptSource).digest("hex"), scriptPath, op: req.op, serial: req.serial === undefined ? null : req.serial, slot: req.slot === undefined ? null : req.slot };
   if (req.items) call.items = req.items.map((i) => i.id);
