@@ -15,6 +15,7 @@
     testbed_api_address: "{{ ansible_host | default(inventory_hostname) }}"
     testbed_extra_manifests: []
     testbed_work_dir: /var/lib/hemlig-testbed
+    testbed_pod_resolv_conf: /etc/rancher/k3s/resolv.conf
     testbed_kubeconfig_name: "hemlig-testbed-{{ inventory_hostname }}"
     testbed_kubeconfig_path: "{{ playbook_dir }}/../.kube/{{ inventory_hostname }}.yaml"
 
@@ -47,11 +48,47 @@
           {{ k3s_current.rc != 0 or (k3s_version not in k3s_current.stdout) }}
         k3s_already_installed: "{{ k3s_current.rc == 0 }}"
 
+    - name: Check for systemd-resolved's upstream resolv.conf
+      ansible.builtin.stat:
+        path: /run/systemd/resolve/resolv.conf
+      register: host_resolved
+
     - name: Create k3s config directory
       ansible.builtin.file:
         path: /etc/rancher/k3s
         state: directory
         mode: "0755"
+
+    - name: Read the host's upstream resolvers
+      ansible.builtin.slurp:
+        src: "{{ '/run/systemd/resolve/resolv.conf' if host_resolved.stat.exists else '/etc/resolv.conf' }}"
+      register: host_resolv
+
+    - name: Choose upstream nameservers for pods
+      ansible.builtin.set_fact:
+        testbed_pod_nameservers: >-
+          {{ (host_resolv.content | b64decode)
+             | regex_findall('(?m)^nameserver[ \t]+([^ \t\r\n#]+)')
+             | reject('match', '^127[.]')
+             | list }}
+
+    - name: Require at least one non-loopback upstream nameserver
+      ansible.builtin.assert:
+        that: testbed_pod_nameservers | length > 0
+        fail_msg: >-
+          No non-loopback nameserver found in the host's resolv.conf; pods
+          would have no working DNS.
+
+    - name: Write the pod resolv.conf (nameservers only, no search domains)
+      ansible.builtin.copy:
+        dest: "{{ testbed_pod_resolv_conf }}"
+        mode: "0644"
+        content: |
+          # Managed by Ansible (testbed/k3s/up.yml). Upstream nameservers only.
+          {% for ns in testbed_pod_nameservers %}
+          nameserver {{ ns }}
+          {% endfor %}
+      register: k3s_resolv
 
     - name: Write k3s server config
       ansible.builtin.template:
@@ -87,7 +124,7 @@
         name: k3s
         state: restarted
       when:
-        - k3s_config is changed
+        - k3s_config is changed or k3s_resolv is changed
         - not (k3s_needs_install | bool)
         - k3s_already_installed | bool
 

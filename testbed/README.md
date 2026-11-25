@@ -47,6 +47,7 @@ The kubeconfig is written to `testbed/.kube/<inventory hostname>.yaml` (gitignor
 - Server config is `/etc/rancher/k3s/config.yaml`: kubeconfig mode `0600`, `tls-san` set to `testbed_api_address` (default `ansible_host`), and Traefik disabled. ServiceLB and local-path storage stay on.
 - cert-manager is applied from the official release manifest with server-side apply (`k3s kubectl apply --server-side`), and only when `kubectl diff` reports drift. This leaves the `caBundle` that cainjector writes into the webhook configurations alone, so reruns stay unchanged. The manifest is verified against `cert_manager_manifest_sha256`. Pinning the checksum is recommended; the default matches the default version, so set a new digest when you change `cert_manager_version`, or set it to an empty string to skip verification.
 - `testbed_extra_manifests` is a list of local manifest files applied after cert-manager. The default is empty.
+- Pods resolve DNS through the host's upstream nameservers, written to `/etc/rancher/k3s/resolv.conf` without the host's `search` domains (`testbed_pod_resolv_conf`). With `ndots:5`, a host search domain makes musl-based images and the controller fail to resolve external names.
 
 ## Install the Hemlig controller from this checkout
 

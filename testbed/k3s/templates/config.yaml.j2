@@ -4,3 +4,8 @@ tls-san:
   - "{{ testbed_api_address }}"
 disable:
   - traefik
+# Pods resolve through the host's upstream nameservers but not its search
+# domains: with ndots:5, a host `search` line makes musl (Alpine) and the
+# controller's lookups of external names fail on the first empty answer.
+kubelet-arg:
+  - "resolv-conf={{ testbed_pod_resolv_conf }}"
