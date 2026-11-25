@@ -30,6 +30,11 @@ export interface TerminalLineOptions {
   /** Without a terminal, take the first line of the stream (default). When false, a non-terminal input is refused via `notTerminal`. */
   readonly allowPipe?: boolean;
   readonly notTerminal?: () => Error;
+  /**
+   * Called with each accepted character, and with `\b \b` when one is erased, so a prompt that is not secret can show
+   * what is typed (raw mode echoes nothing). Absent for secrets.
+   */
+  readonly echo?: (text: string) => void;
 }
 
 export const isTerminal = (input: TerminalInput): boolean =>
@@ -116,9 +121,11 @@ export async function readTerminalLine(input: TerminalInput, options: TerminalLi
           if (last !== undefined) {
             size -= last.length;
             last.fill(0);
+            options.echo?.("\b \b");
           }
         } else if (point >= 0x20) {
           push(ch);
+          options.echo?.(ch);
         }
       }
     }

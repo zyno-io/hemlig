@@ -14,6 +14,7 @@ import {
   type CachedLogin,
 } from "./login";
 import { ConsumerProtocolError } from "./consumer";
+import { EzError } from "./ez-error";
 
 export interface CliDependencies {
   readonly env?: NodeJS.ProcessEnv;
@@ -38,6 +39,21 @@ export interface CliDependencies {
   readonly fetch?: typeof fetch;
   /** Login wait limit; defaults to five minutes. */
   readonly loginTimeoutMs?: number;
+  /**
+   * `hemlig pki ez`: opens the controlling terminal for the typed `confirm` when stdin is a pipe (for example with
+   * `--passphrase-stdin`). Defaults to `/dev/tty`; resolves to undefined when there is none.
+   */
+  readonly openTerminal?: () => Promise<
+    | (AsyncIterable<string | Uint8Array> & {
+        readonly isTTY?: boolean;
+        setRawMode?(mode: boolean): unknown;
+        pause?(): unknown;
+        destroy?(): unknown;
+        iterator?(options: { destroyOnReturn: boolean }): AsyncIterator<string | Uint8Array>;
+        unshift?(chunk: Buffer): unknown;
+      })
+    | undefined
+  >;
 }
 
 export class CliError extends Error {
@@ -263,6 +279,8 @@ export interface Failure {
   status?: number;
   apiCode?: string;
   apiDetails?: Readonly<Record<string, string | number | boolean>>;
+  /** EZ library errors carry structured details (a lock holder, failed profile reasons, and so on). */
+  details?: Readonly<Record<string, unknown>>;
 }
 
 export function classifyError(
@@ -288,6 +306,13 @@ export function classifyError(
     };
   if (error instanceof ConsumerProtocolError)
     return { exitCode: 7, code: "invalid_response", message: error.message };
+  if (error instanceof EzError)
+    return {
+      exitCode: error.exitCode,
+      code: error.code,
+      message: error.message,
+      ...(error.details === undefined ? {} : { details: error.details }),
+    };
   if (error instanceof CliError)
     return {
       exitCode: error.exitCode,
@@ -375,6 +400,12 @@ export interface FailureContext {
   readonly idempotencyKey?: string;
   readonly ifMatch?: string;
   readonly mutationAttempted: boolean;
+  /** `hemlig pki ez`: what finished before the failure, so a rerun knows where it stands. */
+  readonly ez?: {
+    readonly completed: readonly string[];
+    readonly files?: Readonly<Record<string, string>>;
+    readonly rerun?: string;
+  };
 }
 
 /** Writes the one-line JSON error envelope and returns the process exit code. */
@@ -401,6 +432,7 @@ export async function reportFailure(
         },
         idempotencyKey: context.idempotencyKey,
         ifMatch: context.ifMatch,
+        ...(context.ez === undefined ? {} : { ez: context.ez }),
       })}\n`,
     );
   } catch {
