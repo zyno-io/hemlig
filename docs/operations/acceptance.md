@@ -137,6 +137,8 @@ In the console, create a secret, set a payload, then edit metadata.
 
 Enroll a [direct consumer](../reference/glossary.md#direct-consumer) through the console with a CSR you generated locally, then call the delivery API with three certificates.
 
+The delivery domain has no mutual TLS until the first truststore publish succeeds, which the first enrollment triggers. Until then any client certificate, or none, completes TLS and the consumer Lambda answers `403 identity_not_active`. If enrollment returns `503` "API Gateway has not accepted the new truststore version yet." for more than a minute, read the warning in `/aws/lambda/hml-acc-admin`.
+
 | Certificate | Pass | Fail means |
 | --- | --- | --- |
 | The issued, active client certificate | `200` with the payload | Truststore or enrollment is broken |
@@ -275,7 +277,7 @@ CA_ID=$(hemlig pki ca get acc-issuing-1 | jq -r .data.caId)
 EXT_ID=$(hemlig pki ca get acc-issuing-1 | jq -r .data.parent.id)
 # 3. Envelope and CloudTrail (allow up to 15 minutes for delivery)
 aws dynamodb get-item --table-name "$DEP-control" --key "{\"pk\":{\"S\":\"PKI_CA#$CA_ID\"},\"sk\":{\"S\":\"PROFILE\"}}" \
-  --projection-expression '#k.#s, #k.wrapped.#a' --expression-attribute-names '{"#k":"key","#s":"state","#a":"algorithm"}'
+  --projection-expression '#k.#s, #k.#w.#a' --expression-attribute-names '{"#k":"key","#s":"state","#w":"wrapped","#a":"algorithm"}'
 for E in GenerateDataKey Decrypt; do aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=$E \
   --max-results 50 --query 'Events[].CloudTrailEvent' --output text | tr '\t' '\n' \
   | jq -c "select(.requestParameters.encryptionContext.caId==\"$CA_ID\") | {e:.eventName, ctx:.requestParameters.encryptionContext, role:.userIdentity.sessionContext.sessionIssuer.userName}"; done
@@ -313,7 +315,7 @@ aws lambda invoke --function-name "$DEP-pki-maintenance" /tmp/pki-maintenance.js
 | OpenSSL | All three commands print `OK` or `verify OK` | |
 | Upload | First `changed: true`, `revokedCaIds: []`. Identical retry `changed: false` (exit 0). Lower number: exit 5, `apiCode crl_not_newer`. Forged: exit 2, `crl_invalid`, reason `bad_signature`. Other key with the same DN: exit 2, `crl_invalid`, reason `bad_signature` | A forged or rolled-back CRL was accepted |
 | Maintenance | `{"status":"ok",…,"failures":0}`. Within 15 minutes `hml-acc-pki-generated-crl-stale`, `-external-crl-stale` and `-external-crl-missing` show `OK` | `AccessDenied` on S3 or KMS: the role's grants are wrong |
-| Audit | Succeeded events for `pki.ca.create`, `pki.ca.activate`, three `pki.external-ca.upload-crl`, and `pki.crl.get`. Failed events with reason codes `crl_not_newer` and `bad_signature`. No object contains `-----BEGIN` | |
+| Audit | Succeeded events for `pki.ca.create`, `pki.ca.activate`, two `pki.external-ca.upload-crl` (the new CRL and its identical retry), and `pki.crl.get`. Failed `pki.external-ca.upload-crl` events with reason codes `crl_not_newer` and, twice, `bad_signature`. No object contains `-----BEGIN` | |
 
 Keep `acc-root` for PKI-4 to PKI-6.
 
@@ -343,7 +345,7 @@ aws s3api get-object --bucket "$TS_BUCKET" --key "$TS_KEY" ts-after.pem >/dev/nu
 
 | Check | Pass | Fail means |
 | --- | --- | --- |
-| Issue | Receipt `status: ISSUED` with EKU `clientAuth` | Admin issuance or the operator role is broken |
+| Issue | `pki cert get` shows `status: ISSUED` with EKU `clientAuth` (the issue receipt has no `status` field) | Admin issuance or the operator role is broken |
 | Both requests | Rejected by API Gateway: a TLS failure (`curl` exit 35 or 56) or `403` with body `{"message":"Forbidden"}`, **never** a Hemlig `error` envelope | A Hemlig envelope means the request reached a Lambda: the truststore admits the PKI chain |
 | Audit count | Unchanged | Any new object (including `identity_not_active`) means the certificate reached a handler |
 | Truststore | Same `TruststoreVersion`, same anchor count, and no PKI anchor (`openssl x509 -fingerprint` of each block differs from `acc-root/root.pem`) | PKI code wrote the truststore |

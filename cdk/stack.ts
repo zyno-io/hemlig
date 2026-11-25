@@ -1741,9 +1741,12 @@ const grantTruststorePublisher = (
   bucket: s3.IBucket,
   domainName: string,
 ): void => {
+  // UpdateDomainName pins TruststoreVersion, and API Gateway checks that the
+  // caller can read that exact object version; without GetObjectVersion every
+  // publish fails with BadRequestException and mTLS is never attached.
   function_.addToRolePolicy(
     new iam.PolicyStatement({
-      actions: ["s3:GetObject", "s3:PutObject"],
+      actions: ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"],
       resources: [bucket.arnForObjects(`${truststoreKeyPrefix}/*`)],
     }),
   );

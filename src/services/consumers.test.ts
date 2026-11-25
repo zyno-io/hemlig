@@ -290,9 +290,15 @@ describe("consumer certificate lifecycle idempotency", () => {
       {} as EnvironmentService,
     );
 
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     await expect(service.reconcileTruststore()).rejects.toMatchObject({
       code: "service_unavailable",
     });
+    expect(warn).toHaveBeenCalledWith(
+      "Truststore update not accepted; will retry",
+      { name: "BadRequestException", message: "bundle is not available yet" },
+    );
+    warn.mockRestore();
   });
 
   it("recovers an active identity only when its certificate matches the submitted CSR", async () => {

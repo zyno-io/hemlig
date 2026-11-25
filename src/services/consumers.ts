@@ -651,6 +651,12 @@ export class ConsumerService {
         );
       } catch (error) {
         if (retryableTruststoreUpdateError(error)) {
+          // Usually transient (a just-written bundle), but a persistent
+          // failure here means mTLS is never attached, so make it visible.
+          console.warn("Truststore update not accepted; will retry", {
+            name: (error as { name?: unknown }).name,
+            message: String((error as { message?: unknown }).message ?? "").slice(0, 300),
+          });
           throw serviceUnavailable(
             "API Gateway has not accepted the new truststore version yet.",
           );

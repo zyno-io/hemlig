@@ -237,6 +237,25 @@ describe("HemligStack", () => {
     template.hasOutput("ApiUrl", {
       Value: "https://api.test.example.com",
     });
+    // Every truststore publisher must be able to read the exact bundle
+    // version it passes to UpdateDomainName.
+    const truststorePublisherPolicies = Object.values(
+      template.findResources("AWS::IAM::Policy"),
+    ).filter((policy) =>
+      JSON.stringify(policy).includes("apigateway:AddCertificateToDomain"),
+    );
+    expect(truststorePublisherPolicies).toHaveLength(3);
+    for (const policy of truststorePublisherPolicies) {
+      expect(
+        policy.Properties.PolicyDocument.Statement.some(
+          (statement: { Action?: unknown }) =>
+            Array.isArray(statement.Action) &&
+            ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"].every(
+              (action) => (statement.Action as string[]).includes(action),
+            ),
+        ),
+      ).toBe(true);
+    }
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
