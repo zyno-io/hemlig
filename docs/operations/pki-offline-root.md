@@ -26,6 +26,8 @@ hemlig pki ez generate-ca --subject 'CN=Example Offline Root CA 1,O=Example Corp
 
 On a terminal it shows the settings: key algorithm (`ECDSA_P384` by default), root validity (20 years), the default intermediate validity (730 days), the CRL validity (180 days) and the file names. Press Enter to accept, or type a number to change a row. It then asks for a passphrase of at least 12 characters, twice. Flags pre-fill the form, and `--yes` skips it.
 
+On a terminal each command ends with a short result: what happened, the key facts, any warnings and a numbered list of next steps with your directory and IDs filled in. Add `--json` (or pipe the output) for the JSON receipt scripts use.
+
 The directory now holds `root.key.pem` (the encrypted key), `root.pem`, `root.crl.pem` and `hemlig-ez.json` (the state). Copy the whole directory to two backup media after every operation, and store the passphrase apart from the media. Two active copies of the directory fork the root's CRL numbers; keep one.
 
 ### Keep the root key in a YubiKey
@@ -40,11 +42,17 @@ This is the **import** mode, and the one to prefer. EZ generates the key in soft
 
 To hold the same root on a second YubiKey, add `--second-yubikey-serial N` now, or run `hemlig pki ez import-key --yubikey-serial N` later; `import-key` also moves an existing software root onto a YubiKey.
 
+**A second YubiKey that already holds the key.** If the same key was put on another YubiKey outside Hemlig (so there is no backup file for `import-key`), record it with `hemlig pki ez add-yubikey --yubikey-serial N`.
+
+Hemlig checks that the root's slot on that device holds the root's key, shows a review, asks you to type `confirm` and the PIN, signs one test challenge, and records the device. It never writes to either device. After that either YubiKey can sign; connect one at a time or pass `--yubikey-serial`.
+
 **Backup model.** The key file is the only copy that can restore the root. Store it, and the passphrase, apart from the YubiKey. A lost YubiKey is then a re-import, not a new root.
 
 **On-device generation.** `--yubikey --on-device --accept-no-backup` generates the key inside the YubiKey so that it can never be exported. The tradeoff is that nothing can restore it: a lost, broken or locked YubiKey (PIN and PUK both blocked) means a new root, and every intermediate it signed has to be re-issued. EZ prints this warning and requires you to type `no backup`. Choose it only if you have a second, independent plan for losing the device.
 
-**PIN and touch.** The PIN is entered at the terminal, never in an argument. EZ shows the attempts left, refuses a default PIN or a PIN with one attempt left (unless you pass `--allow-last-pin-attempt`), and never retries a wrong PIN. Prompts come after the typed `confirm`. When a signature waits for a touch, EZ prints `Touch the YubiKey`. `--touch-policy cached` keeps a touch valid for 15 seconds; `never` removes the second factor.
+**PIN and touch.** The PIN is entered at the terminal, never in an argument. EZ shows the attempts left, refuses a default PIN or a PIN with one attempt left (unless you pass `--allow-last-pin-attempt`), and asks again after a wrong PIN at the terminal, but never into the last attempt (a PIN piped with `--pin-stdin` fails at once). Prompts come after the typed `confirm`.
+
+When a signature waits for a touch, EZ prints `Touch the YubiKey`. `--touch-policy cached` keeps a touch valid for 15 seconds; `never` removes the second factor.
 
 **Management key.** Importing or generating a key needs the YubiKey's management key. A factory default key is used with a warning, because anyone with the device could replace its keys. `--protect-management-key` swaps it for a random key stored behind the PIN; this changes the whole device and you must type `protect management key`. EZ never rotates a management key that is not the default. If yours is custom, EZ asks for it (hex) at the terminal.
 
@@ -58,7 +66,7 @@ To hold the same root on a second YubiKey, add `--second-yubikey-serial N` now, 
 
 ### Adopt an existing root
 
-If the root already exists, for example from the OpenSSL recipe below or as a key in a YubiKey slot, `adopt-ca` brings it under EZ instead of creating a new one. The root keeps its key and name, so the intermediates it signed stay valid. EZ must learn the root's last CRL number and every revocation it ever made: a next CRL that left one out would un-revoke it, so the command refuses without a source for each.
+If the root already exists, for example from the OpenSSL recipe below or as a key in a YubiKey slot, `adopt-ca` brings it into Hemlig instead of creating a new one. The root keeps its key and name, so the intermediates it signed stay valid. EZ must learn the root's last CRL number and every revocation it ever made: a next CRL that left one out would un-revoke it, so the command refuses without a source for each.
 
 ```sh
 # the recipe directory from the manual steps below (root.pem, private/root.key, index.txt, crlnumber, root.crl.pem)
@@ -68,11 +76,11 @@ hemlig pki ez adopt-ca --dir ez-root --openssl-dir /path/to/recipe
 hemlig pki ez adopt-ca --dir ez-root --yubikey --crl root.crl.pem
 ```
 
-EZ validates the certificate against what Hemlig requires, checks the key against it, shows a review (the subject, fingerprint, key, CRL number, the number of revocations carried over and what it will sign) and asks you to type `confirm`. Then it signs one batch with the root key: a random test challenge, and a new CRL unless the CRL you gave is current, covers every revocation and has 45 days left.
+Hemlig validates the certificate against what it requires, checks the key against it, shows a review (the subject, fingerprint, key, CRL number, the number of revocations carried over and what it will sign) and asks you to type `confirm`. Then it signs one batch with the root key: a random test challenge, and a new CRL unless the CRL you gave is current, covers every revocation and has 45 days left.
 
 - **Prior revocations.** Give `--crl FILE`, an `index.txt` (`--openssl-index`, or the recipe directory), or log in so EZ can read a registered root's stored CRL. If the root never revoked anything, say `--no-prior-revocations`. Without a CRL number from any of these, pass `--crl-number N`, at least the number of the last CRL the root ever issued. Every CRL must verify under the root.
 - **A software key** is copied, never moved: EZ asks for its passphrase, then for a new one (twice), and writes the key to `--dir/root.key.pem` with 1,000,000 PBKDF2 iterations. OpenSSL's `-aes256` uses only 2,048, and an unencrypted key (accepted with a warning) is worse, so secure or delete the originals once the new copy is backed up. EZ never changes them.
-- **A YubiKey** is read, not written: the slot is inspected read-only and EZ signs with the PIN and touch the slot requires. EZ holds no backup of such a key. `--store-certificate-in-slot` is the only device write.
+- **A YubiKey** is read, not written: the slot is inspected read-only and Hemlig signs with the PIN and touch the slot requires. Hemlig holds no backup of such a key. `--store-certificate-in-slot` is the only device write.
 - **A root whose certificate lacks CA extensions** (a certificate from `ykman piv certificates generate` has none) is refused with `--reissue-root-certificate` named. With the flag EZ issues a new self-signed certificate for the same key and name, keeps the old one as `root.original.pem`, and **the root fingerprint changes**: give the new `root.pem` to anything that pins the certificate. Chains still validate by name and key.
 
 After adoption, `sign-cert`, `revoke-cert`, `renew-crl`, `upload-crl` and `status` work as for any EZ root.

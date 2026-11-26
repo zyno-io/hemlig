@@ -48,6 +48,9 @@ export interface CliDependencies {
   /** `hemlig pki ez generate-ca` (tests): called after the backup key file is written and before it is verified. */
   readonly afterBackupWritten?: (path: string) => void | Promise<void>;
   /** `hemlig pki ez adopt-ca` (tests): fault injection into the state store's write steps (a crash between files). */
+  /** `hemlig pki ez`: whether the injected stdout / stderr writers stand for a terminal (the real streams are asked). */
+  readonly stdoutIsTTY?: boolean;
+  readonly stderrIsTTY?: boolean;
   readonly ezFault?: (step: string) => void | Promise<void>;
   readonly openTerminal?: () => Promise<
     | (AsyncIterable<string | Uint8Array> & {

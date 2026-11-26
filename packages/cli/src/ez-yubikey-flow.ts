@@ -23,6 +23,38 @@ export interface YkIo {
   readonly client: YkmanClient;
   readonly pinFromStdin: boolean;
   readonly allowLastPinAttempt: boolean;
+  /** Color for the one-line notices (the terminal supports it). */
+  readonly color?: boolean;
+}
+
+/**
+ * Runs the standalone PIN check, asking again after a wrong PIN at the terminal. Only this check (which happens before
+ * anything is reserved, signed or written) may retry, and never past the last attempt: with one attempt left it refuses
+ * unless `--allow-last-pin-attempt` was given, and an attempt count of zero is the end. A piped PIN fails at once.
+ */
+export const withPinRetry = async (
+  io: YkIo,
+  serial: number,
+  hooks: { readonly clear: () => void; readonly left: (attempts: number) => void },
+  attempt: () => Promise<void>,
+): Promise<void> => {
+  for (;;) {
+    try {
+      await attempt();
+      return;
+    } catch (error) {
+      if (!(error instanceof EzError) || error.code !== "pin_invalid" || io.pinFromStdin || !io.prompter.interactive) throw error;
+      const left = Number((error.details as { attemptsRemaining?: unknown } | undefined)?.attemptsRemaining);
+      if (!Number.isInteger(left) || left <= 0) throw error;
+      hooks.clear();
+      hooks.left(left);
+      const mark = io.color === true ? "\x1b[31m✗\x1b[39m" : "✗";
+      await io.say(`${mark} Incorrect PIN, ${left} attempt${left === 1 ? "" : "s"} left.\n`);
+      if (left === 1 && !io.allowLastPinAttempt) {
+        throw new EzError(5, "pin_last_attempt", `YubiKey ${serial} has one PIN attempt left; another wrong PIN would block it. Rerun with --allow-last-pin-attempt only if you are sure of the PIN.`);
+      }
+    }
+  }
 }
 
 /** One YubiKey during a command: its preflight result plus the secrets read for it (zeroed by `close`). */
@@ -31,6 +63,7 @@ export class DeviceHandle {
   readonly slot: string;
   readonly #io: YkIo;
   #pin: Buffer | undefined;
+  #left: number | undefined;
   #management: ManagementKeySpec | undefined;
 
   public constructor(io: YkIo, target: DeviceTarget, slot: string) {
@@ -50,7 +83,7 @@ export class DeviceHandle {
   /** The PIN, read once from the terminal (or the next piped line with --pin-stdin). */
   public async pin(): Promise<Buffer> {
     if (this.#pin !== undefined) return Buffer.from(this.#pin);
-    const left = this.target.info.pin.attemptsRemaining;
+    const left = this.#left ?? this.target.info.pin.attemptsRemaining;
     this.#pin = await this.#io.prompter.pin({
       fromStdin: this.#io.pinFromStdin,
       label: `YubiKey PIN (serial ${this.serial}, slot ${this.slot}, ${left} attempt${left === 1 ? "" : "s"} left): `,
@@ -60,12 +93,27 @@ export class DeviceHandle {
 
   /** Checks the PIN against the device without signing anything (a typo is found before any key is generated or written). */
   public async verifyPin(): Promise<void> {
-    const pin = await this.pin();
-    try {
-      await this.#io.client.sign({ serial: this.serial, slot: this.slot, pin: pin.toString("utf8"), items: [] });
-    } finally {
-      pin.fill(0);
-    }
+    await withPinRetry(this.#io, this.serial, this.#retryHooks(), async () => {
+      const pin = await this.pin();
+      try {
+        await this.#io.client.sign({ serial: this.serial, slot: this.slot, pin: pin.toString("utf8"), items: [] });
+      } finally {
+        pin.fill(0);
+      }
+    });
+  }
+
+  #retryHooks(extraClear: () => void = () => undefined): { clear: () => void; left: (attempts: number) => void } {
+    return {
+      clear: () => {
+        this.#pin?.fill(0);
+        this.#pin = undefined;
+        extraClear();
+      },
+      left: (attempts) => {
+        this.#left = attempts;
+      },
+    };
   }
 
   /** A signer for this slot; the PIN is read on first use and kept for the command. */
@@ -76,6 +124,7 @@ export class DeviceHandle {
       slot: this.slot,
       spkiDer,
       pin: () => this.pin(),
+      retryPin: (attempt, clear) => withPinRetry(this.#io, this.serial, this.#retryHooks(clear), attempt),
       onClose: () => this.close(),
     });
   }

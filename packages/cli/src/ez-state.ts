@@ -81,7 +81,8 @@ export interface YubiKeyRecord {
   generatedOnDevice: boolean;
   pinPolicy: string;
   touchPolicy: string;
-  devices: { serial: number; firmware: string; fips: boolean; addedAt: string }[];
+  /** `pinPolicy` / `touchPolicy` are this device's own; absent (older state files) means the record's. */
+  devices: { serial: number; firmware: string; fips: boolean; addedAt: string; pinPolicy?: string; touchPolicy?: string }[];
 }
 
 export interface EzState {
@@ -217,7 +218,7 @@ const stateSchema: Check = obj({
         generatedOnDevice: bool,
         pinPolicy: str,
         touchPolicy: str,
-        devices: arr(obj({ serial: int(), firmware: str, fips: bool, addedAt: iso })),
+        devices: arr(obj({ serial: int(), firmware: str, fips: bool, addedAt: iso, pinPolicy: str, touchPolicy: str }, ["pinPolicy", "touchPolicy"])),
       }),
     ),
   }),
@@ -945,7 +946,7 @@ export class EzStore {
     readonly generatedOnDevice: boolean;
     readonly pinPolicy: string;
     readonly touchPolicy: string;
-    readonly device: { readonly serial: number; readonly firmware: string; readonly fips: boolean };
+    readonly device: { readonly serial: number; readonly firmware: string; readonly fips: boolean; readonly pinPolicy?: string; readonly touchPolicy?: string };
   }): Promise<void> {
     const addedAt = this.now().toISOString();
     await this.#persist((draft) => {
@@ -961,7 +962,7 @@ export class EzStore {
       if (record.slot !== input.slot) throw new EzError(5, "state_conflict", "This root's YubiKey slot is fixed.", { reason: "slot_changed" });
       const existing = record.devices.find((d) => d.serial === input.device.serial);
       if (existing === undefined) record.devices.push({ ...input.device, addedAt });
-      else Object.assign(existing, { firmware: input.device.firmware, fips: input.device.fips });
+      else Object.assign(existing, { firmware: input.device.firmware, fips: input.device.fips, ...(input.device.pinPolicy === undefined ? {} : { pinPolicy: input.device.pinPolicy }), ...(input.device.touchPolicy === undefined ? {} : { touchPolicy: input.device.touchPolicy }) });
     });
   }
 

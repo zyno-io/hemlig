@@ -1159,7 +1159,7 @@ export const validateCsr = (input: Buffer | string, expectations: CsrExpectation
           subjectKeyIdentifierValue = parseSki(e.value);
           break;
         default:
-          unexpected(`The CSR requests an extension that EZ does not sign (${e.oid}).`);
+          unexpected(`The CSR requests an extension that Hemlig does not sign (${e.oid}).`);
       }
     }
   } catch (error) {

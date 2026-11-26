@@ -1,4 +1,5 @@
 import { assertRestrictedName, describeName } from "./ez-name";
+import { sourceWord } from "./ez-output";
 import { displaySafe, summarizeCsr, type CrlReasonName, type ParsedCertificate, type ValidatedCsr } from "./ez-x509";
 
 /**
@@ -146,7 +147,7 @@ export interface AdoptReview {
 export const renderAdoptReview = (review: AdoptReview): string => {
   const lines = [
     "",
-    "=== Review: this will ADOPT an existing root under EZ management ===",
+    "=== Review: this will ADOPT an existing root into Hemlig ===",
     row("Source", displaySafe(review.source)),
     row("Subject", displaySafe(review.subjectDn)),
     row("Fingerprint", `SHA-256 ${review.fingerprint}`),
@@ -154,12 +155,12 @@ export const renderAdoptReview = (review: AdoptReview): string => {
     row("Validity", `${review.notBefore.toISOString()} to ${review.notAfter.toISOString()}`),
     row("Key", `${displaySafe(review.key)}, SPKI SHA-256 ${review.spkiSha256}`),
     row("Key storage", displaySafe(review.storage)),
-    row("CRL number", `last issued ${review.crl.lastNumber} (from ${review.crl.sources.join(", ")})`),
+    row("CRL number", `last issued ${review.crl.lastNumber} (from ${review.crl.sources.map(sourceWord).join(", ")})`),
     row(
       "Revocations",
       review.revocations.count === 0
-        ? `none (${review.revocations.sources.join(", ")})`
-        : `${review.revocations.count} carried over (${review.revocations.sources.join(", ")})`,
+        ? `none (${review.revocations.sources.map(sourceWord).join(", ")})`
+        : `${review.revocations.count} carried over (${review.revocations.sources.map(sourceWord).join(", ")})`,
     ),
     ...(review.importedIssued === 0 ? [] : [row("Issued records", `${review.importedIssued} imported from index.txt`)]),
     "",
@@ -182,3 +183,32 @@ export const renderAdoptReview = (review: AdoptReview): string => {
   ];
   return `${lines.join("\n")}\n`;
 };
+
+export interface AddYubiKeyReview {
+  readonly root: { readonly subjectDn: string; readonly fingerprint: string };
+  readonly device: { readonly serial: number; readonly firmware: string; readonly fips: boolean };
+  readonly slot: string;
+  readonly keyType: string;
+  readonly pinPolicy: string;
+  readonly touchPolicy: string;
+  /** The policy the root's record holds (from the first device). */
+  readonly recordedPolicy: { readonly pinPolicy: string; readonly touchPolicy: string };
+  readonly recorded: readonly number[];
+  readonly warnings: readonly string[];
+}
+
+/** What the operator reads before typing `confirm` for `add-yubikey`. */
+export const renderAddYubiKeyReview = (review: AddYubiKeyReview): string =>
+  `${[
+    "",
+    "=== Review: this will RECORD another YubiKey that holds this root's key ===",
+    row("Root", `${displaySafe(review.root.subjectDn)} (SHA-256 ${review.root.fingerprint})`),
+    row("New YubiKey", `serial ${review.device.serial}, firmware ${displaySafe(review.device.firmware)}${review.device.fips ? " (FIPS)" : ""}`),
+    row("Slot", `${displaySafe(review.slot)}: ${displaySafe(review.keyType)}, PIN ${displaySafe(review.pinPolicy)}, touch ${displaySafe(review.touchPolicy)}`),
+    row("Recorded policy", `PIN ${displaySafe(review.recordedPolicy.pinPolicy)}, touch ${displaySafe(review.recordedPolicy.touchPolicy)}${review.pinPolicy === review.recordedPolicy.pinPolicy && review.touchPolicy === review.recordedPolicy.touchPolicy ? "" : "  <- DIFFERS from this device"}`),
+    row("Already recorded", review.recorded.join(", ")),
+    row("Signs", "a 32-byte random test challenge with the new YubiKey (nothing is issued)"),
+    row("Device writes", "none"),
+    ...review.warnings.map((w) => row("Warning", displaySafe(w))),
+    "",
+  ].join("\n")}\n`;

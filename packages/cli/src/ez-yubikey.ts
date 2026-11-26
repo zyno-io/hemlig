@@ -51,7 +51,7 @@ export const MIN_FIRMWARE = "5.3";
 
 export const assertFirmware = (firmware: string): void => {
   if (!firmwareAtLeast(firmware, 5, 3)) {
-    throw new EzError(9, "yubikey_firmware_unsupported", `YubiKey firmware ${firmware} is too old; EZ needs ${MIN_FIRMWARE} or later (for slot, PIN and management-key metadata).`);
+    throw new EzError(9, "yubikey_firmware_unsupported", `YubiKey firmware ${firmware} is too old; Hemlig needs ${MIN_FIRMWARE} or later (for slot, PIN and management-key metadata).`);
   }
 };
 
@@ -381,6 +381,8 @@ export interface YubiKeySignerOptions {
   readonly pin: () => Promise<Buffer>;
   /** Called by `close()` (the device handle zeroes its own cached PIN). */
   readonly onClose?: () => void;
+  /** Runs the standalone PIN check (`attempt`), re-asking after a wrong PIN where that is allowed; `clear` forgets the cached PIN. */
+  readonly retryPin?: (attempt: () => Promise<void>, clear: () => void) => Promise<void>;
 }
 
 /** Signs on the YubiKey. The PIN is verified in every ykman call and never retried. */
@@ -407,7 +409,14 @@ export class YubiKeySigner implements RootSigner {
 
   /** Checks the PIN without signing (so a typo is found before a key is generated). */
   public async verifyPin(): Promise<void> {
-    await this.#options.client.sign({ serial: this.#options.serial, slot: this.#options.slot, pin: await this.#pinText(), items: [] });
+    const attempt = async (): Promise<void> => {
+      await this.#options.client.sign({ serial: this.#options.serial, slot: this.#options.slot, pin: await this.#pinText(), items: [] });
+    };
+    if (this.#options.retryPin === undefined) return attempt();
+    await this.#options.retryPin(attempt, () => {
+      this.#pin?.fill(0);
+      this.#pin = undefined;
+    });
   }
 
   public async sign(items: readonly SignItem[], events?: SignEvents): Promise<Buffer[]> {
@@ -428,10 +437,10 @@ export class YubiKeySigner implements RootSigner {
 export const touchNotice = (serial: number, item: SignItem): string => `Touch the YubiKey (serial ${serial}) now to sign: ${item.description}\n`;
 
 /** Which recorded device to use: the one flagged, else the only connected recorded one. */
-export const chooseRecordedDevice = async (client: YkmanClient, recorded: readonly number[], flagged: number | undefined): Promise<number> => {
+export const chooseRecordedDevice = async (client: YkmanClient, recorded: readonly number[], flagged: number | undefined, hasKeyFile = true): Promise<number> => {
   if (flagged !== undefined) {
     if (!recorded.includes(flagged)) {
-      throw new EzError(5, "yubikey_not_recorded", `YubiKey ${flagged} is not one of this root's recorded devices (${recorded.join(", ")}); use import-key to add it.`);
+      throw new EzError(5, "yubikey_not_recorded", `YubiKey ${flagged} is not one of this root's recorded devices (${recorded.join(", ")}); ${hasKeyFile ? "use import-key to add it from the backup key file, or add-yubikey if the key is already on it" : "use add-yubikey to record it (this root has no backup key file for import-key)"}.`);
     }
     return flagged;
   }

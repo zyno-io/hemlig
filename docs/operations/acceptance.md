@@ -772,9 +772,9 @@ Run on a spare YubiKey (firmware 5.3 or later) with a non-default PIN, never on 
 
 | Step | Do | Expect | Failure means |
 | ---- | -- | ------ | ------------- |
-| 1. Import | `hemlig pki ez generate-ca --yubikey --yubikey-serial <serial> --subject 'CN=acc-yk-root,O=Acceptance'` in an empty directory | A warning if the management key is the default, a serial prompt, a passphrase and PIN prompt, then `Root created`. `root.key.pem` exists. `ykman piv keys info 9c` shows the key with PIN `ALWAYS` and touch `ALWAYS` | The slot was written without the serial being typed, or no backup exists |
+| 1. Import | `hemlig pki ez generate-ca --yubikey --yubikey-serial <serial> --subject 'CN=acc-yk-root,O=Acceptance'` in an empty directory | A warning if the management key is the default, a serial prompt, a passphrase and PIN prompt, then `✓ Root created`. `root.key.pem` exists. `ykman piv keys info 9c` shows the key with PIN `ALWAYS` and touch `ALWAYS` | The slot was written without the serial being typed, or no backup exists |
 | 2. Sign | Create `acc-yk-1` as an external CA, then `hemlig pki ez sign-cert acc-yk-1 --environment prod` | The CSR review, `confirm`, then the PIN prompt and `Touch the YubiKey`. The CA is `ACTIVE` | A signature was made without the PIN or touch |
-| 3. Rails | Rerun step 1 into a new directory with the same slot | `slot_occupied`, and the key is unchanged. A wrong PIN exits 3 `pin_invalid` once, with no retry | A key was overwritten without `--overwrite-slot 9c` |
+| 3. Rails | Rerun step 1 into a new directory with the same slot | `slot_occupied`, and the key is unchanged. A wrong PIN is asked again at the terminal, but with one attempt left the command stops with `pin_last_attempt` | A key was overwritten without `--overwrite-slot 9c` |
 | 4. Restore | `hemlig pki ez import-key --yubikey-serial <second serial>` with a second spare YubiKey | A second device in `status`; `renew-crl --offline --crl-out x.pem --yubikey-serial <second serial>` signs | The backup does not restore |
 | 5. Other slots | Read slots `9a` and `82` again | The output matches what you saved | EZ touched a slot it was not asked to use |
 
