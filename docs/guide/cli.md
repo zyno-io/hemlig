@@ -247,11 +247,14 @@ A PKI failure's `error` object also carries `apiCode` and `apiDetails` (for exam
 
 ### Offline root (`pki ez`)
 
-`hemlig pki ez` creates and runs the offline root that signs `EXTERNAL_INTERMEDIATE` CAs. It replaces the [manual OpenSSL recipe](../operations/pki-offline-root.md#manual-openssl) with commands that validate the CSR, sign the certificate, keep the root CRL current and activate the CA. The root key is a software key in an encrypted file. It needs no OpenSSL binary and no extra package.
+`hemlig pki ez` creates and runs the offline root that signs `EXTERNAL_INTERMEDIATE` CAs. It replaces the [manual OpenSSL recipe](../operations/pki-offline-root.md#manual-openssl) with commands that validate the CSR, sign the certificate, keep the root CRL current and activate the CA.
+
+The root key is a software key in an encrypted file, or a key in a [YubiKey PIV slot](#yubikey-root-key). A software root needs no OpenSSL binary and no extra package; a YubiKey root needs `ykman` 5.x.
 
 | Command                       | What it does                                                                  | Network |
 | ----------------------------- | ----------------------------------------------------------------------------- | ------- |
 | `pki ez generate-ca`          | Creates the root key, the self-signed root, CRL number 1 and the state file    | No      |
+| `pki ez import-key`           | Imports the root's backup key into a (another) YubiKey and records the device   | No      |
 | `pki ez sign-cert <ca>`       | Fetches the pending CA's CSR, shows it, signs it, syncs the root CRL, activates | Yes     |
 | `pki ez sign-cert <ca> --offline` | Signs a CSR file and writes the files to carry to an online machine         | No      |
 | `pki ez activate <ca>`        | Uploads the root CRL and activates from the offline files; no state, no key    | Yes     |
@@ -271,6 +274,37 @@ Common options:
 - `renew-crl` takes `--if-due` (renew only inside the renewal window), `--renew-before`, `--crl-validity` and `--expect-ext-id ext-...`, which refuses a deployment whose external root is another one.
 
 Files in `--dir`: the state file, the encrypted key, `root.pem`, the CRL copy, `crls/` (every CRL ever signed), `issued/` (every certificate ever signed) and a lock file while a command runs. The state file records the CRL numbers, issued serials and revocations, so a second copy of the directory forks the root. Keep one active copy and back the directory up.
+
+#### YubiKey root key
+
+A root key can live in a YubiKey PIV slot. EZ drives the YubiKey with `ykman script --force` and an embedded yubikit script, so `ykman` 5.x must be on the `PATH` (or set `HEMLIG_YKMAN` to its absolute path).
+
+The script is piped to `ykman script -` on its stdin together with the request, so no script file is written. The PIN, the management key and the key to import travel only on that stdin, never in an argument or the environment. After every signature the CLI verifies the result against the root's public key, exactly as it does for a software key.
+
+Two modes, both chosen with `generate-ca --yubikey`:
+
+- **Import (default).** EZ generates the key in software, writes the passphrase-encrypted backup file (`root.key.pem`), then imports the key into the slot. With `--second-yubikey-serial N` it imports into a second YubiKey in the same run. The backup stays the recovery path: `import-key` restores it into a replacement device.
+- **On device (`--on-device --accept-no-backup`).** The key is generated inside the YubiKey and can never be exported. There is no key file and no recovery: if the YubiKey is lost, damaged or locked, the root is gone. EZ prints a loud warning, and you must also type `no backup` at the terminal.
+
+YubiKey options for `generate-ca` and `import-key`:
+
+- `--yubikey-serial N` selects the device; it is required when more than one YubiKey is connected. `--second-yubikey-serial N` (generate-ca, import mode) names a second device.
+- `--slot 9c` (default). Allowed: `9a`, `9c`, `9d` and `82` to `95`. `9e` and `f9` are refused. The PIN policy is always `always`.
+- `--touch-policy always|cached|never` (default `always`). EZ prints `Touch the YubiKey` when a signature is waiting for a touch.
+- `--overwrite-slot 9c` replaces a key or certificate that is already in the slot. It must name the same slot as `--slot`, and without it an occupied slot is refused (`slot_occupied`).
+- `--no-slot-certificate` skips storing the root certificate in the slot.
+- `--protect-management-key` replaces a factory-default management key with a random one kept behind the PIN. It changes the whole device, so EZ asks you to type `protect management key`. A non-default management key is never rotated.
+- `--pin-stdin` reads the PIN from the next line of a pipe (after `--passphrase-stdin`). `--allow-last-pin-attempt` permits using a PIN with one attempt left.
+
+Rails that run before any YubiKey is written, with no override except where named:
+
+- Firmware 5.3 or later is required. RSA-3072, RSA-4096 and Ed25519 need 5.7. Below 5.7 a key cannot be deleted, only overwritten, and EZ says so before an overwrite.
+- A default PIN is refused (`yubikey_default_pin`). One remaining attempt is refused unless `--allow-last-pin-attempt`. A wrong PIN is never retried.
+- A factory management key triggers a warning. A non-default one is read from the terminal (hex) after the YubiKey is checked, and a wrong key stops before any file is written.
+- You must type each device's serial number at the terminal before it is written, and `--yes` never skips it.
+- Every request names exactly one slot. EZ never touches another slot and never deletes, moves or resets anything.
+
+`sign-cert`, `revoke-cert` and `renew-crl` use the YubiKey transparently. After the typed `confirm`, EZ reads the PIN (showing the attempts left), checks it against the device before reserving a serial or a CRL number, and then signs. `--yubikey-serial` picks the device when several of the root's YubiKeys are connected, and `--key` does not apply.
 
 **Settings form.** On a terminal, `generate-ca` and `sign-cert` show a numbered list of the settings: key algorithm, validities, file names and, for `generate-ca`, the subject. Type a number to edit a row, or press Enter to accept. Flags pre-fill the form. `--yes`, or a stdin that is not a terminal, skips it. The key derivation (PBKDF2-HMAC-SHA256, 1,000,000 iterations) is shown and cannot be edited.
 
@@ -314,7 +348,7 @@ After a lost response, read the secret to see what happened. Do not mint a new k
 
 Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr (with `--no-localhost` it also prints a prompt on stderr and reads the login code from stdin), `hemlig pki ca create`, which prints a `warning:` line for an Ed25519 key or a `ROOT`.
 
-`hemlig pki ez` also prints its settings form, review and prompts on stderr, and reads passphrases and the typed `confirm` from the terminal. There are no banners or tables, and no other prompts. `--help` also prints JSON.
+`hemlig pki ez` also prints its settings form, review and prompts on stderr, and reads passphrases, YubiKey PINs and the typed `confirm` from the terminal. There are no banners or tables, and no other prompts. `--help` also prints JSON.
 
 | Field            | Meaning                                                     |
 | ---------------- | ----------------------------------------------------------- |
@@ -367,10 +401,10 @@ For `hemlig login --no-localhost`: an invalid or mismatched code exits `2`, a ti
 
 | Exit | Codes                                                                                                                                                                                                                                                                                                                         |
 | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2    | `invalid_input`, `subject_invalid`, `csr_invalid`, `csr_unexpected_extension`, `crl_invalid`, `pem_invalid`, `der_invalid`, `certificate_invalid`, `key_file_invalid`, `key_invalid`, `key_storage_unsupported`, `passphrase_mismatch`, `terminal_required`, `confirmation_declined`, `unknown_serial`                          |
-| 3    | `passphrase_invalid`, plus API 401 and 403                                                                                                                                                                                                                                                                                      |
-| 5    | `already_exists`, `state_missing`, `state_locked`, `state_conflict`, `state_behind_server`, `state_forked`, `root_mismatch`, `key_mismatch`, `root_profile_invalid`, `root_not_valid`, `validity_too_short`, `csr_key_mismatch`, `csr_subject_mismatch`, `csr_subject_is_root`, `csr_constraints_mismatch`, `issued_conflict`, `revocation_pending`, `revocation_conflict`, `environment_mismatch`, `ca_not_external`, `ca_not_pending`, `ca_activated_elsewhere`, `revocation_not_applied`, `clock_skew`, `clock_regressed`, plus API 409 |
+| 2    | `invalid_input`, `subject_invalid`, `csr_invalid`, `csr_unexpected_extension`, `crl_invalid`, `pem_invalid`, `der_invalid`, `certificate_invalid`, `key_file_invalid`, `key_invalid`, `key_storage_unsupported`, `passphrase_mismatch`, `terminal_required`, `confirmation_declined`, `unknown_serial`, `slot_not_allowed`, `yubikey_multiple`, `yubikey_algorithm_unsupported`                        |
+| 3    | `passphrase_invalid`, `pin_invalid`, `pin_blocked`, `management_key_invalid`, plus API 401 and 403                                                                                                                                                                                                                                                                                      |
+| 5    | `already_exists`, `state_missing`, `state_locked`, `state_conflict`, `state_behind_server`, `state_forked`, `root_mismatch`, `key_mismatch`, `root_profile_invalid`, `root_not_valid`, `validity_too_short`, `csr_key_mismatch`, `csr_subject_mismatch`, `csr_subject_is_root`, `csr_constraints_mismatch`, `issued_conflict`, `revocation_pending`, `revocation_conflict`, `environment_mismatch`, `ca_not_external`, `ca_not_pending`, `ca_activated_elsewhere`, `revocation_not_applied`, `clock_skew`, `clock_regressed`, `slot_occupied`, `slot_empty`, `yubikey_default_pin`, `pin_last_attempt`, `yubikey_not_recorded`, `key_not_exportable`, `management_key_not_default`, plus API 409 |
 | 7    | `signature_self_check_failed`, `invalid_response`                                                                                                                                                                                                                                                                              |
-| 9    | `state_io_error`, `state_corrupt`, `input_io_error`, `prompt_cancelled`                                                                                                                                                                                                                                                        |
+| 9    | `state_io_error`, `state_corrupt`, `input_io_error`, `prompt_cancelled`, `tool_missing`, `tool_failed`, `yubikey_not_found`, `yubikey_firmware_unsupported`, `touch_timeout`                                                                                                                                                                                                                                                        |
 
 Exit codes map to API statuses. The API's own code names are in [Errors](../reference/api/errors.md).

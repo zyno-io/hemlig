@@ -95,11 +95,22 @@ test("prompter: secrets are never echoed, pipe lines are read one at a time, con
 test("prompter: new passphrases are checked against the policy, then confirmed", async () => {
   const mk = (...keys: string[]) => new Prompter({ stdin: new FakeTerminal(...keys), write: () => {} });
   assert.equal((await mk("a long enough passphrase\r", "a long enough passphrase\r").passphrase({ create: true, fromStdin: false })).toString(), "a long enough passphrase");
-  await assert.rejects(mk("short\r", "short\r").passphrase({ create: true, fromStdin: false }), (e) => e instanceof EzError && e.code === "invalid_input");
-  await assert.rejects(mk("a long enough passphrase\r", "a long enough passphrasX\r").passphrase({ create: true, fromStdin: false }), (e) => e instanceof EzError && e.code === "passphrase_mismatch");
+  // A short or mismatched entry at the terminal is asked again.
+  assert.equal((await mk("short\r", "a long enough passphrase\r", "a long enough passphrase\r").passphrase({ create: true, fromStdin: false })).toString(), "a long enough passphrase");
+  assert.equal((await mk("a long enough passphrase\r", "a long enough passphrasX\r", "a long enough passphrase\r", "a long enough passphrase\r").passphrase({ create: true, fromStdin: false })).toString(), "a long enough passphrase");
+  // ... up to three attempts, then the last error.
+  await assert.rejects(mk("short\r", "short\r", "short\r").passphrase({ create: true, fromStdin: false }), (e) => e instanceof EzError && e.code === "invalid_input");
+  await assert.rejects(mk("short\r", "short\r", "a long enough passphrase\r", "a long enough passphrasX\r").passphrase({ create: true, fromStdin: false }), (e) => e instanceof EzError && e.code === "passphrase_mismatch");
   const piped = new Prompter({ stdin: pipeInput("a long enough passphrase\n"), write: () => {} });
   assert.equal((await piped.passphrase({ create: true, fromStdin: true })).toString(), "a long enough passphrase");
   await assert.rejects(new Prompter({ stdin: pipeInput("short\n"), write: () => {} }).passphrase({ create: true, fromStdin: true }), (e) => e instanceof EzError && e.code === "invalid_input");
+});
+
+test("prompter: a PIN of the wrong length is asked again at the terminal, refused from a pipe", async () => {
+  const mk = (...keys: string[]) => new Prompter({ stdin: new FakeTerminal(...keys), write: () => {} });
+  assert.equal((await mk("123\r", "123456\r").pin({ fromStdin: false, label: "PIN: " })).toString(), "123456");
+  await assert.rejects(mk("1\r", "12\r", "123\r").pin({ fromStdin: false, label: "PIN: " }), (e) => e instanceof EzError && e.code === "invalid_input");
+  await assert.rejects(new Prompter({ stdin: pipeInput("123\n"), write: () => {} }).pin({ fromStdin: true, label: "PIN: " }), (e) => e instanceof EzError && e.code === "invalid_input");
 });
 
 test("a confirmation is single-use and only valid for its own action; arming waits for the line to go quiet", async () => {

@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+import { hostname as osHostname } from "node:os";
 import { promises as fs, openSync } from "node:fs";
 import { ReadStream as TtyReadStream } from "node:tty";
 import { isAbsolute, normalize, resolve, dirname, join } from "node:path";
@@ -5,7 +7,7 @@ import { parseArgs } from "node:util";
 import type { PkiCaDetail, PkiCaSubject } from "@zyno-io/hemlig-client";
 import { CliError, reportFailure, parseTimeoutMs, usage, type CliDependencies } from "./common";
 import { EzError } from "./ez-error";
-import { createImmutable, exists } from "./ez-fs";
+import { acquireLock, createImmutable, exists, type LockHandle } from "./ez-fs";
 import { firstFormError, runForm, type FormField } from "./ez-form";
 import { prepareCrl, prepareIntermediate, prepareRoot, signPrepared, type IssuedCertificate, type IssuedCrl, type Prepared } from "./ez-issue";
 import { decryptKeyFile, encryptPkcs8, KEY_FILE_ITERATIONS } from "./ez-keyfile";
@@ -23,7 +25,20 @@ import {
 import { assertCrlValidityDays, EZ_DEFAULTS, parseDuration } from "./ez-profile";
 import { consumeConfirmation, Prompter, type Confirmation } from "./ez-prompt";
 import { renderCrlReview, renderRevokeReview, renderSignReview, rootLabel } from "./ez-review";
-import { generateSoftwareKey, SoftwareSigner, signBatch } from "./ez-signer";
+import { generateSoftwareKey, SoftwareSigner, signBatch, type RootSigner, type SignItem } from "./ez-signer";
+import {
+  assertKeyTypeSupported,
+  chooseRecordedDevice,
+  parseSerial,
+  parseSlot,
+  pivKeyType,
+  TOUCH_POLICIES,
+  touchNotice,
+  YkmanClient,
+  YubiKeySigner,
+  type TouchPolicy,
+} from "./ez-yubikey";
+import { acknowledgeWrites, DeviceHandle, renderYubiKeyReview, type YkIo } from "./ez-yubikey-flow";
 import {
   compareWithServer,
   DEFAULT_STATE_FILE,
@@ -63,10 +78,12 @@ import { resolveCa, isCaId } from "./pki";
 import type { TerminalInput } from "./tty";
 
 export const ezHelp = {
-  usage: "hemlig pki ez <generate-ca|sign-cert|activate|revoke-cert|renew-crl|upload-crl|status> [options]",
+  usage: "hemlig pki ez <generate-ca|import-key|sign-cert|activate|revoke-cert|renew-crl|upload-crl|status> [options]",
   commands: {
     "generate-ca":
-      "[--subject 'CN=..,O=..'] [--key-algorithm ECDSA_P384|ECDSA_P256|RSA_3072|RSA_4096] [--validity 20y] [--intermediate-validity 730d] [--crl-validity 180d] [--path-len N] [--key-file F] [--cert-file F] [--crl-file F] [--passphrase-stdin] [--yes]; creates a software-key root, CRL #1 and the state file. Opens a settings form on a terminal.",
+      "[--subject 'CN=..,O=..'] [--key-algorithm ECDSA_P384|ECDSA_P256|RSA_3072|RSA_4096] [--validity 20y] [--intermediate-validity 730d] [--crl-validity 180d] [--path-len N] [--key-file F] [--cert-file F] [--crl-file F] [--passphrase-stdin] [--yes]; creates a root, CRL #1 and the state file. Opens a settings form on a terminal. YubiKey: --yubikey [--yubikey-serial N] [--second-yubikey-serial N] [--slot 9c] [--touch-policy always|cached|never] [--overwrite-slot 9c] [--no-slot-certificate] [--protect-management-key] [--pin-stdin] [--allow-last-pin-attempt] imports a software-generated key (encrypted backup file kept) into the YubiKey; add --on-device --accept-no-backup to generate on the YubiKey with no backup and no recovery.",
+    "import-key":
+      "[--yubikey-serial N] [--slot 9c] [--touch-policy always|cached|never] [--overwrite-slot 9c] [--no-slot-certificate] [--protect-management-key] [--passphrase-stdin] [--pin-stdin] [--allow-last-pin-attempt]; decrypts the root's backup key file and imports it into a (another) YubiKey, then records the device.",
     "sign-cert <ca>":
       "--environment ENV [--validity 730d] [--crl-validity D] [--renew-before 45d] [--key F] [--csr F] [--passphrase-stdin] [--yes]; online: fetches the pending CA's CSR, shows it, asks you to type confirm, signs, syncs the root CRL and activates.",
     "sign-cert <ca> --offline":
@@ -81,15 +98,34 @@ export const ezHelp = {
   common:
     "--dir DIR (default: the current directory; relative file flags are relative to it), --state-file NAME (default hemlig-ez.json), --break-stale-lock. Online commands also take --admin-url, --token-file and --timeout-ms.",
   prompts:
-    "Passphrases are typed at the terminal (twice for a new key) or read from the first line of a pipe with --passphrase-stdin. sign-cert and revoke-cert always ask you to type confirm at a terminal; --yes skips only the settings form.",
+    "Passphrases and YubiKey PINs are typed at the terminal (twice for a new key) or read from a pipe with --passphrase-stdin and --pin-stdin (passphrase first). sign-cert and revoke-cert always ask you to type confirm at a terminal; --yes skips only the settings form.",
 };
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Arguments
 // ---------------------------------------------------------------------------------------------------------------------
 
-const BOOLEAN_FLAGS = ["help", "yes", "offline", "passphrase-stdin", "break-stale-lock", "if-due"] as const;
+const BOOLEAN_FLAGS = [
+  "help",
+  "yes",
+  "offline",
+  "passphrase-stdin",
+  "break-stale-lock",
+  "if-due",
+  "yubikey",
+  "on-device",
+  "accept-no-backup",
+  "protect-management-key",
+  "no-slot-certificate",
+  "allow-last-pin-attempt",
+  "pin-stdin",
+] as const;
 const STRING_FLAGS = [
+  "yubikey-serial",
+  "second-yubikey-serial",
+  "slot",
+  "touch-policy",
+  "overwrite-slot",
   "dir",
   "state-file",
   "subject",
@@ -124,6 +160,8 @@ const STRING_FLAGS = [
 const ONLINE = ["admin-url", "token-file", "timeout-ms"];
 const STATE = ["dir", "state-file", "break-stale-lock"];
 const SECRET = ["passphrase-stdin"];
+const YUBIKEY_USE = ["pin-stdin", "yubikey-serial", "allow-last-pin-attempt"];
+const YUBIKEY_WRITE = [...YUBIKEY_USE, "slot", "touch-policy", "overwrite-slot", "no-slot-certificate", "protect-management-key"];
 
 interface CommandSpec {
   readonly operands: readonly [number, number];
@@ -133,20 +171,21 @@ interface CommandSpec {
 const COMMANDS: Record<string, CommandSpec> = {
   "generate-ca": {
     operands: [0, 0],
-    flags: [...STATE, ...SECRET, "yes", "subject", "key-algorithm", "validity", "intermediate-validity", "crl-validity", "path-len", "key-file", "cert-file", "crl-file"],
+    flags: [...STATE, ...SECRET, ...YUBIKEY_WRITE, "yubikey", "on-device", "accept-no-backup", "second-yubikey-serial", "yes", "subject", "key-algorithm", "validity", "intermediate-validity", "crl-validity", "path-len", "key-file", "cert-file", "crl-file"],
   },
+  "import-key": { operands: [0, 0], flags: [...STATE, ...SECRET, ...YUBIKEY_WRITE] },
   "sign-cert": {
     operands: [1, 1],
-    flags: [...STATE, ...SECRET, ...ONLINE, "yes", "offline", "environment", "csr", "expect-spki-sha256", "out", "chain-out", "crl-out", "validity", "crl-validity", "renew-before", "key"],
+    flags: [...STATE, ...SECRET, ...YUBIKEY_USE, ...ONLINE, "yes", "offline", "environment", "csr", "expect-spki-sha256", "out", "chain-out", "crl-out", "validity", "crl-validity", "renew-before", "key"],
   },
   activate: { operands: [1, 1], flags: [...ONLINE, "environment", "certificate", "chain", "crl"] },
   "revoke-cert": {
     operands: [0, 1],
-    flags: [...STATE, ...SECRET, ...ONLINE, "offline", "environment", "reason", "invalidity-date", "serial", "crl-out", "crl-validity", "expect-ext-id", "key"],
+    flags: [...STATE, ...SECRET, ...YUBIKEY_USE, ...ONLINE, "offline", "environment", "reason", "invalidity-date", "serial", "crl-out", "crl-validity", "expect-ext-id", "key"],
   },
   "renew-crl": {
     operands: [0, 0],
-    flags: [...STATE, ...SECRET, ...ONLINE, "offline", "if-due", "renew-before", "crl-validity", "expect-ext-id", "crl-out", "key"],
+    flags: [...STATE, ...SECRET, ...YUBIKEY_USE, ...ONLINE, "offline", "if-due", "renew-before", "crl-validity", "expect-ext-id", "crl-out", "key"],
   },
   "upload-crl": { operands: [0, 0], flags: [...STATE, ...ONLINE, "expect-ext-id"] },
   status: { operands: [0, 0], flags: [...STATE, ...ONLINE, "offline"] },
@@ -195,6 +234,8 @@ const parseEzArgs = (args: readonly string[]): Parsed | "help" => {
 interface Progress {
   readonly completed: string[];
   readonly files: Record<string, string>;
+  /** Set when a plain rerun would be wrong; replaces the rerun hint in the error envelope. */
+  recovery?: string;
 }
 
 interface Ctx {
@@ -208,6 +249,8 @@ interface Ctx {
   readonly progress: Progress;
   readonly say: (text: string) => Promise<void>;
   readonly color: boolean;
+  /** The ykman client (created on first use; `HEMLIG_YKMAN` names the executable). */
+  readonly ykman: () => YkmanClient;
 }
 
 interface Receipt {
@@ -351,11 +394,42 @@ const runSettingsForm = async (ctx: Ctx, title: string, fields: FormField[]): Pr
 // Signing core shared by sign-cert, renew-crl and revoke-cert
 // ---------------------------------------------------------------------------------------------------------------------
 
-const unlockSigner = async (ctx: Ctx, store: EzStore): Promise<SoftwareSigner> => {
+const ykIo = (ctx: Ctx): YkIo => ({
+  prompter: ctx.prompter,
+  say: ctx.say,
+  client: ctx.ykman(),
+  pinFromStdin: flag(ctx.values, "pin-stdin"),
+  allowLastPinAttempt: flag(ctx.values, "allow-last-pin-attempt"),
+});
+
+/** The YubiKey that holds this root's key, checked read-only and with its PIN already verified (so a typo changes nothing). */
+const unlockYubiKey = async (ctx: Ctx, store: EzStore): Promise<YubiKeySigner> => {
+  const record = store.state.key.yubikey as NonNullable<typeof store.state.key.yubikey>;
+  if (str(ctx.values, "key") !== undefined) usage("--key applies only to a software key; this root's key is on a YubiKey.");
+  const io = ykIo(ctx);
+  const flagged = str(ctx.values, "yubikey-serial");
+  const serial = await chooseRecordedDevice(io.client, record.devices.map((d) => d.serial), flagged === undefined ? undefined : parseSerial(flagged));
+  const device = await DeviceHandle.open(io, { serial, slot: record.slot, write: false, overwrite: false, allowLastPinAttempt: io.allowLastPinAttempt });
+  if (device.target.info.key === null) {
+    throw new EzError(5, "slot_empty", `Slot ${record.slot} of YubiKey ${serial} holds no key.`);
+  }
+  store.assertSigner(device.target.info.key.spkiDer);
+  const signer = device.signer(device.target.info.key.spkiDer);
+  try {
+    await signer.verifyPin();
+  } catch (error) {
+    signer.close();
+    throw error;
+  }
+  return signer;
+};
+
+const unlockSigner = async (ctx: Ctx, store: EzStore): Promise<RootSigner> => {
+  if (store.state.key.storage === "yubikey") return unlockYubiKey(ctx, store);
   const override = str(ctx.values, "key");
   const path = override === undefined ? store.keyFilePath : withinDir(store.dir, override);
   if (path === undefined) {
-    throw new EzError(2, "key_storage_unsupported", "This root's key is not a software key file; hardware keys are not supported by this version.");
+    throw new EzError(2, "key_storage_unsupported", "This root has no key file to sign with.");
   }
   const pem = await readBounded(path, 65536, "key file");
   const passphrase = await ctx.prompter.passphrase({ create: false, fromStdin: flag(ctx.values, "passphrase-stdin") });
@@ -395,7 +469,7 @@ const assertNoPendingRevocation = (store: EzStore): void => {
  * Reserves and signs as one batch. A batch that signs a certificate, or a CRL that newly lists a revocation, needs the
  * `Confirmation` that only `Prompter.confirm` can mint.
  */
-const issue = async (ctx: Ctx, store: EzStore, signer: SoftwareSigner, plan: IssuePlan, confirmation?: Confirmation): Promise<IssueResult> => {
+const issue = async (ctx: Ctx, store: EzStore, signer: RootSigner, plan: IssuePlan, confirmation?: Confirmation): Promise<IssueResult> => {
   const now = ctx.clock();
   const root = store.rootCertificate;
   const began = await store.begin({ sign: plan.cert?.reservation, crl: plan.crl !== undefined });
@@ -422,6 +496,7 @@ const issue = async (ctx: Ctx, store: EzStore, signer: SoftwareSigner, plan: Iss
   let finished: unknown[] = [];
   try {
     const signatures = await signBatch(signer, items.map((p) => p.item), {
+      events: { onTouch: (item) => void ctx.say(touchNotice(signer instanceof YubiKeySigner ? signer.serial : 0, item)) },
       confirm: () => {
         // The review and the typed confirm happened before anything was reserved; this makes it impossible to sign without them.
         const gated = certAt >= 0 || unlistedRevocations(store).length > 0;
@@ -514,14 +589,26 @@ const checkSubjectText = (text: string): void => {
   if (isIdentityRootName(name)) throw new EzError(2, "subject_invalid", "That subject is reserved for Hemlig's own identity root.");
 };
 
+const YUBIKEY_ONLY_FLAGS = ["yubikey-serial", "second-yubikey-serial", "slot", "touch-policy", "overwrite-slot", "no-slot-certificate", "protect-management-key", "pin-stdin", "allow-last-pin-attempt"];
+
 const generateCa = async (ctx: Ctx): Promise<Receipt> => {
   const v = ctx.values;
+  if (flag(v, "on-device") && !flag(v, "yubikey")) usage("--on-device needs --yubikey.");
+  if (flag(v, "on-device") && !flag(v, "accept-no-backup")) {
+    usage("--on-device generates a key that can never be exported or recovered; add --accept-no-backup to say you understand (you will also be asked to type it).");
+  }
+  if (flag(v, "accept-no-backup") && !flag(v, "on-device")) usage("--accept-no-backup applies only with --on-device.");
+  const initialStorage = flag(v, "yubikey") ? (flag(v, "on-device") ? "yubikey-on-device" : "yubikey") : "software";
   const fields: FormField[] = [
     { id: "dir", label: "Directory", kind: "text", value: directoryOf(v), hint: "state, certificates and CRLs are written here", validate: checked((x) => x.length > 0 || usage("empty")) },
     { id: "subject", label: "Root subject", kind: "text", value: str(v, "subject") ?? "", hint: "for example CN=Example Root CA,O=Example Corp", validate: checked(checkSubjectText) },
-    { id: "storage", label: "Key storage", kind: "choice", value: "software", choices: ["software"], hint: "encrypted key file (hardware keys: a later release)" },
+    { id: "storage", label: "Key storage", kind: "choice", value: initialStorage, choices: ["software", "yubikey", "yubikey-on-device"], hint: "yubikey = backup key file + import (recommended); yubikey-on-device = NO backup" },
     { id: "keyAlgorithm", label: "Key algorithm", kind: "choice", value: str(v, "key-algorithm") ?? EZ_DEFAULTS.keyAlgorithm, choices: EZ_KEY_ALGORITHMS },
-    { id: "keyFile", label: "Key file", kind: "text", value: str(v, "key-file") ?? "root.key.pem", hint: "relative to the directory", validate: checked((x) => recordedPath("/", x)) },
+    { id: "keyFile", label: "Key file", kind: "text", value: str(v, "key-file") ?? "root.key.pem", hint: "the encrypted key or backup; relative to the directory", validate: checked((x) => recordedPath("/", x)) },
+    { id: "yubikeySerial", label: "YubiKey serial", kind: "text", optional: true, value: str(v, "yubikey-serial") ?? "", hint: "YubiKey storage; needed when several are connected", validate: checked((x) => parseSerial(x)) },
+    { id: "secondSerial", label: "Second YubiKey", kind: "text", optional: true, value: str(v, "second-yubikey-serial") ?? "", hint: "optional second copy (imported key only)", validate: checked((x) => parseSerial(x, "--second-yubikey-serial")) },
+    { id: "slot", label: "YubiKey slot", kind: "text", value: str(v, "slot") ?? EZ_DEFAULTS.slot, hint: "PIN policy is always", validate: checked(parseSlot) },
+    { id: "touchPolicy", label: "Touch policy", kind: "choice", value: str(v, "touch-policy") ?? EZ_DEFAULTS.touchPolicy, choices: TOUCH_POLICIES },
     { id: "certFile", label: "Certificate file", kind: "text", value: str(v, "cert-file") ?? "root.pem", validate: checked((x) => recordedPath("/", x)) },
     { id: "crlFile", label: "CRL copy", kind: "text", value: str(v, "crl-file") ?? "root.crl.pem", validate: checked((x) => recordedPath("/", x)) },
     { id: "rootValidity", label: "Root validity", kind: "text", value: str(v, "validity") ?? `${EZ_DEFAULTS.rootValidityDays}d`, hint: "20y = 7300 days", validate: checked((x) => days(x, "Root validity")) },
@@ -536,6 +623,16 @@ const generateCa = async (ctx: Ctx): Promise<Receipt> => {
   const subject = parseSubject(settings.subject as string);
   checkSubjectText(settings.subject as string);
   const algorithm = settings.keyAlgorithm as EzKeyAlgorithm;
+  const storage = settings.storage as string;
+  const useYubiKey = storage !== "software";
+  const onDevice = storage === "yubikey-on-device";
+  if (onDevice && !flag(v, "accept-no-backup")) {
+    usage("Generating the key on the YubiKey (no backup, no recovery) needs --accept-no-backup, and you will also be asked to type it.");
+  }
+  if (!useYubiKey) {
+    for (const name of YUBIKEY_ONLY_FLAGS) if (v[name] !== undefined) usage(`--${name} applies only with --yubikey.`);
+    if (flag(v, "yubikey") || flag(v, "on-device")) usage("--yubikey conflicts with the key storage chosen.");
+  }
   const rootDays = days(settings.rootValidity as string, "Root validity");
   const intermediateDays = days(settings.intermediateValidity as string, "Intermediate validity");
   const crlValidity = crlDays(settings.crlValidity as string);
@@ -543,30 +640,146 @@ const generateCa = async (ctx: Ctx): Promise<Receipt> => {
   const keyFile = recordedPath(dir, settings.keyFile as string);
   const certFile = recordedPath(dir, settings.certFile as string);
   const crlFile = recordedPath(dir, settings.crlFile as string);
-  if (new Set([keyFile, certFile, crlFile]).size !== 3) usage("The key, certificate and CRL files must be different files.");
+  if (new Set(onDevice ? [certFile, crlFile] : [keyFile, certFile, crlFile]).size !== (onDevice ? 2 : 3)) usage("The key, certificate and CRL files must be different files.");
 
-  const options: StoreOptions = { ...storeOptions({ ...ctx, values: { ...v, dir } }, dir) };
+  const baseOptions: StoreOptions = { ...storeOptions({ ...ctx, values: { ...v, dir } }, dir) };
+  // The directory lock is taken before anything is written to a device or to disk, so a second run cannot interleave.
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const lock: LockHandle = await acquireLock(dir, { command: baseOptions.command, hostname: osHostname(), now: ctx.clock, breakStale: baseOptions.breakStaleLock });
+  let lockPassed = false;
+  try {
+  const options: StoreOptions = { ...baseOptions, lock };
   const statePath = join(dir, options.stateFile as string);
-  const targets = [statePath, withinDir(dir, keyFile), withinDir(dir, certFile), withinDir(dir, crlFile), join(dir, "crls", "000001.crl.pem")];
+  const targets = [statePath, ...(onDevice ? [] : [withinDir(dir, keyFile)]), withinDir(dir, certFile), withinDir(dir, crlFile), join(dir, "crls", "000001.crl.pem")];
   const present: string[] = [];
   for (const target of targets) if (await exists(target)) present.push(target);
   if (present.length > 0) {
     throw new EzError(5, "already_exists", `Refusing to overwrite existing files: ${present.join(", ")}. Nothing was changed.`, { files: present });
   }
 
-  const passphrase = await ctx.prompter.passphrase({ create: true, fromStdin: flag(v, "passphrase-stdin") });
-  const now = ctx.clock();
-  const key = generateSoftwareKey(algorithm);
-  const signer = new SoftwareSigner(key.privateKey);
-  let keyPem: string;
-  try {
-    keyPem = encryptPkcs8(key.exportPkcs8(), passphrase);
-  } finally {
-    passphrase.fill(0);
+  // YubiKey preflight: read-only checks and the review, before any prompt for a secret.
+  const io = useYubiKey ? ykIo(ctx) : undefined;
+  const handles: DeviceHandle[] = [];
+  const slot = useYubiKey ? parseSlot(settings.slot as string) : EZ_DEFAULTS.slot;
+  const touchPolicy = settings.touchPolicy as TouchPolicy;
+  const keyType = useYubiKey ? pivKeyType(algorithm) : "";
+  const slotCertificate = !flag(v, "no-slot-certificate");
+  const overwriteFlag = str(v, "overwrite-slot");
+  if (overwriteFlag !== undefined && parseSlot(overwriteFlag) !== slot) usage(`--overwrite-slot must name the chosen slot (${slot}).`);
+  const overwrite = overwriteFlag !== undefined;
+  if (useYubiKey && io !== undefined) {
+    const secondText = settings.secondSerial as string;
+    if (onDevice && secondText !== "") usage("--second-yubikey-serial applies only to an imported key (a key generated on a YubiKey cannot be copied).");
+    const serialText = settings.yubikeySerial as string;
+    for (const text of secondText === "" ? [serialText] : [serialText, secondText]) {
+      const handle = await DeviceHandle.open(io, {
+        serial: text === "" ? undefined : parseSerial(text),
+        slot,
+        write: true,
+        overwrite,
+        keyType,
+        allowLastPinAttempt: io.allowLastPinAttempt,
+      });
+      if (handles.some((h) => h.serial === handle.serial)) usage("The two YubiKeys must be different devices.");
+      handles.push(handle);
+    }
+    if (flag(v, "protect-management-key") && handles.some((h) => h.target.management !== "default")) {
+      usage("--protect-management-key applies only to a YubiKey that still has the factory management key.");
+    }
+    const review = { action: onDevice ? ("generate" as const) : ("import" as const), keyType, touchPolicy, backupFile: onDevice ? undefined : withinDir(dir, keyFile), slotCertificate, overwrite };
+    await ctx.say(renderYubiKeyReview(handles, review));
+    await acknowledgeWrites(io, handles, review);
+    if (flag(v, "protect-management-key")) for (const handle of handles) await handle.acknowledgeProtect();
   }
+
+  const now = ctx.clock();
+  const created: { signer: RootSigner; key?: ReturnType<typeof generateSoftwareKey> } = { signer: undefined as never };
+  const rootTouch = { onTouch: (item: SignItem) => void ctx.say(touchNotice(handles[0]?.serial ?? 0, item)) };
+  let keyPem: string | undefined;
+  let yubikeySigner: YubiKeySigner | undefined;
+  let testSigners: YubiKeySigner[] = [];
+  let backupPassphrase: Buffer | undefined;
+  const protectedSerials: number[] = [];
+  const writtenSerials: number[] = [];
   try {
-    const [root] = await signPrepared(signer, [prepareRoot(signer, { subject, now, validityDays: rootDays, pathLen })] as const);
-    const [crl] = await signPrepared(signer, [prepareCrl(signer, root.certificate, { number: 1, thisUpdate: now, validityDays: crlValidity, entries: [] })] as const);
+    if (!onDevice) {
+      const passphrase = await ctx.prompter.passphrase({ create: true, fromStdin: flag(v, "passphrase-stdin") });
+      const key = generateSoftwareKey(algorithm);
+      created.key = key;
+      created.signer = new SoftwareSigner(key.privateKey);
+      try {
+        keyPem = encryptPkcs8(key.exportPkcs8(), passphrase);
+      } catch (error) {
+        passphrase.fill(0);
+        throw error;
+      }
+      // An imported key keeps the passphrase until the backup has been read back and decrypted (before any device write).
+      if (useYubiKey) backupPassphrase = passphrase;
+      else passphrase.fill(0);
+    }
+    if (useYubiKey) {
+      // Every PIN is read and checked before anything is changed on any device, so a typo changes nothing.
+      for (const handle of handles) await handle.verifyPin();
+      for (const handle of handles) {
+        if (flag(v, "protect-management-key")) {
+          await handle.protectManagementKey();
+          protectedSerials.push(handle.serial);
+          ctx.progress.completed.push(`management-key-protected:${handle.serial}`);
+        }
+        await handle.checkManagement();
+      }
+    }
+    if (onDevice) {
+      const handle = handles[0] as DeviceHandle;
+      const management = await handle.management();
+      const spki = await (io as YkIo).client.generate({ serial: handle.serial, slot, keyType, touchPolicy, overwrite, management: management.spec, pin: management.pin });
+      ctx.progress.completed.push("yubikey-key-generated");
+      await handle.assertHolds(spki);
+      yubikeySigner = handle.signer(spki);
+      created.signer = yubikeySigner;
+    }
+    const signer = created.signer;
+    const [root] = await signPrepared(signer, [prepareRoot(signer, { subject, now, validityDays: rootDays, pathLen })] as const, { events: rootTouch });
+    const [crl] = await signPrepared(signer, [prepareCrl(signer, root.certificate, { number: 1, thisUpdate: now, validityDays: crlValidity, entries: [] })] as const, { events: rootTouch });
+    const slotWarnings: string[] = [];
+
+    if (useYubiKey && !onDevice && created.key !== undefined) {
+      // Backup first, then the devices: the key never exists only on a device.
+      const keyPath = withinDir(dir, keyFile);
+      await fs.mkdir(dirname(keyPath), { recursive: true, mode: 0o700 });
+      await createImmutable(keyPath, Buffer.from(keyPem as string), 0o600);
+      ctx.progress.files.key = keyPath;
+      ctx.progress.completed.push("backup-written");
+      await ctx.dependencies.afterBackupWritten?.(keyPath);
+      // The backup must be the file that was meant and must restore this root's key before any device is written.
+      const onDisk = await fs.readFile(keyPath);
+      if (!onDisk.equals(Buffer.from(keyPem as string))) {
+        throw new EzError(9, "backup_verify_failed", "The backup key file on disk is not what was written; no YubiKey was touched.");
+      }
+      const restored = new SoftwareSigner(decryptKeyFile(onDisk.toString("utf8"), backupPassphrase as Buffer));
+      const restoredSpki = restored.spkiDer;
+      restored.close();
+      if (!restoredSpki.equals(root.certificate.spkiDer)) {
+        throw new EzError(9, "backup_verify_failed", "The backup key file does not restore this root's key; no YubiKey was touched.");
+      }
+      backupPassphrase?.fill(0);
+      backupPassphrase = undefined;
+      for (const handle of handles) {
+        const management = await handle.management();
+        const pkcs8 = created.key.exportPkcs8();
+        try {
+          await (io as YkIo).client.putKey({ serial: handle.serial, slot, touchPolicy, overwrite, management: management.spec, pin: management.pin, keyDer: pkcs8 });
+        } finally {
+          pkcs8.fill(0);
+        }
+        writtenSerials.push(handle.serial);
+        ctx.progress.completed.push(`yubikey-imported:${handle.serial}`);
+        await handle.assertHolds(root.certificate.spkiDer);
+      }
+      yubikeySigner = handles[0]?.signer(root.certificate.spkiDer);
+      testSigners = handles.slice(1).map((h) => h.signer(root.certificate.spkiDer));
+    }
+
     const state = initialState({
       origin: "generated",
       subject: subject as unknown as Record<string, string>,
@@ -574,19 +787,34 @@ const generateCa = async (ctx: Ctx): Promise<Receipt> => {
       root: root.certificate,
       keyAlgorithm: algorithm,
       pathLen: pathLen ?? null,
-      key: { storage: "software", file: keyFile, kdf: { name: "pbkdf2-hmac-sha256", iterations: KEY_FILE_ITERATIONS }, yubikey: null },
+      key: useYubiKey
+        ? {
+            storage: "yubikey",
+            file: onDevice ? null : keyFile,
+            kdf: onDevice ? null : { name: "pbkdf2-hmac-sha256", iterations: KEY_FILE_ITERATIONS },
+            yubikey: {
+              slot,
+              keyType,
+              generatedOnDevice: onDevice,
+              pinPolicy: "always",
+              touchPolicy,
+              devices: handles.map((h) => ({ serial: h.serial, firmware: h.target.info.device.firmware, fips: h.target.info.device.fips, addedAt: now.toISOString() })),
+            },
+          }
+        : { storage: "software", file: keyFile, kdf: { name: "pbkdf2-hmac-sha256", iterations: KEY_FILE_ITERATIONS }, yubikey: null },
       crl: crl.crl,
       certificateFile: certFile,
       crlCopyFile: crlFile,
       defaults: { intermediateValidityDays: intermediateDays, crlValidityDays: crlValidity },
       now,
     });
-    const store = await EzStore.create(options, state, initialArtifacts(state, { rootDer: root.der, crlDer: crl.der, keyFilePem: keyPem }));
+    lockPassed = true;
+    const store = await EzStore.create(options, state, initialArtifacts(state, { rootDer: root.der, crlDer: crl.der, ...(useYubiKey ? {} : { keyFilePem: keyPem }) }));
     try {
       ctx.progress.completed.push("root-created");
       const files = {
         state: statePath,
-        key: withinDir(dir, keyFile),
+        ...(onDevice ? {} : { key: withinDir(dir, keyFile) }),
         certificate: withinDir(dir, certFile),
         crl: withinDir(dir, crlFile),
       };
@@ -596,11 +824,38 @@ const generateCa = async (ctx: Ctx): Promise<Receipt> => {
           "",
           `Root created: ${formatSubject(subject)}`,
           `  SHA-256 fingerprint  ${root.certificate.fingerprint}`,
-          `  Key file             ${files.key}  (encrypted; back it up and remember the passphrase)`,
+          ...(onDevice
+            ? [`  Key                  on YubiKey ${handles[0]?.serial ?? ""}, slot ${slot} (generated on the device; NO backup exists)`]
+            : [`  Key file             ${(files as { key: string }).key}  (encrypted; back it up and remember the passphrase)`]),
+          ...(useYubiKey && !onDevice ? [`  YubiKey              ${handles.map((h) => h.serial).join(", ")}, slot ${slot}`] : []),
           `  Certificate          ${files.certificate}`,
           "",
         ].join("\n"),
       );
+      if (useYubiKey && slotCertificate && io !== undefined) {
+        for (const handle of handles) {
+          try {
+            const management = await handle.management();
+            await io.client.putCertificate({ serial: handle.serial, slot, overwrite: handle.target.occupied, management: management.spec, pin: management.pin, certificateDer: root.der });
+            ctx.progress.completed.push(`slot-certificate:${handle.serial}`);
+          } catch (error) {
+            slotWarnings.push(`slot_certificate_failed:${handle.serial}`);
+            await ctx.say(`The root was created, but its certificate could not be stored in slot ${slot} of YubiKey ${handle.serial} (${error instanceof EzError ? error.message : "unknown error"}). It is in ${files.certificate}.\n`);
+          }
+        }
+      }
+      if (useYubiKey && !onDevice && yubikeySigner !== undefined) {
+        // A real signature with the stored key proves the import end to end (PIN, and a touch if the policy asks for it).
+        try {
+          for (const tester of [yubikeySigner, ...testSigners]) {
+            await signBatch(tester, [{ id: "test", description: "a test challenge (nothing is issued)", data: randomBytes(32) }], { events: { onTouch: (item) => void ctx.say(touchNotice(tester.serial, item)) } });
+          }
+          ctx.progress.completed.push("test-signature");
+        } catch (error) {
+          await ctx.say("The root was created and the key imported, but the test signature failed. The state is valid; try renew-crl to retry signing.\n");
+          throw error;
+        }
+      }
       return {
         data: {
           command: "generate-ca",
@@ -616,19 +871,145 @@ const generateCa = async (ctx: Ctx): Promise<Receipt> => {
             extIdHint: state.root.extIdHint,
           },
           crl: { number: 1, nextUpdate: (crl.crl.nextUpdate as Date).toISOString() },
+          key: useYubiKey
+            ? { storage: "yubikey", slot, keyType, generatedOnDevice: onDevice, touchPolicy, serials: handles.map((h) => h.serial), managementKeyProtected: protectedSerials, backupFile: onDevice ? null : (files as { key: string }).key }
+            : { storage: "software" },
           files,
           defaults: state.defaults,
+          ...(slotWarnings.length === 0 ? {} : { warnings: slotWarnings }),
         },
         next: [
-          `Back up ${files.key} somewhere safe, apart from the passphrase.`,
+          onDevice
+            ? "There is NO backup of this root key: protect the YubiKey and its PIN and PUK."
+            : `Back up ${(files as { key: string }).key} somewhere safe, apart from the passphrase.`,
           "hemlig pki ca create --kind EXTERNAL_INTERMEDIATE ... (then) hemlig pki ez sign-cert <ca-id> --environment <env>",
         ],
       };
     } finally {
       await store.close();
     }
+  } catch (error) {
+    if (ctx.progress.completed.includes("backup-written") && !ctx.progress.completed.includes("root-created")) {
+      ctx.progress.recovery = [
+        `No state file was written and nothing was published. The backup key file ${ctx.progress.files.key ?? ""} exists.`,
+        writtenSerials.length === 0 ? "No YubiKey was written." : `YubiKey(s) already written: ${writtenSerials.join(", ")} (slot ${slot}).`,
+        `Delete ${dir} and rerun generate-ca${writtenSerials.length === 0 ? "" : ` with --overwrite-slot ${slot}`}; do not reuse this backup.`,
+      ].join(" ");
+    }
+    throw error;
   } finally {
-    signer.close();
+    backupPassphrase?.fill(0);
+    created.signer?.close();
+    yubikeySigner?.close();
+    for (const tester of testSigners) tester.close();
+    for (const handle of handles) handle.close();
+  }
+  } finally {
+    if (!lockPassed) await lock.release();
+  }
+};
+
+/** `import-key`: puts the backup key into a (another) YubiKey. */
+const importKey = async (ctx: Ctx): Promise<Receipt> => {
+  const v = ctx.values;
+  const dir = directoryOf(v);
+  const store = await EzStore.open(storeOptions(ctx, dir));
+  const handles: DeviceHandle[] = [];
+  const protectedSerials: number[] = [];
+  try {
+    const state = store.state;
+    const record = state.key.yubikey;
+    if (state.key.file === null) {
+      throw new EzError(5, "key_not_exportable", "This root's key was generated on a YubiKey and has no backup file; it cannot be copied to another device.");
+    }
+    const slot = record?.slot ?? parseSlot(str(v, "slot") ?? EZ_DEFAULTS.slot);
+    if (record !== null && str(v, "slot") !== undefined && parseSlot(str(v, "slot") as string) !== record.slot) usage(`This root's YubiKey slot is ${record.slot}.`);
+    const touchPolicy = (record?.touchPolicy ?? str(v, "touch-policy") ?? EZ_DEFAULTS.touchPolicy) as TouchPolicy;
+    if (!TOUCH_POLICIES.includes(touchPolicy)) usage(`--touch-policy must be one of ${TOUCH_POLICIES.join(", ")}.`);
+    if (record !== null && str(v, "touch-policy") !== undefined && str(v, "touch-policy") !== record.touchPolicy) usage(`This root's touch policy is ${record.touchPolicy}.`);
+    const overwriteFlag = str(v, "overwrite-slot");
+    if (overwriteFlag !== undefined && parseSlot(overwriteFlag) !== slot) usage(`--overwrite-slot must name the chosen slot (${slot}).`);
+    const overwrite = overwriteFlag !== undefined;
+    const io = ykIo(ctx);
+    const keyType = pivKeyType(state.root.keyAlgorithm);
+    const serialText = str(v, "yubikey-serial");
+    const handle = await DeviceHandle.open(io, { serial: serialText === undefined ? undefined : parseSerial(serialText), slot, write: true, overwrite, keyType, allowLastPinAttempt: io.allowLastPinAttempt });
+    handles.push(handle);
+    assertKeyTypeSupported(handle.target.info.device.firmware, keyType);
+    if (flag(v, "protect-management-key") && handle.target.management !== "default") usage("--protect-management-key applies only to a YubiKey that still has the factory management key.");
+    const slotCertificate = !flag(v, "no-slot-certificate");
+    const review = { action: "import" as const, keyType, touchPolicy, backupFile: store.keyFilePath, slotCertificate, overwrite };
+    await ctx.say(renderYubiKeyReview(handles, review));
+    await acknowledgeWrites(io, handles, review);
+    if (flag(v, "protect-management-key")) await handle.acknowledgeProtect();
+
+    const keyPath = store.keyFilePath as string;
+    const pem = await readBounded(keyPath, 65536, "key file");
+    const passphrase = await ctx.prompter.passphrase({ create: false, fromStdin: flag(v, "passphrase-stdin") });
+    let privateKey;
+    try {
+      privateKey = decryptKeyFile(pem.toString("utf8"), passphrase);
+    } finally {
+      passphrase.fill(0);
+    }
+    const software = new SoftwareSigner(privateKey);
+    store.assertSigner(software.spkiDer);
+    software.close();
+    const signer = handle.signer(store.rootCertificate.spkiDer);
+    try {
+      await handle.verifyPin();
+      if (flag(v, "protect-management-key")) {
+        await handle.protectManagementKey();
+        protectedSerials.push(handle.serial);
+        ctx.progress.completed.push(`management-key-protected:${handle.serial}`);
+      }
+      await handle.checkManagement();
+      const management = await handle.management();
+      const pkcs8 = privateKey.export({ type: "pkcs8", format: "der" });
+      try {
+        await io.client.putKey({ serial: handle.serial, slot, touchPolicy, overwrite, management: management.spec, pin: management.pin, keyDer: pkcs8 });
+      } finally {
+        pkcs8.fill(0);
+      }
+      ctx.progress.completed.push(`yubikey-imported:${handle.serial}`);
+      await handle.assertHolds(store.rootCertificate.spkiDer);
+      await store.recordYubiKey({
+        slot,
+        keyType,
+        generatedOnDevice: false,
+        pinPolicy: "always",
+        touchPolicy,
+        device: { serial: handle.serial, firmware: handle.target.info.device.firmware, fips: handle.target.info.device.fips },
+      });
+      ctx.progress.completed.push("state-updated");
+      const warnings: string[] = [];
+      if (slotCertificate) {
+        try {
+          await io.client.putCertificate({ serial: handle.serial, slot, overwrite: handle.target.occupied, management: management.spec, pin: management.pin, certificateDer: store.rootCertificate.der });
+        } catch (error) {
+          warnings.push(`slot_certificate_failed:${handle.serial}`);
+          await ctx.say(`The key was imported, but the root certificate could not be stored in the slot (${error instanceof EzError ? error.message : "unknown error"}).\n`);
+        }
+      }
+      await signBatch(signer, [{ id: "test", description: "a test challenge (nothing is issued)", data: randomBytes(32) }], {
+        events: { onTouch: (item) => void ctx.say(touchNotice(handle.serial, item)) },
+      });
+      ctx.progress.completed.push("test-signature");
+      return {
+        data: {
+          command: "import-key",
+          root: { fingerprint: store.rootCertificate.fingerprint },
+          yubikey: { serial: handle.serial, firmware: handle.target.info.device.firmware, slot, keyType, touchPolicy, managementKeyProtected: protectedSerials.includes(handle.serial) },
+          ...(warnings.length === 0 ? {} : { warnings }),
+        },
+        next: [state.key.storage === "software" ? "Signing now uses the YubiKey; the key file is kept as the backup." : "Add this YubiKey's serial to your records."],
+      };
+    } finally {
+      signer.close();
+    }
+  } finally {
+    for (const handle of handles) handle.close();
+    await store.close();
   }
 };
 
@@ -749,10 +1130,12 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
       { id: "validity", label: "Intermediate validity", kind: "text", value: str(v, "validity") ?? `${state.defaults.intermediateValidityDays}d`, hint: "clamped to the root's end", validate: checked((x) => days(x, "Validity")) },
       { id: "crlValidity", label: "CRL validity", kind: "text", value: str(v, "crl-validity") ?? `${state.defaults.crlValidityDays}d`, hint: "if the CRL is renewed", validate: checked(crlDays) },
       { id: "renewBefore", label: "CRL renewal window", kind: "text", value: str(v, "renew-before") ?? `${EZ_DEFAULTS.crlRenewBeforeDays}d`, hint: "renew when fewer days remain", validate: checked((x) => days(x, "Renewal window")) },
-      { id: "key", label: "Root key file", kind: "text", value: str(v, "key") ?? keyDefault, validate: checked((x) => x.length > 0 || usage("empty")) },
+      state.key.storage === "yubikey"
+        ? { id: "key", label: "Root key", kind: "readonly" as const, value: `YubiKey slot ${state.key.yubikey?.slot ?? ""} (serial ${(state.key.yubikey?.devices ?? []).map((d) => d.serial).join(", ")})` }
+        : { id: "key", label: "Root key file", kind: "text" as const, value: str(v, "key") ?? keyDefault, validate: checked((x) => x.length > 0 || usage("empty")) },
       ...(offline ? [{ id: "out", label: "Certificate output", kind: "text" as const, value: outputs.out, validate: checked((x) => x.length > 0 || usage("empty")) }] : []),
     ]);
-    const finalValues: Values = { ...v, key: settings.key };
+    const finalValues: Values = state.key.storage === "yubikey" ? { ...v } : { ...v, key: settings.key };
     const certPath = offline ? withinDir(dir, settings.out as string) : outputs.out;
     const now = ctx.clock();
     const validityDays = days(settings.validity as string, "Validity");
@@ -1255,6 +1638,7 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
   const stderr = dependencies.stderr ?? ((text: string) => process.stderr.write(text));
   const nowMs = dependencies.now ?? Date.now;
   const progress: Progress = { completed: [], files: {} };
+  let ykmanClient: YkmanClient | undefined;
   try {
     const parsed = parseEzArgs(args);
     if (parsed === "help") {
@@ -1282,9 +1666,11 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
         await stderr(text);
       },
       color: colorWanted(env, prompter.interactive),
+      ykman: () => (ykmanClient ??= new YkmanClient({ path: env.HEMLIG_YKMAN })),
     };
     const handlers: Record<string, (ctx: Ctx) => Promise<Receipt>> = {
       "generate-ca": generateCa,
+      "import-key": importKey,
       "sign-cert": signCert,
       activate: activateCommand,
       "revoke-cert": revokeCert,
@@ -1303,7 +1689,13 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
         mutationAttempted: false,
         ...(progress.completed.length === 0
           ? {}
-          : { ez: { completed: progress.completed, files: progress.files, rerun: `hemlig pki ez ${args.map(shellArg).join(" ")}` } }),
+          : {
+              ez: {
+                completed: progress.completed,
+                files: progress.files,
+                ...(progress.recovery === undefined ? { rerun: `hemlig pki ez ${args.map(shellArg).join(" ")}` } : { recovery: progress.recovery }),
+              },
+            }),
       },
       stderr,
     );

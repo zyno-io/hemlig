@@ -302,6 +302,8 @@ const issuedFileName = (serial: string): string => `issued/${serial}.pem`;
 // ---------------------------------------------------------------------------------------------------------------------
 
 export interface StoreOptions extends FsFaults {
+  /** `create` only: a lock the caller already holds (generate-ca takes it before it writes a device). */
+  readonly lock?: LockHandle;
   readonly dir: string;
   readonly stateFile?: string;
   readonly command: string;
@@ -398,13 +400,15 @@ export class EzStore {
     const dir = resolve(options.dir);
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
     const stateFilePath = join(dir, options.stateFile ?? DEFAULT_STATE_FILE);
-    const lock = await acquireLock(dir, {
-      command: options.command,
-      hostname: options.hostname ?? osHostname(),
-      now: options.now,
-      breakStale: options.breakStaleLock,
-      isAlive: options.isAlive,
-    });
+    const lock =
+      options.lock ??
+      (await acquireLock(dir, {
+        command: options.command,
+        hostname: options.hostname ?? osHostname(),
+        now: options.now,
+        breakStale: options.breakStaleLock,
+        isAlive: options.isAlive,
+      }));
     try {
       const targets = artifacts.map((a) => resolveRecordedPath(dir, a.path, a.allowAbsolute === true));
       const present: string[] = [];
@@ -860,6 +864,37 @@ export class EzStore {
         existing.lastUploadedCrlNumber = Math.max(existing.lastUploadedCrlNumber, number);
         existing.lastSeenAt = seen;
       }
+    });
+  }
+
+  /**
+   * Records a YubiKey that now holds the root key (`import-key`). The first call on a software root switches the
+   * storage to `yubikey` and keeps the encrypted backup file; later calls add devices. Slot and policies are fixed by
+   * the first record.
+   */
+  public async recordYubiKey(input: {
+    readonly slot: string;
+    readonly keyType: string;
+    readonly generatedOnDevice: boolean;
+    readonly pinPolicy: string;
+    readonly touchPolicy: string;
+    readonly device: { readonly serial: number; readonly firmware: string; readonly fips: boolean };
+  }): Promise<void> {
+    const addedAt = this.now().toISOString();
+    await this.#persist((draft) => {
+      draft.key.storage = "yubikey";
+      const record = (draft.key.yubikey ??= {
+        slot: input.slot,
+        keyType: input.keyType,
+        generatedOnDevice: input.generatedOnDevice,
+        pinPolicy: input.pinPolicy,
+        touchPolicy: input.touchPolicy,
+        devices: [],
+      });
+      if (record.slot !== input.slot) throw new EzError(5, "state_conflict", "This root's YubiKey slot is fixed.", { reason: "slot_changed" });
+      const existing = record.devices.find((d) => d.serial === input.device.serial);
+      if (existing === undefined) record.devices.push({ ...input.device, addedAt });
+      else Object.assign(existing, { firmware: input.device.firmware, fips: input.device.fips });
     });
   }
 
