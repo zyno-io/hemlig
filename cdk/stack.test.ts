@@ -1519,3 +1519,65 @@ describe("OIDC context defaults reach the synthesized template", () => {
     expect(template.Outputs.AdminOidcAudience?.Value).toBe("api-id");
   });
 });
+
+describe("OIDC defaults on the library path (HemligStack props)", () => {
+  const props = {
+    environmentName: "test",
+    adminFqdn: "admin.test.example.com",
+    apiFqdn: "api.test.example.com",
+    consoleFqdn: "console.test.example.com",
+    consoleCertificateArn:
+      "arn:aws:acm:us-east-1:123456789012:certificate/12345678-1234-1234-1234-123456789012",
+    zoneDomain: "test.example.com",
+    oidcIssuer: "https://login.microsoftonline.com/tenant/v2.0",
+    oidcSubjectClaim: "oid",
+    oidcAdminScope: "hemlig.admin",
+    oidcAdminRole: "Hemlig.Administrator",
+  };
+  const synth = (
+    extra: Partial<ConstructorParameters<typeof HemligStack>[2]>,
+  ): string =>
+    JSON.stringify(
+      Template.fromStack(
+        new HemligStack(new App(), "hml-test", { ...props, ...extra }),
+      ).toJSON(),
+    );
+
+  it("one client ID gives the same template as the explicit one-app props", () => {
+    const explicit = synth({
+      oidcAudience: "app-id",
+      oidcConsoleAccessScope: "api://app-id/hemlig.admin",
+      oidcClientId: "app-id",
+    });
+    expect(synth({ oidcClientId: "app-id" })).toBe(explicit);
+  });
+
+  it("explicit two-app props are left as they are", () => {
+    const template = JSON.parse(
+      synth({
+        oidcAudience: "api-id",
+        oidcConsoleAccessScope: "api://api-id/hemlig.admin",
+        oidcClientId: "console-id",
+      }),
+    ) as { Outputs: Record<string, { Value: string }> };
+    expect(template.Outputs.AdminOidcAudience?.Value).toBe("api-id");
+  });
+
+  it("refuses a derived audience without an admin scope, and no client ID or audience", () => {
+    const { consoleFqdn: _c, consoleCertificateArn: _a, oidcAdminScope: _s, ...apiOnly } = props;
+    expect(
+      () => new HemligStack(new App(), "hml-test", { ...apiOnly, oidcClientId: "app-id" }),
+    ).toThrow("oidcAdminScope is required when oidcAudience is omitted");
+    expect(() => new HemligStack(new App(), "hml-test", { ...apiOnly })).toThrow(
+      "set oidcClientId (or oidcAudience",
+    );
+    expect(
+      () =>
+        new HemligStack(new App(), "hml-test", {
+          ...props,
+          oidcAudience: "  ",
+          oidcClientId: "console-id",
+        }),
+    ).toThrow("oidcAudience must not be blank");
+  });
+});

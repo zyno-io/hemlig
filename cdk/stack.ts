@@ -45,6 +45,7 @@ import {
   DEFAULT_PKI_ISSUANCE_BURST_LIMIT,
   DEFAULT_PKI_ISSUANCE_RATE_LIMIT,
   isUsEast1CertificateArn,
+  resolveOidcDefaults,
   type DeploymentConfig,
 } from "./config";
 import { consoleRuntimeConfig } from "./console-runtime-config";
@@ -114,8 +115,10 @@ export class HemligStack extends Stack {
   public constructor(
     scope: Construct,
     id: string,
-    props: DeploymentConfig & StackProps,
+    input: DeploymentConfig & StackProps,
   ) {
+    // One app, one client ID: the audience and console scope default from it.
+    const props = resolveOidcDefaults(input);
     super(scope, id, {
       ...props,
       // resolveConsoleCertificate() may create a sibling us-east-1 stack to hold the
