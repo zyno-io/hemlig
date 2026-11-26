@@ -67,10 +67,16 @@ const mountView = async (
     generatedAt: "2026-11-01T00:00:00Z",
   })),
   query: Record<string, string> = {},
+  casFailure?: Error,
 ) => {
   const pinia = createPinia();
   setActivePinia(pinia);
-  const listPkiCas = vi.fn(async () => ({ cas, generatedAt: "2026-11-01T00:00:00Z" }));
+  const listPkiCas = vi.fn(async () => {
+    if (casFailure) {
+      throw casFailure;
+    }
+    return { cas, generatedAt: "2026-11-01T00:00:00Z" };
+  });
   const listExternalCas = vi.fn(async () => ({
     externalCas: externals,
     generatedAt: "2026-11-01T00:00:00Z",
@@ -395,6 +401,65 @@ describe("PkiOverview", () => {
       expect(wrapper.find('[data-testid="cert-load-more"]').exists()).toBe(false);
       expect(wrapper.text()).not.toContain("cursor expired");
       expect(wrapper.findAll("tbody tr")).toHaveLength(1);
+    });
+  });
+
+  describe("Certificates tab follow-ups", () => {
+    const page = (certificates: PkiCertificateSummary[], nextCursor?: string) => ({
+      certificates,
+      ...(nextCursor === undefined ? {} : { nextCursor }),
+      generatedAt: "2026-11-01T00:00:00Z",
+    });
+    const twoCas = [ca({ caId: "ca-a" }), ca({ caId: "ca-b", name: "b" })];
+    // ca-a holds a cursor after one early row; ca-b has a later row that is held back.
+    const heldBackList = (cursorFails = false) =>
+      vi.fn<ListCerts>(async (caId, input) => {
+        if (caId === "ca-a") {
+          if (input.cursor !== undefined) {
+            throw new ApiError(400, "bad_request", "cursor expired");
+          }
+          return page([cert({ serial: "a1", notAfter: "2030-01-01T00:00:00Z" })], cursorFails ? "n" : "n");
+        }
+        return page([cert({ caId: "ca-b", serial: "b1", notAfter: "2031-01-01T00:00:00Z" })]);
+      });
+
+    it("searches held-back rows too, ordered by expiry", async () => {
+      const { wrapper } = await mountView(twoCas, [], vi.fn(), heldBackList(), { tab: "certificates" });
+      const serials = () => wrapper.findAll("tbody .mono[title]").map((e) => e.attributes("title"));
+      expect(serials()).toEqual(["a1"]);
+      await wrapper.get('input[type="search"]').setValue("b1");
+      expect(serials()).toEqual(["b1"]);
+      await wrapper.get('input[type="search"]').setValue("svc");
+      expect(serials()).toEqual(["a1", "b1"]);
+    });
+
+    it("replaces Load more with Refresh while a CA is outdated, and keeps the held-back count", async () => {
+      const { wrapper } = await mountView(twoCas, [], vi.fn(), heldBackList(), { tab: "certificates" });
+      await wrapper.get('[data-testid="cert-load-more"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="cert-load-more"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="cert-refresh"]').exists()).toBe(true);
+      expect(wrapper.get('[data-testid="cert-partial"]').text()).toContain("1 more loaded, held back");
+    });
+
+    it("does not stay on Loading when the first CA list load fails", async () => {
+      const { wrapper } = await mountView([], [], vi.fn(), undefined, { tab: "certificates" }, new ApiError(500, "internal_error", "down"));
+      expect(wrapper.text()).not.toContain("Loading…");
+    });
+
+    it("reads the offline roots once across tab switches, even after they go stale", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const { wrapper, listExternalCas } = await mountView([ca({})], [ext({})]);
+        expect(listExternalCas).toHaveBeenCalledTimes(1);
+        await wrapper.get('[data-testid="tab-certificates"]').trigger("click");
+        vi.setSystemTime(Date.now() + 5 * 60_000);
+        await wrapper.get('[data-testid="tab-cas"]').trigger("click");
+        await flushPromises();
+        expect(listExternalCas).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

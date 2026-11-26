@@ -179,13 +179,18 @@ const visible = computed(() =>
 );
 const rows = computed(() => {
   const needle = search.value.trim().toLowerCase();
-  return needle === ""
-    ? visible.value
-    : visible.value.filter((certificate) =>
-        [certificate.subject, certificate.serial, ...certificateSans(certificate)].some((text) =>
-          text.toLowerCase().includes(needle),
-        ),
-      );
+  if (needle === "") {
+    return visible.value;
+  }
+  // A search looks at every loaded row, held back or not, so a match is never hidden.
+  return (slices.data.value ?? [])
+    .flatMap((slice) => slice.certificates)
+    .filter((certificate) =>
+      [certificate.subject, certificate.serial, ...certificateSans(certificate)].some((text) =>
+        text.toLowerCase().includes(needle),
+      ),
+    )
+    .sort((a, b) => time(a.notAfter) - time(b.notAfter));
 });
 const totalLoaded = computed(() =>
   (slices.data.value ?? []).reduce((sum, slice) => sum + slice.certificates.length, 0),
@@ -316,14 +321,29 @@ const expiresSoon = (certificate: PkiCertificateSummary): boolean =>
       </table>
     </div>
 
-    <div v-if="hasMore" class="card-body flex flex-wrap items-center gap-3">
-      <button class="btn" data-testid="cert-load-more" :disabled="loadingMore" @click="loadMore">
-        {{ loadingMore ? "Loading…" : "Load more" }}
-      </button>
+    <div
+      v-if="hasMore || outdatedSlices.length > 0 || heldBack > 0"
+      class="card-body flex flex-wrap items-center gap-3"
+    >
+      <button
+        v-if="outdatedSlices.length > 0"
+        class="btn"
+        data-testid="cert-refresh"
+        @click="refresh()"
+      >Refresh</button>
+      <button
+        v-else-if="hasMore"
+        class="btn"
+        data-testid="cert-load-more"
+        :disabled="loadingMore"
+        @click="loadMore"
+      >{{ loadingMore ? "Loading…" : "Load more" }}</button>
       <span class="meta" data-testid="cert-partial">
-        Partial list, ordered by expiry: {{ visible.length }} shown<template v-if="heldBack > 0">
-        ({{ heldBack }} more loaded, held back to keep the order)</template>, and some CAs have
-        more. Filtering covers loaded rows only.
+        <template v-if="hasMore || outdatedSlices.length > 0">Partial list, ordered by expiry: </template>
+        {{ visible.length }} shown<template v-if="heldBack > 0">
+        ({{ heldBack }} more loaded, held back to keep the order)</template><template
+          v-if="hasMore || outdatedSlices.length > 0"
+        >, and some CAs have more. Filtering covers loaded rows only.</template>
       </span>
     </div>
   </section>

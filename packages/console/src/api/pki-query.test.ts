@@ -63,4 +63,19 @@ describe("env-wide certificate cache after a revoke", () => {
       expect(state(qc, f)?.isInvalidated).toBe(true);
     }
   });
+
+  it("keeps an earlier stale mark when a single revoke touches other lists", () => {
+    const qc = seed();
+    markEnvCertificatesStale(qc);
+    // A certificate none of the cached lists hold: the write is skipped.
+    applyCertificateRevoked(qc, cert({ serial: "other", status: "REVOKED", storedStatus: "REVOKED" }));
+    for (const f of ["active", "expired", "revoked", "all"]) {
+      expect(state(qc, f)?.isInvalidated).toBe(true);
+    }
+    // One they do hold: patched, and still marked stale for the next mount.
+    applyCertificateRevoked(qc, cert({ status: "REVOKED", storedStatus: "REVOKED" }));
+    expect(data(qc, "active")?.[0]?.certificates).toEqual([]);
+    expect(state(qc, "active")?.isInvalidated).toBe(true);
+    expect(state(qc, "all")?.isInvalidated).toBe(true);
+  });
 });

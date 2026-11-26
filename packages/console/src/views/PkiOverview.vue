@@ -23,6 +23,10 @@ const TABS: readonly { id: PkiTab; label: string }[] = [
   { id: "certificates", label: "Certificates" },
 ];
 const activeTab = ref<PkiTab>(props.tab ?? "cas");
+const rootsWanted = ref(activeTab.value !== "certificates");
+watch(activeTab, (tab) => {
+  rootsWanted.value ||= tab !== "certificates";
+});
 watch(
   () => props.tab,
   (tab) => {
@@ -49,7 +53,8 @@ const cas = useQuery({
 const externalCas = useQuery({
   queryKey: pkiKeys.externalCas(),
   // Only the CAs tab shows offline roots; do not audit-read them for the other.
-  enabled: computed(() => activeTab.value !== "certificates"),
+  // Latched: once the CAs tab has been shown, switching tabs must not re-read.
+  enabled: computed(() => rootsWanted.value),
   queryFn: () =>
     fetchAllPages<PkiExternalCaSummary>(async (cursor) => {
       const page = await store.requireApi().listExternalCas({ cursor });
@@ -144,7 +149,7 @@ const onUploaded = async (): Promise<void> => {
       <ErrorNotice v-if="cas.error.value" :error="cas.error.value" context="the CA list" />
 
       <template v-if="activeTab === 'certificates'">
-        <p v-if="!certificatesReady" class="card-body meta">Loading…</p>
+        <p v-if="!certificatesReady && !cas.error.value" class="card-body meta">Loading…</p>
         <PkiCertificatesTab v-else-if="cas.data.value" ref="certificatesTab" :env="env" :cas="cas.data.value" />
       </template>
 

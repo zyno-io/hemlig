@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/vue-query";
+import type { Query, QueryClient } from "@tanstack/vue-query";
 import type { PkiCertificateSummary } from "./pki-schemas";
 
 /**
@@ -90,14 +90,26 @@ export const applyCertificateRevoked = (
 ): void => {
   const sameCert = (c: PkiCertificateSummary): boolean =>
     c.caId === certificate.caId && c.serial === certificate.serial;
+  const isEnvList = (filters: readonly string[]) => (query: Query): boolean =>
+    filters.includes(String(envFilterOf(query.queryKey)));
+  // A write marks a query fresh, which would clear an earlier stale mark (a bulk
+  // revoke): remember what was stale and mark it again after patching.
+  const wasStale = new Set(
+    queryClient
+      .getQueryCache()
+      .findAll({ queryKey: ENV_CERTS })
+      .filter((query) => query.state.isInvalidated)
+      .map((query) => query.queryHash),
+  );
   const patch = (filters: readonly string[], drop: boolean): void => {
     queryClient.setQueriesData<readonly EnvCertificateSlice[]>(
-      {
-        queryKey: ENV_CERTS,
-        predicate: (query) => filters.includes(String(envFilterOf(query.queryKey))),
-      },
-      (old) =>
-        old?.map((slice) =>
+      { queryKey: ENV_CERTS, predicate: isEnvList(filters) },
+      (old) => {
+        // `undefined` skips the write: a list without the certificate is untouched.
+        if (!old?.some((slice) => slice.certificates.some(sameCert))) {
+          return undefined;
+        }
+        return old.map((slice) =>
           slice.caId !== certificate.caId || !slice.certificates.some(sameCert)
             ? slice
             : {
@@ -106,15 +118,17 @@ export const applyCertificateRevoked = (
                   !sameCert(c) ? [c] : drop ? [] : [certificate],
                 ),
               },
-        ),
+        );
+      },
     );
   };
   patch(["active", "expired"], certificate.status !== "ISSUED");
   patch(["all"], false);
-  // Patching marks a query fresh, so mark the Revoked list stale afterwards.
+  // The Revoked list cannot be patched (the row is not in it): mark it stale,
+  // along with anything that was already stale.
   void queryClient.invalidateQueries({
     queryKey: ENV_CERTS,
-    predicate: (query) => envFilterOf(query.queryKey) === "revoked",
+    predicate: (query) => envFilterOf(query.queryKey) === "revoked" || wasStale.has(query.queryHash),
     refetchType: "none",
   });
 };
