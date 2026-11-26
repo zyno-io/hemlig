@@ -250,7 +250,12 @@ describe("one-app OIDC defaults", () => {
 
   it("defaults the audience to the client ID", () => {
     const config = deploymentConfigFromContext(
-      context({ ...base, oidcIssuer: entra, oidcClientId: "app-id" }),
+      context({
+        ...base,
+        oidcIssuer: entra,
+        oidcClientId: "app-id",
+        oidcAdminScope: "hemlig.admin",
+      }),
     );
     expect(config.oidcAudience).toBe("app-id");
   });
@@ -267,6 +272,14 @@ describe("one-app OIDC defaults", () => {
     expect(config.oidcAudience).toBe("api-id");
   });
 
+  it("requires oidcAdminScope when the audience is derived from the client ID", () => {
+    expect(() =>
+      deploymentConfigFromContext(
+        context({ ...base, oidcIssuer: entra, oidcClientId: "app-id" }),
+      ),
+    ).toThrow("oidcAdminScope is required when oidcAudience is omitted");
+  });
+
   it("fails when neither client ID nor audience is set", () => {
     expect(() =>
       deploymentConfigFromContext(context({ ...base, oidcIssuer: entra })),
@@ -278,7 +291,12 @@ describe("one-app OIDC defaults", () => {
   it("still validates the resolved audience", () => {
     expect(() =>
       deploymentConfigFromContext(
-        context({ ...base, oidcIssuer: entra, oidcClientId: "x".repeat(513) }),
+        context({
+          ...base,
+          oidcIssuer: entra,
+          oidcClientId: "x".repeat(513),
+          oidcAdminScope: "hemlig.admin",
+        }),
       ),
     ).toThrow("oidcAudience must be at most 512 characters");
   });
@@ -349,7 +367,12 @@ describe("one-app OIDC defaults", () => {
     );
     expect(audienceOnly.oidcConsoleAccessScope).toBeUndefined();
     const noScope = deploymentConfigFromContext(
-      context({ ...base, oidcIssuer: entra, oidcClientId: "app-id" }),
+      context({
+        ...base,
+        oidcIssuer: entra,
+        oidcClientId: "app-id",
+        oidcAudience: "api-id",
+      }),
     );
     expect(noScope.oidcConsoleAccessScope).toBeUndefined();
   });

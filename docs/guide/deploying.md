@@ -110,13 +110,15 @@ Your app owns the account, region and pipeline. TypeScript needs `moduleResoluti
 
 ## 3. Fill in the OIDC values
 
-Three values connect the administrator API to your identity provider. With the console, one app registration serves as both the API and the console client, so you set the client ID once and leave `oidcAudience` out:
+Four values connect the administrator API to your identity provider. In the reference app (CDK context), one app registration can serve as both the API and the console client, so you set the client ID once and leave `oidcAudience` out. In your own CDK app, `DeploymentConfig` takes resolved values: set `oidcAudience` (and, with the console, `oidcConsoleAccessScope`) yourself.
+
+
 
 | Field | Value |
 | --- | --- |
 | `oidcIssuer` | HTTPS issuer URL, exactly as it appears in the token's `iss` claim |
-| `oidcClientId` | The one app registration's client ID. It is also the access-token `aud` (the bare client ID on Microsoft Entra v2, never the `api://` URI). Required with the console |
-| `oidcAudience` | Optional. Defaults to `oidcClientId`. Set it only for an API-only deployment without the console, or a split API and console app |
+| `oidcAudience` | Exact access-token `aud`. For Microsoft Entra v2 this is the API's bare client ID, never the `api://` URI. Required in `DeploymentConfig`. In context only it defaults to `oidcClientId`, which requires `oidcAdminScope`; set it explicitly for an API-only deployment without the console, or a split API and console app |
+| `oidcClientId` | Context path with the console: the one app registration's client ID, also used as the default audience |
 | `oidcSubjectClaim` | Immutable actor claim. The reference app defaults it to `sub` |
 
 [Connect your identity provider](identity-provider.md) shows where to find each one per provider. Console fields are covered in [Console](console.md).

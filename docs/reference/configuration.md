@@ -19,13 +19,13 @@ Imported from `hemlig/cdk`. The reference app (`cdk/app.ts`) reads the same name
 | `apiFqdn` | yes | none | Public mTLS delivery API host |
 | `zoneDomain` | yes | none | Route 53 zone name. Every FQDN must be the zone or inside it |
 | `oidcIssuer` | yes | none | HTTPS OIDC issuer URL; RSA-signed JWTs |
-| `oidcAudience` | no | `oidcClientId` | Exact access-token `aud`, at most 512 characters. Entra v2: the API's bare client ID. Set it only for a split-app (two-app) deployment or an API-only deployment with no console; with neither it and `oidcClientId`, synthesis fails |
+| `oidcAudience` | yes (no, in context) | `oidcClientId` (context only) | Exact access-token `aud`, at most 512 characters. Entra v2: the API's bare client ID. Set it only for a split-app (two-app) deployment or an API-only deployment with no console; with neither it and `oidcClientId`, synthesis fails. When omitted, `oidcAdminScope` is required, so the scope check rejects ID tokens issued to the same app |
 | `oidcSubjectClaim` | yes | `sub` (context only) | Immutable actor claim name, `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$` |
 | `existingHostedZoneId` | no | creates a zone | Use an existing Route 53 zone |
 | `existingApplicationKeyArn` | no | creates a key | Adopt an existing [application CMK](glossary.md#application-cmk). Must be a full KMS key ARN |
 | `consoleFqdn` | no | console off | Enables [console](../guide/console.md) hosting and admin-API CORS for the console origin |
 | `oidcAdminScope` | with `consoleFqdn` | none | One scope token enforced from the token's `scope` or `scp` |
-| `oidcConsoleAccessScope` | no | derived | Resource-qualified scope the browser requests. Default, from `oidcAdminScope` and `oidcClientId`: `api://<audience>/<oidcAdminScope>` when the issuer host is `login.microsoftonline.com`, `login.microsoftonline.us` or `login.chinacloudapi.cn`; otherwise `oidcAdminScope` as-is. An explicit value always wins (custom identifier URIs) |
+| `oidcConsoleAccessScope` | with `consoleFqdn` (no, in context) | derived (context only) | Resource-qualified scope the browser requests. Default, from `oidcAdminScope` and `oidcClientId`: `api://<audience>/<oidcAdminScope>` when the issuer host is `login.microsoftonline.com`, `login.microsoftonline.us` or `login.chinacloudapi.cn`; otherwise `oidcAdminScope` as-is. An explicit value always wins (custom identifier URIs) |
 | `oidcClientId` | with `consoleFqdn` | none | The console single-page app's OAuth client ID. In a one-app deployment it is also the audience |
 | `oidcAdminRole` | no | none | Role required from `roles` or `role` after JWT validation. One role token |
 | `oidcPkiCaAdminRole` | no | none | Role additionally required for PKI CA lifecycle and root CRL upload. One role token. Passed to the PKI admin Lambda as `ADMIN_PKI_CA_ROLE`. Checked, after the administrator JWT, on create, update, delete, activate, retire, destroy-key and root CRL upload. Unset means any administrator may. Reads need only the JWT |

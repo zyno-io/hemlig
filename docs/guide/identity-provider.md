@@ -14,7 +14,9 @@ Hemlig does not create users, app registrations or administrator groups. Your pr
 
 ## What the API checks
 
-Every administrator request is checked twice: by API Gateway, then again by the admin Lambda. A token must be an **access token**, not an ID token.
+Every administrator request is checked twice: by API Gateway, then again by the admin Lambda. A token must be an access token, not an ID token.
+
+With separate API and console apps the audience check rejects an ID token. In a one-app setup an Entra ID token has `aud` equal to the client ID, so the audience check passes; the `oidcAdminScope` (`scp`) check is what rejects it, because ID tokens carry no `scp`. For that reason `oidcAdminScope` is required whenever `oidcAudience` is omitted.
 
 | Requirement | Config field | Checked by | Token claim |
 | --- | --- | --- | --- |
@@ -81,7 +83,8 @@ Points that commonly go wrong:
 
 Use one app registration as both the API and the console client, so the client ID appears once.
 
-1. In the API app registration, expose the `hemlig.admin` scope and set `accessTokenAcceptedVersion` to `2` in the manifest.
+1. In the app registration, expose the `hemlig.admin` scope and keep the default Application ID URI `api://<client ID>`; the derived console scope depends on it. Set the access token version to 2 in the manifest: `api.requestedAccessTokenVersion: 2` in the Microsoft Graph manifest, or `accessTokenAcceptedVersion: 2` in the legacy AAD Graph manifest.
+   Then grant consent: API permissions, Add a permission, My APIs, this app, `hemlig.admin`, then **Grant admin consent** (include `openid` and `profile`). Without it the first sign-in can fail with AADSTS65001.
 2. On the same registration, add the **Single-page application** platform and the console redirect URIs listed under [Console client registration](#console-client-registration).
 3. On the matching enterprise application (Enterprise applications, Properties), set **Assignment required** to Yes and assign only the administrators and groups that should reach Hemlig. Without it, any user in the tenant can obtain a token for the app.
 4. Deploy with the client ID once, as in the block below.

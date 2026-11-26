@@ -25,7 +25,7 @@ They must be set together.
 | `consoleFqdn` | yes | Console host, for example `console.example.com`. May be the zone apex |
 | `oidcAdminScope` | yes | Short scope carried in the access token, for example `hemlig.admin` |
 | `oidcClientId` | yes | The single-page app's OAuth client ID. With one app registration it is also the audience |
-| `oidcConsoleAccessScope` | no | Resource-qualified scope the browser requests. Derived from `oidcAdminScope`: `api://<client ID>/<scope>` on Microsoft Entra issuers, the bare scope elsewhere. Set it to override |
+| `oidcConsoleAccessScope` | no | Resource-qualified scope the browser requests. Derived from `oidcAdminScope`: `api://<audience>/<scope>` on Microsoft Entra issuers (the audience defaults to the client ID), the bare scope elsewhere. Set it to override |
 | `consoleCertificateArn` | no | ACM certificate in `us-east-1`. The simplest path |
 | `oidcAdminRole` | no | Role the Lambda requires after the gateway validates the token |
 

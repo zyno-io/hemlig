@@ -9,7 +9,10 @@ export interface DeploymentConfig {
   readonly consoleCertificateArn?: string;
   readonly zoneDomain: string;
   readonly oidcIssuer: string;
-  /** Exact access-token `aud`. Defaults to oidcClientId (one app registration). */
+  /**
+   * Exact access-token `aud`. Required here: only deploymentConfigFromContext
+   * (the CDK context path) defaults it to oidcClientId.
+   */
   readonly oidcAudience: string;
   readonly oidcSubjectClaim: string;
   /** Required administrator OAuth scope when the console origin is enabled. */
@@ -18,9 +21,11 @@ export interface DeploymentConfig {
    * Resource-qualified OAuth scope requested by the console SPA, for example
    * `api://<application-id>/hemlig.admin` on Microsoft Entra. This differs
    * from oidcAdminScope, the short value enforced from the access token's
-   * `scp` claim by API Gateway. Defaults, when oidcAdminScope and
-   * oidcClientId are set, to `api://<audience>/<oidcAdminScope>` on Microsoft
-   * Entra issuers and to oidcAdminScope as-is on any other issuer.
+   * `scp` claim by API Gateway. HemligStack requires it when consoleFqdn is
+   * set. deploymentConfigFromContext (context only) defaults it, when
+   * oidcAdminScope and oidcClientId are set, to
+   * `api://<audience>/<oidcAdminScope>` on Microsoft Entra issuers and to
+   * oidcAdminScope as-is on any other issuer.
    */
   readonly oidcConsoleAccessScope?: string;
   /** Optional external IdP role required by the Lambda after JWT validation. */
@@ -121,7 +126,8 @@ export const deploymentConfigFromContext = (context: {
     "pkiIssuanceBurstLimit",
   );
   const oidcClientId = optionalContext(context, "oidcClientId");
-  const oidcAudience = optionalContext(context, "oidcAudience") ?? oidcClientId;
+  const explicitAudience = optionalContext(context, "oidcAudience");
+  const oidcAudience = explicitAudience ?? oidcClientId;
   if (oidcAudience === undefined) {
     throw new Error(
       "set oidcClientId (or oidcAudience for an API-only deployment without the console)",
@@ -191,6 +197,13 @@ export const deploymentConfigFromContext = (context: {
   }
   if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/.test(oidcSubjectClaim)) {
     throw new Error("context oidcSubjectClaim is not a valid JWT claim name.");
+  }
+  // With one app, an Entra ID token has aud == client ID. The scp check is what
+  // rejects it, so a derived audience must come with an enforced admin scope.
+  if (explicitAudience === undefined && oidcAdminScope === undefined) {
+    throw new Error(
+      "context oidcAdminScope is required when oidcAudience is omitted (it defaults to oidcClientId, and the scope check is what rejects ID tokens issued to the same app).",
+    );
   }
   if (consoleFqdn !== undefined && oidcAdminScope === undefined) {
     throw new Error(
