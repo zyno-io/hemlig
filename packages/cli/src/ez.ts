@@ -474,7 +474,7 @@ const unlockYubiKey = async (ctx: Ctx, store: EzStore): Promise<YubiKeySigner> =
   if (str(ctx.values, "key") !== undefined) usage("--key applies only to a software key; this root's key is on a YubiKey.");
   const io = ykIo(ctx);
   const flagged = str(ctx.values, "yubikey-serial");
-  const serial = await chooseRecordedDevice(io.client, record.devices.map((d) => d.serial), flagged === undefined ? undefined : parseSerial(flagged));
+  const serial = await chooseRecordedDevice(io.client, record.devices.map((d) => d.serial), flagged === undefined ? undefined : parseSerial(flagged), store.state.key.file !== null);
   const device = await DeviceHandle.open(io, { serial, slot: record.slot, write: false, overwrite: false, allowLastPinAttempt: io.allowLastPinAttempt });
   if (device.target.info.key === null) {
     throw new EzError(5, "slot_empty", `Slot ${record.slot} of YubiKey ${serial} holds no key.`);
@@ -1046,7 +1046,7 @@ const importKey = async (ctx: Ctx): Promise<Receipt> => {
         generatedOnDevice: false,
         pinPolicy: "always",
         touchPolicy,
-        device: { serial: handle.serial, firmware: handle.target.info.device.firmware, fips: handle.target.info.device.fips },
+        device: { serial: handle.serial, firmware: handle.target.info.device.firmware, fips: handle.target.info.device.fips, pinPolicy: "always", touchPolicy },
       });
       ctx.progress.completed.push("state-updated");
       const warnings: string[] = [];
@@ -1116,6 +1116,8 @@ const addYubiKey = async (ctx: Ctx): Promise<Receipt> => {
     }
     const warnings: string[] = [];
     const slotCertificate = handle.target.info.certificateDer;
+    const policyDiffers = key.pinPolicy !== record.pinPolicy || key.touchPolicy !== record.touchPolicy;
+    if (policyDiffers) warnings.push("yubikey_policy_differs");
     if (slotCertificate === null) warnings.push("slot_certificate_missing");
     else if (!slotCertificate.equals(root.der)) warnings.push("slot_certificate_not_root");
     await ctx.prompter.requireConfirmTerminal("record");
@@ -1127,6 +1129,7 @@ const addYubiKey = async (ctx: Ctx): Promise<Receipt> => {
         keyType: key.keyType,
         pinPolicy: key.pinPolicy,
         touchPolicy: key.touchPolicy,
+        recordedPolicy: { pinPolicy: record.pinPolicy, touchPolicy: record.touchPolicy },
         recorded,
         warnings: warnings.map((w) => warningText(w)),
       }),
@@ -1150,7 +1153,8 @@ const addYubiKey = async (ctx: Ctx): Promise<Receipt> => {
       generatedOnDevice: record.generatedOnDevice,
       pinPolicy: record.pinPolicy,
       touchPolicy: record.touchPolicy,
-      device: { serial, firmware: handle.target.info.device.firmware, fips: handle.target.info.device.fips },
+      // The device keeps its own PIN and touch policy (it may differ from the root's recorded one).
+      device: { serial, firmware: handle.target.info.device.firmware, fips: handle.target.info.device.fips, pinPolicy: key.pinPolicy, touchPolicy: key.touchPolicy },
     });
     return {
       data: {
@@ -1896,7 +1900,8 @@ const status = async (ctx: Ctx): Promise<Receipt> => {
     pending: state.pending,
     lastSignedAt: state.lastSignedAt,
   };
-  if (flag(ctx.values, "offline")) return { data: { ...data, server: { checked: false } } };
+  const extra = { devices: (state.key.yubikey?.devices ?? []).map((d) => ({ serial: d.serial, pinPolicy: d.pinPolicy ?? state.key.yubikey?.pinPolicy, touchPolicy: d.touchPolicy ?? state.key.yubikey?.touchPolicy })), slot: state.key.yubikey?.slot };
+  if (flag(ctx.values, "offline")) return { extra, data: { ...data, server: { checked: false } } };
   try {
     const session = await sessionOf(ctx);
     const ext = await findExternalRoot(session, state.root);
@@ -1908,11 +1913,11 @@ const status = async (ctx: Ctx): Promise<Receipt> => {
       if (!(error instanceof EzError)) throw error;
       relation = error.code;
     }
-    return { data: { ...data, server: { checked: true, origin: session.origin.origin, extId: ext?.extId, crlNumberHex: ext?.crl?.numberHex, relation } } };
+    return { extra, data: { ...data, server: { checked: true, origin: session.origin.origin, extId: ext?.extId, crlNumberHex: ext?.crl?.numberHex, relation } } };
   } catch (error) {
     // `status` reports instead of failing when the server cannot be reached or no login is cached.
     const code = error instanceof EzError || error instanceof CliError ? error.code : "server_unreachable";
-    return { data: { ...data, server: { checked: false, reason: code } } };
+    return { extra, data: { ...data, server: { checked: false, reason: code } } };
   }
 };
 
@@ -2531,15 +2536,20 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
   }
 }
 
-/** The output flag (`--out`, `--crl-out`, ...) whose value names `file`, for the already_exists hint. */
+/** The output flag (`--out`, `--crl-out`, ...) whose parsed value names `file`, for the already_exists hint (`--flag=value` too). */
 const outputFlagFor = (args: readonly string[]): ((file: string) => string | undefined) => {
-  const at = args.indexOf("--dir");
-  const dir = resolve(at >= 0 && args[at + 1] !== undefined ? (args[at + 1] as string) : process.cwd());
+  let values: Values = {};
+  try {
+    const parsed = parseEzArgs(args);
+    if (parsed !== "help") values = parsed.values;
+  } catch {
+    return () => undefined;
+  }
+  const dir = resolve(str(values, "dir") ?? process.cwd());
   return (file) => {
-    for (const flagName of ["--out", "--chain-out", "--crl-out", "--key-file", "--cert-file", "--crl-file"]) {
-      const index = args.indexOf(flagName);
-      const value = index >= 0 ? args[index + 1] : undefined;
-      if (value !== undefined && withinDir(dir, value) === file) return flagName;
+    for (const name of ["out", "chain-out", "crl-out", "key-file", "cert-file", "crl-file"]) {
+      const value = str(values, name);
+      if (value !== undefined && withinDir(dir, value) === file) return `--${name}`;
     }
     return undefined;
   };

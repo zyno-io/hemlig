@@ -428,6 +428,10 @@ test("a terminal error carries the details a person needs: details, API fields, 
     assert.equal(exists.exitCode, 5);
     assert.match(exists.stderr, /Choose another name for --out \(.*taken\.pem\)/);
     assert.doesNotMatch(exists.stderr, /Choose another --dir/);
+    // the same with --flag=value
+    const equals = await run(["sign-cert", ca.record.caId, `--dir=${out}`, "--offline", `--csr=${csr}`, `--out=${join(dir, "taken.pem")}`, "--yes"], { ...tty(), stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(equals.exitCode, 5);
+    assert.match(equals.stderr, /Choose another name for --out \(.*taken\.pem\)/);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -444,7 +448,10 @@ test("status with a recorded but unlisted revocation points to revoke-cert, not 
     const status = await run(["status", "--dir", out, "--offline"], tty());
     assert.equal(status.exitCode, 0, status.stderr);
     assert.match(status.stdout, /\n! 1 revocation recorded but not yet in a signed CRL \(serial 0a0b\)/);
-    assert.match(status.stdout, /hemlig pki ez revoke-cert --serial 0a0b --reason keyCompromise --dir /);
+    assert.match(status.stdout, /hemlig pki ez revoke-cert --serial 0a0b --reason keyCompromise --offline --crl-out root\.crl\.pem --dir /, "no server was checked: the offline form");
+    const online = await run(["status", "--dir", out], { ...tty(), server: server() });
+    assert.match(online.stdout, /revoke-cert --serial 0a0b --reason keyCompromise --dir [^\n]*\n/);
+    assert.doesNotMatch(online.stdout, /revoke-cert [^\n]*--offline/);
     assert.doesNotMatch(status.stdout, /Renew the root CRL/);
     state.revoked.pop();
     await fs.writeFile(statePath, JSON.stringify(state));

@@ -171,6 +171,7 @@ const WARNING_TEXT: Record<string, string> = {
   csr_unbound: "The CSR was not pinned to the CA's key (no --expect-spki-sha256).",
   csr_unconstrained: "The CA has no name constraints: it may issue for any name.",
   root_not_registered: "The server you are logged in to does not know this root yet (it is registered when the first CA under it is activated).",
+  yubikey_policy_differs: "This YubiKey's PIN or touch policy differs from the one recorded for the root. Each device keeps its own policy, so prompts (a touch, for example) will differ between the devices.",
   slot_certificate_missing: "The slot holds no certificate. That does not affect signing; the root certificate is in the directory.",
   slot_certificate_not_root: "The certificate in the slot is not this root's certificate. That does not affect signing.",
   no_root_crl: "No root CRL was supplied or registered.",
@@ -393,13 +394,13 @@ export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: 
       };
     }
     case "status":
-      return statusResult(data, ctx);
+      return statusResult(data, ctx, extra);
     default:
       return { headline: String(data.command ?? ctx.command), warnings };
   }
 };
 
-const statusResult = (data: Data, ctx: HumanContext): HumanResult => {
+const statusResult = (data: Data, ctx: HumanContext, extra: Data): HumanResult => {
   const root = data.root as Data;
   const crl = data.crl as Data | null;
   const issued = (data.issued as Data[]) ?? [];
@@ -431,7 +432,7 @@ const statusResult = (data: Data, ctx: HumanContext): HumanResult => {
     facts: [
       ["Origin", `${displaySafe(String(root.origin))}, ${displaySafe(String(root.keyAlgorithm))}, valid until ${day(root.notAfter)}`],
       ["Fingerprint", `${String(root.fingerprint)} (SHA-256)`],
-      ["Key", (data.key as Data).storage === "yubikey" ? "YubiKey" : `software key file ${relativeTo(ctx.dir, (data.key as Data).file)}`],
+      ["Key", (data.key as Data).storage === "yubikey" ? `YubiKey slot ${displaySafe(String(extra.slot ?? ""))}: ${((extra.devices as Data[] | undefined) ?? []).map((d) => `${Number(d.serial)} (PIN ${displaySafe(String(d.pinPolicy))}, touch ${displaySafe(String(d.touchPolicy))})`).join("; ")}` : `software key file ${relativeTo(ctx.dir, (data.key as Data).file)}`],
       ["CRL", crl === null ? "none" : `${crlFact(crl, ctx.now)}${crl.due === true ? " — renewal due" : ""}`],
       ["Issued", `${plural(issued.length, "certificate")}${issued.length === 0 ? "" : `, ${active} active`}`],
       ["Revoked", String(revoked.length)],
@@ -441,7 +442,7 @@ const statusResult = (data: Data, ctx: HumanContext): HumanResult => {
     warnings,
     next:
       pending.length > 0
-        ? [`Finish the pending revocation${pending.length === 1 ? "" : "s"} (renew-crl refuses until then); each shows its review and asks you to type confirm:\n${pending.slice(0, 5).map((r) => cmd(ctx, "revoke-cert", `--serial ${shellQuote(String(r.serial))} --reason ${shellQuote(String(r.reason))}`)).join("\n")}`]
+        ? [`Finish the pending revocation${pending.length === 1 ? "" : "s"} (renew-crl refuses until then); each shows its review and asks you to type confirm:\n${pending.slice(0, 5).map((r) => cmd(ctx, "revoke-cert", `--serial ${shellQuote(String(r.serial))} --reason ${shellQuote(String(r.reason))}${server?.checked === true ? "" : " --offline --crl-out root.crl.pem"}`)).join("\n")}`]
         : crl?.due === true || crl === null
           ? [`Renew the root CRL:\n${cmd(ctx, "renew-crl")}`]
           : undefined,

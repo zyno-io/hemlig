@@ -191,6 +191,8 @@ export interface AddYubiKeyReview {
   readonly keyType: string;
   readonly pinPolicy: string;
   readonly touchPolicy: string;
+  /** The policy the root's record holds (from the first device). */
+  readonly recordedPolicy: { readonly pinPolicy: string; readonly touchPolicy: string };
   readonly recorded: readonly number[];
   readonly warnings: readonly string[];
 }
@@ -203,6 +205,7 @@ export const renderAddYubiKeyReview = (review: AddYubiKeyReview): string =>
     row("Root", `${displaySafe(review.root.subjectDn)} (SHA-256 ${review.root.fingerprint})`),
     row("New YubiKey", `serial ${review.device.serial}, firmware ${displaySafe(review.device.firmware)}${review.device.fips ? " (FIPS)" : ""}`),
     row("Slot", `${displaySafe(review.slot)}: ${displaySafe(review.keyType)}, PIN ${displaySafe(review.pinPolicy)}, touch ${displaySafe(review.touchPolicy)}`),
+    row("Recorded policy", `PIN ${displaySafe(review.recordedPolicy.pinPolicy)}, touch ${displaySafe(review.recordedPolicy.touchPolicy)}${review.pinPolicy === review.recordedPolicy.pinPolicy && review.touchPolicy === review.recordedPolicy.touchPolicy ? "" : "  <- DIFFERS from this device"}`),
     row("Already recorded", review.recorded.join(", ")),
     row("Signs", "a 32-byte random test challenge with the new YubiKey (nothing is issued)"),
     row("Device writes", "none"),

@@ -437,10 +437,10 @@ export class YubiKeySigner implements RootSigner {
 export const touchNotice = (serial: number, item: SignItem): string => `Touch the YubiKey (serial ${serial}) now to sign: ${item.description}\n`;
 
 /** Which recorded device to use: the one flagged, else the only connected recorded one. */
-export const chooseRecordedDevice = async (client: YkmanClient, recorded: readonly number[], flagged: number | undefined): Promise<number> => {
+export const chooseRecordedDevice = async (client: YkmanClient, recorded: readonly number[], flagged: number | undefined, hasKeyFile = true): Promise<number> => {
   if (flagged !== undefined) {
     if (!recorded.includes(flagged)) {
-      throw new EzError(5, "yubikey_not_recorded", `YubiKey ${flagged} is not one of this root's recorded devices (${recorded.join(", ")}); use import-key to add it.`);
+      throw new EzError(5, "yubikey_not_recorded", `YubiKey ${flagged} is not one of this root's recorded devices (${recorded.join(", ")}); ${hasKeyFile ? "use import-key to add it from the backup key file, or add-yubikey if the key is already on it" : "use add-yubikey to record it (this root has no backup key file for import-key)"}.`);
     }
     return flagged;
   }

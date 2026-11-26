@@ -552,6 +552,7 @@ test("a second YubiKey in the same run is confirmed by serial and holds the same
     assert.equal(picked.exitCode, 0, picked.stderr);
     const notRecorded = await run(env.ykman, ["renew-crl", "--dir", env.dir, "--offline", "--crl-out", join(env.dir, "y.pem"), "--yubikey-serial", "33333333"], { stdin: new FakeTerminal(`${PIN}\r`) });
     assert.equal(notRecorded.error.code, "yubikey_not_recorded");
+    assert.match(notRecorded.error.message, /import-key to add it from the backup key file, or add-yubikey if the key is already on it/);
   } finally {
     await env.done();
   }
@@ -1134,6 +1135,58 @@ test("add-yubikey warns, without failing, when the slot has no certificate or an
     } finally {
       await env2.done();
     }
+  } finally {
+    await env.done();
+  }
+});
+
+test("add-yubikey shows and records the new device's own PIN and touch policy; older state files without per-device policies still load", async () => {
+  const a = adoptable({ cert: "full", touchPolicy: "never" });
+  const env = await adoptedYubi(a);
+  try {
+    const first = (await env.ykman.state()).devices[0] as FakeDevice;
+    const b = secondDevice(a);
+    (b.slots["9c"] as { touchPolicy: string }).touchPolicy = "always";
+    await connect(env, first, b);
+    // the state written by adoption has no per-device policy fields, and loads
+    const adoptedState = await readState(env.dir);
+    assert.equal(adoptedState.key.yubikey?.devices[0]?.touchPolicy, undefined);
+    assert.equal(adoptedState.key.yubikey?.touchPolicy, "never");
+    const added = await addYubi(env, ["--yubikey-serial", String(SECOND)], ["confirm\r", `${PIN}\r`]);
+    assert.equal(added.exitCode, 0, added.stderr);
+    assert.match(added.stderr, /Recorded policy: +PIN always, touch never  <- DIFFERS from this device/);
+    assert.match(added.stderr, /Slot: +9c: ECCP256, PIN always, touch always/);
+    assert.deepEqual(added.json.data.warnings, ["yubikey_policy_differs"]);
+    const state = await readState(env.dir);
+    assert.equal(state.key.yubikey?.touchPolicy, "never", "the root's record keeps the first device's policy");
+    assert.deepEqual(state.key.yubikey?.devices.map((d) => [d.serial, d.touchPolicy]), [[SERIAL, undefined], [SECOND, "always"]]);
+    // the terminal status shows each device's own policy (the first falls back to the record's)
+    const status = await run(env.ykman, ["status", "--dir", env.dir, "--offline"], { tty: true });
+    assert.match(status.stdout, /\n {2}Key {2,}YubiKey slot 9c: 11111111 \(PIN always, touch never\); 22222222 \(PIN always, touch always\)\n/);
+    // an identical policy produces no warning
+    const same = adoptable({ cert: "full", touchPolicy: "never" });
+    const env2 = await adoptedYubi(same);
+    try {
+      await connect(env2, (await env2.ykman.state()).devices[0] as FakeDevice, secondDevice(same));
+      const quiet = await addYubi(env2, ["--yubikey-serial", String(SECOND)], ["confirm\r", `${PIN}\r`]);
+      assert.deepEqual(quiet.json.data.warnings, []);
+      assert.doesNotMatch(quiet.stderr, /DIFFERS/);
+    } finally {
+      await env2.done();
+    }
+  } finally {
+    await env.done();
+  }
+});
+
+test("a root with no backup key file points to add-yubikey for an unrecorded device", async () => {
+  const a = adoptable({ cert: "full" });
+  const env = await adoptedYubi(a);
+  try {
+    const result = await run(env.ykman, ["renew-crl", "--dir", env.dir, "--offline", "--crl-out", join(env.dir, "x.pem"), "--yubikey-serial", "33333333"], { stdin: new FakeTerminal(`${PIN}\r`) });
+    assert.equal(result.error.code, "yubikey_not_recorded");
+    assert.match(result.error.message, /use add-yubikey to record it \(this root has no backup key file for import-key\)/);
+    assert.doesNotMatch(result.error.message, /use import-key/);
   } finally {
     await env.done();
   }

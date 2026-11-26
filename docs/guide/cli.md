@@ -328,7 +328,9 @@ A software root is refused (`key_storage_unsupported`): use `import-key` for tha
 
 A slot certificate that is missing or is not `root.pem` is a warning only.
 
-It then shows a review, asks you to type `confirm`, asks for the PIN, signs one random 32-byte test challenge and verifies it under the root's key. Only after that does it record the device, atomically. Nothing is ever written to either device. Afterwards either YubiKey can sign; connect one at a time, or pass `--yubikey-serial N`.
+It then shows a review, asks you to type `confirm`, asks for the PIN, signs one random 32-byte test challenge and verifies it under the root's key. Only after that does it record the device, atomically. Nothing is ever written to either device.
+
+The review shows the new device's PIN and touch policy next to the recorded one and warns when they differ; each device's own policy is stored in the state (older state files without it still load) and shown by `status`. Afterwards either YubiKey can sign; connect one at a time, or pass `--yubikey-serial N`.
 
 YubiKey options for `generate-ca` and `import-key`:
 
