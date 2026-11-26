@@ -4,7 +4,7 @@ import { computed, ref } from "vue";
 import ErrorNotice from "../components/ErrorNotice.vue";
 import RootCrlUploadDialog from "../components/RootCrlUploadDialog.vue";
 import StateBadge from "../components/StateBadge.vue";
-import { daysUntil } from "../api/pki-format";
+import { CA_KIND_SHORT_LABEL, daysUntil, isoDate, keyAlgorithmLabel } from "../api/pki-format";
 import { fetchAllPages, PKI_QUERY_OPTIONS, pkiKeys } from "../api/pki-query";
 import type { PkiCaSummary, PkiExternalCaSummary } from "../api/pki-schemas";
 import { useAppStore } from "../stores/app";
@@ -115,39 +115,44 @@ const onUploaded = async (): Promise<void> => {
             </thead>
             <tbody>
               <tr v-for="ca in rows" :key="ca.caId">
-                <td>
+                <td class="align-middle">
                   <RouterLink
-                    class="link mono"
+                    class="link font-medium"
                     :to="{ name: 'pki-ca', params: { env, caId: ca.caId } }"
                   >{{ ca.displayName ?? ca.name }}</RouterLink>
                   <p v-if="ca.displayName" class="meta mono">{{ ca.name }}</p>
                 </td>
-                <td class="mono text-xs">{{ ca.kind }}</td>
-                <td><StateBadge :state="ca.status" /></td>
-                <td class="text-xs">
-                  <span class="mono">{{ ca.keyAlgorithm }}</span>
-                  <StateBadge class="ml-1" :state="ca.keyState" />
+                <td class="align-middle text-[13px] whitespace-nowrap">
+                  {{ CA_KIND_SHORT_LABEL[ca.kind] ?? ca.kind }}
                 </td>
-                <td class="text-xs">
+                <td class="align-middle"><StateBadge :state="ca.status" /></td>
+                <td class="align-middle text-[13px] whitespace-nowrap">
+                  {{ keyAlgorithmLabel(ca.keyAlgorithm) }}
+                  <!-- The key's own state only matters when it differs from a working key. -->
+                  <StateBadge v-if="ca.keyState !== 'ACTIVE'" class="ml-1" :state="ca.keyState" />
+                </td>
+                <td class="align-middle text-[13px] whitespace-nowrap">
                   <template v-if="ca.notAfter">
-                    {{ ca.notAfter }}
+                    <span :title="ca.notAfter">{{ isoDate(ca.notAfter) }}</span>
                     <span v-if="expiresSoon(ca)" class="tag tag-warning ml-1">&lt;30 days</span>
                   </template>
                   <span v-else class="meta">not issued</span>
                 </td>
-                <td class="text-xs">
+                <td class="align-middle text-[13px] whitespace-nowrap">
                   <template v-if="ca.kind === 'EXTERNAL_INTERMEDIATE'">
                     <template v-if="rootFor(ca)">
                       <StateBadge :state="rootFor(ca)!.crlState" />
-                      <span v-if="rootFor(ca)!.crl?.nextUpdate" class="meta ml-1">
-                        next {{ rootFor(ca)!.crl?.nextUpdate }}
-                      </span>
+                      <span
+                        v-if="rootFor(ca)!.crl?.nextUpdate"
+                        class="meta ml-2"
+                        :title="rootFor(ca)!.crl?.nextUpdate"
+                      >next {{ isoDate(rootFor(ca)!.crl?.nextUpdate ?? "") }}</span>
                     </template>
                     <span v-else class="meta">none yet</span>
                   </template>
                   <span v-else class="meta">generated, see detail</span>
                 </td>
-                <td class="text-right">
+                <td class="align-middle text-right">
                   <RouterLink
                     class="btn btn-sm"
                     :to="{
@@ -190,11 +195,16 @@ const onUploaded = async (): Promise<void> => {
             </thead>
             <tbody>
               <tr v-for="ext in roots" :key="ext.extId">
-                <td class="mono text-xs break-all">{{ ext.subjectDn }}</td>
-                <td><StateBadge :state="ext.crlState" /></td>
-                <td class="text-xs">{{ ext.crl?.nextUpdate ?? "-" }}</td>
-                <td>{{ ext.dependents.length }}</td>
-                <td class="text-right">
+                <td class="align-middle text-[13px] break-all">{{ ext.subjectDn }}</td>
+                <td class="align-middle"><StateBadge :state="ext.crlState" /></td>
+                <td class="align-middle text-[13px] whitespace-nowrap">
+                  <span v-if="ext.crl?.nextUpdate" :title="ext.crl.nextUpdate">{{
+                    isoDate(ext.crl.nextUpdate)
+                  }}</span>
+                  <span v-else class="meta">-</span>
+                </td>
+                <td class="align-middle text-[13px]">{{ ext.dependents.length }}</td>
+                <td class="align-middle text-right">
                   <button
                     class="btn btn-sm"
                     :data-testid="`upload-crl-${ext.extId}`"

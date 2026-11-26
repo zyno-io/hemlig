@@ -93,6 +93,24 @@ export const isoToLocalInput = (iso: string | undefined): string => {
 export const daysUntil = (iso: string, now: Date = new Date()): number =>
   Math.floor((new Date(iso).getTime() - now.getTime()) / 86_400_000);
 
+/** The UTC calendar date of an ISO timestamp, `2031-11-25T08:42:52.000Z` → `2031-11-25`. */
+export const isoDate = (iso: string): string => iso.slice(0, 10);
+
+// --------------------------------------------------------------- Labels
+
+/** Short CA kind names for tables, by who signs the CA. */
+export const CA_KIND_SHORT_LABEL: Record<PkiCaKind, string> = {
+  EXTERNAL_INTERMEDIATE: "Intermediate (offline root)",
+  INTERMEDIATE: "Intermediate (Hemlig root)",
+  ROOT: "Hemlig root",
+};
+
+/** `ECDSA_P384` → `ECDSA P-384`, `RSA_3072` → `RSA 3072`, `ED25519` → `Ed25519`. */
+export const keyAlgorithmLabel = (algorithm: string): string =>
+  algorithm === "ED25519"
+    ? "Ed25519"
+    : algorithm.replace(/^ECDSA_P/, "ECDSA P-").replace(/_/g, " ");
+
 // --------------------------------------------------------------- PEM
 
 export type PemKind = "certificate" | "chain" | "csr" | "crl";
