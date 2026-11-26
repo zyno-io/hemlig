@@ -51,7 +51,7 @@ import {
 } from "./ez-online";
 import { assertCrlValidityDays, EZ_DEFAULTS, parseDuration } from "./ez-profile";
 import { consumeConfirmation, Prompter, type Confirmation } from "./ez-prompt";
-import { renderAdoptReview, renderCrlReview, renderRevokeReview, renderSignReview, rootLabel } from "./ez-review";
+import { renderAddYubiKeyReview, renderAdoptReview, renderCrlReview, renderRevokeReview, renderSignReview, rootLabel } from "./ez-review";
 import { generateSoftwareKey, SoftwareSigner, signBatch, type RootSigner, type SignItem } from "./ez-signer";
 import {
   assertKeyTypeSupported,
@@ -108,16 +108,18 @@ import {
   type ValidatedCsr,
 } from "./ez-x509";
 import { resolveCa, isCaId } from "./pki";
-import { humanFromReceipt, makeStyle, renderHuman, renderHumanError, type ErrorInfo } from "./ez-output";
+import { humanFromReceipt, warningText, makeStyle, renderHuman, renderHumanError, type ErrorInfo } from "./ez-output";
 import type { TerminalInput } from "./tty";
 
 export const ezHelp = {
-  usage: "hemlig pki ez <generate-ca|adopt-ca|import-key|sign-cert|activate|revoke-cert|renew-crl|upload-crl|status> [options]",
+  usage: "hemlig pki ez <generate-ca|adopt-ca|import-key|add-yubikey|sign-cert|activate|revoke-cert|renew-crl|upload-crl|status> [options]",
   commands: {
     "generate-ca":
       "[--subject 'CN=..,O=..'] [--key-algorithm ECDSA_P384|ECDSA_P256|RSA_3072|RSA_4096] [--validity 20y] [--intermediate-validity 730d] [--crl-validity 180d] [--path-len N] [--key-file F] [--cert-file F] [--crl-file F] [--passphrase-stdin] [--yes]; creates a root, CRL #1 and the state file. Opens a settings form on a terminal. YubiKey: --yubikey [--yubikey-serial N] [--second-yubikey-serial N] [--slot 9c] [--touch-policy always|cached|never] [--overwrite-slot 9c] [--no-slot-certificate] [--protect-management-key] [--pin-stdin] [--allow-last-pin-attempt] imports a software-generated key (encrypted backup file kept) into the YubiKey; add --on-device --accept-no-backup to generate on the YubiKey with no backup and no recovery.",
     "adopt-ca":
       "(--openssl-dir DIR | --cert F --key F | --yubikey [--cert F]) [--crl F] [--openssl-index F] [--openssl-crlnumber F] [--crl-number N] [--no-prior-revocations] [--reissue-root-certificate [--validity D]] [--offline] [--crl-validity D] [--intermediate-validity D] [--key-file F] [--cert-file F] [--crl-file F] [--passphrase-stdin]; brings an existing offline root into Hemlig. Needs a revocation source (--crl, an index.txt, or the server's root CRL) or --no-prior-revocations, and a CRL number source (or --crl-number N, at least the last CRL number the root ever issued). Software roots: the key is re-encrypted into --dir under a new passphrase (with --passphrase-stdin: the source key's passphrase first, if it is encrypted, then the new one) and the source files are never changed. --openssl-dir reads root.pem, private/root.key, index.txt, crlnumber and root.crl.pem. YubiKey: --yubikey [--yubikey-serial N] [--slot 9c] [--pin-stdin] [--allow-last-pin-attempt] reads the slot read-only and signs with it; nothing is written to the device unless --store-certificate-in-slot. Input files are relative to the current directory. Shows a review and asks you to type confirm. Online by default (reads the server's root CRL); --offline skips the server.",
+    "add-yubikey":
+      "[--yubikey-serial N] [--pin-stdin] [--allow-last-pin-attempt] [--json]; records another YubiKey that already holds this root's key (a YubiKey root only; for a software root use import-key). Read-only on the device: it checks the recorded slot holds the root's key, shows a review, asks you to type confirm and signs one test challenge. Nothing is written to either device.",
     "import-key":
       "[--yubikey-serial N] [--slot 9c] [--touch-policy always|cached|never] [--overwrite-slot 9c] [--no-slot-certificate] [--protect-management-key] [--passphrase-stdin] [--pin-stdin] [--allow-last-pin-attempt]; decrypts the root's backup key file and imports it into a (another) YubiKey, then records the device.",
     "sign-cert <ca>":
@@ -227,6 +229,7 @@ const COMMANDS: Record<string, CommandSpec> = {
       "no-prior-revocations", "reissue-root-certificate", "validity", "crl-validity", "intermediate-validity", "key-file", "cert-file", "crl-file",
     ],
   },
+  "add-yubikey": { operands: [0, 0], flags: [...STATE, ...YUBIKEY_USE] },
   "import-key": { operands: [0, 0], flags: [...STATE, ...SECRET, ...YUBIKEY_WRITE] },
   "sign-cert": {
     operands: [1, 1],
@@ -1066,6 +1069,93 @@ const importKey = async (ctx: Ctx): Promise<Receipt> => {
     }
   } finally {
     for (const handle of handles) handle.close();
+    await store.close();
+  }
+};
+
+/**
+ * `add-yubikey`: records another YubiKey that already holds this root's key (imported there outside Hemlig). Read-only on
+ * the device (`info`, then one test signature); the state gains the device only after the typed confirm and a verified signature.
+ */
+const addYubiKey = async (ctx: Ctx): Promise<Receipt> => {
+  const v = ctx.values;
+  const store = await EzStore.open(storeOptions(ctx, directoryOf(v)));
+  let handle: DeviceHandle | undefined;
+  let signer: YubiKeySigner | undefined;
+  try {
+    const state = store.state;
+    const record = state.key.yubikey;
+    if (state.key.storage !== "yubikey" || record === null) {
+      throw new EzError(2, "key_storage_unsupported", "This root's key is a software key. To put it on a YubiKey use import-key; add-yubikey records a second YubiKey for a root that already lives on one.");
+    }
+    const recorded = record.devices.map((d) => d.serial);
+    const flagged = str(v, "yubikey-serial") === undefined ? undefined : parseSerial(str(v, "yubikey-serial") as string);
+    const alreadyRecorded = (serial: number): EzError =>
+      new EzError(5, "yubikey_already_recorded", `YubiKey ${serial} is already recorded for this root (recorded: ${recorded.join(", ")}); nothing changed.`);
+    if (flagged !== undefined && recorded.includes(flagged)) throw alreadyRecorded(flagged);
+    const io = ykIo(ctx);
+    handle = await DeviceHandle.open(io, { serial: flagged, slot: record.slot, write: false, overwrite: false, allowLastPinAttempt: io.allowLastPinAttempt });
+    if (recorded.includes(handle.serial)) throw alreadyRecorded(handle.serial);
+    const key = handle.target.info.key;
+    if (key === null) throw new EzError(5, "slot_empty", `Slot ${record.slot} of YubiKey ${handle.serial} holds no key. The key must be in slot ${record.slot}, the root's recorded slot.`);
+    const root = store.rootCertificate;
+    if (key.keyType !== record.keyType || !key.spkiDer.equals(root.spkiDer)) {
+      throw new EzError(
+        5,
+        "key_mismatch",
+        `Slot ${record.slot} of YubiKey ${handle.serial} does not hold this root's key (${key.keyType}, SPKI SHA-256 ${sha256Hex(key.spkiDer)}; the root's key is ${record.keyType}, SPKI SHA-256 ${root.spkiSha256}). Nothing changed.`,
+        { slotSpkiSha256: sha256Hex(key.spkiDer), rootSpkiSha256: root.spkiSha256 },
+      );
+    }
+    const warnings: string[] = [];
+    const slotCertificate = handle.target.info.certificateDer;
+    if (slotCertificate === null) warnings.push("slot_certificate_missing");
+    else if (!slotCertificate.equals(root.der)) warnings.push("slot_certificate_not_root");
+    await ctx.prompter.requireConfirmTerminal("record");
+    await ctx.say(
+      renderAddYubiKeyReview({
+        root: rootLabel(root),
+        device: handle.target.info.device,
+        slot: record.slot,
+        keyType: key.keyType,
+        pinPolicy: key.pinPolicy,
+        touchPolicy: key.touchPolicy,
+        recorded,
+        warnings: warnings.map((w) => warningText(w)),
+      }),
+    );
+    const confirmation = await ctx.prompter.confirm("record");
+    const serial = handle.serial;
+    signer = handle.signer(root.spkiDer);
+    // The test signature is verified under the root's key by signBatch; only then is the device recorded.
+    await signBatch(signer, [{ id: "test", description: "a test challenge (nothing is issued)", data: randomBytes(32) }], {
+      events: { onTouch: (item) => void ctx.say(touchNotice(serial, item)) },
+      confirm: () => {
+        if (!consumeConfirmation(confirmation, "record")) throw new EzError(2, "confirmation_declined", "Signing was attempted without the typed confirmation.");
+      },
+    });
+    ctx.progress.completed.push("test-signature");
+    await store.recordYubiKey({
+      slot: record.slot,
+      keyType: record.keyType,
+      generatedOnDevice: record.generatedOnDevice,
+      pinPolicy: record.pinPolicy,
+      touchPolicy: record.touchPolicy,
+      device: { serial, firmware: handle.target.info.device.firmware, fips: handle.target.info.device.fips },
+    });
+    return {
+      data: {
+        command: "add-yubikey",
+        root: { fingerprint: root.fingerprint },
+        yubikey: { serial, firmware: handle.target.info.device.firmware, slot: record.slot, keyType: record.keyType, pinPolicy: key.pinPolicy, touchPolicy: key.touchPolicy },
+        devices: store.state.key.yubikey?.devices.map((d) => d.serial) ?? [],
+        warnings,
+      },
+      next: ["Either YubiKey can now sign. Connect only one at a time, or pass --yubikey-serial N."],
+    };
+  } finally {
+    signer?.close();
+    handle?.close();
     await store.close();
   }
 };
@@ -2354,6 +2444,7 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
       "generate-ca": generateCa,
       "adopt-ca": adoptCa,
       "import-key": importKey,
+      "add-yubikey": addYubiKey,
       "sign-cert": signCert,
       activate: activateCommand,
       "revoke-cert": revokeCert,

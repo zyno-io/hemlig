@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createPrivateKey, createPublicKey } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,11 +35,11 @@ interface Run {
   error: any;
 }
 
-const run = async (ykman: FakeYkman, args: string[], options: { stdin?: TerminalInput; server?: FakeServer; afterBackupWritten?: (path: string) => Promise<void> } = {}): Promise<Run> => {
+const run = async (ykman: FakeYkman, args: string[], options: { stdin?: TerminalInput; server?: FakeServer; afterBackupWritten?: (path: string) => Promise<void>; tty?: boolean } = {}): Promise<Run> => {
   let stdout = "";
   let stderr = "";
   const exitCode = await runCli(["pki", "ez", ...args], {
-    env: { HEMLIG_ADMIN_URL: origin, HEMLIG_ADMIN_TOKEN: token, HEMLIG_ENVIRONMENT: "prod", HEMLIG_YKMAN: ykman.path },
+    env: { HEMLIG_ADMIN_URL: origin, HEMLIG_ADMIN_TOKEN: token, HEMLIG_ENVIRONMENT: "prod", HEMLIG_YKMAN: ykman.path, ...(options.tty === true ? { NO_COLOR: "1" } : {}) },
     configDir: join(tmpdir(), "hemlig-ez-test-no-config"),
     now: () => clock.value,
     stdin: options.stdin ?? pipeInput(),
@@ -52,9 +52,11 @@ const run = async (ykman: FakeYkman, args: string[], options: { stdin?: Terminal
     transport: options.server ?? ({ async request() { throw new Error("unexpected network request"); } } as never),
     confirmArmMs: 0,
     afterBackupWritten: options.afterBackupWritten,
+    stdoutIsTTY: options.tty === true,
+    stderrIsTTY: options.tty === true,
   });
   const last = stderr.trim().split("\n").filter((l) => l.startsWith("{")).pop();
-  return { ez: last === undefined ? undefined : JSON.parse(last).ez, exitCode, stdout, stderr, json: stdout.trim() === "" ? undefined : JSON.parse(stdout), error: last === undefined ? undefined : JSON.parse(last).error };
+  return { ez: last === undefined ? undefined : JSON.parse(last).ez, exitCode, stdout, stderr, json: stdout.trim().startsWith("{") ? JSON.parse(stdout) : undefined, error: last === undefined ? undefined : JSON.parse(last).error };
 };
 
 const tempDir = (): Promise<string> => fs.mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "ez-yk-"));
@@ -918,6 +920,183 @@ test("adopt-ca --yubikey: flags for the other kind of source are rejected", asyn
       assert.equal(result.exitCode, 2, extra.join(" "));
     }
     assert.deepEqual((await env.ykman.calls()).filter((c) => c.op !== "list"), []);
+  } finally {
+    await env.done();
+  }
+});
+
+// -- add-yubikey -----------------------------------------------------------------------------------------------------
+
+/** A second device that holds the same key (imported there outside Hemlig), optionally with another certificate. */
+const secondDevice = (a: ReturnType<typeof adoptable>, overrides: { cert?: string | null; slot?: string; keyOf?: ReturnType<typeof adoptable> } = {}): FakeDevice => {
+  const device = makeDevice(SECOND);
+  const source = overrides.keyOf?.slot ?? a.slot;
+  const copy = { ...source, cert: overrides.cert === undefined ? a.slot.cert : overrides.cert };
+  delete (device.slots as Record<string, unknown>)["9c"];
+  device.slots[overrides.slot ?? "9c"] = copy;
+  return device;
+};
+
+const adoptedYubi = async (a: ReturnType<typeof adoptable>) => {
+  const env = await setup([a.device]);
+  const adopted = await adoptYubi(env, ["--no-prior-revocations", "--crl-number", "1"], ["confirm\r", `${PIN}\r`]);
+  assert.equal(adopted.exitCode, 0, adopted.stderr);
+  return env;
+};
+
+const connect = (env: Env, ...devices: FakeDevice[]) => env.ykman.setState((s) => void (s.devices = devices));
+const addYubi = (env: Env, extra: string[], keys: string[], more: { tty?: boolean } = {}) =>
+  run(env.ykman, ["add-yubikey", "--dir", env.dir, ...extra], { stdin: new FakeTerminal(...keys), ...more });
+
+test("add-yubikey records a second device that holds the same key; either device then signs, one connected at a time", async () => {
+  const a = adoptable({ cert: "full" });
+  const env = await adoptedYubi(a);
+  try {
+    const b = secondDevice(a);
+    const first = (await env.ykman.state()).devices[0] as FakeDevice;
+    await connect(env, first, b);
+    const callsBefore = (await env.ykman.calls()).length;
+    const added = await addYubi(env, ["--yubikey-serial", String(SECOND)], ["confirm\r", `${PIN}\r`]);
+    assert.equal(added.exitCode, 0, added.stderr);
+    assert.deepEqual(added.json.data.devices, [SERIAL, SECOND]);
+    assert.deepEqual(added.json.data.warnings, []);
+    assert.match(added.stderr, /Review: this will RECORD another YubiKey/);
+    assert.match(added.stderr, /Device writes: +none/);
+    assert.match(added.stderr, /Already recorded: +11111111/);
+    const newCalls = (await env.ykman.calls()).slice(callsBefore);
+    assert.deepEqual(writes(newCalls), [], "nothing is written to either device");
+    assert.deepEqual([...new Set(newCalls.filter((c) => c.op !== "list").map((c) => c.op))].sort(), ["info", "sign"]);
+    assert.ok(newCalls.every((c) => c.op === "list" || c.serial === SECOND));
+    const state = await readState(env.dir);
+    assert.deepEqual(state.key.yubikey?.devices.map((d) => d.serial), [SERIAL, SECOND]);
+    assert.equal(state.key.yubikey?.devices[1]?.firmware, "5.4.3");
+    // each device signs when it is the only one connected
+    for (const [device, serial] of [[b, SECOND], [first, SERIAL]] as const) {
+      await connect(env, device);
+      const renewed = await run(env.ykman, ["renew-crl", "--dir", env.dir, "--offline", "--crl-out", join(env.dir, `${serial}.crl.pem`)], { stdin: new FakeTerminal(`${PIN}\r`) });
+      assert.equal(renewed.exitCode, 0, renewed.stderr);
+      const crl = parseCrl(fromPem(await fs.readFile(join(env.dir, `${serial}.crl.pem`), "utf8"), "X509 CRL"));
+      assert.equal(verifyCrlSignature(crl, a.parsed.spkiDer), true);
+    }
+    // sign-cert with the second device
+    await connect(env, b);
+    const ca = pendingCa(1);
+    const server = new FakeServer();
+    server.add(ca.record);
+    const signed = await run(env.ykman, ["sign-cert", ca.record.caId, "--dir", env.dir, "--environment", "prod", "--yes"], { server, stdin: new FakeTerminal("confirm\r", `${PIN}\r`) });
+    assert.equal(signed.exitCode, 0, signed.stderr);
+    // both connected: a serial is needed
+    await connect(env, first, b);
+    const both = await run(env.ykman, ["renew-crl", "--dir", env.dir, "--offline", "--crl-out", join(env.dir, "x.crl.pem")], { stdin: new FakeTerminal(`${PIN}\r`) });
+    assert.equal(both.error.code, "yubikey_multiple");
+    // already recorded, by flag and by the only connected device
+    const flagged = await addYubi(env, ["--yubikey-serial", String(SECOND)], ["confirm\r", `${PIN}\r`]);
+    assert.equal(flagged.error.code, "yubikey_already_recorded");
+    await connect(env, b);
+    const implicit = await addYubi(env, [], ["confirm\r", `${PIN}\r`]);
+    assert.equal(implicit.error.code, "yubikey_already_recorded");
+    assert.deepEqual(writes(await env.ykman.calls()), []);
+  } finally {
+    await env.done();
+  }
+});
+
+test("add-yubikey refuses a slot that does not hold the root's key (other key, other type, empty or other slot) and changes nothing", async () => {
+  const a = adoptable({ cert: "full" });
+  const other = adoptable({ cert: "full", serial: SECOND });
+  const env = await adoptedYubi(a);
+  try {
+    const first = (await env.ykman.state()).devices[0] as FakeDevice;
+    const before = await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8");
+    const calls = async () => (await env.ykman.calls()).length;
+    const attempt = async (device: FakeDevice) => {
+      await connect(env, first, device);
+      const n = await calls();
+      const result = await addYubi(env, ["--yubikey-serial", String(SECOND)], ["confirm\r", `${PIN}\r`]);
+      const added = (await env.ykman.calls()).slice(n);
+      assert.equal(added.some((c) => c.op === "sign"), false, "nothing is signed");
+      assert.equal(await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8"), before);
+      return result;
+    };
+    const mismatch = await attempt(secondDevice(a, { keyOf: other, cert: null }));
+    assert.equal(mismatch.exitCode, 5);
+    assert.equal(mismatch.error.code, "key_mismatch");
+    const spki = (s: string): string => createHash("sha256").update(Buffer.from(s, "base64")).digest("hex");
+    assert.ok(mismatch.error.message.includes(spki(other.slot.spki)) && mismatch.error.message.includes(spki(a.slot.spki)), "both fingerprints are shown");
+    const wrongType = secondDevice(a);
+    (wrongType.slots["9c"] as { keyType: string }).keyType = "ECCP384";
+    assert.equal((await attempt(wrongType)).error.code, "key_mismatch");
+    assert.equal((await attempt(secondDevice(a, { slot: "9d" }))).error.code, "slot_empty");
+    const empty = secondDevice(a);
+    delete (empty.slots as Record<string, unknown>)["9c"];
+    assert.equal((await attempt(empty)).error.code, "slot_empty");
+  } finally {
+    await env.done();
+  }
+});
+
+test("add-yubikey refuses a software root, a declined confirm changes nothing, and a wrong PIN is tried once", async () => {
+  const soft = await setup();
+  try {
+    const made = await run(soft.ykman, ["generate-ca", "--dir", soft.dir, "--subject", "CN=Soft Root,O=Example Corp", "--yes", "--key-algorithm", "ECDSA_P256", "--passphrase-stdin"], { stdin: pipeInput(`${PASS}\n`) });
+    assert.equal(made.exitCode, 0, made.stderr);
+    const refused = await addYubi(soft, [], ["confirm\r", `${PIN}\r`]);
+    assert.equal(refused.exitCode, 2);
+    assert.equal(refused.error.code, "key_storage_unsupported");
+    assert.match(refused.error.message, /import-key/);
+    assert.deepEqual((await soft.ykman.calls()).filter((c) => c.op !== "list"), []);
+  } finally {
+    await soft.done();
+  }
+  const a = adoptable({ cert: "full" });
+  const env = await adoptedYubi(a);
+  try {
+    const b = secondDevice(a);
+    await connect(env, (await env.ykman.state()).devices[0] as FakeDevice, b);
+    const before = await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8");
+    const n = (await env.ykman.calls()).length;
+    const declined = await addYubi(env, ["--yubikey-serial", String(SECOND)], ["no\r"]);
+    assert.equal(declined.error.code, "confirmation_declined");
+    assert.equal((await env.ykman.calls()).slice(n).some((c) => c.op === "sign"), false);
+    assert.equal(await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8"), before);
+    const wrong = await addYubi(env, ["--yubikey-serial", String(SECOND)], ["confirm\r", "000000\r"]);
+    assert.equal(wrong.exitCode, 3);
+    assert.equal(wrong.error.code, "pin_invalid");
+    assert.equal((await env.ykman.calls()).slice(n).filter((c) => c.op === "sign").length, 1);
+    assert.equal(await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8"), before);
+    assert.deepEqual(writes(await env.ykman.calls()), []);
+  } finally {
+    await env.done();
+  }
+});
+
+test("add-yubikey warns, without failing, when the slot has no certificate or another one; the terminal result shows the next steps", async () => {
+  const a = adoptable({ cert: "full" });
+  const env = await adoptedYubi(a);
+  try {
+    const first = (await env.ykman.state()).devices[0] as FakeDevice;
+    await connect(env, first, secondDevice(a, { cert: null }));
+    const missing = await addYubi(env, ["--yubikey-serial", String(SECOND)], ["confirm\r", `${PIN}\r`]);
+    assert.equal(missing.exitCode, 0, missing.stderr);
+    assert.deepEqual(missing.json.data.warnings, ["slot_certificate_missing"]);
+    assert.match(missing.stderr, /Warning: +The slot holds no certificate/);
+
+    const env2 = await adoptedYubi(adoptable({ cert: "full" }));
+    try {
+      const a2 = (await env2.ykman.state()).devices[0] as FakeDevice;
+      const b2 = makeDevice(SECOND);
+      b2.slots["9c"] = { ...(a2.slots["9c"] as object), cert: Buffer.from("another certificate").toString("base64") } as never;
+      await connect(env2, a2, b2);
+      const differs = await addYubi(env2, ["--yubikey-serial", String(SECOND)], ["confirm\r", `${PIN}\r`], { tty: true });
+      assert.equal(differs.exitCode, 0, differs.stderr);
+      assert.match(differs.stdout, /^✓ YubiKey 22222222 recorded as another holder of the root key\n/);
+      assert.match(differs.stdout, /\n {2}Recorded {2,}11111111, 22222222\n/);
+      assert.match(differs.stdout, /\n! The certificate in the slot is not this root's certificate/);
+      assert.match(differs.stdout, /\n {2}1\. Either YubiKey can now sign\. Connect only one at a time, or pass --yubikey-serial N/);
+      assert.doesNotMatch(differs.stdout, /\{"data"/);
+    } finally {
+      await env2.done();
+    }
   } finally {
     await env.done();
   }

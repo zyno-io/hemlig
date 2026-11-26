@@ -93,6 +93,7 @@ test("adopt-ca on a terminal prints a headline, aligned facts, warnings and numb
     assert.match(result.stdout, /\n {2}Fingerprint {2,}[0-9a-f]{8}…[0-9a-f]{4} \(SHA-256\)\n/);
     assert.match(result.stdout, /\n {2}CRL {2,}#2, next update \d{4}-\d{2}-\d{2} \(\d+ days left\), signed now\n/);
     assert.match(result.stdout, new RegExp(`\\n {2}Directory {2,}${out.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n`));
+    assert.match(result.stdout, /\n {2}Revocations {2,}0 carried over \(none declared\)\n/);
     assert.match(result.stdout, /\n! The original key file\(s\) remain/);
     assert.match(result.stdout, /\nNext steps\n {2}1\. Back up .*CA \(for example, commit it to a private git repo\)\.\n {2}2\. Create an intermediate CA in Hemlig/);
     assert.match(result.stdout, new RegExp(`\\n {5}hemlig pki ez sign-cert <ca-id> --environment prod --dir ${out.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n`));

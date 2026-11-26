@@ -78,6 +78,8 @@ const ERROR_HINTS: Record<string, string> = {
   revocation_source_required: "Pass --crl FILE, --openssl-index FILE, or --no-prior-revocations if this root never revoked anything.",
   crl_number_required: "Pass --crl-number N, at least the number of the last CRL this root ever issued.",
   root_profile_invalid: "Reissuing a root certificate with --reissue-root-certificate fixes missing CA extensions only.",
+  yubikey_multiple: "Pass --yubikey-serial N to choose a device.",
+  yubikey_already_recorded: "That YubiKey is already one of this root's recorded devices; nothing changed.",
   tool_missing: "Install YubiKey Manager (ykman 5.5 or later), or set HEMLIG_YKMAN to its absolute path.",
   unknown_serial: "Pass the certificate itself with --cert FILE if the root issued it before it was adopted.",
 };
@@ -119,6 +121,10 @@ export interface HumanContext {
 export const shellQuote = (value: string): string => (/^[A-Za-z0-9._/:=@%+-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`);
 
 const shortFingerprint = (fingerprint: string): string => (fingerprint.length > 16 ? `${fingerprint.slice(0, 8)}…${fingerprint.slice(-4)}` : fingerprint);
+/** Plain words for the source codes the JSON carries. */
+export const sourceWord = (code: string): string =>
+  ({ "none-declared": "none declared", "crl-file": "CRL file", "openssl-index": "index.txt", server: "server CRL", flag: "--crl-number", "openssl-crlnumber": "crlnumber file" })[code] ?? displaySafe(code);
+
 const day = (iso: unknown): string => (typeof iso === "string" ? iso.slice(0, 10) : "unknown");
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -137,6 +143,8 @@ const WARNING_TEXT: Record<string, string> = {
   csr_unbound: "The CSR was not pinned to the CA's key (no --expect-spki-sha256).",
   csr_unconstrained: "The CA has no name constraints: it may issue for any name.",
   root_not_registered: "The server you are logged in to does not know this root yet (it is registered when the first CA under it is activated).",
+  slot_certificate_missing: "The slot holds no certificate. That does not affect signing; the root certificate is in the directory.",
+  slot_certificate_not_root: "The certificate in the slot is not this root's certificate. That does not affect signing.",
   no_root_crl: "No root CRL was supplied or registered.",
 };
 
@@ -207,7 +215,7 @@ export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: 
         facts: [
           ["Fingerprint", `${shortFingerprint(root.fingerprint)} (SHA-256)`],
           ["CRL", `${crlFact(crl, ctx.now)}${crl.signed === true ? ", signed now" : ", the supplied CRL stays current"}`],
-          ["Revocations", `${(data.revocations as Data).count} carried over${sources === undefined ? "" : ` (${sources.join(", ")})`}`],
+          ["Revocations", `${(data.revocations as Data).count} carried over${sources === undefined ? "" : ` (${sources.map(sourceWord).join(", ")})`}`],
           ["Key", keyFact(key, ctx.dir)],
           ...(reissued ? ([["Original", `${relativeTo(ctx.dir, (data.files as Data).originalCertificate)} (kept)`]] as [string, string][]) : []),
           ["Directory", ctx.dir],
@@ -236,6 +244,25 @@ export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: 
         ],
         warnings,
         next: [`Record YubiKey ${Number(yk.serial)} with your other root-key custody records.`, `Check it signs: ${cmd(ctx, "renew-crl", `--offline --crl-out root.crl.pem --yubikey-serial ${yk.serial}`)}`],
+      };
+    }
+    case "add-yubikey": {
+      const yk = data.yubikey as Data;
+      const serial = Number(yk.serial);
+      return {
+        headline: `YubiKey ${serial} recorded as another holder of the root key`,
+        facts: [
+          ["Fingerprint", `${shortFingerprint(String((data.root as Data).fingerprint))} (SHA-256)`],
+          ["YubiKey", `${serial}, firmware ${displaySafe(String(yk.firmware))}`],
+          ["Slot", `${displaySafe(String(yk.slot))}, ${displaySafe(String(yk.keyType))}, touch ${displaySafe(String(yk.touchPolicy))}`],
+          ["Recorded", (data.devices as number[]).join(", ")],
+          ["Directory", ctx.dir],
+        ],
+        warnings,
+        next: [
+          `Either YubiKey can now sign. Connect only one at a time, or pass --yubikey-serial N (for example ${cmd(ctx, "renew-crl", `--if-due --yubikey-serial ${serial}`)}).`,
+          backupStep(ctx),
+        ],
       };
     }
     case "sign-cert": {

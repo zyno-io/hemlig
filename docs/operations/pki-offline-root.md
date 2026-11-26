@@ -42,6 +42,10 @@ This is the **import** mode, and the one to prefer. EZ generates the key in soft
 
 To hold the same root on a second YubiKey, add `--second-yubikey-serial N` now, or run `hemlig pki ez import-key --yubikey-serial N` later; `import-key` also moves an existing software root onto a YubiKey.
 
+**A second YubiKey that already holds the key.** If the same key was put on another YubiKey outside Hemlig (so there is no backup file for `import-key`), record it with `hemlig pki ez add-yubikey --yubikey-serial N`.
+
+Hemlig checks that the root's slot on that device holds the root's key, shows a review, asks you to type `confirm` and the PIN, signs one test challenge, and records the device. It never writes to either device. After that either YubiKey can sign; connect one at a time or pass `--yubikey-serial`.
+
 **Backup model.** The key file is the only copy that can restore the root. Store it, and the passphrase, apart from the YubiKey. A lost YubiKey is then a re-import, not a new root.
 
 **On-device generation.** `--yubikey --on-device --accept-no-backup` generates the key inside the YubiKey so that it can never be exported. The tradeoff is that nothing can restore it: a lost, broken or locked YubiKey (PIN and PUK both blocked) means a new root, and every intermediate it signed has to be re-issued. EZ prints this warning and requires you to type `no backup`. Choose it only if you have a second, independent plan for losing the device.
