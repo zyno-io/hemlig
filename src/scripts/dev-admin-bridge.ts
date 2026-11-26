@@ -42,6 +42,54 @@ const corsHeaders = (): Record<string, string> => ({
   vary: "origin",
 });
 
+const devClaims = (subject: string): Record<string, unknown> => {
+  const claims: Record<string, unknown> = {
+    iss: process.env.ADMIN_JWT_ISSUER ?? "",
+    aud: process.env.ADMIN_JWT_AUDIENCE?.split(",")[0]?.trim() ?? "",
+    sub: subject,
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    ...(process.env.ADMIN_JWT_SCOPE === undefined
+      ? {}
+      : { scope: process.env.ADMIN_JWT_SCOPE }),
+  };
+  const role = process.env.ADMIN_JWT_ROLE?.split(",")[0]?.trim();
+  if (role !== undefined && role.length > 0) {
+    // Place the role where ADMIN_ROLE_CLAIM (a name or a JSON Pointer) reads it.
+    const claim = process.env.ADMIN_ROLE_CLAIM?.trim() || "roles";
+    if (claim.startsWith("/")) {
+      const segments = claim
+        .slice(1)
+        .split("/")
+        .map((segment) => segment.replace(/~1/g, "/").replace(/~0/g, "~"));
+      let target = claims;
+      const last = segments.pop() ?? "";
+      for (const segment of segments) {
+        const next: Record<string, unknown> = {};
+        target[segment] = next;
+        target = next;
+      }
+      target[last] = [role];
+    } else {
+      claims[claim] = [role];
+    }
+  }
+  return claims;
+};
+
+// API Gateway flattens claims; the handler only binds the scalar ones.
+const flattenForGateway = (
+  claims: Record<string, unknown>,
+): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(claims).filter(([, value]) => typeof value !== "object"),
+  );
+
+const unsignedJwt = (claims: Record<string, unknown>): string => {
+  const part = (value: unknown): string =>
+    Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${part({ alg: "none", typ: "JWT" })}.${part(claims)}.`;
+};
+
 const buildServer = () =>
   createServer((request: IncomingMessage, response: ServerResponse) => {
     void (async () => {
@@ -65,6 +113,12 @@ const buildServer = () =>
         }
       }
       const body = await readBody(request);
+
+      // The handler reads claims from the Authorization bearer, so fabricate an
+      // unsigned one carrying the same claims. Local only: nothing here is verified.
+      const claims = devClaims(subject);
+      const authorizerClaims = flattenForGateway(claims);
+      headers.authorization = `Bearer ${unsignedJwt(claims)}`;
 
       const event = {
         version: "2.0",
@@ -91,17 +145,11 @@ const buildServer = () =>
           time: new Date().toISOString(),
           timeEpoch: Date.now(),
           // Claims API Gateway would have validated. The handler re-checks them
-          // against its own configuration, so these must match the environment.
+          // against its own configuration and binds them to the bearer above,
+          // so these must match the environment.
           authorizer: {
             jwt: {
-              claims: {
-                iss: process.env.ADMIN_JWT_ISSUER ?? "",
-                aud: process.env.ADMIN_JWT_AUDIENCE ?? "",
-                sub: subject,
-                ...(process.env.ADMIN_JWT_SCOPE === undefined
-                  ? {}
-                  : { scope: process.env.ADMIN_JWT_SCOPE }),
-              },
+              claims: authorizerClaims,
               scopes: null,
             },
           },

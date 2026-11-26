@@ -1,3 +1,4 @@
+import { bearerFor, testExp } from "../auth/test-support";
 import { GenerateDataKeyCommand, type KMSClient } from "@aws-sdk/client-kms";
 import type {
   APIGatewayProxyEventV2,
@@ -63,7 +64,14 @@ const buildEvent = (
 ): APIGatewayProxyEventV2 =>
   ({
     rawPath,
-    headers,
+    headers: {
+      authorization: bearerFor({
+        iss: config.adminJwtIssuer,
+        aud: config.adminJwtAudience,
+        sub: "admin-1",
+      }),
+      ...headers,
+    },
     queryStringParameters,
     requestContext: {
       http: { method, sourceIp: "203.0.113.10" },
@@ -74,6 +82,7 @@ const buildEvent = (
             iss: config.adminJwtIssuer,
             aud: config.adminJwtAudience,
             sub: "admin-1",
+            exp: testExp,
           },
         },
       },

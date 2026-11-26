@@ -2,7 +2,7 @@ import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
-import { hasRequiredRole } from "../auth/actors";
+import { hasRequiredRole } from "../auth/admin-token";
 import type { PkiConfig } from "../aws/config";
 import { badRequest } from "../domain/errors";
 import { empty } from "../http/responses";
@@ -106,7 +106,7 @@ export const notModified = (
 
 /** `read` needs only the administrator JWT; the other roles map to the optional configured role claims. */
 export const assertPkiRole = (
-  claims: Record<string, string | number | boolean | string[]> | undefined,
+  roleValues: ReadonlySet<string>,
   config: Pick<PkiConfig, "adminPkiCaRole" | "adminPkiOperatorRole">,
   role: PkiRole,
 ): void => {
@@ -115,7 +115,7 @@ export const assertPkiRole = (
   }
   const required =
     role === "ca-admin" ? config.adminPkiCaRole : config.adminPkiOperatorRole;
-  if (!hasRequiredRole(claims ?? {}, required)) {
+  if (!hasRequiredRole(roleValues, required)) {
     throw pkiRoleRequired(role);
   }
 };

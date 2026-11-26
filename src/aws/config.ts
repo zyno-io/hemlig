@@ -1,3 +1,4 @@
+import { assertRoleClaim } from "../auth/admin-token";
 import { badRequest } from "../domain/errors";
 
 export interface AppConfig {
@@ -32,6 +33,8 @@ export interface AppConfig {
   readonly adminJwtScope?: string;
   /** Optional IdP application role required in addition to the OAuth scope. */
   readonly adminJwtRole?: string;
+  /** Claim name, or an RFC 6901 JSON Pointer starting with `/`, holding the role values. Unset reads `roles`. */
+  readonly adminRoleClaim?: string;
   readonly adminActorTenantClaim?: string;
   readonly adminExpectedTenantId?: string;
   /** Present on the PKI Lambdas only. */
@@ -95,6 +98,7 @@ export const loadConfig = (
     adminActorSubjectClaim: required(environment, "ADMIN_ACTOR_SUBJECT_CLAIM"),
     adminJwtScope: optional(environment, "ADMIN_JWT_SCOPE"),
     adminJwtRole: optional(environment, "ADMIN_JWT_ROLE"),
+    adminRoleClaim: optionalRoleClaim(environment),
     adminActorTenantClaim: optional(environment, "ADMIN_ACTOR_TENANT_CLAIM"),
     adminExpectedTenantId: optional(environment, "ADMIN_EXPECTED_TENANT_ID"),
     pkiDirectoryIndex: optional(environment, "PKI_DIRECTORY_INDEX"),
@@ -118,6 +122,14 @@ export const loadPkiConfig = (
   pkiDirectoryIndex: required(environment, "PKI_DIRECTORY_INDEX"),
   pkiBucketName: required(environment, "PKI_BUCKET_NAME"),
 });
+
+const optionalRoleClaim = (environment: NodeJS.ProcessEnv): string | undefined => {
+  const claim = optional(environment, "ADMIN_ROLE_CLAIM")?.trim();
+  if (claim !== undefined) {
+    assertRoleClaim(claim);
+  }
+  return claim;
+};
 
 const required = (environment: NodeJS.ProcessEnv, name: string): string => {
   const value = environment[name];
