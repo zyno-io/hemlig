@@ -79,9 +79,13 @@ export const createImmutable = async (path: string, data: Uint8Array, mode = 0o6
       try {
         await handle.writeFile(data);
         await handle.sync();
-      } finally {
-        await handle.close();
+      } catch (writeError) {
+        // The file was created by this call: a torn copy must not stay behind under the final name.
+        await handle.close().catch(() => undefined);
+        await fs.unlink(path).catch(() => undefined);
+        throw writeError;
       }
+      await handle.close();
     }
   } finally {
     await fs.unlink(temp).catch(() => undefined);

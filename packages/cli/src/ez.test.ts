@@ -17,6 +17,7 @@ const token = "test.header.signature";
 const origin = "https://admin.example.test";
 const baseEnv = { HEMLIG_ADMIN_URL: origin, HEMLIG_ADMIN_TOKEN: token, HEMLIG_ENVIRONMENT: "prod" };
 const clock = { value: Date.parse("2026-11-25T12:00:00Z") };
+FakeServer.clock = () => clock.value;
 
 interface Run {
   exitCode: number;

@@ -30,7 +30,7 @@ The directory now holds `root.key.pem` (the encrypted key), `root.pem`, `root.cr
 
 ### Keep the root key in a YubiKey
 
-A YubiKey (firmware 5.3 or later, with `ykman` 5.x installed) can hold the root key in PIV slot `9c`. Change the factory PIN first (`ykman piv access change-pin`); EZ refuses a default PIN.
+A YubiKey (firmware 5.3 or later, with `ykman` 5.5 or later installed) can hold the root key in PIV slot `9c`. Change the factory PIN first (`ykman piv access change-pin`); EZ refuses a default PIN.
 
 ```sh
 hemlig pki ez generate-ca --subject 'CN=Example Offline Root CA 1,O=Example Corp' --yubikey

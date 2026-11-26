@@ -51,10 +51,15 @@ export const openSession = async (
   return { client: new HemligClient(origin, transport), token, origin, serverTime: () => seen };
 };
 
-/** Exits 5 `clock_skew` when this machine and the server disagree by more than the profile allows (no header: skipped). */
+/**
+ * Exits 5 `clock_skew` when this machine and the server disagree by more than the profile allows. Call it after the first
+ * server response: with no server time seen it fails closed (`clock_unchecked`), so a misplaced call cannot skip the check.
+ */
 export const assertClockSkew = (session: OnlineSession, now: Date): void => {
   const server = session.serverTime();
-  if (server === undefined) return;
+  if (server === undefined) {
+    throw new EzError(5, "clock_unchecked", "The server's clock could not be read (no Date header), so this machine's clock could not be checked; nothing was signed.");
+  }
   const skew = Math.abs(server.getTime() - now.getTime()) / 1000;
   if (skew > EZ_DEFAULTS.clockSkewSeconds) {
     throw new EzError(5, "clock_skew", `This machine's clock differs from the server's by ${Math.round(skew)} s; fix the clock first.`, {

@@ -58,7 +58,7 @@ export const ezActivationCommands = (
     offlineSign:
       `hemlig pki ez sign-cert ${id} --offline --csr ${shellArg(csrFile)}` +
       ` --expect-spki-sha256 ${ca.spkiSha256.toLowerCase()}` +
-      ` --out ${shellArg(certFile)} --chain-out root.pem --crl-out root.crl.pem`,
+      ` --out ${shellArg(certFile)}`,
     activate:
       `hemlig pki ez activate ${id} --environment ${env}` +
       ` --certificate ${shellArg(certFile)} --chain root.pem --crl root.crl.pem`,
@@ -81,6 +81,6 @@ export const ezRenewCrlCommands = (extId: string): EzRenewCrlCommands | undefine
     renew: `hemlig pki ez renew-crl --if-due --expect-ext-id ${ext}`,
     upload: `hemlig pki ez upload-crl --expect-ext-id ${ext}`,
     offlineRenew: "hemlig pki ez renew-crl --offline --crl-out root.crl.pem",
-    offlineUpload: `hemlig pki external-ca upload-crl ${ext} --crl root.crl.pem`,
+    offlineUpload: `hemlig pki ez upload-crl --crl root.crl.pem --root-cert root.pem --expect-ext-id ${ext}`,
   };
 };

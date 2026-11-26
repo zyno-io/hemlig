@@ -455,6 +455,8 @@ export const parseCertificate = (der: Buffer): ParsedCertificate => {
     };
   } catch (error) {
     if (error instanceof DerError) throw new EzError(2, "certificate_invalid", `Malformed certificate: ${error.message}`);
+    // A truncated structure (an empty wrapper, a missing field) dereferences undefined: still malformed input.
+    if (error instanceof TypeError || error instanceof RangeError) throw new EzError(2, "certificate_invalid", `Malformed certificate.`);
     throw error;
   }
 };
@@ -597,6 +599,8 @@ export const parseCrl = (der: Buffer): ParsedCrl => {
     };
   } catch (error) {
     if (error instanceof DerError) throw new EzError(2, "crl_invalid", `Malformed CRL: ${error.message}`);
+    // A truncated structure (an empty wrapper, a missing field) dereferences undefined: still malformed input.
+    if (error instanceof TypeError || error instanceof RangeError) throw new EzError(2, "crl_invalid", `Malformed CRL.`);
     throw error;
   }
 };
@@ -1012,6 +1016,8 @@ export const parseCsr = (der: Buffer): ParsedCsr => {
     };
   } catch (error) {
     if (error instanceof DerError) throw new EzError(2, "csr_invalid", `Malformed CSR: ${error.message}`);
+    // A truncated structure (an empty wrapper, a missing field) dereferences undefined: still malformed input.
+    if (error instanceof TypeError || error instanceof RangeError) throw new EzError(2, "csr_invalid", `Malformed CSR.`);
     throw error;
   }
 };

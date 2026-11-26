@@ -3,18 +3,19 @@ import { createHash, generateKeyPairSync, sign as cryptoSign, type KeyObject } f
 import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { runCli } from "./index";
 import { bigUint, bitString, bool, enumerated, explicit, extension, octetString, seq, smallInt, time, tlv, uint } from "./ez-der";
 import { FakeServer, FakeTerminal, pendingCa, pipeInput, type FakeCa } from "./ez-fake";
 import { decryptKeyFile } from "./ez-keyfile";
 import { parseOpenSslCrlNumber, parseOpenSslIndex, planReissue } from "./ez-adopt";
-import { prepareCrl, signPrepared } from "./ez-issue";
+import { prepareCrl, prepareIntermediate, signPrepared } from "./ez-issue";
+import { resolveCa } from "./pki";
 import { SoftwareSigner } from "./ez-signer";
 import type { EzState } from "./ez-state";
-import { makeBareRoot } from "./ez-testkit";
-import { fromPem, keyIdentifier, OID, signatureAlgorithmForSpki, toPem, parseCertificate, parseCrl, validateRootCertificate, verifyCertificateSignature, verifyCrlSignature } from "./ez-x509";
+import { makeBareRoot, makeTestCsr } from "./ez-testkit";
+import { fromPem, keyIdentifier, parseCertificate as parseCert, validateCsr, OID, signatureAlgorithmForSpki, toPem, parseCertificate, parseCrl, validateRootCertificate, verifyCertificateSignature, verifyCrlSignature } from "./ez-x509";
 import type { TerminalInput } from "./tty";
 
 const PASS = "correct horse battery staple";
@@ -24,6 +25,7 @@ const origin = "https://admin.example.test";
 const baseEnv = { HEMLIG_ADMIN_URL: origin, HEMLIG_ADMIN_TOKEN: token, HEMLIG_ENVIRONMENT: "prod" };
 // OpenSSL stamps the real time, so these tests run on the real clock.
 const clock = { value: Date.now() };
+FakeServer.clock = () => clock.value;
 
 const haveOpenssl = spawnSync("openssl", ["version"]).status === 0;
 if (!haveOpenssl && process.env.CI) {
@@ -1218,6 +1220,288 @@ test("a server-stored CRL with an unnamed reason code does not wedge online comm
     s.externals.get(extId)!.crl = { ...(s.externals.get(extId)!.crl as any), numberHex: "04", sha256: serverCrl.sha256 };
     const behind = await run(["upload-crl", "--dir", bareOut], { server: s });
     assert.equal(behind.error.code, "state_behind_server");
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+// -- Fable review findings -------------------------------------------------------------------------------------------
+
+/** A bare (openssl-free) root adopted into `dir/out`, with its key and a helper to sign intermediates it "issued before". */
+const adoptedBare = async (dir: string, extraArgs: string[] = []) => {
+  const key = bareKey();
+  const signer = new SoftwareSigner(key);
+  const bare = makeBareRoot({
+    privateKey: key,
+    notAfter: new Date(Date.now() + 3000 * 86_400_000),
+    extensions: [extension(OID.basicConstraints, true, seq(bool(true))), extension(OID.keyUsage, true, bitString(Buffer.from([0x06]), 1)), extension(OID.ski, false, octetString(keyIdentifier(signer.spkiDer)))],
+  });
+  const root = parseCertificate(bare.der);
+  await fs.writeFile(join(dir, "root.pem"), bare.pem);
+  await fs.writeFile(join(dir, "key.pem"), key.export({ type: "pkcs8", format: "pem" }));
+  await fs.writeFile(join(dir, "index.txt"), "V\t300101000000Z\t\t01\tunknown\t/CN=old\n");
+  const out = join(dir, "out");
+  const result = await run(["adopt-ca", "--dir", out, "--cert", join(dir, "root.pem"), "--key", join(dir, "key.pem"), "--openssl-index", join(dir, "index.txt"), "--crl-number", "1", "--offline", ...extraArgs], { stdin: adoptKeys(false) });
+  assert.equal(result.exitCode, 0, result.stderr);
+  const issue = async (n: number) => {
+    const csr = validateCsr(makeTestCsr({ subject: { O: "Example Corp", CN: `Old Issuing CA ${n}` } }).der);
+    const [cert] = await signPrepared(signer, [prepareIntermediate(signer, root, csr, { now: new Date() })] as const);
+    return cert;
+  };
+  return { out, key, signer, root, bare, issue };
+};
+
+test("every online command checks the clock after its first response: +30 days of skew is refused before any signing or upload", async () => {
+  const dir = await tempDir();
+  try {
+    const a = await adoptedBare(dir);
+    const skewed = (...cas: FakeCa[]): FakeServer => {
+      const s = server(...cas);
+      s.dateHeader = new Date(Date.now() + 30 * 86_400_000).toUTCString();
+      return s;
+    };
+    const before = await snapshot(a.out);
+    const cases: [string, string[], RunOptions][] = [
+      ["renew-crl", ["renew-crl", "--dir", a.out], { stdin: new FakeTerminal(`${PASS}\r`) }],
+      ["revoke-cert --serial", ["revoke-cert", "--dir", a.out, "--serial", "01", "--reason", "keyCompromise"], { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) }],
+      ["upload-crl", ["upload-crl", "--dir", a.out], {}],
+      ["upload-crl stateless", ["upload-crl", "--crl", join(a.out, "root.crl.pem"), "--root-cert", join(a.out, "root.pem")], {}],
+    ];
+    for (const [name, args, options] of cases) {
+      const s = skewed();
+      const result = await run(args, { ...options, server: s });
+      assert.equal(result.exitCode, 5, name);
+      assert.equal(result.error.code, "clock_skew", name);
+      assert.equal(s.mutations.length, 0, name);
+      assert.deepEqual(await snapshot(a.out), before, name);
+    }
+    // revoke-cert by CA ID: the CA fetch is the first response
+    const ca = pendingCa(7);
+    const byId = await run(["revoke-cert", ca.record.caId, "--dir", a.out, "--reason", "keyCompromise"], { server: skewed(ca.record), stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(byId.exitCode === 5 || byId.exitCode === 2, true);
+    assert.deepEqual(await snapshot(a.out), before);
+    // sign-cert and activate
+    const ca1 = pendingCa(1);
+    const signed = await run(["sign-cert", ca1.record.caId, "--dir", a.out, "--environment", "prod", "--yes"], { server: skewed(ca1.record), stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(signed.error.code, "clock_skew");
+    const csrPath = join(dir, "ca.csr.pem");
+    await fs.writeFile(csrPath, ca1.csr.pem);
+    const carried = [join(dir, "c.pem"), join(dir, "chain.pem"), join(dir, "c.crl.pem")];
+    assert.equal((await run(["sign-cert", ca1.record.caId, "--dir", a.out, "--offline", "--csr", csrPath, "--out", carried[0] as string, "--chain-out", carried[1] as string, "--crl-out", carried[2] as string, "--yes"], { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) })).exitCode, 0);
+    const s2 = skewed(ca1.record);
+    const activated = await run(["activate", ca1.record.caId, "--environment", "prod", "--certificate", carried[0] as string, "--chain", carried[1] as string, "--crl", carried[2] as string], { server: s2 });
+    assert.equal(activated.error.code, "clock_skew");
+    assert.equal(s2.mutations.length, 0);
+    // adopt-ca online
+    const adopt = await run(["adopt-ca", "--dir", join(dir, "again"), "--cert", join(dir, "root.pem"), "--key", join(dir, "key.pem"), "--no-prior-revocations", "--crl-number", "1"], { server: skewed(), stdin: adoptKeys(false) });
+    assert.equal(adopt.error.code, "clock_skew");
+    assert.equal(await exists(join(dir, "again")), false);
+    // a server whose clock cannot be read fails closed
+    const mute = server();
+    mute.omitDate = true;
+    const unread = await run(["renew-crl", "--dir", a.out], { server: mute, stdin: new FakeTerminal(`${PASS}\r`) });
+    assert.equal(unread.exitCode, 5);
+    assert.equal(unread.error.code, "clock_unchecked");
+    // and with a good clock the same command works
+    assert.equal((await run(["renew-crl", "--dir", a.out], { server: server(), stdin: new FakeTerminal(`${PASS}\r`) })).exitCode, 0);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("sign-cert --offline accepts outputs that already hold exactly what would be written (the console's root directory), and refuses others", async () => {
+  const dir = await tempDir();
+  try {
+    const a = await adoptedBare(dir);
+    const ca = pendingCa(2);
+    const csrPath = join(dir, "ca.csr.pem");
+    await fs.writeFile(csrPath, ca.csr.pem);
+    const args = ["sign-cert", ca.record.caId, "--dir", a.out, "--offline", "--csr", csrPath, "--expect-spki-sha256", ca.record.spkiSha256, "--out", join(dir, "ca.pem"), "--chain-out", "root.pem", "--crl-out", "root.crl.pem", "--yes"];
+    const first = await run(args, { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(first.exitCode, 0, first.stderr);
+    assert.equal(first.json.data.chainFile, join(a.out, "root.pem"));
+    // different content in an output is still refused
+    await fs.writeFile(join(dir, "other.pem"), "x");
+    const clash = await run(["sign-cert", pendingCa(3).record.caId, "--dir", a.out, "--offline", "--csr", csrPath, "--out", join(dir, "other.pem"), "--yes"], { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(clash.error.code, "already_exists");
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("revoke-cert --cert revokes an intermediate issued before adoption; it must verify under the root and is recorded only after the confirm", async () => {
+  const dir = await tempDir();
+  try {
+    const a = await adoptedBare(dir);
+    const old = await a.issue(1);
+    const certPath = join(dir, "old.pem");
+    await fs.writeFile(certPath, old!.pem);
+    const base = (path: string): string[] => ["revoke-cert", "--dir", a.out, "--cert", path, "--reason", "keyCompromise", "--offline", "--crl-out", join(dir, "r.crl.pem")];
+    assert.equal((await readState(a.out)).issued.some((e) => e.serial === old!.certificate.serialHex), false);
+    // unknown to the state without --cert
+    const unknown = await run(["revoke-cert", "--dir", a.out, "--serial", old!.certificate.serialHex, "--reason", "keyCompromise", "--offline", "--crl-out", join(dir, "u.crl.pem")]);
+    assert.equal(unknown.error.code, "unknown_serial");
+    assert.match(unknown.error.message, /--cert/);
+    // declined: nothing recorded
+    const declined = await run(base(certPath), { stdin: new FakeTerminal("no\r") });
+    assert.equal(declined.error.code, "confirmation_declined");
+    assert.equal((await readState(a.out)).issued.some((e) => e.serial === old!.certificate.serialHex), false);
+    // the root itself, and a certificate from another root, are refused
+    assert.equal((await run(base(join(dir, "root.pem")))).error.code, "certificate_invalid");
+    const other = await adoptedBare(await tempDir());
+    const foreign = await other.issue(1);
+    await fs.writeFile(join(dir, "foreign.pem"), foreign!.pem);
+    assert.equal((await run(base(join(dir, "foreign.pem")))).error.code, "certificate_invalid");
+    // the real thing
+    const result = await run(base(certPath), { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stderr, new RegExp(`Serial revoked: +${old!.certificate.serialHex}`));
+    assert.match(result.stderr, /Certificate from: +file /);
+    assert.match(result.stderr, new RegExp(`Fingerprint: +SHA-256 ${old!.certificate.fingerprint}`));
+    const state = await readState(a.out);
+    assert.equal(state.issued.find((e) => e.serial === old!.certificate.serialHex)?.status, "imported");
+    assert.equal(await exists(join(a.out, "issued", `${old!.certificate.serialHex}.pem`)), true);
+    const crl = parseCrl(fromPem(await fs.readFile(join(dir, "r.crl.pem"), "utf8"), "X509 CRL"));
+    assert.ok(crl.entries.some((e) => e.serial === old!.certificate.serialHex && e.reason === "keyCompromise"));
+    // two selectors at once are a usage error
+    assert.equal((await run(["revoke-cert", "--dir", a.out, "--cert", certPath, "--serial", "01", "--reason", "keyCompromise", "--offline", "--crl-out", join(dir, "z.crl.pem")])).exitCode, 2);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("online revoke-cert <ca-id> imports the CA's certificate from the server when the state lacks it", async () => {
+  const dir = await tempDir();
+  try {
+    const a = await adoptedBare(dir);
+    const old = await a.issue(2);
+    const ca = pendingCa(5);
+    ca.record.status = "ACTIVE";
+    ca.record.certificatePem = old!.pem;
+    ca.record.fingerprint = old!.certificate.fingerprint;
+    const s = server(ca.record);
+    const crlPem = await fs.readFile(join(a.out, "root.crl.pem"), "utf8");
+    const crl = parseCrl(fromPem(crlPem, "X509 CRL"));
+    const extId = `ext-${a.root.spkiSha256.slice(0, 40)}`;
+    s.externals.set(extId, {
+      extId,
+      fingerprint: a.root.fingerprint,
+      crlPem,
+      crl: { numberHex: crl.number!.toString(16).padStart(40, "0"), sha256: crl.sha256, thisUpdate: crl.thisUpdate.toISOString(), nextUpdate: (crl.nextUpdate as Date).toISOString() },
+      dependents: new Set([ca.record.caId]),
+      serials: new Map([[old!.certificate.serialHex, ca.record.caId]]),
+    });
+    const result = await run(["revoke-cert", ca.record.caId, "--dir", a.out, "--reason", "caCompromise"], { server: s, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.json.data.revoked, true);
+    assert.match(result.stderr, /Certificate from: +server https:\/\/admin\.example\.test/);
+    assert.match(result.stderr, new RegExp(`Fingerprint: +SHA-256 ${old!.certificate.fingerprint}`));
+    assert.equal(s.cas.get(ca.record.caId)?.status, "REVOKED");
+    const entry = (await readState(a.out)).issued.find((e) => e.serial === old!.certificate.serialHex);
+    assert.equal(entry?.caId, ca.record.caId);
+    assert.equal(entry?.status, "imported");
+    // a certificate the root did not issue is refused
+    const foreign = await adoptedBare(await tempDir());
+    const fo = await foreign.issue(1);
+    const ca2 = pendingCa(6);
+    ca2.record.status = "ACTIVE";
+    ca2.record.certificatePem = fo!.pem;
+    const refused = await run(["revoke-cert", ca2.record.caId, "--dir", a.out, "--reason", "caCompromise"], { server: server(ca2.record), stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(refused.error.code, "certificate_invalid");
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("resolveCa refuses a server-supplied CA ID that is not a CA ID", async () => {
+  const client = { listPkiCas: async () => ({ cas: [{ name: "evil", caId: "ca-\x1b[2J" }], nextCursor: undefined }) } as never;
+  await assert.rejects(resolveCa(client, "t", "evil", "prod"), /malformed CA ID/);
+});
+
+test("truncated CRLs and certificates are invalid input (exit 2), not a transport error", () => {
+  const key = bareKey();
+  // an empty [3] extensions wrapper
+  const emptyWrapper = makeBareRoot({ privateKey: key, emptyExtensionsWrapper: true });
+  assert.throws(() => parseCert(emptyWrapper.der), (e: any) => e.code === "certificate_invalid" && e.exitCode === 2);
+  // an empty [0] extensions wrapper in a TBSCertList
+  const root = parseCertificate(makeBareRoot({ privateKey: key }).der);
+  const alg = signatureAlgorithmForSpki(root.spkiDer);
+  const tbs = seq(smallInt(1), alg.algorithmIdentifier, root.subjectDer, time(new Date()), time(new Date(Date.now() + 86_400_000)), tlv(0xa0));
+  const crl = seq(tbs, alg.algorithmIdentifier, bitString(Buffer.from([1, 2, 3])));
+  assert.throws(() => parseCrl(crl), (e: any) => e.code === "crl_invalid" && e.exitCode === 2);
+  // a TBS that stops after the issuer
+  const short = seq(seq(smallInt(1), alg.algorithmIdentifier, root.subjectDer), alg.algorithmIdentifier, bitString(Buffer.from([1])));
+  assert.throws(() => parseCrl(short), (e: any) => e.exitCode === 2);
+});
+
+test("the server cannot attach a certificate the state knows to another CA", async () => {
+  const dir = await tempDir();
+  try {
+    const a = await adoptedBare(dir);
+    const first = pendingCa(1);
+    const s = server(first.record);
+    const signed = await run(["sign-cert", first.record.caId, "--dir", a.out, "--environment", "prod", "--yes"], { server: s, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(signed.exitCode, 0, signed.stderr);
+    const issuedPem = await fs.readFile(join(a.out, "issued", `${signed.json.data.serial}.pem`), "utf8");
+    // A second CA whose "certificate" the server claims is the one EZ issued for the first.
+    const liar = pendingCa(2);
+    liar.record.status = "ACTIVE";
+    liar.record.certificatePem = issuedPem;
+    s.add(liar.record);
+    const before = await snapshot(a.out);
+    const result = await run(["revoke-cert", liar.record.caId, "--dir", a.out, "--reason", "caCompromise"], { server: s, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(result.exitCode, 5);
+    assert.equal(result.error.code, "state_conflict");
+    assert.deepEqual(await snapshot(a.out), before);
+    assert.equal(s.cas.get(first.record.caId)?.status, "ACTIVE");
+    assert.equal(s.mutations.filter((r) => r.url.pathname.endsWith("/crl")).length, 0);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("sign-cert --offline refuses before signing when --crl-out holds a CRL that this run renews, and accepts the state's own copy", async () => {
+  const dir = await tempDir();
+  try {
+    const a = await adoptedBare(dir);
+    const ca = pendingCa(4);
+    const csrPath = join(dir, "ca.csr.pem");
+    await fs.writeFile(csrPath, ca.csr.pem);
+    const mine = join(dir, "mine.crl.pem");
+    await fs.copyFile(join(a.out, "root.crl.pem"), mine);
+    const args = (crlOut: string): string[] => ["sign-cert", ca.record.caId, "--dir", a.out, "--offline", "--csr", csrPath, "--out", join(dir, "ca.pem"), "--crl-out", crlOut, "--yes"];
+    const before = await snapshot(a.out);
+    // 150 days later the 180-day CRL is due, so this run renews it
+    const refused = await run(args(mine), { laterDays: 150, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(refused.exitCode, 5);
+    assert.equal(refused.error.code, "already_exists");
+    assert.doesNotMatch(refused.stderr, /Review:/, "refused before the review and any signature");
+    assert.deepEqual(await snapshot(a.out), before);
+    assert.equal(await exists(join(dir, "ca.pem")), false);
+    // the state's own copy is rewritten with the renewed CRL, which is exactly what --crl-out gets
+    const ok = await run(args("root.crl.pem"), { laterDays: 150, stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(ok.exitCode, 0, ok.stderr);
+    assert.equal(ok.json.data.crl.renewed, true);
+    // not due: an identical existing file is fine
+    const fresh = await adoptedBare(await tempDir());
+    const same = join(dirname(fresh.out), "same.crl.pem");
+    await fs.copyFile(join(fresh.out, "root.crl.pem"), same);
+    const notDue = await run(["sign-cert", ca.record.caId, "--dir", fresh.out, "--offline", "--csr", csrPath, "--out", join(dirname(fresh.out), "ca.pem"), "--crl-out", same, "--yes"], { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(notDue.exitCode, 0, notDue.stderr);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("revoke-cert --cert is relative to --dir, like the other input paths under the root directory", async () => {
+  const dir = await tempDir();
+  try {
+    const a = await adoptedBare(dir);
+    const old = await a.issue(3);
+    await fs.writeFile(join(a.out, "old-ca.pem"), old!.pem);
+    const result = await run(["revoke-cert", "--dir", a.out, "--cert", "old-ca.pem", "--reason", "superseded", "--offline", "--crl-out", "out.crl.pem"], { stdin: new FakeTerminal("confirm\r", `${PASS}\r`) });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.json.data.serial, old!.certificate.serialHex);
   } finally {
     await cleanup(dir);
   }

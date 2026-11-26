@@ -13,6 +13,9 @@
     "dist",
     "!dist/ez-yubikey-smoke.*",
     "!dist/ez-yubikey-testkit.*",
+    "!dist/*.test.*",
+    "!dist/ez-fake.*",
+    "!dist/ez-testkit.*",
     "README.md",
     "LICENSE"
   ],

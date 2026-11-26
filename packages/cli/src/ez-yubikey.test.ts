@@ -24,6 +24,7 @@ const SECOND = 22222222;
 const token = "test.header.signature";
 const origin = "https://admin.example.test";
 const clock = { value: Date.parse("2026-11-25T12:00:00Z") };
+FakeServer.clock = () => clock.value;
 
 interface Run {
   ez: any;

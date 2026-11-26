@@ -99,6 +99,8 @@ export interface BareRootOptions {
   /** Extension TLVs (`extension(...)`) to include; none gives a v3 certificate without extensions (like ykman's). */
   readonly extensions?: readonly Buffer[];
   readonly serial?: Buffer;
+  /** An empty `[3]` wrapper (malformed): for parser tests. */
+  readonly emptyExtensionsWrapper?: boolean;
 }
 
 /** A self-signed v3 root with exactly the extensions given, for adoption tests (a ykman-style root has none). */
@@ -118,7 +120,7 @@ export const makeBareRoot = (options: BareRootOptions): { der: Buffer; pem: stri
     seq(time(notBefore), time(notAfter)),
     name,
     spkiDer,
-    ...(exts.length === 0 ? [] : [explicit(3, seq(...exts))]),
+    ...(options.emptyExtensionsWrapper ? [tlv(0xa3)] : exts.length === 0 ? [] : [explicit(3, seq(...exts))]),
   );
   const signature =
     algorithm.keyType === "ec"

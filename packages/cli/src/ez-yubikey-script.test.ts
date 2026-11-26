@@ -141,7 +141,7 @@ class PivSession:
     def put_certificate(self, slot, cert, compress=False): self._slot(slot)
 import sys
 `,
-  "ykman/__init__.py": "",
+  "ykman/__init__.py": "import os\n__version__ = os.environ.get('FAKE_YKMAN_VERSION', '5.9.0')\n",
   "ykman/device.py": `
 import json, os
 from yubikit.piv import world
@@ -203,7 +203,7 @@ const device = (serial: number, extra: Partial<World["devices"][number]> = {}): 
   ...extra,
 });
 
-const withPython = (name: string, fn: (run: (world: World, request: Record<string, unknown>) => Promise<{ result: any; stderr: string; stdout: string; log: any[] }>) => Promise<void>): void => {
+const withPython = (name: string, fn: (run: (world: World, request: Record<string, unknown>, env?: Record<string, string>) => Promise<{ result: any; stderr: string; stdout: string; log: any[] }>) => Promise<void>): void => {
   test(name, { skip: !haveAll && process.env.CI === undefined }, async () => {
     assert.ok(haveAll, "python3 is required in CI");
     const dir = await fs.mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "ez-py-"));
@@ -214,12 +214,12 @@ const withPython = (name: string, fn: (run: (world: World, request: Record<strin
       }
       await fs.mkdir(join(dir, "script"));
       await fs.writeFile(join(dir, "script", "hemlig_ez_piv.py"), YUBIKEY_SCRIPT);
-      await fn(async (world, request) => {
+      await fn(async (world, request, extraEnv = {}) => {
         await fs.writeFile(join(dir, "world.json"), JSON.stringify(world));
         await fs.rm(join(dir, "log.jsonl"), { force: true });
         const out = spawnSync("python3", [join(dir, "script", "hemlig_ez_piv.py")], {
           input: `${JSON.stringify({ v: 1, ...request })}\n`,
-          env: { ...process.env, PYTHONPATH: join(dir, "fakes"), FAKE_WORLD: join(dir, "world.json"), FAKE_LOG: join(dir, "log.jsonl"), PYTHONDONTWRITEBYTECODE: "1" },
+          env: { ...process.env, PYTHONPATH: join(dir, "fakes"), FAKE_WORLD: join(dir, "world.json"), FAKE_LOG: join(dir, "log.jsonl"), PYTHONDONTWRITEBYTECODE: "1", ...extraEnv },
           encoding: "utf8",
         });
         const frame = out.stdout.split("\n").find((l) => l.startsWith("HEMLIG-EZ-RESULT "));
@@ -335,4 +335,26 @@ withPython("script: certificates go only into an existing key's slot", async (ru
   assert.equal(ok.result.ok, true);
   const existing = await run(w, { op: "put-certificate", slot: "82", certificateDer: cert, managementKey: { mode: "default" } });
   assert.equal(existing.result.code, "slot_occupied");
+});
+
+withPython("script: operations that need YubiKey Manager 5.5 fail with a clear error on an older one, and reads still work", async (run) => {
+  const old = { FAKE_YKMAN_VERSION: "5.2.1" };
+  const key = Buffer.from("0102030405060708aa", "hex").toString("base64");
+  const cert = Buffer.from("cert").toString("base64");
+  const requests: Record<string, unknown>[] = [
+    { op: "put-key", slot: "9c", keyDer: key, touchPolicy: "always", pinPolicy: "always", overwrite: true, managementKey: { mode: "default" } },
+    { op: "put-certificate", slot: "9c", certificateDer: cert, overwrite: true, managementKey: { mode: "default" } },
+    { op: "check-management-key", slot: "9c", managementKey: { mode: "default" } },
+    { op: "generate", slot: "9c", keyType: "ECCP384", touchPolicy: "always", overwrite: true, managementKey: { mode: "default" } },
+    { op: "protect-management-key", slot: "9c", pin: "123456" },
+  ];
+  for (const request of requests) {
+    const result = await run(world(device(111)), request, old);
+    assert.equal(result.result.code, "tool_unsupported", String(request.op));
+    assert.match(result.result.message, /needs YubiKey Manager 5\.5 or later; found 5\.2\.1/);
+    assert.equal(result.log.some((e) => e.m === "put_key" || e.m === "generate_key" || e.m === "put_certificate"), false);
+  }
+  assert.equal((await run(world(device(111)), { op: "info", slot: "9c" }, old)).result.ok, true);
+  assert.equal((await run(world(device(111)), { op: "sign", slot: "9c", pin: "123456", items: [] }, old)).result.ok, true);
+  assert.equal((await run(world(device(111)), requests[2] as Record<string, unknown>, { FAKE_YKMAN_VERSION: "5.5.0" })).result.ok, true);
 });

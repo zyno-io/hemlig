@@ -65,6 +65,9 @@ export interface RevokeReview {
   readonly alreadyRevoked: boolean;
   /** Serials recorded earlier but not yet in a signed CRL; this CRL lists them too. */
   readonly alsoListed?: readonly string[];
+  /** Where a certificate the state did not record came from (a file or the server), and its SHA-256 fingerprint. */
+  readonly certificateSource?: string;
+  readonly certificateFingerprint?: string;
 }
 
 export const renderRevokeReview = (review: RevokeReview): string => {
@@ -75,6 +78,8 @@ export const renderRevokeReview = (review: RevokeReview): string => {
     row("Environment", displaySafe(review.environment ?? "(unknown)")),
     row("Subject", displaySafe(review.subjectDn)),
     row("Serial revoked", review.serial),
+    ...(review.certificateSource === undefined ? [] : [row("Certificate from", displaySafe(review.certificateSource))]),
+    ...(review.certificateFingerprint === undefined ? [] : [row("Fingerprint", `SHA-256 ${review.certificateFingerprint}`)]),
     row("Reason", review.reason),
     ...(review.invalidityDate === undefined ? [] : [row("Invalidity date", review.invalidityDate.toISOString())]),
     row("Effect", "every certificate this CA issued stops being trusted once the new root CRL is uploaded; revocation is permanent"),

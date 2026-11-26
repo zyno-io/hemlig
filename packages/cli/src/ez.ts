@@ -124,7 +124,7 @@ export const ezHelp = {
     "sign-cert <ca> --offline":
       "--csr F [--expect-spki-sha256 HEX] [--out F] [--chain-out F] [--crl-out F] [--environment ENV] [--validity D] [--key F]; no network; writes the certificate (and optional chain and CRL copies) to carry to an online machine.",
     "activate <ca>": "--environment ENV --certificate F --chain F [--crl F]; online: uploads the root CRL, then activates. Needs no state and no key.",
-    "revoke-cert (<ca> | --serial HEX)":
+    "revoke-cert (<ca> | --serial HEX | --cert FILE)":
       "--reason R [--invalidity-date ISO] [--offline --crl-out F] [--key F] [--passphrase-stdin]; shows what is revoked, asks you to type confirm, signs a new CRL and uploads it.",
     "renew-crl": "[--if-due] [--renew-before 45d] [--crl-validity D] [--expect-ext-id ext-..] [--offline --crl-out F] [--key F] [--passphrase-stdin]; signs a new root CRL and uploads it.",
     "upload-crl": "[--expect-ext-id ext-..]; uploads the current root CRL (retry path, or another deployment). Stateless: --crl F --root-cert F verifies a carried CRL under the root, refuses one that drops a revocation the server lists or is not newer, then uploads it (no state directory needed).",
@@ -233,7 +233,7 @@ const COMMANDS: Record<string, CommandSpec> = {
   activate: { operands: [1, 1], flags: [...ONLINE, "environment", "certificate", "chain", "crl"] },
   "revoke-cert": {
     operands: [0, 1],
-    flags: [...STATE, ...SECRET, ...YUBIKEY_USE, ...ONLINE, "offline", "environment", "reason", "invalidity-date", "serial", "crl-out", "crl-validity", "expect-ext-id", "key"],
+    flags: [...STATE, ...SECRET, ...YUBIKEY_USE, ...ONLINE, "offline", "environment", "reason", "invalidity-date", "serial", "cert", "crl-out", "crl-validity", "expect-ext-id", "key"],
   },
   "renew-crl": {
     operands: [0, 0],
@@ -1156,8 +1156,9 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
     // Root registration and the server cross-checks come before any prompt.
     let ext: Awaited<ReturnType<typeof findExternalRoot>> = undefined;
     if (session !== undefined) {
-      assertClockSkew(session, ctx.clock());
       ext = await findExternalRoot(session, state.root);
+      // The first server response carries its clock; check it before anything is signed or uploaded.
+      assertClockSkew(session, ctx.clock());
       await store.checkServer(await fetchServerView(session, ext, store.rootCertificate));
     }
 
@@ -1167,8 +1168,18 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
       crl: str(v, "crl-out") === undefined ? undefined : withinDir(dir, str(v, "crl-out") as string),
     };
     if (offline && prior === undefined) {
-      for (const path of [outputs.out, outputs.chain, outputs.crl]) {
-        if (path !== undefined && (await exists(path))) {
+      // Like writeOutput: an existing file that already holds exactly what would be written (the root, the current CRL) is fine.
+      const rootPem = Buffer.from(pemOf(root.der, "CERTIFICATE"));
+      const wanted = new Map<string, Buffer | undefined>([
+        [outputs.out, undefined],
+        ...(outputs.chain === undefined ? [] : [[outputs.chain, rootPem] as const]),
+      ]);
+      // --crl-out is decided below, once it is known whether this run renews the CRL.
+      for (const path of [outputs.out, outputs.chain]) {
+        if (path === undefined || !(await exists(path))) continue;
+        const expected = wanted.get(path);
+        const existing = expected === undefined ? undefined : await fs.readFile(path).catch(() => undefined);
+        if (expected === undefined || existing === undefined || !existing.equals(expected)) {
           throw new EzError(5, "already_exists", `${path} already exists; nothing was overwritten.`, { files: [path] });
         }
       }
@@ -1199,6 +1210,17 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
     const serial = serialHex(serialBytes);
     const needCert = prior === undefined;
     const needCrl = store.crlDue(renewBefore, now);
+    if (offline && prior === undefined && outputs.crl !== undefined && (await exists(outputs.crl))) {
+      // A renewed CRL is written to --crl-out after signing, so an existing file is acceptable only where it cannot clash: the
+      // state's own CRL copy (rewritten with the renewed CRL) when renewing, or a file already holding the current CRL.
+      const current = await store.readCurrentCrl();
+      const existing = await fs.readFile(outputs.crl).catch(() => undefined);
+      const identical = current !== undefined && existing !== undefined && existing.equals(Buffer.from(pemOf(current.der, "X509 CRL")));
+      const isCopy = outputs.crl === withinDir(dir, state.crl.copyFile);
+      if (needCrl ? !isCopy : !identical) {
+        throw new EzError(5, "already_exists", `${outputs.crl} already exists${needCrl ? " and the root CRL is renewed in this run" : ""}; nothing was signed or overwritten.`, { files: [outputs.crl] });
+      }
+    }
     const crlPreview = needCrl ? { number: state.crl.lastNumber + 1, nextUpdate: new Date(store.nextCrlThisUpdate(now).getTime() + crlValidity * DAY_MS) } : undefined;
 
     let confirmation: Confirmation | undefined;
@@ -1372,8 +1394,9 @@ const activateCommand = async (ctx: Ctx): Promise<Receipt> => {
     return { data: { command: "activate", caId, environment, fingerprint: certificate.fingerprint, activated: true, alreadyActive: true, ca: { status: ca.status, version: ca.version } } };
   }
   if (ca.status !== "PENDING_CERTIFICATE") throw new EzError(5, "ca_not_pending", `That CA is ${ca.status}, not waiting for a certificate.`);
-  assertClockSkew(session, ctx.clock());
   const ext = await findExternalRoot(session, { spkiSha256: root.spkiSha256, fingerprint: root.fingerprint });
+  // The first server response carries its clock; check it before anything is signed or uploaded.
+  assertClockSkew(session, ctx.clock());
   let uploaded = false;
   let changed: boolean | undefined;
   let skipped: string | undefined;
@@ -1429,12 +1452,35 @@ const certificateBytes = (bytes: Buffer): Buffer => {
 // revoke-cert
 // ---------------------------------------------------------------------------------------------------------------------
 
+const safeSubjectDn = (cert: ParsedCertificate): string => {
+  try {
+    return describeName(assertRestrictedName(cert.subjectDer, "external"));
+  } catch {
+    return "(unreadable subject)";
+  }
+};
+
+/** A certificate this root issued: its issuer, signature and AKI are the root's, and it is not the root itself. */
+const assertIssuedByRoot = (cert: ParsedCertificate, root: ParsedCertificate): ParsedCertificate => {
+  if (cert.fingerprint === root.fingerprint || cert.spkiDer.equals(root.spkiDer)) {
+    throw new EzError(5, "certificate_invalid", "That is the root certificate (or one with the root's key), not a certificate the root issued.");
+  }
+  if (!cert.issuerDer.equals(root.subjectDer) || !verifyCertificateSignature(cert, root.spkiDer)) {
+    throw new EzError(5, "certificate_invalid", "That certificate was not issued by this root (its issuer or signature does not verify under the root's key).");
+  }
+  if (root.subjectKeyIdentifier === undefined || cert.authorityKeyIdentifier === undefined || !cert.authorityKeyIdentifier.equals(root.subjectKeyIdentifier)) {
+    throw new EzError(5, "certificate_invalid", "That certificate's authority key identifier is not this root's subject key identifier.");
+  }
+  return cert;
+};
+
 const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
   const v = ctx.values;
   const offline = flag(v, "offline");
   const reference = ctx.operands[0];
   const serialFlag = str(v, "serial");
-  if ((reference === undefined) === (serialFlag === undefined)) usage("Supply exactly one of <ca> or --serial HEX.");
+  const certFile = str(v, "cert");
+  if ([reference, serialFlag, certFile].filter((x) => x !== undefined).length !== 1) usage("Supply exactly one of <ca>, --serial HEX or --cert FILE.");
   const reason = str(v, "reason") as CrlReasonName | undefined;
   if (reason === undefined) usage("--reason is required (there is no default).");
   // certificateHold and aACompromise can only be repeated for a serial an adoption imported with that reason (checked below).
@@ -1455,12 +1501,56 @@ const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
     if (reference !== undefined) {
       caId = isCaId(reference) ? reference : await resolveCa((session as OnlineSession).client, (session as OnlineSession).token, reference, environmentOf(ctx, true) as string);
     }
-    const target =
-      caId !== null
-        ? state.issued.filter((e) => e.caId === caId && (e.status === "signed" || e.status === "activated"))
-        : state.issued.filter((e) => e.serial === EzStore.canonicalSerial(serialFlag as string));
+    const live = (e: IssuedEntry): boolean => e.status === "signed" || e.status === "activated" || e.status === "imported";
+    // A certificate the state never recorded (an adopted root's earlier intermediates): taken from --cert, or from the server
+    // for a CA. It must verify under this root; it is recorded only after the typed confirm.
+    let outside: { der: Buffer; caId: string | null; environment: string | null; adminOrigin: string | null } | undefined;
+    let target: IssuedEntry[];
+    if (certFile !== undefined) {
+      const der = certificateBytes(await readBounded(withinDir(dir, certFile), 32768, "certificate file"));
+      const cert = assertIssuedByRoot(parseCertificate(der), root);
+      target = state.issued.filter((e) => e.serial === cert.serialHex);
+      if (target.length === 0) outside = { der: cert.der, caId: null, environment: null, adminOrigin: null };
+    } else {
+      target = caId !== null ? state.issued.filter((e) => e.caId === caId && live(e)) : state.issued.filter((e) => e.serial === EzStore.canonicalSerial(serialFlag as string));
+      if (target.length === 0 && caId !== null && session !== undefined) {
+        const ca = await fetchCa(session, caId);
+        if (ca.certificatePem !== undefined) {
+          const cert = assertIssuedByRoot(parseCertificate(fromPem(ca.certificatePem, "CERTIFICATE")), root);
+          // The server must not be able to attach a certificate this state already knows to a different CA.
+          const known = state.issued.find((e) => e.serial === cert.serialHex);
+          if (known !== undefined && (known.caId !== caId || (known.fingerprint !== null && known.fingerprint !== cert.fingerprint))) {
+            throw new EzError(5, "state_conflict", `The server's certificate for ${caId} has serial ${cert.serialHex}, which this state already records for ${known.caId ?? "no CA"}; nothing was revoked.`, { reason: "serial_other_ca", serial: cert.serialHex });
+          }
+          outside = { der: cert.der, caId, environment: ca.environment, adminOrigin: session.origin.origin };
+        }
+      }
+    }
+    const certSource = certFile !== undefined ? `file ${withinDir(dir, certFile)}` : outside !== undefined && session !== undefined ? `server ${session.origin.origin}` : undefined;
+    if (outside !== undefined) {
+      const cert = parseCertificate(outside.der);
+      target = [
+        {
+          serial: cert.serialHex,
+          caId: outside.caId,
+          environment: outside.environment,
+          adminOrigin: outside.adminOrigin,
+          subjectDn: safeSubjectDn(cert),
+          subjectKey: "",
+          csrSha256: null,
+          spkiSha256: cert.spkiSha256,
+          certificateFile: null,
+          fingerprint: cert.fingerprint,
+          notBefore: cert.notBefore.toISOString(),
+          notAfter: cert.notAfter.toISOString(),
+          status: "imported",
+          signedAt: null,
+          activatedAt: null,
+        },
+      ];
+    }
     if (target.length !== 1) {
-      throw new EzError(2, "unknown_serial", target.length === 0 ? "This root state has no such issued certificate." : "More than one certificate matches; revoke by --serial.");
+      throw new EzError(2, "unknown_serial", target.length === 0 ? "This root state has no such issued certificate. For a certificate issued before adoption, pass it with --cert FILE (online, a CA ID also works when the server holds its certificate)." : "More than one certificate matches; revoke by --serial.", {});
     }
     const entry = target[0] as IssuedEntry;
     const already = state.revoked.find((r) => r.serial === entry.serial);
@@ -1482,8 +1572,9 @@ const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
     const needSign = already === undefined || unlisted || store.crlDue(renewBefore);
     let ext: Awaited<ReturnType<typeof findExternalRoot>> = undefined;
     if (session !== undefined) {
-      assertClockSkew(session, ctx.clock());
       ext = await findExternalRoot(session, state.root);
+      // The first server response carries its clock; check it before anything is signed or uploaded.
+      assertClockSkew(session, ctx.clock());
       await store.checkServer(await fetchServerView(session, ext, store.rootCertificate));
       checkExpectedExt(str(v, "expect-ext-id"), ext);
     }
@@ -1504,11 +1595,13 @@ const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
           root: rootLabel(root),
           crl: { number: state.crl.lastNumber + 1, nextUpdate: new Date(store.nextCrlThisUpdate(now).getTime() + crlValidity * DAY_MS) },
           alreadyRevoked: already !== undefined,
+          ...(certSource === undefined ? {} : { certificateSource: certSource, certificateFingerprint: entry.fingerprint ?? undefined }),
         }),
       );
       const confirmation = await ctx.prompter.confirm("revoke");
       const signer = await unlockSigner(ctx, store);
       try {
+        if (outside !== undefined) await store.importIssued({ ...outside });
         // A serial already recorded (for example imported with certificateHold) is signed as recorded.
         if (already === undefined) await store.addRevocation({ serial: entry.serial, caId: entry.caId, reason: reason as CrlReasonName, invalidityDate });
         ctx.progress.completed.push("revocation-recorded");
@@ -1571,8 +1664,9 @@ const renewCrl = async (ctx: Ctx): Promise<Receipt> => {
     const session = offline ? undefined : await sessionOf(ctx);
     let ext: Awaited<ReturnType<typeof findExternalRoot>> = undefined;
     if (session !== undefined) {
-      assertClockSkew(session, ctx.clock());
       ext = await findExternalRoot(session, state.root);
+      // The first server response carries its clock; check it before anything is signed or uploaded.
+      assertClockSkew(session, ctx.clock());
       await store.checkServer(await fetchServerView(session, ext, store.rootCertificate));
       checkExpectedExt(str(v, "expect-ext-id"), ext);
     }
@@ -1620,8 +1714,9 @@ const uploadCrlStateless = async (ctx: Ctx): Promise<Receipt> => {
   const crl = parseCrl(bytes.toString("latin1").includes("-----BEGIN") ? fromPem(bytes.toString("latin1"), "X509 CRL") : bytes);
   assertCrlFromRoot(crl, root, "The CRL");
   const session = await sessionOf(ctx);
-  assertClockSkew(session, ctx.clock());
   const ext = await findExternalRoot(session, { spkiSha256: root.spkiSha256, fingerprint: root.fingerprint });
+  // The first server response carries its clock; check it before anything is signed or uploaded.
+  assertClockSkew(session, ctx.clock());
   if (ext === undefined) throw new EzError(4, "not_found", "The server does not know this root yet; it is registered when the first CA under it is activated.");
   checkExpectedExt(str(v, "expect-ext-id"), ext);
   const summary = { number: Number(crl.number), sha256: crl.sha256 };
@@ -1644,8 +1739,9 @@ const uploadCrl = async (ctx: Ctx): Promise<Receipt> => {
   const store = await EzStore.open(storeOptions(ctx, directoryOf(ctx.values)));
   try {
     const session = await sessionOf(ctx);
-    assertClockSkew(session, ctx.clock());
     const ext = await findExternalRoot(session, store.state.root);
+    // The first server response carries its clock; check it before anything is signed or uploaded.
+    assertClockSkew(session, ctx.clock());
     if (ext === undefined) throw new EzError(4, "not_found", "The server does not know this root yet; it is registered when the first CA under it is activated.");
     await store.checkServer(await fetchServerView(session, ext, store.rootCertificate));
     checkExpectedExt(str(ctx.values, "expect-ext-id"), ext);
@@ -1882,8 +1978,9 @@ const adoptCa = async (ctx: Ctx): Promise<Receipt> => {
     let serverCrl: ParsedCrl | undefined;
     if (!offline) {
       session = await sessionOf(ctx);
-      assertClockSkew(session, now);
       ext = await findExternalRoot(session, { spkiSha256: cert.spkiSha256, fingerprint: cert.fingerprint });
+      // The first server response carries its clock; check it before anything is signed or uploaded.
+      assertClockSkew(session, now);
       if (ext !== undefined && reissuePlan !== undefined) {
         throw new EzError(5, "root_mismatch", "The server already knows this root; a re-issued certificate would change its fingerprint and no longer match the registered root.", { extId: ext.extId });
       }

@@ -68,6 +68,7 @@ export interface FakeCa {
   readonly requestedConstraints: Record<string, unknown>;
   csrPem: string;
   certificateSerial?: string;
+  certificatePem?: string;
 }
 
 export const caIdOf = (n: number): string => `ca-11111111-2222-3333-4444-${String(n).padStart(12, "0")}`;
@@ -116,7 +117,11 @@ export class FakeServer implements HemligTransport {
   public readonly cas = new Map<string, FakeCa>();
   public readonly externals = new Map<string, FakeExternal>();
   public readonly requests: TransportRequest[] = [];
+  /** The clock behind the default `Date` header (tests point it at their own fixed clock). */
+  public static clock: () => number = Date.now;
   public dateHeader: string | undefined;
+  /** Send no `Date` header (a server whose clock cannot be read). */
+  public omitDate = false;
   /** Fail (throw a transport error) on the next request whose path ends with this suffix, after (`after`) or before processing. */
   public failNext: { suffix: string; after: boolean } | undefined;
   /** Ignore CRL uploads' revocations (to test `revocation_not_applied`). */
@@ -146,7 +151,8 @@ export class FakeServer implements HemligTransport {
       this.failNext = undefined;
       throw new TypeError("fetch failed");
     }
-    return this.dateHeader === undefined ? response : { ...response, headers: { ...response.headers, date: this.dateHeader } };
+    if (this.omitDate) return response;
+    return { ...response, headers: { ...response.headers, date: this.dateHeader ?? new Date(FakeServer.clock()).toUTCString() } };
   }
 
   /** Requests that changed something, in order. */
@@ -169,6 +175,7 @@ export class FakeServer implements HemligTransport {
       requestedConstraints: ca.requestedConstraints,
       csrPem: ca.status === "PENDING_CERTIFICATE" ? ca.csrPem : undefined,
       ...(ca.fingerprint === undefined ? {} : { fingerprint: ca.fingerprint }),
+      ...(ca.certificatePem === undefined ? {} : { certificatePem: ca.certificatePem }),
       ...(ca.parent === undefined ? {} : { parent: ca.parent }),
       createdAt: "2026-11-25T00:00:00.000Z",
     };
@@ -191,7 +198,7 @@ export class FakeServer implements HemligTransport {
     const der = fromPem(pem, "X509 CRL");
     const crl = parseCrl(der);
     const sha256 = sha256Hex(der);
-    const number = (crl.number as bigint).toString(16).padStart(2, "0");
+    const number = (crl.number as bigint).toString(16).padStart(40, "0");
     if (ext.crl?.sha256 === sha256) return { status: 200, headers: {}, body: { extId: ext.extId, crl: ext.crl, changed: false, revokedCaIds: this.revoked(ext, crl.entries) } };
     if (ext.crl !== undefined && BigInt(`0x${ext.crl.numberHex}`) >= (crl.number as bigint)) return errorResponse(409, "crl_not_newer");
     ext.crlPem = pem;
