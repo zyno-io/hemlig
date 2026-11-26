@@ -108,6 +108,7 @@ import {
   type ValidatedCsr,
 } from "./ez-x509";
 import { resolveCa, isCaId } from "./pki";
+import { humanFromReceipt, makeStyle, renderHuman, renderHumanError, type ErrorInfo } from "./ez-output";
 import type { TerminalInput } from "./tty";
 
 export const ezHelp = {
@@ -116,7 +117,7 @@ export const ezHelp = {
     "generate-ca":
       "[--subject 'CN=..,O=..'] [--key-algorithm ECDSA_P384|ECDSA_P256|RSA_3072|RSA_4096] [--validity 20y] [--intermediate-validity 730d] [--crl-validity 180d] [--path-len N] [--key-file F] [--cert-file F] [--crl-file F] [--passphrase-stdin] [--yes]; creates a root, CRL #1 and the state file. Opens a settings form on a terminal. YubiKey: --yubikey [--yubikey-serial N] [--second-yubikey-serial N] [--slot 9c] [--touch-policy always|cached|never] [--overwrite-slot 9c] [--no-slot-certificate] [--protect-management-key] [--pin-stdin] [--allow-last-pin-attempt] imports a software-generated key (encrypted backup file kept) into the YubiKey; add --on-device --accept-no-backup to generate on the YubiKey with no backup and no recovery.",
     "adopt-ca":
-      "(--openssl-dir DIR | --cert F --key F | --yubikey [--cert F]) [--crl F] [--openssl-index F] [--openssl-crlnumber F] [--crl-number N] [--no-prior-revocations] [--reissue-root-certificate [--validity D]] [--offline] [--crl-validity D] [--intermediate-validity D] [--key-file F] [--cert-file F] [--crl-file F] [--passphrase-stdin]; brings an existing offline root under EZ management. Needs a revocation source (--crl, an index.txt, or the server's root CRL) or --no-prior-revocations, and a CRL number source (or --crl-number N, at least the last CRL number the root ever issued). Software roots: the key is re-encrypted into --dir under a new passphrase (with --passphrase-stdin: the source key's passphrase first, if it is encrypted, then the new one) and the source files are never changed. --openssl-dir reads root.pem, private/root.key, index.txt, crlnumber and root.crl.pem. YubiKey: --yubikey [--yubikey-serial N] [--slot 9c] [--pin-stdin] [--allow-last-pin-attempt] reads the slot read-only and signs with it; nothing is written to the device unless --store-certificate-in-slot. Input files are relative to the current directory. Shows a review and asks you to type confirm. Online by default (reads the server's root CRL); --offline skips the server.",
+      "(--openssl-dir DIR | --cert F --key F | --yubikey [--cert F]) [--crl F] [--openssl-index F] [--openssl-crlnumber F] [--crl-number N] [--no-prior-revocations] [--reissue-root-certificate [--validity D]] [--offline] [--crl-validity D] [--intermediate-validity D] [--key-file F] [--cert-file F] [--crl-file F] [--passphrase-stdin]; brings an existing offline root into Hemlig. Needs a revocation source (--crl, an index.txt, or the server's root CRL) or --no-prior-revocations, and a CRL number source (or --crl-number N, at least the last CRL number the root ever issued). Software roots: the key is re-encrypted into --dir under a new passphrase (with --passphrase-stdin: the source key's passphrase first, if it is encrypted, then the new one) and the source files are never changed. --openssl-dir reads root.pem, private/root.key, index.txt, crlnumber and root.crl.pem. YubiKey: --yubikey [--yubikey-serial N] [--slot 9c] [--pin-stdin] [--allow-last-pin-attempt] reads the slot read-only and signs with it; nothing is written to the device unless --store-certificate-in-slot. Input files are relative to the current directory. Shows a review and asks you to type confirm. Online by default (reads the server's root CRL); --offline skips the server.",
     "import-key":
       "[--yubikey-serial N] [--slot 9c] [--touch-policy always|cached|never] [--overwrite-slot 9c] [--no-slot-certificate] [--protect-management-key] [--passphrase-stdin] [--pin-stdin] [--allow-last-pin-attempt]; decrypts the root's backup key file and imports it into a (another) YubiKey, then records the device.",
     "sign-cert <ca>":
@@ -131,7 +132,7 @@ export const ezHelp = {
     status: "[--offline]; local state, deployments and a server comparison.",
   },
   common:
-    "--dir DIR (default: the current directory; relative file flags are relative to it), --state-file NAME (default hemlig-ez.json), --break-stale-lock. Online commands also take --admin-url, --token-file and --timeout-ms.",
+    "--json (print the JSON receipt on stdout even on a terminal; piped output is always JSON), --dir DIR (default: the current directory; relative file flags are relative to it), --state-file NAME (default hemlig-ez.json), --break-stale-lock. Online commands also take --admin-url, --token-file and --timeout-ms.",
   prompts:
     "Passphrases and YubiKey PINs are typed at the terminal (twice for a new key) or read from a pipe with --passphrase-stdin and --pin-stdin (passphrase first). sign-cert and revoke-cert always ask you to type confirm at a terminal; --yes skips only the settings form.",
 };
@@ -154,6 +155,7 @@ const BOOLEAN_FLAGS = [
   "no-slot-certificate",
   "allow-last-pin-attempt",
   "pin-stdin",
+  "json",
   "no-prior-revocations",
   "reissue-root-certificate",
   "store-certificate-in-slot",
@@ -274,7 +276,7 @@ const parseEzArgs = (args: readonly string[]): Parsed | "help" => {
   if (spec === undefined) return usage("Unknown pki ez command. Run hemlig pki ez --help.");
   if (parsed.values.help === true) return "help";
   if (operands.length < spec.operands[0] || operands.length > spec.operands[1]) usage(`Wrong number of operands for ${command}. Run hemlig pki ez --help.`);
-  const allowed = new Set(spec.flags);
+  const allowed = new Set([...spec.flags, "json"]);
   for (const flag of seen) if (!allowed.has(flag)) usage(`--${flag} is not supported by ${command}.`);
   return { command, operands, values: parsed.values as Values };
 };
@@ -300,6 +302,8 @@ interface Ctx {
   readonly prompter: Prompter;
   readonly progress: Progress;
   readonly say: (text: string) => Promise<void>;
+  /** Like `say`, but only when the result is printed as JSON: on a terminal the human result replaces it. */
+  readonly summary: (text: string) => Promise<void>;
   readonly color: boolean;
   /** The ykman client (created on first use; `HEMLIG_YKMAN` names the executable). */
   readonly ykman: () => YkmanClient;
@@ -872,7 +876,7 @@ const generateCa = async (ctx: Ctx): Promise<Receipt> => {
         crl: withinDir(dir, crlFile),
       };
       Object.assign(ctx.progress.files, files);
-      await ctx.say(
+      await ctx.summary(
         [
           "",
           `Root created: ${formatSubject(subject)}`,
@@ -2069,7 +2073,7 @@ const adoptCa = async (ctx: Ctx): Promise<Receipt> => {
       }
       if (!encryptedSource) {
         warnings.push("key_unencrypted");
-        await ctx.say("WARNING: the source key file is NOT encrypted. EZ re-encrypts a copy under your new passphrase, but the original stays unprotected until you delete it.\n");
+        await ctx.say("WARNING: the source key file is NOT encrypted. Hemlig re-encrypts a copy under your new passphrase, but the original stays unprotected until you delete it.\n");
       }
       signer = new SoftwareSigner(sourceKey);
       if (!signer.spkiDer.equals(cert.spkiDer)) {
@@ -2092,7 +2096,7 @@ const adoptCa = async (ctx: Ctx): Promise<Receipt> => {
           notAfter: cert.notAfter,
           key: keyInfo.algorithm,
           spkiSha256: cert.spkiSha256,
-          storage: useYubiKey ? `YubiKey (no backup held by EZ), PIN and touch as the slot is set` : `software key file ${withinDir(dir, keyFile)} (re-encrypted)`,
+          storage: useYubiKey ? `YubiKey (no backup held by Hemlig), PIN and touch as the slot is set` : `software key file ${withinDir(dir, keyFile)} (re-encrypted)`,
           crl: {
             lastNumber: plan.lastNumber,
             sources: plan.sources,
@@ -2118,7 +2122,7 @@ const adoptCa = async (ctx: Ctx): Promise<Receipt> => {
         await signer.verifyPin();
         if (storeDeviceCertificate && handle !== undefined) await handle.checkManagement();
       } else {
-        const fresh = await ctx.prompter.passphrase({ create: true, fromStdin: flag(v, "passphrase-stdin"), label: "New passphrase for the EZ key file (12+ characters): " });
+        const fresh = await ctx.prompter.passphrase({ create: true, fromStdin: flag(v, "passphrase-stdin"), label: "New passphrase for the Hemlig key file (12+ characters): " });
         try {
           newKeyPem = encryptPkcs8((sourceKey as NonNullable<typeof sourceKey>).export({ type: "pkcs8", format: "der" }), fresh);
           const check = new SoftwareSigner(decryptKeyFile(newKeyPem, fresh));
@@ -2213,12 +2217,12 @@ const adoptCa = async (ctx: Ctx): Promise<Receipt> => {
         if (session !== undefined && ext?.crl !== undefined && ext.crl.sha256 === currentCrl.sha256) {
           await store.recordUpload(session.origin.origin, ext.extId, Number(currentCrl.number));
         }
-        await ctx.say(["", `Root adopted: ${formatSubject(subject)}`, `  SHA-256 fingerprint  ${finalRoot.fingerprint}`, `  CRL number           ${currentCrl.number}`, ""].join("\n"));
+        await ctx.summary(["", `Root adopted: ${formatSubject(subject)}`, `  SHA-256 fingerprint  ${finalRoot.fingerprint}`, `  CRL number           ${currentCrl.number}`, ""].join("\n"));
         if (!useYubiKey) {
           const originals = [recipe === undefined ? input(keyFlag as string) : join(recipe, "private", "root.key")];
-          await ctx.say(`NOTE: the original key file(s) remain: ${originals.join(", ")}. ${encryptedSource ? "OpenSSL's -aes256 protects them with only a few thousand PBKDF2 iterations" : "They are NOT encrypted"}; secure or delete them once you have backed up ${files.key}.\n`);
+          await ctx.summary(`NOTE: the original key file(s) remain: ${originals.join(", ")}. ${encryptedSource ? "OpenSSL's -aes256 protects them with only a few thousand PBKDF2 iterations" : "They are NOT encrypted"}; secure or delete them once you have backed up ${files.key}.\n`);
         } else {
-          await ctx.say("NOTE: EZ holds no backup of this YubiKey's key. If the device is lost or locked, this root is gone.\n");
+          await ctx.summary("NOTE: Hemlig holds no backup of this YubiKey's key. If the device is lost or locked, this root is gone.\n");
         }
         if (storeDeviceCertificate && handle !== undefined && io !== undefined) {
           try {
@@ -2258,7 +2262,7 @@ const adoptCa = async (ctx: Ctx): Promise<Receipt> => {
             warnings,
           },
           next: [
-            ...(useYubiKey ? ["EZ holds no backup of this YubiKey's key."] : [`Back up ${files.key}, then secure or delete the original key file(s).`]),
+            ...(useYubiKey ? ["Hemlig holds no backup of this YubiKey's key."] : [`Back up ${files.key}, then secure or delete the original key file(s).`]),
             ...(reissued === undefined ? [] : [`The root fingerprint changed (was ${cert.fingerprint}); redistribute ${files.certificate} to anything that pins the certificate.`]),
             ...(registered && newCrl !== undefined ? ["hemlig pki ez upload-crl"] : []),
             "hemlig pki ez sign-cert <ca-id> --environment <env>",
@@ -2281,7 +2285,7 @@ const adoptCa = async (ctx: Ctx): Promise<Receipt> => {
 
 const ADOPT_WARNINGS: Record<string, string> = {
   key_unencrypted: "the source key file is not encrypted",
-  no_key_backup: "EZ holds no backup of this YubiKey's key; if the device is lost or locked the root is gone",
+  no_key_backup: "Hemlig holds no backup of this YubiKey's key; if the device is lost or locked the root is gone",
   slot_certificate_differs: "the slot holds a different certificate than --cert; the one from --cert is adopted",
   crl_number_raised_by_server: "the server's CRL number raised the next number",
   root_key_rsa_2048: "RSA-2048 is a weak size for a root key",
@@ -2306,6 +2310,12 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
   const stdout = dependencies.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr = dependencies.stderr ?? ((text: string) => process.stderr.write(text));
   const nowMs = dependencies.now ?? Date.now;
+  // Terminals get a human result; pipes, redirects and --json keep the JSON envelope. Injected writers are not terminals
+  // unless a test says so.
+  const stdoutTty = dependencies.stdoutIsTTY ?? (dependencies.stdout === undefined && process.stdout.isTTY === true);
+  const stderrTty = dependencies.stderrIsTTY ?? (dependencies.stderr === undefined && process.stderr.isTTY === true);
+  const jsonRequested = args.includes("--json");
+  const human = stdoutTty && !jsonRequested;
   const progress: Progress = { completed: [], files: {} };
   let ykmanClient: YkmanClient | undefined;
   try {
@@ -2334,6 +2344,9 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
       say: async (text) => {
         await stderr(text);
       },
+      summary: async (text) => {
+        if (!human) await stderr(text);
+      },
       color: colorWanted(env, prompter.interactive),
       ykman: () => (ykmanClient ??= new YkmanClient({ path: env.HEMLIG_YKMAN })),
     };
@@ -2349,25 +2362,45 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
       status,
     };
     const receipt = await (handlers[parsed.command] as (ctx: Ctx) => Promise<Receipt>)(ctx);
+    if (human) {
+      const result = humanFromReceipt(receipt.data, receipt.next ?? [], {
+        command: parsed.command,
+        dir: parsed.command === "activate" ? process.cwd() : directoryOf(parsed.values),
+        cwd: process.cwd(),
+        now: ctx.clock(),
+        environment: str(parsed.values, "environment") ?? env.HEMLIG_ENVIRONMENT,
+      });
+      await stdout(renderHuman(result, makeStyle(colorWanted(env, true))));
+      return 0;
+    }
     await stdout(`${JSON.stringify({ data: receipt.data, ...(receipt.next === undefined ? {} : { next: receipt.next }) })}\n`);
     return 0;
   } catch (error) {
-    return reportFailure(
-      error,
-      {
-        group: "pki",
-        mutationAttempted: false,
-        ...(progress.completed.length === 0
-          ? {}
-          : {
-              ez: {
-                completed: progress.completed,
-                files: progress.files,
-                ...(progress.recovery === undefined ? { rerun: `hemlig pki ez ${args.map(shellArg).join(" ")}` } : { recovery: progress.recovery }),
-              },
-            }),
-      },
-      stderr,
-    );
+    const failure = {
+      group: "pki",
+      mutationAttempted: false,
+      ...(progress.completed.length === 0
+        ? {}
+        : {
+            ez: {
+              completed: progress.completed,
+              files: progress.files,
+              ...(progress.recovery === undefined ? { rerun: `hemlig pki ez ${args.map(shellArg).join(" ")}` } : { recovery: progress.recovery }),
+            },
+          }),
+    };
+    if (!stderrTty || jsonRequested) return reportFailure(error, failure, stderr);
+    // A terminal: the same exit code and the same classification, printed for a person.
+    let envelope = "";
+    const code = await reportFailure(error, failure, (text) => {
+      envelope += text;
+    });
+    try {
+      const parsedError = JSON.parse(envelope.trim().split("\n").pop() as string) as { error: ErrorInfo & { ez?: ErrorInfo["ez"] }; ez?: ErrorInfo["ez"] };
+      await stderr(renderHumanError({ ...parsedError.error, ez: parsedError.ez ?? parsedError.error.ez }, makeStyle(colorWanted(env, true))));
+    } catch {
+      await stderr(envelope);
+    }
+    return code;
   }
 }

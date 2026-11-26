@@ -228,7 +228,7 @@ export const assertCrlFromRoot = (crl: ParsedCrl, root: ParsedCertificate, label
 /** What Hemlig's root-CRL upload refuses (`serverProfile`: exactly that and nothing more), so EZ never treats such a CRL as a source of revocations (no `src/` import). */
 export const assertCrlProfile = (crl: ParsedCrl, label: string, serverProfile = false): void => {
   const refuse = (why: string): never => {
-    throw new EzError(5, "crl_invalid", `${label} cannot be used: ${why}. Hemlig refuses such a CRL for a root, and EZ will not guess what it revokes.`, { reason: why });
+    throw new EzError(5, "crl_invalid", `${label} cannot be used: ${why}. Hemlig refuses such a CRL for a root, so it will not guess what it revokes.`, { reason: why });
   };
   const present = (oid: string): boolean => crl.extensions.some((e) => e.oid === oid);
   if (present(OID.issuingDistributionPoint)) refuse("it has an issuing distribution point (a partitioned CRL)");
@@ -293,7 +293,7 @@ export const planCrl = (
     throw new EzError(2, "crl_number_required", "No CRL number source: pass --crl-number N, which must be at least the number of the last CRL this root ever issued (uploaded to Hemlig or not), or give a CRL, an OpenSSL crlnumber file, or log in so the server's root CRL can be read.");
   }
   const lastNumber = numbers.reduce((max, n) => (n.value > max ? n.value : max), 0n);
-  if (lastNumber >= MAX_STATE_CRL_NUMBER) throw new EzError(2, "invalid_input", "The CRL number is too large for the EZ state file.");
+  if (lastNumber >= MAX_STATE_CRL_NUMBER) throw new EzError(2, "invalid_input", "The CRL number is too large for the Hemlig state file.");
   const serverNumber = numbers.find((n) => n.name === "server")?.value;
   const operatorNumber = [sources.flag, sources.crlnumberFile].filter((n): n is bigint => n !== undefined);
   const raisedByServer = serverNumber !== undefined && operatorNumber.some((n) => serverNumber > n);

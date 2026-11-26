@@ -254,7 +254,7 @@ The root key is a software key in an encrypted file, or a key in a [YubiKey PIV 
 | Command                       | What it does                                                                  | Network |
 | ----------------------------- | ----------------------------------------------------------------------------- | ------- |
 | `pki ez generate-ca`          | Creates the root key, the self-signed root, CRL number 1 and the state file    | No      |
-| `pki ez adopt-ca`             | Brings an existing root (OpenSSL recipe, key and certificate files, or a YubiKey slot) under EZ | Optional |
+| `pki ez adopt-ca`             | Brings an existing root (OpenSSL recipe, key and certificate files, or a YubiKey slot) into Hemlig | Optional |
 | `pki ez import-key`           | Imports the root's backup key into a (another) YubiKey and records the device   | No      |
 | `pki ez sign-cert <ca>`       | Fetches the pending CA's CSR, shows it, signs it, syncs the root CRL, activates | Yes     |
 | `pki ez sign-cert <ca> --offline` | Signs a CSR file and writes the files to carry to an online machine         | No      |
@@ -282,7 +282,7 @@ Files in `--dir`: the state file, the encrypted key, `root.pem`, the CRL copy, `
 
 #### Adopt an existing root
 
-`pki ez adopt-ca` brings a root that already exists under EZ: an OpenSSL recipe directory, a certificate and key in files, or a root key in a YubiKey slot. It reads the sources, validates the root, carries over the CRL number and every prior revocation, shows a review, and after the typed `confirm` signs one batch with the root key. 
+`pki ez adopt-ca` brings a root that already exists into Hemlig: an OpenSSL recipe directory, a certificate and key in files, or a root key in a YubiKey slot. It reads the sources, validates the root, carries over the CRL number and every prior revocation, shows a review, and after the typed `confirm` signs one batch with the root key. 
 
 It writes the state, `root.pem` and the CRL into `--dir`, and never modifies a source file or directory. An existing state file or target file is refused (`already_exists`); nothing is overwritten.
 
@@ -383,7 +383,13 @@ After a lost response, read the secret to see what happened. Do not mint a new k
 
 Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr (with `--no-localhost` it also prints a prompt on stderr and reads the login code from stdin), `hemlig pki ca create`, which prints a `warning:` line for an Ed25519 key or a `ROOT`.
 
-`hemlig pki ez` also prints its settings form, review and prompts on stderr, and reads passphrases, YubiKey PINs and the typed `confirm` from the terminal. There are no banners or tables, and no other prompts. `--help` also prints JSON.
+`hemlig pki ez` also prints its settings form, review and prompts on stderr, and reads passphrases, YubiKey PINs and the typed `confirm` from the terminal. There are no banners, and no other prompts. `--help` also prints JSON.
+
+On a terminal, `hemlig pki ez` prints a short human-readable result on stdout instead of the JSON receipt: a `✓` headline, a few aligned facts (fingerprint, CRL number and next update, CA ID, the directory once), `!` warnings and a numbered "Next steps" list with ready-to-run commands (your `--dir`, CA ID and file names already filled in).
+
+A failure prints `✗`, the message, `(code, exit N)` and a hint where there is one, on stderr. Color is used only on a terminal and is off with `NO_COLOR` or `TERM=dumb`.
+
+When stdout is piped or redirected, or with `--json`, stdout is the JSON object described above, unchanged, so scripts keep working: in that mode the human summary of a run stays on stderr, as before, and a failure is the JSON error object. The exit codes never depend on the mode.
 
 | Field            | Meaning                                                     |
 | ---------------- | ----------------------------------------------------------- |

@@ -146,7 +146,7 @@ export interface AdoptReview {
 export const renderAdoptReview = (review: AdoptReview): string => {
   const lines = [
     "",
-    "=== Review: this will ADOPT an existing root under EZ management ===",
+    "=== Review: this will ADOPT an existing root into Hemlig ===",
     row("Source", displaySafe(review.source)),
     row("Subject", displaySafe(review.subjectDn)),
     row("Fingerprint", `SHA-256 ${review.fingerprint}`),

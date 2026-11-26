@@ -51,7 +51,7 @@ export const MIN_FIRMWARE = "5.3";
 
 export const assertFirmware = (firmware: string): void => {
   if (!firmwareAtLeast(firmware, 5, 3)) {
-    throw new EzError(9, "yubikey_firmware_unsupported", `YubiKey firmware ${firmware} is too old; EZ needs ${MIN_FIRMWARE} or later (for slot, PIN and management-key metadata).`);
+    throw new EzError(9, "yubikey_firmware_unsupported", `YubiKey firmware ${firmware} is too old; Hemlig needs ${MIN_FIRMWARE} or later (for slot, PIN and management-key metadata).`);
   }
 };
 

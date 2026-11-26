@@ -728,7 +728,7 @@ test("adopt-ca --yubikey adopts the slot certificate read-only, signs one test c
     const result = await adoptYubi(env, ["--crl", crlPath], ["confirm\r", `${PIN}\r`]);
     assert.equal(result.exitCode, 0, result.stderr);
     assert.match(result.stderr, /Review: this will ADOPT/);
-    assert.match(result.stderr, /EZ holds no backup of this YubiKey's key/);
+    assert.match(result.stderr, /Hemlig holds no backup of this YubiKey's key/);
     assert.match(result.stderr, /Touch the YubiKey \(serial 11111111\) now to sign: a test challenge/);
     const calls = await env.ykman.calls();
     assert.deepEqual(writes(calls), [], "nothing is written to the device");
