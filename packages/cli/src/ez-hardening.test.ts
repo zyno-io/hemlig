@@ -7,7 +7,7 @@ import { createHash, type KeyObject } from "node:crypto";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { EzError } from "./ez-error";
-import { acquireLock, LOCK_FILE } from "./ez-fs";
+import { acquireLock, createImmutable, LOCK_FILE } from "./ez-fs";
 import { prepareCrl, prepareIntermediate, prepareRoot, signPrepared } from "./ez-issue";
 import { encryptPkcs8 } from "./ez-keyfile";
 import { formatSubject } from "./ez-name";
@@ -443,8 +443,79 @@ test("checkServer: a server CRL under a number this state burned is a fork (p5 Q
     await f.store.close();
     f.store = await EzStore.open(f.options); // burns #2
     await code(f.store.checkServer({ crl: { numberHex: "02", sha256: "c".repeat(64) } }), "state_forked");
+    // the real server zero-pads the number to 40 hex digits
+    await code(f.store.checkServer({ crl: { numberHex: "2".padStart(40, "0"), sha256: "c".repeat(64) } }), "state_forked");
+    await code(f.store.checkServer({ crl: { numberHex: "5".padStart(40, "0"), sha256: "c".repeat(64) } }), "state_behind_server");
   } finally {
     await done(f);
+  }
+});
+
+test("a torn artifact (a failed no-link write, or garbage under the final name) is moved aside, never deleted, and the number or serial is burned", async () => {
+  const f = await fixture("torn");
+  try {
+    tick();
+    await f.store.begin({ crl: true });
+    const torn = "-----BEGIN X509 CRL-----\nMIIB\n";
+    await fs.writeFile(join(f.dir, "crls/000002.crl.pem"), torn);
+    await f.store.close();
+    f.store = await EzStore.open(f.options);
+    assert.equal(f.store.state.crl.current!.number, 1);
+    assert.equal(f.store.state.crl.lastNumber, 2, "the number is burned");
+    assert.equal(f.store.state.pending, null);
+    const names = await fs.readdir(join(f.dir, "crls"));
+    assert.ok(names.some((n) => /^000002\.crl\.pem\.torn-\d+$/.test(n)));
+    assert.equal(names.includes("000002.crl.pem"), false);
+    assert.equal(await fs.readFile(join(f.dir, "crls", names.find((n) => n.includes(".torn-")) as string), "utf8"), torn);
+
+    tick();
+    const csr = validateCsr(makeTestCsr().der);
+    const { sign } = reserve("0abc01", "ca-torn", csr);
+    await f.store.begin({ sign });
+    await fs.writeFile(join(f.dir, "issued/0abc01.pem"), "-----BEGIN CERTIFICATE-----\nMIIB");
+    await f.store.close();
+    f.store = await EzStore.open(f.options);
+    assert.equal(f.store.state.issued.find((e) => e.serial === "0abc01")?.status, "abandoned");
+    const issued = await fs.readdir(join(f.dir, "issued"));
+    assert.ok(issued.some((n) => /^0abc01\.pem\.torn-\d+$/.test(n)));
+    assert.equal(issued.includes("0abc01.pem"), false);
+  } finally {
+    await done(f);
+  }
+});
+
+test("createImmutable without hard links removes a partial file when the write fails", async () => {
+  const dir = await fs.mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "ez-nolink-"));
+  const target = join(dir, "artifact.pem");
+  const realLink = fs.link;
+  const realOpen = fs.open;
+  try {
+    (fs as any).link = async () => {
+      throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+    };
+    (fs as any).open = async (path: string, flags?: string, mode?: number) => {
+      const handle = await realOpen.call(fs, path, flags, mode);
+      if (path === target) {
+        const real = handle.writeFile.bind(handle);
+        (handle as any).writeFile = async (data: Uint8Array) => {
+          await real(data.subarray(0, 4));
+          throw new Error("disk full");
+        };
+      }
+      return handle;
+    };
+    await assert.rejects(createImmutable(target, Buffer.from("0123456789")), /disk full/);
+  } finally {
+    (fs as any).link = realLink;
+    (fs as any).open = realOpen;
+  }
+  try {
+    await assert.rejects(fs.stat(target), "no torn file stays under the final name");
+    assert.deepEqual((await fs.readdir(dir)).filter((n) => n.endsWith(".tmp")), []);
+    await createImmutable(target, Buffer.from("0123456789"));
+    assert.equal(await fs.readFile(target, "utf8"), "0123456789");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
   }
 });
 

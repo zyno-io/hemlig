@@ -2,10 +2,33 @@ import { randomBytes } from "node:crypto";
 import { hostname as osHostname } from "node:os";
 import { promises as fs, openSync } from "node:fs";
 import { ReadStream as TtyReadStream } from "node:tty";
-import { isAbsolute, normalize, resolve, dirname, join } from "node:path";
+import { isAbsolute, normalize, resolve, dirname, join, basename, sep } from "node:path";
 import { parseArgs } from "node:util";
 import type { PkiCaDetail, PkiCaSubject } from "@zyno-io/hemlig-client";
 import { CliError, reportFailure, parseTimeoutMs, usage, type CliDependencies } from "./common";
+import {
+  crlEntriesOf,
+  gateRootProfile,
+  importedIssuedEntries,
+  isEncryptedKeyPem,
+  KEY_FILE_ALGORITHM_WARNINGS,
+  assertCrlFromRoot,
+  mergeRevocations,
+  nextThisUpdate,
+  parseCrlSource,
+  parseOpenSslCrlNumber,
+  parseOpenSslIndex,
+  planCrl,
+  planReissue,
+  readSourceKey,
+  recordsFromCrl,
+  recordsFromIndex,
+  revokedEntriesOf,
+  subjectOfRoot,
+  type IndexRow,
+  type RevocationRecord,
+  type RevocationSource,
+} from "./ez-adopt";
 import { EzError } from "./ez-error";
 import { acquireLock, createImmutable, exists, type LockHandle } from "./ez-fs";
 import { firstFormError, runForm, type FormField } from "./ez-form";
@@ -15,16 +38,20 @@ import { assertRestrictedName, describeName, encodeSubject, formatSubject, isIde
 import {
   activateWithCertificate,
   assertClockSkew,
+  downloadRootCrl,
   fetchCa,
   findExternalRoot,
   openSession,
+  assertCarriesServerRevocations,
+  fetchServerCrl,
+  fetchServerView,
   serverViewOf,
   uploadRootCrl,
   type OnlineSession,
 } from "./ez-online";
 import { assertCrlValidityDays, EZ_DEFAULTS, parseDuration } from "./ez-profile";
 import { consumeConfirmation, Prompter, type Confirmation } from "./ez-prompt";
-import { renderCrlReview, renderRevokeReview, renderSignReview, rootLabel } from "./ez-review";
+import { renderAdoptReview, renderCrlReview, renderRevokeReview, renderSignReview, rootLabel } from "./ez-review";
 import { generateSoftwareKey, SoftwareSigner, signBatch, type RootSigner, type SignItem } from "./ez-signer";
 import {
   assertKeyTypeSupported,
@@ -45,6 +72,7 @@ import {
   EzStore,
   initialArtifacts,
   initialState,
+  resolveRecordedPath,
   type EzState,
   type IssuedEntry,
   type SignReservation,
@@ -54,9 +82,14 @@ import {
   computeIntermediateValidity,
   DAY_MS,
   decodeCsrInput,
+  CRL_REASON_NAMES,
+  describeSpki,
   EZ_KEY_ALGORITHMS,
   fromPem,
+  keyIdentifier,
   NEW_REVOCATION_REASONS,
+  OID,
+  parseBasicConstraints,
   parseCertificate,
   parseCrl,
   randomSerial,
@@ -78,10 +111,12 @@ import { resolveCa, isCaId } from "./pki";
 import type { TerminalInput } from "./tty";
 
 export const ezHelp = {
-  usage: "hemlig pki ez <generate-ca|import-key|sign-cert|activate|revoke-cert|renew-crl|upload-crl|status> [options]",
+  usage: "hemlig pki ez <generate-ca|adopt-ca|import-key|sign-cert|activate|revoke-cert|renew-crl|upload-crl|status> [options]",
   commands: {
     "generate-ca":
       "[--subject 'CN=..,O=..'] [--key-algorithm ECDSA_P384|ECDSA_P256|RSA_3072|RSA_4096] [--validity 20y] [--intermediate-validity 730d] [--crl-validity 180d] [--path-len N] [--key-file F] [--cert-file F] [--crl-file F] [--passphrase-stdin] [--yes]; creates a root, CRL #1 and the state file. Opens a settings form on a terminal. YubiKey: --yubikey [--yubikey-serial N] [--second-yubikey-serial N] [--slot 9c] [--touch-policy always|cached|never] [--overwrite-slot 9c] [--no-slot-certificate] [--protect-management-key] [--pin-stdin] [--allow-last-pin-attempt] imports a software-generated key (encrypted backup file kept) into the YubiKey; add --on-device --accept-no-backup to generate on the YubiKey with no backup and no recovery.",
+    "adopt-ca":
+      "(--openssl-dir DIR | --cert F --key F | --yubikey [--cert F]) [--crl F] [--openssl-index F] [--openssl-crlnumber F] [--crl-number N] [--no-prior-revocations] [--reissue-root-certificate [--validity D]] [--offline] [--crl-validity D] [--intermediate-validity D] [--key-file F] [--cert-file F] [--crl-file F] [--passphrase-stdin]; brings an existing offline root under EZ management. Needs a revocation source (--crl, an index.txt, or the server's root CRL) or --no-prior-revocations, and a CRL number source (or --crl-number N, at least the last CRL number the root ever issued). Software roots: the key is re-encrypted into --dir under a new passphrase (with --passphrase-stdin: the source key's passphrase first, if it is encrypted, then the new one) and the source files are never changed. --openssl-dir reads root.pem, private/root.key, index.txt, crlnumber and root.crl.pem. YubiKey: --yubikey [--yubikey-serial N] [--slot 9c] [--pin-stdin] [--allow-last-pin-attempt] reads the slot read-only and signs with it; nothing is written to the device unless --store-certificate-in-slot. Input files are relative to the current directory. Shows a review and asks you to type confirm. Online by default (reads the server's root CRL); --offline skips the server.",
     "import-key":
       "[--yubikey-serial N] [--slot 9c] [--touch-policy always|cached|never] [--overwrite-slot 9c] [--no-slot-certificate] [--protect-management-key] [--passphrase-stdin] [--pin-stdin] [--allow-last-pin-attempt]; decrypts the root's backup key file and imports it into a (another) YubiKey, then records the device.",
     "sign-cert <ca>":
@@ -89,10 +124,10 @@ export const ezHelp = {
     "sign-cert <ca> --offline":
       "--csr F [--expect-spki-sha256 HEX] [--out F] [--chain-out F] [--crl-out F] [--environment ENV] [--validity D] [--key F]; no network; writes the certificate (and optional chain and CRL copies) to carry to an online machine.",
     "activate <ca>": "--environment ENV --certificate F --chain F [--crl F]; online: uploads the root CRL, then activates. Needs no state and no key.",
-    "revoke-cert (<ca> | --serial HEX)":
+    "revoke-cert (<ca> | --serial HEX | --cert FILE)":
       "--reason R [--invalidity-date ISO] [--offline --crl-out F] [--key F] [--passphrase-stdin]; shows what is revoked, asks you to type confirm, signs a new CRL and uploads it.",
     "renew-crl": "[--if-due] [--renew-before 45d] [--crl-validity D] [--expect-ext-id ext-..] [--offline --crl-out F] [--key F] [--passphrase-stdin]; signs a new root CRL and uploads it.",
-    "upload-crl": "[--expect-ext-id ext-..]; uploads the current root CRL (retry path, or another deployment).",
+    "upload-crl": "[--expect-ext-id ext-..]; uploads the current root CRL (retry path, or another deployment). Stateless: --crl F --root-cert F verifies a carried CRL under the root, refuses one that drops a revocation the server lists or is not newer, then uploads it (no state directory needed).",
     status: "[--offline]; local state, deployments and a server comparison.",
   },
   common:
@@ -119,6 +154,9 @@ const BOOLEAN_FLAGS = [
   "no-slot-certificate",
   "allow-last-pin-attempt",
   "pin-stdin",
+  "no-prior-revocations",
+  "reissue-root-certificate",
+  "store-certificate-in-slot",
 ] as const;
 const STRING_FLAGS = [
   "yubikey-serial",
@@ -155,6 +193,12 @@ const STRING_FLAGS = [
   "admin-url",
   "token-file",
   "timeout-ms",
+  "cert",
+  "openssl-dir",
+  "root-cert",
+  "openssl-index",
+  "openssl-crlnumber",
+  "crl-number",
 ] as const;
 
 const ONLINE = ["admin-url", "token-file", "timeout-ms"];
@@ -173,6 +217,14 @@ const COMMANDS: Record<string, CommandSpec> = {
     operands: [0, 0],
     flags: [...STATE, ...SECRET, ...YUBIKEY_WRITE, "yubikey", "on-device", "accept-no-backup", "second-yubikey-serial", "yes", "subject", "key-algorithm", "validity", "intermediate-validity", "crl-validity", "path-len", "key-file", "cert-file", "crl-file"],
   },
+  "adopt-ca": {
+    operands: [0, 0],
+    flags: [
+      ...STATE, ...SECRET, ...YUBIKEY_USE, ...ONLINE,
+      "offline", "yubikey", "slot", "store-certificate-in-slot", "cert", "key", "crl", "openssl-dir", "openssl-index", "openssl-crlnumber", "crl-number",
+      "no-prior-revocations", "reissue-root-certificate", "validity", "crl-validity", "intermediate-validity", "key-file", "cert-file", "crl-file",
+    ],
+  },
   "import-key": { operands: [0, 0], flags: [...STATE, ...SECRET, ...YUBIKEY_WRITE] },
   "sign-cert": {
     operands: [1, 1],
@@ -181,13 +233,13 @@ const COMMANDS: Record<string, CommandSpec> = {
   activate: { operands: [1, 1], flags: [...ONLINE, "environment", "certificate", "chain", "crl"] },
   "revoke-cert": {
     operands: [0, 1],
-    flags: [...STATE, ...SECRET, ...YUBIKEY_USE, ...ONLINE, "offline", "environment", "reason", "invalidity-date", "serial", "crl-out", "crl-validity", "expect-ext-id", "key"],
+    flags: [...STATE, ...SECRET, ...YUBIKEY_USE, ...ONLINE, "offline", "environment", "reason", "invalidity-date", "serial", "cert", "crl-out", "crl-validity", "expect-ext-id", "key"],
   },
   "renew-crl": {
     operands: [0, 0],
     flags: [...STATE, ...SECRET, ...YUBIKEY_USE, ...ONLINE, "offline", "if-due", "renew-before", "crl-validity", "expect-ext-id", "crl-out", "key"],
   },
-  "upload-crl": { operands: [0, 0], flags: [...STATE, ...ONLINE, "expect-ext-id"] },
+  "upload-crl": { operands: [0, 0], flags: [...STATE, ...ONLINE, "expect-ext-id", "crl", "root-cert"] },
   status: { operands: [0, 0], flags: [...STATE, ...ONLINE, "offline"] },
 };
 
@@ -299,17 +351,18 @@ const storeOptions = (ctx: Ctx, dir: string): StoreOptions => {
     command: `pki ez ${ctx.command}`,
     breakStaleLock: flag(ctx.values, "break-stale-lock"),
     now: ctx.clock,
+    fault: ctx.dependencies.ezFault,
   };
 };
 
-const readBounded = async (path: string, limit: number, what: string): Promise<Buffer> => {
+const readBounded = async (path: string, limit: number, what: string, allowEmpty = false): Promise<Buffer> => {
   let bytes: Buffer;
   try {
     bytes = await fs.readFile(path);
   } catch {
     throw new EzError(9, "input_io_error", `Cannot read the ${what} (${path}).`);
   }
-  if (bytes.length === 0 || bytes.length > limit) throw new EzError(2, "invalid_input", `The ${what} is empty or larger than ${limit} bytes.`);
+  if ((bytes.length === 0 && !allowEmpty) || bytes.length > limit) throw new EzError(2, "invalid_input", `The ${what} is empty or larger than ${limit} bytes.`);
   return bytes;
 };
 
@@ -1103,9 +1156,10 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
     // Root registration and the server cross-checks come before any prompt.
     let ext: Awaited<ReturnType<typeof findExternalRoot>> = undefined;
     if (session !== undefined) {
-      assertClockSkew(session, ctx.clock());
       ext = await findExternalRoot(session, state.root);
-      await store.checkServer(serverViewOf(ext));
+      // The first server response carries its clock; check it before anything is signed or uploaded.
+      assertClockSkew(session, ctx.clock());
+      await store.checkServer(await fetchServerView(session, ext, store.rootCertificate));
     }
 
     const outputs = {
@@ -1114,8 +1168,18 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
       crl: str(v, "crl-out") === undefined ? undefined : withinDir(dir, str(v, "crl-out") as string),
     };
     if (offline && prior === undefined) {
-      for (const path of [outputs.out, outputs.chain, outputs.crl]) {
-        if (path !== undefined && (await exists(path))) {
+      // Like writeOutput: an existing file that already holds exactly what would be written (the root, the current CRL) is fine.
+      const rootPem = Buffer.from(pemOf(root.der, "CERTIFICATE"));
+      const wanted = new Map<string, Buffer | undefined>([
+        [outputs.out, undefined],
+        ...(outputs.chain === undefined ? [] : [[outputs.chain, rootPem] as const]),
+      ]);
+      // --crl-out is decided below, once it is known whether this run renews the CRL.
+      for (const path of [outputs.out, outputs.chain]) {
+        if (path === undefined || !(await exists(path))) continue;
+        const expected = wanted.get(path);
+        const existing = expected === undefined ? undefined : await fs.readFile(path).catch(() => undefined);
+        if (expected === undefined || existing === undefined || !existing.equals(expected)) {
           throw new EzError(5, "already_exists", `${path} already exists; nothing was overwritten.`, { files: [path] });
         }
       }
@@ -1146,6 +1210,17 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
     const serial = serialHex(serialBytes);
     const needCert = prior === undefined;
     const needCrl = store.crlDue(renewBefore, now);
+    if (offline && prior === undefined && outputs.crl !== undefined && (await exists(outputs.crl))) {
+      // A renewed CRL is written to --crl-out after signing, so an existing file is acceptable only where it cannot clash: the
+      // state's own CRL copy (rewritten with the renewed CRL) when renewing, or a file already holding the current CRL.
+      const current = await store.readCurrentCrl();
+      const existing = await fs.readFile(outputs.crl).catch(() => undefined);
+      const identical = current !== undefined && existing !== undefined && existing.equals(Buffer.from(pemOf(current.der, "X509 CRL")));
+      const isCopy = outputs.crl === withinDir(dir, state.crl.copyFile);
+      if (needCrl ? !isCopy : !identical) {
+        throw new EzError(5, "already_exists", `${outputs.crl} already exists${needCrl ? " and the root CRL is renewed in this run" : ""}; nothing was signed or overwritten.`, { files: [outputs.crl] });
+      }
+    }
     const crlPreview = needCrl ? { number: state.crl.lastNumber + 1, nextUpdate: new Date(store.nextCrlThisUpdate(now).getTime() + crlValidity * DAY_MS) } : undefined;
 
     let confirmation: Confirmation | undefined;
@@ -1319,8 +1394,9 @@ const activateCommand = async (ctx: Ctx): Promise<Receipt> => {
     return { data: { command: "activate", caId, environment, fingerprint: certificate.fingerprint, activated: true, alreadyActive: true, ca: { status: ca.status, version: ca.version } } };
   }
   if (ca.status !== "PENDING_CERTIFICATE") throw new EzError(5, "ca_not_pending", `That CA is ${ca.status}, not waiting for a certificate.`);
-  assertClockSkew(session, ctx.clock());
   const ext = await findExternalRoot(session, { spkiSha256: root.spkiSha256, fingerprint: root.fingerprint });
+  // The first server response carries its clock; check it before anything is signed or uploaded.
+  assertClockSkew(session, ctx.clock());
   let uploaded = false;
   let changed: boolean | undefined;
   let skipped: string | undefined;
@@ -1332,6 +1408,8 @@ const activateCommand = async (ctx: Ctx): Promise<Receipt> => {
     else if (ours < serverNumber) skipped = "the server's root CRL is newer than the one supplied";
     else if (ours === serverNumber) throw new EzError(5, "state_forked", "The server's root CRL has the same number as the supplied one but different content: two copies of this root are signing.");
     else {
+      // Never upload a CRL that drops a revocation the server already lists.
+      assertCarriesServerRevocations(crl, await fetchServerCrl(session, ext, root));
       const response = await uploadRootCrl(session, ext.extId, { pem: pemOf(crl.der, "X509 CRL"), sha256: crl.sha256 });
       uploaded = true;
       changed = response.changed;
@@ -1374,15 +1452,39 @@ const certificateBytes = (bytes: Buffer): Buffer => {
 // revoke-cert
 // ---------------------------------------------------------------------------------------------------------------------
 
+const safeSubjectDn = (cert: ParsedCertificate): string => {
+  try {
+    return describeName(assertRestrictedName(cert.subjectDer, "external"));
+  } catch {
+    return "(unreadable subject)";
+  }
+};
+
+/** A certificate this root issued: its issuer, signature and AKI are the root's, and it is not the root itself. */
+const assertIssuedByRoot = (cert: ParsedCertificate, root: ParsedCertificate): ParsedCertificate => {
+  if (cert.fingerprint === root.fingerprint || cert.spkiDer.equals(root.spkiDer)) {
+    throw new EzError(5, "certificate_invalid", "That is the root certificate (or one with the root's key), not a certificate the root issued.");
+  }
+  if (!cert.issuerDer.equals(root.subjectDer) || !verifyCertificateSignature(cert, root.spkiDer)) {
+    throw new EzError(5, "certificate_invalid", "That certificate was not issued by this root (its issuer or signature does not verify under the root's key).");
+  }
+  if (root.subjectKeyIdentifier === undefined || cert.authorityKeyIdentifier === undefined || !cert.authorityKeyIdentifier.equals(root.subjectKeyIdentifier)) {
+    throw new EzError(5, "certificate_invalid", "That certificate's authority key identifier is not this root's subject key identifier.");
+  }
+  return cert;
+};
+
 const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
   const v = ctx.values;
   const offline = flag(v, "offline");
   const reference = ctx.operands[0];
   const serialFlag = str(v, "serial");
-  if ((reference === undefined) === (serialFlag === undefined)) usage("Supply exactly one of <ca> or --serial HEX.");
+  const certFile = str(v, "cert");
+  if ([reference, serialFlag, certFile].filter((x) => x !== undefined).length !== 1) usage("Supply exactly one of <ca>, --serial HEX or --cert FILE.");
   const reason = str(v, "reason") as CrlReasonName | undefined;
   if (reason === undefined) usage("--reason is required (there is no default).");
-  if (!NEW_REVOCATION_REASONS.includes(reason as CrlReasonName)) usage(`--reason must be one of ${NEW_REVOCATION_REASONS.join(", ")}.`);
+  // certificateHold and aACompromise can only be repeated for a serial an adoption imported with that reason (checked below).
+  if (!CRL_REASON_NAMES.includes(reason as CrlReasonName)) usage(`--reason must be one of ${NEW_REVOCATION_REASONS.join(", ")}.`);
   const invalidityText = str(v, "invalidity-date");
   const invalidityDate = invalidityText === undefined ? undefined : new Date(invalidityText);
   if (invalidityDate !== undefined && Number.isNaN(invalidityDate.getTime())) usage("--invalidity-date must be an ISO-8601 time.");
@@ -1399,21 +1501,67 @@ const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
     if (reference !== undefined) {
       caId = isCaId(reference) ? reference : await resolveCa((session as OnlineSession).client, (session as OnlineSession).token, reference, environmentOf(ctx, true) as string);
     }
-    const target =
-      caId !== null
-        ? state.issued.filter((e) => e.caId === caId && (e.status === "signed" || e.status === "activated"))
-        : state.issued.filter((e) => e.serial === EzStore.canonicalSerial(serialFlag as string));
+    const live = (e: IssuedEntry): boolean => e.status === "signed" || e.status === "activated" || e.status === "imported";
+    // A certificate the state never recorded (an adopted root's earlier intermediates): taken from --cert, or from the server
+    // for a CA. It must verify under this root; it is recorded only after the typed confirm.
+    let outside: { der: Buffer; caId: string | null; environment: string | null; adminOrigin: string | null } | undefined;
+    let target: IssuedEntry[];
+    if (certFile !== undefined) {
+      const der = certificateBytes(await readBounded(withinDir(dir, certFile), 32768, "certificate file"));
+      const cert = assertIssuedByRoot(parseCertificate(der), root);
+      target = state.issued.filter((e) => e.serial === cert.serialHex);
+      if (target.length === 0) outside = { der: cert.der, caId: null, environment: null, adminOrigin: null };
+    } else {
+      target = caId !== null ? state.issued.filter((e) => e.caId === caId && live(e)) : state.issued.filter((e) => e.serial === EzStore.canonicalSerial(serialFlag as string));
+      if (target.length === 0 && caId !== null && session !== undefined) {
+        const ca = await fetchCa(session, caId);
+        if (ca.certificatePem !== undefined) {
+          const cert = assertIssuedByRoot(parseCertificate(fromPem(ca.certificatePem, "CERTIFICATE")), root);
+          // The server must not be able to attach a certificate this state already knows to a different CA.
+          const known = state.issued.find((e) => e.serial === cert.serialHex);
+          if (known !== undefined && (known.caId !== caId || (known.fingerprint !== null && known.fingerprint !== cert.fingerprint))) {
+            throw new EzError(5, "state_conflict", `The server's certificate for ${caId} has serial ${cert.serialHex}, which this state already records for ${known.caId ?? "no CA"}; nothing was revoked.`, { reason: "serial_other_ca", serial: cert.serialHex });
+          }
+          outside = { der: cert.der, caId, environment: ca.environment, adminOrigin: session.origin.origin };
+        }
+      }
+    }
+    const certSource = certFile !== undefined ? `file ${withinDir(dir, certFile)}` : outside !== undefined && session !== undefined ? `server ${session.origin.origin}` : undefined;
+    if (outside !== undefined) {
+      const cert = parseCertificate(outside.der);
+      target = [
+        {
+          serial: cert.serialHex,
+          caId: outside.caId,
+          environment: outside.environment,
+          adminOrigin: outside.adminOrigin,
+          subjectDn: safeSubjectDn(cert),
+          subjectKey: "",
+          csrSha256: null,
+          spkiSha256: cert.spkiSha256,
+          certificateFile: null,
+          fingerprint: cert.fingerprint,
+          notBefore: cert.notBefore.toISOString(),
+          notAfter: cert.notAfter.toISOString(),
+          status: "imported",
+          signedAt: null,
+          activatedAt: null,
+        },
+      ];
+    }
     if (target.length !== 1) {
-      throw new EzError(2, "unknown_serial", target.length === 0 ? "This root state has no such issued certificate." : "More than one certificate matches; revoke by --serial.");
+      throw new EzError(2, "unknown_serial", target.length === 0 ? "This root state has no such issued certificate. For a certificate issued before adoption, pass it with --cert FILE (online, a CA ID also works when the server holds its certificate)." : "More than one certificate matches; revoke by --serial.", {});
     }
     const entry = target[0] as IssuedEntry;
     const already = state.revoked.find((r) => r.serial === entry.serial);
+    if (already === undefined && !NEW_REVOCATION_REASONS.includes(reason as CrlReasonName)) usage(`--reason must be one of ${NEW_REVOCATION_REASONS.join(", ")}.`);
     if (already !== undefined) {
       // The signed CRL carries what is recorded; a different reason or date would be shown but never signed.
       const recordedDate = already.invalidityDate === null ? undefined : Date.parse(already.invalidityDate);
       const askedDate = invalidityDate === undefined ? undefined : Math.floor(invalidityDate.getTime() / 1000) * 1000;
       if (already.reason !== reason || (askedDate !== undefined && askedDate !== recordedDate)) {
-        throw new EzError(5, "revocation_conflict", `Serial ${entry.serial} is already recorded as revoked (reason ${already.reason}${already.invalidityDate === null ? "" : `, invalidity date ${already.invalidityDate}`}); rerun with those values.`, {
+        const imported = !NEW_REVOCATION_REASONS.includes(already.reason);
+        throw new EzError(5, "revocation_conflict", `Serial ${entry.serial} is already recorded as revoked (reason ${already.reason}${already.invalidityDate === null ? "" : `, invalidity date ${already.invalidityDate}`}); rerun with those values${imported ? ` (--reason ${already.reason} is accepted here only to match the imported revocation; it cannot be given for a new one)` : ""}.`, {
           reason: already.reason,
           invalidityDate: already.invalidityDate,
         });
@@ -1424,9 +1572,10 @@ const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
     const needSign = already === undefined || unlisted || store.crlDue(renewBefore);
     let ext: Awaited<ReturnType<typeof findExternalRoot>> = undefined;
     if (session !== undefined) {
-      assertClockSkew(session, ctx.clock());
       ext = await findExternalRoot(session, state.root);
-      await store.checkServer(serverViewOf(ext));
+      // The first server response carries its clock; check it before anything is signed or uploaded.
+      assertClockSkew(session, ctx.clock());
+      await store.checkServer(await fetchServerView(session, ext, store.rootCertificate));
       checkExpectedExt(str(v, "expect-ext-id"), ext);
     }
     const crlValidity = str(v, "crl-validity") === undefined ? state.defaults.crlValidityDays : crlDays(str(v, "crl-validity") as string);
@@ -1446,12 +1595,15 @@ const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
           root: rootLabel(root),
           crl: { number: state.crl.lastNumber + 1, nextUpdate: new Date(store.nextCrlThisUpdate(now).getTime() + crlValidity * DAY_MS) },
           alreadyRevoked: already !== undefined,
+          ...(certSource === undefined ? {} : { certificateSource: certSource, certificateFingerprint: entry.fingerprint ?? undefined }),
         }),
       );
       const confirmation = await ctx.prompter.confirm("revoke");
       const signer = await unlockSigner(ctx, store);
       try {
-        await store.addRevocation({ serial: entry.serial, caId: entry.caId, reason: reason as CrlReasonName, invalidityDate });
+        if (outside !== undefined) await store.importIssued({ ...outside });
+        // A serial already recorded (for example imported with certificateHold) is signed as recorded.
+        if (already === undefined) await store.addRevocation({ serial: entry.serial, caId: entry.caId, reason: reason as CrlReasonName, invalidityDate });
         ctx.progress.completed.push("revocation-recorded");
         issuedCrl = (await issue(ctx, store, signer, { crl: { validityDays: crlValidity } }, confirmation)).crl;
       } finally {
@@ -1470,7 +1622,7 @@ const revokeCert = async (ctx: Ctx): Promise<Receipt> => {
       const crlOut = withinDir(dir, str(v, "crl-out") as string);
       if (currentCrl !== undefined) await writeOutput(crlOut, Buffer.from(pemOf(currentCrl.der, "X509 CRL")));
       ctx.progress.files.crl = crlOut;
-      return { data: { ...data, crlFile: crlOut }, next: [`hemlig pki external-ca upload-crl ${state.root.extIdHint} --crl ${shellArg(crlOut)}`] };
+      return { data: { ...data, crlFile: crlOut }, next: [`On an online machine: hemlig pki ez upload-crl --crl ${shellArg(crlOut)} --root-cert ${shellArg(withinDir(dir, state.root.certificateFile))}`] };
     }
     if (ext === undefined) {
       if (entry.caId !== null) {
@@ -1512,9 +1664,10 @@ const renewCrl = async (ctx: Ctx): Promise<Receipt> => {
     const session = offline ? undefined : await sessionOf(ctx);
     let ext: Awaited<ReturnType<typeof findExternalRoot>> = undefined;
     if (session !== undefined) {
-      assertClockSkew(session, ctx.clock());
       ext = await findExternalRoot(session, state.root);
-      await store.checkServer(serverViewOf(ext));
+      // The first server response carries its clock; check it before anything is signed or uploaded.
+      assertClockSkew(session, ctx.clock());
+      await store.checkServer(await fetchServerView(session, ext, store.rootCertificate));
       checkExpectedExt(str(v, "expect-ext-id"), ext);
     }
     const now = ctx.clock();
@@ -1536,7 +1689,7 @@ const renewCrl = async (ctx: Ctx): Promise<Receipt> => {
       const crlOut = withinDir(dir, str(v, "crl-out") as string);
       if (currentCrl !== undefined) await writeOutput(crlOut, Buffer.from(pemOf(currentCrl.der, "X509 CRL")));
       ctx.progress.files.crl = crlOut;
-      return { data: { ...data, crlFile: crlOut }, next: [`hemlig pki external-ca upload-crl ${state.root.extIdHint} --crl ${shellArg(crlOut)}`] };
+      return { data: { ...data, crlFile: crlOut }, next: [`On an online machine: hemlig pki ez upload-crl --crl ${shellArg(crlOut)} --root-cert ${shellArg(withinDir(dir, state.root.certificateFile))}`] };
     }
     const sync = await syncRootCrl(session, store, ext, ctx);
     return {
@@ -1547,14 +1700,50 @@ const renewCrl = async (ctx: Ctx): Promise<Receipt> => {
   }
 };
 
+/** `upload-crl --crl F --root-cert F`: no state. Verifies the CRL under the root, then the same server checks as a stateful upload. */
+const uploadCrlStateless = async (ctx: Ctx): Promise<Receipt> => {
+  const v = ctx.values;
+  const crlFile = str(v, "crl");
+  const rootFile = str(v, "root-cert");
+  if (crlFile === undefined || rootFile === undefined) usage("A stateless upload needs both --crl FILE and --root-cert FILE.");
+  for (const name of ["dir", "state-file", "break-stale-lock"]) if (v[name] !== undefined) usage(`--${name} applies only to an upload from the state directory (omit --crl and --root-cert).`);
+  const root = parseCertificate(certificateBytes(await readBounded(resolve(rootFile as string), 32768, "root certificate file")));
+  const rootCheck = validateRootCertificate(root.der);
+  if (rootCheck.reasons.length > 0) throw new EzError(5, "root_profile_invalid", `The root certificate is not acceptable (${rootCheck.reasons.join(", ")}).`, { reasons: rootCheck.reasons });
+  const bytes = await readBounded(resolve(crlFile as string), 4_194_304, "CRL file");
+  const crl = parseCrl(bytes.toString("latin1").includes("-----BEGIN") ? fromPem(bytes.toString("latin1"), "X509 CRL") : bytes);
+  assertCrlFromRoot(crl, root, "The CRL");
+  const session = await sessionOf(ctx);
+  const ext = await findExternalRoot(session, { spkiSha256: root.spkiSha256, fingerprint: root.fingerprint });
+  // The first server response carries its clock; check it before anything is signed or uploaded.
+  assertClockSkew(session, ctx.clock());
+  if (ext === undefined) throw new EzError(4, "not_found", "The server does not know this root yet; it is registered when the first CA under it is activated.");
+  checkExpectedExt(str(v, "expect-ext-id"), ext);
+  const summary = { number: Number(crl.number), sha256: crl.sha256 };
+  if (ext.crl?.sha256 === crl.sha256) {
+    return { data: { command: "upload-crl", root: { extId: ext.extId }, crl: summary, uploaded: false, changed: false } };
+  }
+  if (ext.crl !== undefined) {
+    const serverNumber = BigInt(`0x${ext.crl.numberHex}`);
+    const ours = crl.number ?? 0n;
+    if (ours < serverNumber) throw new EzError(5, "state_behind_server", "The server's root CRL is newer than this one; nothing was uploaded.", { serverNumber: serverNumber.toString(), number: ours.toString() });
+    if (ours === serverNumber) throw new EzError(5, "state_forked", "The server's root CRL has the same number but different content: two copies of this root are signing.", { number: ours.toString() });
+    assertCarriesServerRevocations(crl, await fetchServerCrl(session, ext, root));
+  }
+  const response = await uploadRootCrl(session, ext.extId, { pem: pemOf(crl.der, "X509 CRL"), sha256: crl.sha256 });
+  return { data: { command: "upload-crl", root: { extId: ext.extId }, crl: summary, uploaded: true, changed: response.changed, revokedCaIds: response.revokedCaIds } };
+};
+
 const uploadCrl = async (ctx: Ctx): Promise<Receipt> => {
+  if (str(ctx.values, "crl") !== undefined || str(ctx.values, "root-cert") !== undefined) return uploadCrlStateless(ctx);
   const store = await EzStore.open(storeOptions(ctx, directoryOf(ctx.values)));
   try {
     const session = await sessionOf(ctx);
-    assertClockSkew(session, ctx.clock());
     const ext = await findExternalRoot(session, store.state.root);
+    // The first server response carries its clock; check it before anything is signed or uploaded.
+    assertClockSkew(session, ctx.clock());
     if (ext === undefined) throw new EzError(4, "not_found", "The server does not know this root yet; it is registered when the first CA under it is activated.");
-    await store.checkServer(serverViewOf(ext));
+    await store.checkServer(await fetchServerView(session, ext, store.rootCertificate));
     checkExpectedExt(str(ctx.values, "expect-ext-id"), ext);
     const sync = await syncRootCrl(session, store, ext, ctx);
     return { data: { command: "upload-crl", root: { extId: sync.extId }, crl: crlSummary(await store.readCurrentCrl()), uploaded: sync.uploaded, changed: sync.changed, revokedCaIds: sync.revokedCaIds } };
@@ -1566,6 +1755,11 @@ const uploadCrl = async (ctx: Ctx): Promise<Receipt> => {
 // ---------------------------------------------------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------------------------------------------------
+
+const statusRoot = async (dir: string, state: EzState): Promise<ParsedCertificate> => {
+  const bytes = await readBounded(resolveRecordedPath(dir, state.root.certificateFile, true), 65536, "root certificate file");
+  return parseCertificate(fromPem(bytes.toString("latin1"), "CERTIFICATE"));
+};
 
 const status = async (ctx: Ctx): Promise<Receipt> => {
   const dir = directoryOf(ctx.values);
@@ -1605,7 +1799,7 @@ const status = async (ctx: Ctx): Promise<Receipt> => {
     const ext = await findExternalRoot(session, state.root);
     let relation = ext === undefined ? "not_registered" : "in_sync";
     try {
-      compareWithServer(state, serverViewOf(ext));
+      compareWithServer(state, await fetchServerView(session, ext, await statusRoot(dir, state)));
       if (ext?.crl !== undefined && current !== null && ext.crl.sha256 !== current.sha256) relation = "server_behind_local";
     } catch (error) {
       if (!(error instanceof EzError)) throw error;
@@ -1618,6 +1812,481 @@ const status = async (ctx: Ctx): Promise<Receipt> => {
     return { data: { ...data, server: { checked: false, reason: code } } };
   }
 };
+
+// ---------------------------------------------------------------------------------------------------------------------
+// adopt-ca
+// ---------------------------------------------------------------------------------------------------------------------
+
+const wholeNumber = (text: string, name: string): bigint => {
+  if (!/^\d{1,40}$/.test(text)) usage(`${name} must be a whole number.`);
+  return BigInt(text);
+};
+
+const pathLenOf = (cert: ParsedCertificate): number | null => {
+  const bc = cert.extensions.find((e) => e.oid === OID.basicConstraints);
+  const pathLen = bc === undefined ? undefined : parseBasicConstraints(bc.value).pathLen;
+  return pathLen !== undefined && pathLen >= 1 ? pathLen : null;
+};
+
+/** realpath of the nearest existing ancestor, with the rest appended (the path itself may not exist yet). */
+const realPathOf = async (path: string): Promise<string> => {
+  const tail: string[] = [];
+  let current = resolve(path);
+  for (;;) {
+    try {
+      return join(await fs.realpath(current), ...tail);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return resolve(path);
+      tail.unshift(basename(current));
+      current = parent;
+    }
+  }
+};
+
+const crlFileNameOf = (number: bigint): string => `crls/${String(number).padStart(6, "0")}.crl.pem`;
+
+/** `adopt-ca`: brings an existing root (an OpenSSL recipe, key and certificate files, or a YubiKey slot) under EZ management. */
+const adoptCa = async (ctx: Ctx): Promise<Receipt> => {
+  const v = ctx.values;
+  const useYubiKey = flag(v, "yubikey");
+  const opensslDir = str(v, "openssl-dir");
+  const certFlag = str(v, "cert");
+  const keyFlag = str(v, "key");
+  const reissue = flag(v, "reissue-root-certificate");
+  const offline = flag(v, "offline");
+  const storeInSlot = flag(v, "store-certificate-in-slot");
+
+  // -- 1. Flags (no side effects) ------------------------------------------------------------------------------------
+  if (useYubiKey && opensslDir !== undefined) usage("--yubikey and --openssl-dir are different sources; choose one.");
+  if (opensslDir !== undefined && (certFlag !== undefined || keyFlag !== undefined)) usage("--openssl-dir supplies the certificate and key; do not add --cert or --key.");
+  if (!useYubiKey && opensslDir === undefined && (certFlag === undefined || keyFlag === undefined)) {
+    usage("Choose what to adopt: --openssl-dir DIR, --cert F --key F, or --yubikey [--cert F].");
+  }
+  if (useYubiKey && keyFlag !== undefined) usage("--key applies to a software root; this root's key is in the YubiKey.");
+  if (!useYubiKey) {
+    for (const name of ["yubikey-serial", "slot", "pin-stdin", "allow-last-pin-attempt", "store-certificate-in-slot"]) {
+      if (v[name] !== undefined) usage(`--${name} applies only with --yubikey.`);
+    }
+  } else {
+    for (const name of ["passphrase-stdin", "key-file"]) if (v[name] !== undefined) usage(`--${name} applies only to a software root.`);
+  }
+  if (flag(v, "no-prior-revocations") && (v.crl !== undefined || v["openssl-index"] !== undefined || opensslDir !== undefined)) {
+    usage("--no-prior-revocations contradicts the CRL or index.txt you supplied; drop one of them.");
+  }
+  if (str(v, "validity") !== undefined && !reissue) usage("--validity applies only with --reissue-root-certificate.");
+  if (offline) {
+    for (const name of ["admin-url", "token-file", "timeout-ms"]) if (v[name] !== undefined) usage(`--${name} cannot be combined with --offline.`);
+  }
+  const flagNumber = str(v, "crl-number") === undefined ? undefined : wholeNumber(str(v, "crl-number") as string, "--crl-number");
+  const reissueDays = str(v, "validity") === undefined ? undefined : days(str(v, "validity") as string, "Validity");
+  const crlValidity = str(v, "crl-validity") === undefined ? EZ_DEFAULTS.crlValidityDays : crlDays(str(v, "crl-validity") as string);
+  const intermediateDays = str(v, "intermediate-validity") === undefined ? EZ_DEFAULTS.intermediateValidityDays : days(str(v, "intermediate-validity") as string, "Intermediate validity");
+  const dir = directoryOf(v);
+  const now = ctx.clock();
+  const keyFile = recordedPath(dir, str(v, "key-file") ?? "root.key.pem");
+  const certFile = recordedPath(dir, str(v, "cert-file") ?? "root.pem");
+  const crlFile = recordedPath(dir, str(v, "crl-file") ?? "root.crl.pem");
+  const names = useYubiKey ? [certFile, crlFile] : [keyFile, certFile, crlFile];
+  if (new Set(names).size !== names.length) usage("The key, certificate and CRL files must be different files.");
+
+  // -- 2. Read and verify everything that does not need the target directory (still no side effects) --------------------
+  // Input files are relative to the current directory; only the output names are relative to --dir.
+  const input = (path: string): string => resolve(path);
+  const recipe = opensslDir === undefined ? undefined : resolve(opensslDir);
+  const optionalFile = async (path: string): Promise<string | undefined> => ((await exists(path)) ? path : undefined);
+  const uniq = (paths: (string | undefined)[]): string[] => [...new Set(paths.filter((p): p is string => p !== undefined))];
+  const crlPaths = uniq([recipe === undefined ? undefined : await optionalFile(join(recipe, "root.crl.pem")), str(v, "crl") === undefined ? undefined : input(str(v, "crl") as string)]);
+  const indexPaths = uniq([recipe === undefined ? undefined : join(recipe, "index.txt"), str(v, "openssl-index") === undefined ? undefined : input(str(v, "openssl-index") as string)]);
+  const numberPaths = uniq([recipe === undefined ? undefined : await optionalFile(join(recipe, "crlnumber")), str(v, "openssl-crlnumber") === undefined ? undefined : input(str(v, "openssl-crlnumber") as string)]);
+
+  const io = useYubiKey ? ykIo(ctx) : undefined;
+  let handle: DeviceHandle | undefined;
+  let lockPassed = false;
+  let createdDir = false;
+  let lock: LockHandle | undefined;
+  try {
+    let slot = EZ_DEFAULTS.slot as string;
+    let certDer: Buffer | undefined;
+    let slotKeySpki: Buffer | undefined;
+    let slotCertDer: Buffer | null = null;
+    const warnings: string[] = [];
+    if (useYubiKey && io !== undefined) {
+      slot = parseSlot(str(v, "slot") ?? EZ_DEFAULTS.slot);
+      const serialText = str(v, "yubikey-serial");
+      handle = await DeviceHandle.open(io, { serial: serialText === undefined ? undefined : parseSerial(serialText), slot, write: false, overwrite: false, allowLastPinAttempt: io.allowLastPinAttempt });
+      const slotKey = handle.target.info.key;
+      if (slotKey === null) throw new EzError(5, "slot_empty", `Slot ${slot} of YubiKey ${handle.serial} holds no key; there is nothing to adopt.`);
+      slotKeySpki = slotKey.spkiDer;
+      slotCertDer = handle.target.info.certificateDer;
+      if (certFlag !== undefined) {
+        certDer = certificateBytes(await readBounded(input(certFlag), 65536, "root certificate file"));
+        if (slotCertDer !== null && !slotCertDer.equals(certDer)) warnings.push("slot_certificate_differs");
+      } else if (slotCertDer !== null) {
+        certDer = slotCertDer;
+      } else {
+        throw new EzError(2, "root_certificate_required", `Slot ${slot} of YubiKey ${handle.serial} holds no certificate; pass the root certificate with --cert F.`);
+      }
+    } else {
+      const certPath = recipe === undefined ? input(certFlag as string) : join(recipe, "root.pem");
+      certDer = certificateBytes(await readBounded(certPath, 65536, "root certificate file"));
+    }
+    const validation = validateRootCertificate(certDer, { now, minimumRemainingDays: EZ_DEFAULTS.adoptMinimumRemainingDays });
+    const cert = validation.certificate;
+    if (slotKeySpki !== undefined && !cert.spkiDer.equals(slotKeySpki)) {
+      throw new EzError(5, "key_mismatch", `The certificate's public key is not the key in slot ${slot} of YubiKey ${handle?.serial ?? ""}; nothing was adopted.`);
+    }
+    gateRootProfile(validation.reasons, reissue);
+    const keyInfo = describeSpki(cert.spkiDer);
+    if (keyInfo.keyType === "rsa" && Number(keyInfo.algorithm.slice(4)) < 2048) {
+      throw new EzError(2, "key_too_weak", "An RSA root key must be at least 2048 bits.");
+    }
+    warnings.push(...KEY_FILE_ALGORITHM_WARNINGS(keyInfo.algorithm));
+    const reissuePlan = reissue ? planReissue(cert, reissueDays, now) : undefined;
+    const finalSki = reissuePlan?.subjectKeyIdentifier ?? cert.subjectKeyIdentifier ?? keyIdentifier(cert.spkiDer);
+    const issuerView = { ...cert, subjectKeyIdentifier: finalSki } as ParsedCertificate & { readonly subjectKeyIdentifier: Buffer };
+
+    // The source key (software roots): read now, decrypted after the review decisions that need no secret.
+    let keyPem: string | undefined;
+    let encryptedSource = false;
+    if (!useYubiKey) {
+      const keyPath = recipe === undefined ? input(keyFlag as string) : join(recipe, "private", "root.key");
+      keyPem = (await readBounded(keyPath, 65536, "key file")).toString("utf8");
+      if (!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(keyPem)) throw new EzError(2, "key_file_invalid", "The key file does not contain a PEM private key.");
+      encryptedSource = isEncryptedKeyPem(keyPem);
+    }
+
+    // Prior CRLs and revocations. Every CRL must verify under the root.
+    const crls: { source: "server" | "crl-file"; crl: ParsedCrl }[] = [];
+    for (const path of crlPaths) {
+      const crl = parseCrlSource(await readBounded(path, 4_194_304, "CRL file"), (text) => fromPem(text, "X509 CRL"));
+      assertCrlFromRoot(crl, cert, `The CRL ${path}`);
+      crls.push({ source: "crl-file", crl });
+    }
+    crls.sort((a, b) => (b.crl.number ?? 0n) > (a.crl.number ?? 0n) ? 1 : -1);
+    const rows: IndexRow[] = [];
+    for (const path of indexPaths) rows.push(...parseOpenSslIndex((await readBounded(path, 33_554_432, "index.txt file", true)).toString("utf8")));
+    let crlnumberFile: bigint | undefined;
+    for (const path of numberPaths) {
+      const last = parseOpenSslCrlNumber((await readBounded(path, 4096, "crlnumber file")).toString("utf8")) - 1n;
+      if (crlnumberFile === undefined || last > crlnumberFile) crlnumberFile = last;
+    }
+
+    // The server: for a registered root, its stored root CRL is a revocation and number source.
+    let session: OnlineSession | undefined;
+    let ext: Awaited<ReturnType<typeof findExternalRoot>> = undefined;
+    let serverCrl: ParsedCrl | undefined;
+    if (!offline) {
+      session = await sessionOf(ctx);
+      ext = await findExternalRoot(session, { spkiSha256: cert.spkiSha256, fingerprint: cert.fingerprint });
+      // The first server response carries its clock; check it before anything is signed or uploaded.
+      assertClockSkew(session, now);
+      if (ext !== undefined && reissuePlan !== undefined) {
+        throw new EzError(5, "root_mismatch", "The server already knows this root; a re-issued certificate would change its fingerprint and no longer match the registered root.", { extId: ext.extId });
+      }
+      if (ext?.crl !== undefined) {
+        const bytes = await downloadRootCrl(session, ext.extId);
+        if (sha256Hex(bytes) !== ext.crl.sha256) throw new EzError(7, "invalid_response", "The server's root CRL does not match its record.");
+        serverCrl = parseCrl(bytes);
+        assertCrlFromRoot(serverCrl, cert, "The server's root CRL");
+        crls.unshift({ source: "server", crl: serverCrl });
+      }
+    }
+    const revocationSources: RevocationSource[] = [
+      ...(serverCrl === undefined ? [] : ["server" as const]),
+      ...(crls.some((c) => c.source === "crl-file") ? ["crl-file" as const] : []),
+      ...(indexPaths.length === 0 ? [] : ["openssl-index" as const]),
+    ];
+    if (revocationSources.length === 0 && !flag(v, "no-prior-revocations")) {
+      throw new EzError(2, "revocation_source_required", "No source of prior revocations: pass --crl FILE, --openssl-index FILE (or --openssl-dir), log in so the server's root CRL can be read, or --no-prior-revocations if this root has never revoked anything. A next CRL that omitted earlier revocations would un-revoke them for relying parties.");
+    }
+    const records: RevocationRecord[] = mergeRevocations([
+      ...crls.map((c) => recordsFromCrl(c.crl, c.source)),
+      recordsFromIndex(rows),
+    ]);
+    const plan = planCrl({ flag: flagNumber, crlnumberFile, crls }, { now, renewBeforeDays: EZ_DEFAULTS.crlRenewBeforeDays, root: issuerView, records });
+    if (plan.raisedByServer) {
+      warnings.push("crl_number_raised_by_server");
+      await ctx.say(`The server's root CRL number is higher than the one you gave; the next CRL number was raised to follow it.\n`);
+    }
+    const currentNumber = plan.adopted === undefined ? plan.lastNumber + 1n : plan.lastNumber;
+    const newThisUpdate = plan.adopted === undefined ? nextThisUpdate(now, plan.newestThisUpdate) : undefined;
+    const newNextUpdate = newThisUpdate === undefined ? undefined : new Date(newThisUpdate.getTime() + crlValidity * DAY_MS);
+
+    // Targets: never overwrite anything.
+    const statePath = join(dir, str(v, "state-file") ?? DEFAULT_STATE_FILE);
+    const targets = [statePath, withinDir(dir, certFile), withinDir(dir, crlFile), join(dir, crlFileNameOf(currentNumber)), ...(useYubiKey ? [] : [withinDir(dir, keyFile)]), ...(reissuePlan === undefined ? [] : [join(dir, "root.original.pem")])];
+    // Adoption writes only into --dir: it must not overlap the recipe directory, and no output may be an input file.
+    const refuseSourceOverlap = async (): Promise<void> => {
+      const realDir = await realPathOf(dir);
+      if (recipe !== undefined) {
+        const realRecipe = await realPathOf(recipe);
+        if (realDir === realRecipe || realDir.startsWith(realRecipe + sep)) {
+          throw new EzError(2, "invalid_input", `--dir (${dir}) is the OpenSSL directory or inside it; adopt-ca writes crls/, the state and more, and never writes into a source. Choose another --dir.`);
+        }
+      }
+      const inputs = new Set<string>();
+      for (const path of [certFlag, keyFlag, str(v, "crl"), str(v, "openssl-index"), str(v, "openssl-crlnumber"), ...crlPaths, ...indexPaths, ...numberPaths, ...(recipe === undefined ? [] : [join(recipe, "root.pem"), join(recipe, "private", "root.key")])]) {
+        if (path !== undefined) inputs.add(await realPathOf(input(path)));
+      }
+      for (const target of targets) {
+        if (inputs.has(await realPathOf(target))) throw new EzError(2, "invalid_input", `The output ${target} is also an input file; adopt-ca never modifies a source.`);
+      }
+    };
+    const refuseExisting = async (): Promise<void> => {
+      const present: string[] = [];
+      for (const target of targets) if (await exists(target)) present.push(target);
+      if (present.length > 0) {
+        throw new EzError(5, "already_exists", `Refusing to overwrite existing files: ${present.join(", ")}. Nothing was changed. If a previous adopt-ca was interrupted (there is no ${DEFAULT_STATE_FILE}), remove only the files it wrote there and rerun; your sources and the device were not changed.`, { files: present });
+      }
+    };
+    await refuseSourceOverlap();
+    await refuseExisting();
+    // A certificate that already is the slot's needs no device write.
+    const storeDeviceCertificate = storeInSlot && (reissuePlan !== undefined || slotCertDer === null || !slotCertDer.equals(cert.der));
+    // Everything that could refuse has run; from here on the operator must be able to type the confirmation.
+    await ctx.prompter.requireConfirmTerminal("adopt");
+
+    // -- 3. The directory, the lock, then secrets --------------------------------------------------------------------
+    createdDir = !(await exists(dir));
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    const baseOptions = storeOptions({ ...ctx, values: { ...v, dir } }, dir);
+    lock = await acquireLock(dir, { command: baseOptions.command, hostname: osHostname(), now: ctx.clock, breakStale: baseOptions.breakStaleLock });
+    await refuseExisting();
+
+    let signer: RootSigner;
+    let sourceKey: ReturnType<typeof readSourceKey>["key"] | undefined;
+    if (useYubiKey && handle !== undefined) {
+      signer = handle.signer(cert.spkiDer);
+      warnings.push("no_key_backup");
+    } else {
+      let existing: Buffer | undefined;
+      if (encryptedSource) existing = await ctx.prompter.passphrase({ create: false, fromStdin: flag(v, "passphrase-stdin"), label: "Source key passphrase: " });
+      try {
+        sourceKey = readSourceKey(keyPem as string, existing).key;
+      } finally {
+        existing?.fill(0);
+      }
+      if (!encryptedSource) {
+        warnings.push("key_unencrypted");
+        await ctx.say("WARNING: the source key file is NOT encrypted. EZ re-encrypts a copy under your new passphrase, but the original stays unprotected until you delete it.\n");
+      }
+      signer = new SoftwareSigner(sourceKey);
+      if (!signer.spkiDer.equals(cert.spkiDer)) {
+        signer.close();
+        throw new EzError(5, "key_mismatch", "The private key does not belong to the certificate's public key; nothing was adopted.");
+      }
+    }
+
+    try {
+      // -- 4. Review and the typed confirm ---------------------------------------------------------------------------
+      const sourceLabel = useYubiKey ? `YubiKey ${handle?.serial ?? ""}, slot ${slot} (firmware ${handle?.target.info.device.firmware ?? ""})` : recipe !== undefined ? `OpenSSL directory ${recipe}` : `files ${input(certFlag as string)} and ${input(keyFlag as string)}`;
+      const adoptedCrl = plan.adopted?.crl;
+      await ctx.say(
+        renderAdoptReview({
+          source: sourceLabel,
+          subjectDn: describeName(assertRestrictedName(cert.subjectDer, "external")),
+          fingerprint: cert.fingerprint,
+          serial: cert.serialHex,
+          notBefore: cert.notBefore,
+          notAfter: cert.notAfter,
+          key: keyInfo.algorithm,
+          spkiSha256: cert.spkiSha256,
+          storage: useYubiKey ? `YubiKey (no backup held by EZ), PIN and touch as the slot is set` : `software key file ${withinDir(dir, keyFile)} (re-encrypted)`,
+          crl: {
+            lastNumber: plan.lastNumber,
+            sources: plan.sources,
+            signNumber: plan.adopted === undefined ? Number(currentNumber) : undefined,
+            nextUpdate: (adoptedCrl?.nextUpdate ?? newNextUpdate) as Date,
+            adopted: plan.adopted !== undefined,
+          },
+          revocations: { count: records.length, sources: revocationSources.length === 0 ? ["none declared"] : revocationSources },
+          importedIssued: new Set(rows.map((r) => r.serial)).size,
+          ...(reissuePlan === undefined ? {} : { reissue: { serial: serialHex(reissuePlan.serial), notAfter: reissuePlan.notAfter, keepsSki: reissuePlan.subjectKeyIdentifier !== undefined, keptFile: withinDir(dir, "root.original.pem"), pathLen: reissuePlan.pathLen, droppedPathLen: reissuePlan.droppedPathLen } }),
+          ...(useYubiKey ? { slotCertificate: storeDeviceCertificate } : {}),
+          warnings: warnings.map((w) => adoptWarningText(w)),
+        }),
+      );
+      const confirmation = await ctx.prompter.confirm("adopt");
+      if (storeDeviceCertificate && handle !== undefined && io !== undefined) {
+        await io.prompter.acknowledge(String(handle.serial), `Type the serial number ${handle.serial} to store the certificate in slot ${slot} of that YubiKey${slotCertDer === null ? "" : " (replacing the one there)"}: `);
+      }
+
+      // -- 5. Unlock, prepare and sign one batch -----------------------------------------------------------------------
+      let newKeyPem: string | undefined;
+      if (signer instanceof YubiKeySigner) {
+        await signer.verifyPin();
+        if (storeDeviceCertificate && handle !== undefined) await handle.checkManagement();
+      } else {
+        const fresh = await ctx.prompter.passphrase({ create: true, fromStdin: flag(v, "passphrase-stdin"), label: "New passphrase for the EZ key file (12+ characters): " });
+        try {
+          newKeyPem = encryptPkcs8((sourceKey as NonNullable<typeof sourceKey>).export({ type: "pkcs8", format: "der" }), fresh);
+          const check = new SoftwareSigner(decryptKeyFile(newKeyPem, fresh));
+          const same = check.spkiDer.equals(cert.spkiDer);
+          check.close();
+          if (!same) throw new EzError(7, "internal_error", "The re-encrypted key does not restore this root's key; nothing was written.");
+        } finally {
+          fresh.fill(0);
+        }
+      }
+      const test: SignItem = { id: "test", description: "a test challenge (nothing is issued)", data: randomBytes(32) };
+      const rootPrep = reissuePlan === undefined ? undefined : prepareRoot(signer, { subject: reissuePlan.subjectDer, now, serial: reissuePlan.serial, notAfter: reissuePlan.notAfter, pathLen: reissuePlan.pathLen, subjectKeyIdentifier: reissuePlan.subjectKeyIdentifier });
+      const crlPrep =
+        plan.adopted !== undefined || newThisUpdate === undefined
+          ? undefined
+          : prepareCrl(signer, issuerView, { number: currentNumber, thisUpdate: newThisUpdate, validityDays: crlValidity, entries: crlEntriesOf(records) });
+      const items = [test, ...(rootPrep === undefined ? [] : [rootPrep.item]), ...(crlPrep === undefined ? [] : [crlPrep.item])];
+      const signatures = await signBatch(signer, items, {
+        events: { onTouch: (item) => void ctx.say(touchNotice(handle?.serial ?? 0, item)) },
+        confirm: () => {
+          if (!consumeConfirmation(confirmation, "adopt")) throw new EzError(2, "confirmation_declined", "Signing was attempted without the typed confirmation.");
+        },
+      });
+      let cursor = 1;
+      const reissued = rootPrep === undefined ? undefined : rootPrep.finish(signatures[cursor++] as Buffer);
+      const newCrl = crlPrep === undefined ? undefined : crlPrep.finish(signatures[cursor++] as Buffer);
+      const finalRoot = reissued?.certificate ?? cert;
+      if (reissued !== undefined && (!finalRoot.subjectDer.equals(cert.subjectDer) || !finalRoot.spkiDer.equals(cert.spkiDer))) {
+        throw new EzError(7, "signature_self_check_failed", "The re-issued root does not keep the original subject and key; nothing was written.");
+      }
+      const currentCrl = (newCrl?.crl ?? plan.adopted?.crl) as ParsedCrl;
+
+      // -- 6. State and files (the state file last; nothing is overwritten) --------------------------------------------
+      const subject = subjectOfRoot(finalRoot);
+      const state = initialState({
+        origin: "adopted",
+        subject: subject as unknown as Record<string, string>,
+        subjectDn: formatSubject(subject),
+        root: finalRoot,
+        keyAlgorithm: keyInfo.algorithm,
+        pathLen: pathLenOf(finalRoot),
+        key:
+          useYubiKey && handle !== undefined
+            ? {
+                storage: "yubikey",
+                file: null,
+                kdf: null,
+                yubikey: {
+                  slot,
+                  keyType: handle.target.info.key?.keyType ?? "",
+                  generatedOnDevice: handle.target.info.key?.generated ?? false,
+                  pinPolicy: handle.target.info.key?.pinPolicy ?? "always",
+                  touchPolicy: handle.target.info.key?.touchPolicy ?? "always",
+                  devices: [{ serial: handle.serial, firmware: handle.target.info.device.firmware, fips: handle.target.info.device.fips, addedAt: now.toISOString() }],
+                },
+              }
+            : { storage: "software", file: keyFile, kdf: { name: "pbkdf2-hmac-sha256", iterations: KEY_FILE_ITERATIONS }, yubikey: null },
+        crl: currentCrl,
+        certificateFile: certFile,
+        crlCopyFile: crlFile,
+        defaults: { intermediateValidityDays: intermediateDays, crlValidityDays: crlValidity },
+        adoption: {
+          source: useYubiKey ? "yubikey" : recipe !== undefined ? "openssl-dir" : "files",
+          adoptedAt: now.toISOString(),
+          crlNumberSource: [...plan.sources],
+          revocationSource: revocationSources.length === 0 ? ["none-declared"] : [...revocationSources],
+        },
+        reissuedFrom: reissued === undefined ? null : { fingerprint: cert.fingerprint, file: "root.original.pem" },
+        now,
+      });
+      state.revoked = revokedEntriesOf(records, Number(currentNumber));
+      state.issued = importedIssuedEntries(rows, finalRoot);
+      if (plan.newestThisUpdate !== undefined && plan.newestThisUpdate.getTime() > Date.parse(state.crl.lastThisUpdate)) {
+        state.crl.lastThisUpdate = plan.newestThisUpdate.toISOString();
+      }
+      const artifacts = [
+        ...initialArtifacts(state, { rootDer: finalRoot.der, crlDer: currentCrl.der, ...(newKeyPem === undefined ? {} : { keyFilePem: newKeyPem }) }),
+        ...(reissued === undefined ? [] : [{ path: "root.original.pem", data: Buffer.from(toPem(cert.der, "CERTIFICATE")), mode: 0o644 }]),
+      ];
+      lockPassed = true;
+      const store = await EzStore.create({ ...baseOptions, lock }, state, artifacts);
+      try {
+        ctx.progress.completed.push("root-adopted");
+        const files: Record<string, string> = {
+          state: statePath,
+          ...(useYubiKey ? {} : { key: withinDir(dir, keyFile) }),
+          certificate: withinDir(dir, certFile),
+          crl: withinDir(dir, crlFile),
+          ...(reissued === undefined ? {} : { originalCertificate: join(dir, "root.original.pem") }),
+        };
+        Object.assign(ctx.progress.files, files);
+        if (session !== undefined && ext?.crl !== undefined && ext.crl.sha256 === currentCrl.sha256) {
+          await store.recordUpload(session.origin.origin, ext.extId, Number(currentCrl.number));
+        }
+        await ctx.say(["", `Root adopted: ${formatSubject(subject)}`, `  SHA-256 fingerprint  ${finalRoot.fingerprint}`, `  CRL number           ${currentCrl.number}`, ""].join("\n"));
+        if (!useYubiKey) {
+          const originals = [recipe === undefined ? input(keyFlag as string) : join(recipe, "private", "root.key")];
+          await ctx.say(`NOTE: the original key file(s) remain: ${originals.join(", ")}. ${encryptedSource ? "OpenSSL's -aes256 protects them with only a few thousand PBKDF2 iterations" : "They are NOT encrypted"}; secure or delete them once you have backed up ${files.key}.\n`);
+        } else {
+          await ctx.say("NOTE: EZ holds no backup of this YubiKey's key. If the device is lost or locked, this root is gone.\n");
+        }
+        if (storeDeviceCertificate && handle !== undefined && io !== undefined) {
+          try {
+            const management = await handle.management();
+            await io.client.putCertificate({ serial: handle.serial, slot, overwrite: slotCertDer !== null, management: management.spec, pin: management.pin, certificateDer: finalRoot.der });
+            ctx.progress.completed.push(`slot-certificate:${handle.serial}`);
+          } catch (error) {
+            warnings.push(`slot_certificate_failed:${handle.serial}`);
+            await ctx.say(`The root was adopted, but its certificate could not be stored in slot ${slot} (${error instanceof EzError ? error.message : "unknown error"}). It is in ${files.certificate}.\n`);
+          }
+        }
+        const registered = ext !== undefined;
+        return {
+          data: {
+            command: "adopt-ca",
+            dir,
+            source: state.adoption?.source,
+            root: {
+              subject: formatSubject(subject),
+              fingerprint: finalRoot.fingerprint,
+              spkiSha256: finalRoot.spkiSha256,
+              serial: finalRoot.serialHex,
+              notBefore: finalRoot.notBefore.toISOString(),
+              notAfter: finalRoot.notAfter.toISOString(),
+              keyAlgorithm: keyInfo.algorithm,
+              extIdHint: state.root.extIdHint,
+              reissued: reissued !== undefined,
+              ...(reissued === undefined ? {} : { originalFingerprint: cert.fingerprint, fingerprintChanged: true }),
+            },
+            crl: { number: Number(currentCrl.number), nextUpdate: (currentCrl.nextUpdate as Date).toISOString(), signed: newCrl !== undefined, adopted: newCrl === undefined, lastNumber: Number(plan.lastNumber), numberSources: plan.sources },
+            revocations: { count: records.length, sources: state.adoption?.revocationSource },
+            issuedImported: state.issued.length,
+            key: useYubiKey ? { storage: "yubikey", slot, serial: handle?.serial, keyType: state.key.yubikey?.keyType, touchPolicy: state.key.yubikey?.touchPolicy } : { storage: "software", file: files.key },
+            files,
+            defaults: state.defaults,
+            ...(registered ? { server: { registered: true, extId: ext?.extId } } : {}),
+            warnings,
+          },
+          next: [
+            ...(useYubiKey ? ["EZ holds no backup of this YubiKey's key."] : [`Back up ${files.key}, then secure or delete the original key file(s).`]),
+            ...(reissued === undefined ? [] : [`The root fingerprint changed (was ${cert.fingerprint}); redistribute ${files.certificate} to anything that pins the certificate.`]),
+            ...(registered && newCrl !== undefined ? ["hemlig pki ez upload-crl"] : []),
+            "hemlig pki ez sign-cert <ca-id> --environment <env>",
+          ],
+        };
+      } finally {
+        await store.close();
+      }
+    } finally {
+      signer.close();
+    }
+  } finally {
+    handle?.close();
+    if (!lockPassed) {
+      await lock?.release();
+      if (createdDir) await fs.rmdir(dir).catch(() => undefined);
+    }
+  }
+};
+
+const ADOPT_WARNINGS: Record<string, string> = {
+  key_unencrypted: "the source key file is not encrypted",
+  no_key_backup: "EZ holds no backup of this YubiKey's key; if the device is lost or locked the root is gone",
+  slot_certificate_differs: "the slot holds a different certificate than --cert; the one from --cert is adopted",
+  crl_number_raised_by_server: "the server's CRL number raised the next number",
+  root_key_rsa_2048: "RSA-2048 is a weak size for a root key",
+};
+const adoptWarningText = (code: string): string => ADOPT_WARNINGS[code] ?? code;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Entry point
@@ -1670,6 +2339,7 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
     };
     const handlers: Record<string, (ctx: Ctx) => Promise<Receipt>> = {
       "generate-ca": generateCa,
+      "adopt-ca": adoptCa,
       "import-key": importKey,
       "sign-cert": signCert,
       activate: activateCommand,

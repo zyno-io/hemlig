@@ -695,7 +695,11 @@ export async function resolveCa(
   for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
     const result = await client.listPkiCas(token, { environment, cursor });
     const match = result.cas.find((ca) => ca.name === reference);
-    if (match !== undefined) return match.caId;
+    if (match !== undefined) {
+      // The ID is printed and used in requests: a server-supplied value that is not a CA ID is never trusted.
+      if (!isCaId(match.caId)) throw new CliError(7, "invalid_response", "The server returned a malformed CA ID.");
+      return match.caId;
+    }
     cursor = result.nextCursor;
     if (cursor === undefined) break;
   }

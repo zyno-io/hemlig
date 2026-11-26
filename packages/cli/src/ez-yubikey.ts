@@ -110,6 +110,7 @@ const EXIT_FOR_CODE: Record<string, number> = {
   yubikey_not_found: 9,
   yubikey_multiple: 2,
   yubikey_firmware_unsupported: 9,
+  tool_unsupported: 9,
   yubikey_algorithm_unsupported: 2,
   pin_invalid: 3,
   pin_blocked: 3,

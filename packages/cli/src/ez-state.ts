@@ -11,6 +11,7 @@ import {
   type FsFaults,
   type LockHandle,
 } from "./ez-fs";
+import { assertRestrictedName, describeName } from "./ez-name";
 import { EZ_DEFAULTS } from "./ez-profile";
 import {
   CRL_REASON_NAMES,
@@ -292,6 +293,17 @@ export const validateState = (raw: unknown): EzState => {
   if (state.key.storage === "software" && state.key.file === null) corrupt("$.key.file", "a software key needs a file");
   if (state.key.storage === "yubikey" && state.key.yubikey === null) corrupt("$.key.yubikey", "a YubiKey root needs a record");
   return state;
+};
+
+/** True when `parse` accepts the PEM text; an EzError from it (malformed PEM or DER) means a torn artifact. */
+const parsesAs = (pem: Buffer, parse: (text: string) => unknown): boolean => {
+  try {
+    parse(pem.toString("utf8"));
+    return true;
+  } catch (error) {
+    if (error instanceof EzError) return false;
+    throw error;
+  }
 };
 
 const crlFileName = (number: number): string => `crls/${String(number).padStart(6, "0")}.crl.pem`;
@@ -732,6 +744,60 @@ export class EzStore {
     });
   }
 
+  /**
+   * Records a certificate this root issued before it was adopted (so it can be revoked). It must verify under the root;
+   * the file is kept as `issued/<serial>.pem` (no-clobber) and the entry is `imported`. An existing entry is returned as is.
+   */
+  public async importIssued(input: { der: Buffer; caId: string | null; environment: string | null; adminOrigin: string | null }): Promise<IssuedEntry> {
+    const cert = parseCertificate(input.der);
+    const root = this.rootCertificate;
+    if (!cert.issuerDer.equals(root.subjectDer) || !verifyCertificateSignature(cert, root.spkiDer)) {
+      throw new EzError(5, "certificate_invalid", "That certificate was not issued by this root.");
+    }
+    const existing = this.#state.issued.find((e) => e.serial === cert.serialHex);
+    if (existing !== undefined) {
+      if ((input.caId !== null && existing.caId !== input.caId) || (existing.fingerprint !== null && existing.fingerprint !== cert.fingerprint)) {
+        throw new EzError(5, "state_conflict", `Serial ${cert.serialHex} is already recorded for another CA or certificate.`, { reason: "serial_other_ca" });
+      }
+      return existing;
+    }
+    let subjectKey = sha256Hex(cert.subjectDer);
+    let subjectDn = "(unreadable subject)";
+    try {
+      const name = assertRestrictedName(cert.subjectDer, "external");
+      subjectKey = name.key;
+      subjectDn = describeName(name);
+    } catch {
+      // not in the restricted form: the DER hash stands in
+    }
+    const file = issuedFileName(cert.serialHex);
+    try {
+      await createImmutable(this.path(file), Buffer.from(toPem(cert.der, "CERTIFICATE")), 0o644, this.options);
+    } catch (error) {
+      if (!(error instanceof EzError && error.code === "already_exists")) throw error;
+    }
+    await this.#persist((draft) => {
+      draft.issued.push({
+        serial: cert.serialHex,
+        caId: input.caId,
+        environment: input.environment,
+        adminOrigin: input.adminOrigin,
+        subjectDn,
+        subjectKey,
+        csrSha256: null,
+        spkiSha256: cert.spkiSha256,
+        certificateFile: file,
+        fingerprint: cert.fingerprint,
+        notBefore: cert.notBefore.toISOString(),
+        notAfter: cert.notAfter.toISOString(),
+        status: "imported",
+        signedAt: null,
+        activatedAt: null,
+      });
+    });
+    return this.#state.issued.find((e) => e.serial === cert.serialHex) as IssuedEntry;
+  }
+
   /** Marks a reservation that will never be signed (for example after the operator declined). */
   public async abandon(rawSerial: string): Promise<void> {
     const serial = EzStore.canonicalSerial(rawSerial);
@@ -839,8 +905,9 @@ export class EzStore {
   /** `compareWithServer`, plus the local `crls/<n>` hash when the server's CRL number is below ours. */
   public async checkServer(server: ServerRootView): Promise<void> {
     let local: string | undefined;
-    if (server.crl !== undefined && /^[0-9a-fA-F]{1,15}$/.test(server.crl.numberHex)) {
-      const n = Number.parseInt(server.crl.numberHex, 16);
+    // The server zero-pads the number to 40 hex digits; compare as a BigInt.
+    if (server.crl !== undefined && /^[0-9a-fA-F]{1,40}$/.test(server.crl.numberHex) && BigInt(`0x${server.crl.numberHex}`) < BigInt(Number.MAX_SAFE_INTEGER)) {
+      const n = Number(BigInt(`0x${server.crl.numberHex}`));
       const currentNumber = this.#state.crl.current?.number ?? 0;
       if (n > currentNumber && n <= this.#state.crl.lastNumber) {
         // The server holds a CRL under a number this state allocated but never committed (burned): another signer made it.
@@ -911,6 +978,11 @@ export class EzStore {
     for (const entry of this.#state.issued.filter((e) => e.status === "signing")) {
       const file = issuedFileName(entry.serial);
       let pem = await readIfExists(this.path(file));
+      if (pem !== undefined && !parsesAs(pem, (der) => parseCertificate(fromPem(der, "CERTIFICATE")))) {
+        // A torn write (a filesystem without hard links): keep the evidence, then recover as if the file never existed.
+        await this.#moveAside(this.path(file));
+        pem = undefined;
+      }
       if (pem === undefined) pem = await this.#rescueTemp(entry, file);
       if (pem === undefined) {
         await this.#persist((draft) => {
@@ -931,7 +1003,11 @@ export class EzStore {
       const number = this.#state.pending.crlNumber;
       const current = this.#state.crl.current?.number ?? 0;
       const file = crlFileName(number);
-      const pem = number > current ? await readIfExists(this.path(file)) : undefined;
+      let pem = number > current ? await readIfExists(this.path(file)) : undefined;
+      if (pem !== undefined && !parsesAs(pem, (text) => parseCrl(fromPem(text, "X509 CRL")))) {
+        await this.#moveAside(this.path(file));
+        pem = undefined;
+      }
       if (pem !== undefined) {
         const crl = this.#verifyCrl(number, fromPem(pem.toString("utf8"), "X509 CRL"));
         await this.#adoptCrl(number, file, crl);
@@ -951,6 +1027,11 @@ export class EzStore {
         await writeAtomic(copy, wanted, 0o644, this.options);
       }
     }
+  }
+
+  /** Renames an unreadable artifact to `<name>.torn-<time>`; never deletes it. */
+  async #moveAside(path: string): Promise<void> {
+    await fs.rename(path, `${path}.torn-${this.now().getTime()}`);
   }
 
   /**

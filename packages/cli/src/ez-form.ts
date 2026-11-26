@@ -47,7 +47,7 @@ const shown = (field: FormField): string => {
 
 export const renderForm = (title: string, fields: readonly FormField[], columns: number, color: boolean): string => {
   const width = Math.max(...fields.map((f) => f.label.length));
-  const lines = [`\n${bold(color, title)}`, dim(color, "Review the settings. Enter a number to edit it, or press Enter to accept.")];
+  const lines = [`\n${bold(color, displaySafe(title))}`, dim(color, "Review the settings. Enter a number to edit it, or press Enter to accept.")];
   let index = 0;
   for (const field of fields) {
     const number = field.kind === "readonly" ? " -" : `${String((index += 1))}`.padStart(2);

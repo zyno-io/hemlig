@@ -330,6 +330,10 @@ hemlig pki ez sign-cert acc-issuing-1 --dir ez-root --environment prod
 
 Expected output: the review lists the CA, constraints and root; typing anything but `confirm` aborts with exit 2 and changes nothing; after `confirm` the CA is `ACTIVE`.
 
+To check adoption, adopt a throwaway copy so the adopted root and `acc-root` never share a CRL number line: run `cp -R acc-root acc-root-copy`, then `hemlig pki ez adopt-ca --dir ez-adopted --openssl-dir acc-root-copy`. The review shows the recipe root and its revocations, and the command asks for `confirm`.
+
+Then `hemlig pki ez renew-crl --dir ez-adopted --offline --crl-out adopted.crl.pem` signs a CRL that lists every revocation from the recipe's `index.txt`, and `openssl crl -verify -in adopted.crl.pem -CAfile acc-root/root.pem` passes. Never upload `adopted.crl.pem`: `acc-root` keeps signing its own CRLs with OpenSSL in the later gates. Both recipe directories are byte for byte unchanged.
+
 Keep `acc-root` for PKI-4 to PKI-6.
 
 ## Gate PKI-3: a PKI certificate never authenticates to the delivery API

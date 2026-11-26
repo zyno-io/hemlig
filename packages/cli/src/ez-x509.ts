@@ -455,6 +455,8 @@ export const parseCertificate = (der: Buffer): ParsedCertificate => {
     };
   } catch (error) {
     if (error instanceof DerError) throw new EzError(2, "certificate_invalid", `Malformed certificate: ${error.message}`);
+    // A truncated structure (an empty wrapper, a missing field) dereferences undefined: still malformed input.
+    if (error instanceof TypeError || error instanceof RangeError) throw new EzError(2, "certificate_invalid", `Malformed certificate.`);
     throw error;
   }
 };
@@ -506,6 +508,9 @@ export interface CrlEntry {
   readonly revokedAt: Date;
   readonly reason?: CrlReasonName;
   readonly invalidityDate?: Date;
+  /** Parsed CRLs only: the raw reason code (even one with no name) and the entry's extensions. */
+  readonly reasonCode?: number;
+  readonly extensions?: readonly ParsedExtension[];
 }
 
 export interface ParsedCrl {
@@ -553,18 +558,22 @@ export const parseCrl = (der: Buffer): ParsedCrl => {
         if (serial === undefined || revoked === undefined) return bad("Malformed CRL entry.");
         let reason: CrlReasonName | undefined;
         let invalidityDate: Date | undefined;
+        let reasonCode: number | undefined;
+        let parsedEntryExtensions: ParsedExtension[] = [];
         if (entryExtensions !== undefined) {
-          for (const e of parseExtensions(entryExtensions)) {
+          parsedEntryExtensions = parseExtensions(entryExtensions);
+          for (const e of parsedEntryExtensions) {
             if (e.oid === OID.reasonCode) {
               const code = parseDer(e.value);
               if (code.tag !== TAG.enumerated || code.value.length !== 1) return bad("Malformed reason code.");
-              reason = reasonName(code.value[0] as number);
+              reasonCode = code.value[0] as number;
+              reason = reasonName(reasonCode);
             } else if (e.oid === OID.invalidityDate) {
               invalidityDate = decodeTime(parseDer(e.value));
             }
           }
         }
-        entries.push({ serial: serialHex(decodeUint(serial)), revokedAt: decodeTime(revoked), reason, invalidityDate });
+        entries.push({ serial: serialHex(decodeUint(serial)), revokedAt: decodeTime(revoked), reason, invalidityDate, reasonCode, extensions: parsedEntryExtensions });
       }
     }
     let extensions: ParsedExtension[] = [];
@@ -590,6 +599,8 @@ export const parseCrl = (der: Buffer): ParsedCrl => {
     };
   } catch (error) {
     if (error instanceof DerError) throw new EzError(2, "crl_invalid", `Malformed CRL: ${error.message}`);
+    // A truncated structure (an empty wrapper, a missing field) dereferences undefined: still malformed input.
+    if (error instanceof TypeError || error instanceof RangeError) throw new EzError(2, "crl_invalid", `Malformed CRL.`);
     throw error;
   }
 };
@@ -1005,6 +1016,8 @@ export const parseCsr = (der: Buffer): ParsedCsr => {
     };
   } catch (error) {
     if (error instanceof DerError) throw new EzError(2, "csr_invalid", `Malformed CSR: ${error.message}`);
+    // A truncated structure (an empty wrapper, a missing field) dereferences undefined: still malformed input.
+    if (error instanceof TypeError || error instanceof RangeError) throw new EzError(2, "csr_invalid", `Malformed CSR.`);
     throw error;
   }
 };

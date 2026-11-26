@@ -49,6 +49,38 @@ def parse_version(version):
     return (version[0], version[1], version[2])
 
 
+def ykman_version():
+    # Returns (major, minor, patch) of the installed YubiKey Manager, or None when it cannot be told.
+    try:
+        import ykman
+
+        text = ykman.__version__
+    except Exception:
+        try:
+            from importlib.metadata import version as dist_version
+
+            text = dist_version("yubikey-manager")
+        except Exception:
+            return None
+    parts = []
+    for piece in str(text).split(".")[:3]:
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts)
+
+
+def require_ykman(minimum):
+    # One-argument PivSession.authenticate(key) and check_key_support exist only from YubiKey Manager 5.5.
+    found = ykman_version()
+    if found is not None and found < minimum:
+        raise Fail(
+            "tool_unsupported",
+            "This operation needs YubiKey Manager %d.%d or later; found %d.%d.%d." % (minimum[0], minimum[1], found[0], found[1], found[2]),
+        )
+
+
 def open_device(serial):
     from ykman.device import list_all_devices
 
@@ -187,6 +219,7 @@ def verify_pin(piv, request):
 
 
 def authenticate(piv, request):
+    require_ykman((5, 5, 0))
     from ykman.piv import derive_management_key, get_pivman_data, get_pivman_protected_data
     from yubikit.core import BadResponseError
     from yubikit.core.smartcard import ApduError
@@ -324,6 +357,7 @@ def op_generate(request):
     slot, name = slot_of(request)
     key_type = KEY_TYPE[request.get("keyType", "")]
     pin_policy, touch_policy = key_policies(request)
+    require_ykman((5, 5, 0))
     with Session(request) as s:
         piv = s.piv
         piv.check_key_support(key_type, pin_policy, touch_policy, True)

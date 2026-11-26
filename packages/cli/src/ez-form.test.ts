@@ -122,3 +122,10 @@ test("a confirmation is single-use and only valid for its own action; arming wai
   // typeahead that keeps arriving restarts the wait: the later "confirm" is still inside the window of the junk before it
   await assert.rejects(mk("junk\r", 60, "confirm\r").confirm("sign"), (e) => e instanceof EzError && e.code === "prompt_cancelled");
 });
+
+test("renderForm escapes control characters in the title (a server-supplied CA ID cannot move the cursor)", () => {
+  const text = renderForm("sign-cert: ca-\x1b[2J\x07evil", fields(), 80, false);
+  assert.equal(text.includes("\x1b"), false);
+  assert.equal(text.includes("\x07"), false);
+  assert.match(text, /\\x1b\[2J/);
+});
