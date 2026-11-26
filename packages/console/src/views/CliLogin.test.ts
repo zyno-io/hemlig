@@ -272,6 +272,8 @@ describe("CliLogin", () => {
       expect(submit).not.toHaveBeenCalled();
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(document.querySelector("form")).toBeNull();
+      // Already authorized: only Copy and Hide remain.
+      expect(wrapper.findAll("button").map((b) => b.text())).toEqual(["Copy", "Hide"]);
 
       await wrapper.findAll("button").find((b) => b.text() === "Copy")!.trigger("click");
       await flushPromises();
@@ -280,6 +282,7 @@ describe("CliLogin", () => {
       await wrapper.findAll("button").find((b) => b.text() === "Hide")!.trigger("click");
       expect(wrapper.find("textarea").exists()).toBe(false);
       expect(wrapper.html()).not.toContain("hdr.body.sig");
+      expect(wrapper.findAll("button").map((b) => b.text())).toEqual(["Authorize", "Cancel"]);
       vi.unstubAllGlobals();
     });
 
