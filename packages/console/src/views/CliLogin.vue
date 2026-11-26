@@ -271,16 +271,12 @@ const cancel = (): void => {
           <p class="notice-title">Could not authorize the CLI.</p>
           <p class="mt-1">{{ error }}</p>
         </div>
-        <div class="mt-4 flex gap-2">
+        <!-- Once the code is shown it is already authorized: only Copy and Hide apply. -->
+        <div v-if="revealed === undefined" class="mt-4 flex gap-2">
           <button
             type="button"
             class="btn btn-primary"
-            :disabled="
-              phase === 'sending' ||
-              !armed ||
-              code === undefined ||
-              revealed !== undefined
-            "
+            :disabled="phase === 'sending' || !armed || code === undefined"
             @click="authorize"
           >
             {{ phase === "sending" ? "Authorizing…" : "Authorize" }}
