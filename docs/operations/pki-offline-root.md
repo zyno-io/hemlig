@@ -50,7 +50,9 @@ Hemlig checks that the root's slot on that device holds the root's key, shows a 
 
 **On-device generation.** `--yubikey --on-device --accept-no-backup` generates the key inside the YubiKey so that it can never be exported. The tradeoff is that nothing can restore it: a lost, broken or locked YubiKey (PIN and PUK both blocked) means a new root, and every intermediate it signed has to be re-issued. EZ prints this warning and requires you to type `no backup`. Choose it only if you have a second, independent plan for losing the device.
 
-**PIN and touch.** The PIN is entered at the terminal, never in an argument. EZ shows the attempts left, refuses a default PIN or a PIN with one attempt left (unless you pass `--allow-last-pin-attempt`), and never retries a wrong PIN. Prompts come after the typed `confirm`. When a signature waits for a touch, EZ prints `Touch the YubiKey`. `--touch-policy cached` keeps a touch valid for 15 seconds; `never` removes the second factor.
+**PIN and touch.** The PIN is entered at the terminal, never in an argument. EZ shows the attempts left, refuses a default PIN or a PIN with one attempt left (unless you pass `--allow-last-pin-attempt`), and asks again after a wrong PIN at the terminal, but never into the last attempt (a PIN piped with `--pin-stdin` fails at once). Prompts come after the typed `confirm`.
+
+When a signature waits for a touch, EZ prints `Touch the YubiKey`. `--touch-policy cached` keeps a touch valid for 15 seconds; `never` removes the second factor.
 
 **Management key.** Importing or generating a key needs the YubiKey's management key. A factory default key is used with a warning, because anyone with the device could replace its keys. `--protect-management-key` swaps it for a random key stored behind the PIN; this changes the whole device and you must type `protect management key`. EZ never rotates a management key that is not the default. If yours is custom, EZ asks for it (hex) at the terminal.
 

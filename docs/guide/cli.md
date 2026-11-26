@@ -343,7 +343,7 @@ YubiKey options for `generate-ca` and `import-key`:
 Rails that run before any YubiKey is written, with no override except where named:
 
 - Firmware 5.3 or later is required. RSA-3072, RSA-4096 and Ed25519 need 5.7. Below 5.7 a key cannot be deleted, only overwritten, and EZ says so before an overwrite.
-- A default PIN is refused (`yubikey_default_pin`). One remaining attempt is refused unless `--allow-last-pin-attempt`. A wrong PIN is never retried.
+- A default PIN is refused (`yubikey_default_pin`). One remaining attempt is refused unless `--allow-last-pin-attempt`. At the terminal a wrong PIN is asked for again (`✗ Incorrect PIN, 2 attempts left.`), but only at the standalone PIN check that runs before anything is reserved, signed or written, and never into the last attempt: with one attempt left the command stops with `pin_last_attempt` unless `--allow-last-pin-attempt` is given, and it never retries past that one. A PIN read with `--pin-stdin` is tried once and fails at once with `pin_invalid`; a blocked PIN exits `pin_blocked`.
 - A factory management key triggers a warning. A non-default one is read from the terminal (hex) after the YubiKey is checked, and a wrong key stops before any file is written.
 - You must type each device's serial number at the terminal before it is written, and `--yes` never skips it.
 - Every request names exactly one slot. EZ never touches another slot and never deletes, moves or resets anything.

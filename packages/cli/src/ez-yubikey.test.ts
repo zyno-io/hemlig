@@ -209,20 +209,55 @@ test("a signed certificate, a CRL renewal and a revocation all go through the Yu
   }
 });
 
-test("a wrong PIN fails once, is never retried and changes no state", async () => {
+test("a wrong PIN at the terminal is asked again, never past the last attempt, and a piped PIN still fails at once", async () => {
   const env = await setup();
   try {
     assert.equal((await run(env.ykman, base(env.dir), { stdin: importKeys() })).exitCode, 0);
     const stateBefore = await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8");
-    const callsBefore = (await env.ykman.calls()).length;
-    const result = await run(env.ykman, ["renew-crl", "--dir", env.dir, "--offline", "--crl-out", join(env.dir, "x.crl.pem")], { stdin: new FakeTerminal("999999\r") });
-    assert.equal(result.exitCode, 3);
-    assert.equal(result.error.code, "pin_invalid");
-    assert.match(result.error.message, /2 attempt/);
+    const renew = (extra: string[] = []) => ["renew-crl", "--dir", env.dir, "--offline", "--crl-out", join(env.dir, "x.crl.pem"), ...extra];
+    const signCalls = async (since: number) => (await env.ykman.calls()).slice(since).filter((c) => c.op === "sign");
+    const mark = async () => (await env.ykman.calls()).length;
+    const attempts = async () => (await env.ykman.state()).devices[0]?.pinAttempts;
+
+    // piped: fails at once, as before
+    let since = await mark();
+    const piped = await run(env.ykman, renew(["--pin-stdin"]), { stdin: pipeInput("999999\n") });
+    assert.equal(piped.exitCode, 3);
+    assert.equal(piped.error.code, "pin_invalid");
+    assert.equal((await signCalls(since)).length, 1);
+    assert.equal(await attempts(), 2);
     assert.equal(await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8"), stateBefore);
-    const sign = (await env.ykman.calls()).slice(callsBefore).filter((c) => c.op === "sign");
-    assert.equal(sign.length, 1, "the PIN is tried exactly once");
-    assert.equal((await env.ykman.state()).devices[0]?.pinAttempts, 2);
+
+    // a wrong PIN, then the right one: one signing batch only
+    await env.ykman.setState((st) => void ((st.devices[0] as FakeDevice).pinAttempts = 3));
+    since = await mark();
+    const again = await run(env.ykman, renew(), { stdin: new FakeTerminal("999999\r", `${PIN}\r`) });
+    assert.equal(again.exitCode, 0, again.stderr);
+    assert.match(again.stderr.replace(/\x1b\[[0-9;]*m/g, ""), /✗ Incorrect PIN, 2 attempts left\./);
+    assert.match(again.stderr, /YubiKey PIN \(serial 11111111, slot 9c, 2 attempts left\)/);
+    const calls = await signCalls(since);
+    assert.deepEqual(calls.map((c) => c.items), [[], [], ["crl"]], "two PIN checks, one signing batch");
+    assert.equal(await attempts(), 3, "the right PIN resets the counter");
+    const stateAfter = await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8");
+    assert.equal(JSON.parse(stateAfter).crl.current.number, 2);
+
+    // two wrong PINs: the last-attempt rail stops before the third, with nothing reserved and no further verify call
+    since = await mark();
+    const rail = await run(env.ykman, ["renew-crl", "--dir", env.dir, "--offline", "--crl-out", join(env.dir, "y.crl.pem")], { stdin: new FakeTerminal("999999\r", "888888\r", `${PIN}\r`) });
+    assert.equal(rail.exitCode, 5);
+    assert.equal(rail.error.code, "pin_last_attempt");
+    assert.equal((await signCalls(since)).length, 2);
+    assert.equal(await attempts(), 1);
+    assert.equal(await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8"), stateAfter);
+
+    // with --allow-last-pin-attempt the last attempt may be used, and a third wrong PIN ends the run (the device blocks)
+    since = await mark();
+    const allowed = await run(env.ykman, ["renew-crl", "--dir", env.dir, "--offline", "--crl-out", join(env.dir, "z.crl.pem"), "--allow-last-pin-attempt"], { stdin: new FakeTerminal("777777\r", "666666\r") });
+    assert.equal(allowed.exitCode, 3);
+    assert.equal(allowed.error.code, "pin_blocked");
+    assert.equal((await signCalls(since)).length, 1);
+    assert.equal(await attempts(), 0);
+    assert.equal(await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8"), stateAfter);
   } finally {
     await env.done();
   }
@@ -656,10 +691,10 @@ test("two YubiKeys: every PIN is checked before any device changes, and --protec
   const env = await setup([makeDevice(SERIAL), makeDevice(SECOND)]);
   try {
     const result = await run(env.ykman, base(env.dir, ["--yubikey-serial", String(SERIAL), "--second-yubikey-serial", String(SECOND), "--protect-management-key"]), {
-      stdin: new FakeTerminal(`${SERIAL}\r`, `${SECOND}\r`, "protect management key\r", "protect management key\r", `${PASS}\r`, `${PASS}\r`, `${PIN}\r`, "000000\r"),
+      stdin: new FakeTerminal(`${SERIAL}\r`, `${SECOND}\r`, "protect management key\r", "protect management key\r", `${PASS}\r`, `${PASS}\r`, `${PIN}\r`, "000000\r", "000000\r"),
     });
-    assert.equal(result.exitCode, 3);
-    assert.equal(result.error.code, "pin_invalid");
+    assert.equal(result.exitCode, 5);
+    assert.equal(result.error.code, "pin_last_attempt");
     assert.deepEqual(writes(await env.ykman.calls()), [], "no device was changed");
     assert.deepEqual((await env.ykman.state()).devices.map((d) => d.mgmt.default), [true, true]);
     assert.deepEqual((await fs.readdir(env.dir)).filter((f) => f !== ".hemlig-ez.lock"), []);
@@ -885,7 +920,7 @@ test("adopt-ca --yubikey: an extension-less slot certificate needs --reissue-roo
   }
 });
 
-test("adopt-ca --yubikey: a declined confirm and a wrong PIN leave nothing behind, and the PIN is tried once", async () => {
+test("adopt-ca --yubikey: a declined confirm and a wrong PIN leave nothing behind, and a wrong PIN stops before the last attempt", async () => {
   const a = adoptable({ cert: "full" });
   const env = await setup([a.device]);
   try {
@@ -895,12 +930,14 @@ test("adopt-ca --yubikey: a declined confirm and a wrong PIN leave nothing behin
     assert.equal(declined.error.code, "confirmation_declined");
     assert.equal((await env.ykman.calls()).some((c) => c.op === "sign"), false);
     assert.deepEqual(await fs.readdir(env.dir), []);
-    const wrong = await adoptYubi(env, flags, ["confirm\r", "000000\r"]);
-    assert.equal(wrong.exitCode, 3);
-    assert.equal(wrong.error.code, "pin_invalid");
-    assert.equal((await env.ykman.calls()).filter((c) => c.op === "sign").length, 1);
-    assert.equal((await env.ykman.state()).devices[0]?.pinAttempts, 2);
+    const wrong = await adoptYubi(env, flags, ["confirm\r", "000000\r", "111111\r"]);
+    assert.equal(wrong.exitCode, 5);
+    assert.equal(wrong.error.code, "pin_last_attempt");
+    assert.equal((await env.ykman.calls()).filter((c) => c.op === "sign").length, 2);
+    assert.equal((await env.ykman.state()).devices[0]?.pinAttempts, 1);
     assert.deepEqual(await fs.readdir(env.dir), []);
+    // (a device with one attempt left is refused up front, so reset it as the owner would with the PUK)
+    await env.ykman.setState((st) => void ((st.devices[0] as FakeDevice).pinAttempts = 3));
     // a second adoption into the same directory refuses to overwrite
     assert.equal((await adoptYubi(env, flags, ["confirm\r", `${PIN}\r`])).exitCode, 0);
     const again = await adoptYubi(env, flags, ["confirm\r", `${PIN}\r`]);
@@ -1035,7 +1072,7 @@ test("add-yubikey refuses a slot that does not hold the root's key (other key, o
   }
 });
 
-test("add-yubikey refuses a software root, a declined confirm changes nothing, and a wrong PIN is tried once", async () => {
+test("add-yubikey refuses a software root, a declined confirm changes nothing, and a wrong PIN is asked again but never into the last attempt", async () => {
   const soft = await setup();
   try {
     const made = await run(soft.ykman, ["generate-ca", "--dir", soft.dir, "--subject", "CN=Soft Root,O=Example Corp", "--yes", "--key-algorithm", "ECDSA_P256", "--passphrase-stdin"], { stdin: pipeInput(`${PASS}\n`) });
@@ -1059,10 +1096,10 @@ test("add-yubikey refuses a software root, a declined confirm changes nothing, a
     assert.equal(declined.error.code, "confirmation_declined");
     assert.equal((await env.ykman.calls()).slice(n).some((c) => c.op === "sign"), false);
     assert.equal(await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8"), before);
-    const wrong = await addYubi(env, ["--yubikey-serial", String(SECOND)], ["confirm\r", "000000\r"]);
-    assert.equal(wrong.exitCode, 3);
-    assert.equal(wrong.error.code, "pin_invalid");
-    assert.equal((await env.ykman.calls()).slice(n).filter((c) => c.op === "sign").length, 1);
+    const wrong = await addYubi(env, ["--yubikey-serial", String(SECOND)], ["confirm\r", "000000\r", "111111\r"]);
+    assert.equal(wrong.exitCode, 5);
+    assert.equal(wrong.error.code, "pin_last_attempt");
+    assert.equal((await env.ykman.calls()).slice(n).filter((c) => c.op === "sign").length, 2);
     assert.equal(await fs.readFile(join(env.dir, "hemlig-ez.json"), "utf8"), before);
     assert.deepEqual(writes(await env.ykman.calls()), []);
   } finally {

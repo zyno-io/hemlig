@@ -381,6 +381,8 @@ export interface YubiKeySignerOptions {
   readonly pin: () => Promise<Buffer>;
   /** Called by `close()` (the device handle zeroes its own cached PIN). */
   readonly onClose?: () => void;
+  /** Runs the standalone PIN check (`attempt`), re-asking after a wrong PIN where that is allowed; `clear` forgets the cached PIN. */
+  readonly retryPin?: (attempt: () => Promise<void>, clear: () => void) => Promise<void>;
 }
 
 /** Signs on the YubiKey. The PIN is verified in every ykman call and never retried. */
@@ -407,7 +409,14 @@ export class YubiKeySigner implements RootSigner {
 
   /** Checks the PIN without signing (so a typo is found before a key is generated). */
   public async verifyPin(): Promise<void> {
-    await this.#options.client.sign({ serial: this.#options.serial, slot: this.#options.slot, pin: await this.#pinText(), items: [] });
+    const attempt = async (): Promise<void> => {
+      await this.#options.client.sign({ serial: this.#options.serial, slot: this.#options.slot, pin: await this.#pinText(), items: [] });
+    };
+    if (this.#options.retryPin === undefined) return attempt();
+    await this.#options.retryPin(attempt, () => {
+      this.#pin?.fill(0);
+      this.#pin = undefined;
+    });
   }
 
   public async sign(items: readonly SignItem[], events?: SignEvents): Promise<Buffer[]> {

@@ -460,6 +460,7 @@ const ykIo = (ctx: Ctx): YkIo => ({
   client: ctx.ykman(),
   pinFromStdin: flag(ctx.values, "pin-stdin"),
   allowLastPinAttempt: flag(ctx.values, "allow-last-pin-attempt"),
+  color: ctx.color,
 });
 
 /** The YubiKey that holds this root's key, checked read-only and with its PIN already verified (so a typo changes nothing). */
@@ -1127,6 +1128,8 @@ const addYubiKey = async (ctx: Ctx): Promise<Receipt> => {
     const confirmation = await ctx.prompter.confirm("record");
     const serial = handle.serial;
     signer = handle.signer(root.spkiDer);
+    // The PIN is checked on its own first (a wrong one is asked again at the terminal, never past the last attempt).
+    await signer.verifyPin();
     // The test signature is verified under the root's key by signBatch; only then is the device recorded.
     await signBatch(signer, [{ id: "test", description: "a test challenge (nothing is issued)", data: randomBytes(32) }], {
       events: { onTouch: (item) => void ctx.say(touchNotice(serial, item)) },
