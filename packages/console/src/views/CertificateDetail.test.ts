@@ -60,7 +60,7 @@ interface Fake {
   revokePkiCertificate: ReturnType<typeof vi.fn>;
 }
 
-const mountView = async (api: Fake) => {
+const mountView = async (api: Fake, seed?: (queryClient: QueryClient) => void) => {
   const pinia = createPinia();
   setActivePinia(pinia);
   const store = useAppStore();
@@ -77,6 +77,7 @@ const mountView = async (api: Fake) => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
+  seed?.(queryClient);
   const wrapper = mount(CertificateDetail, {
     props: { env: "prod", caId: "ca-1", serial: "0a1b" },
     attachTo: document.body,
@@ -129,6 +130,29 @@ describe("CertificateDetail", () => {
       invalidityDate: new Date("2026-11-01T10:00").toISOString(),
     });
     expect(typeof call[3]).toBe("string");
+    wrapper.unmount();
+  });
+
+  it("patches the cached environment-wide certificate lists after a revoke", async () => {
+    const key = ["pki", "env-certificates", "prod", "active", ["ca-1"]];
+    let client: QueryClient | undefined;
+    const wrapper = await mountView(
+      {
+        getPkiCertificate: vi.fn(async () => certificate()),
+        revokePkiCertificate: vi.fn(async () => response(revoked("unspecified"))),
+      },
+      (qc) => {
+        client = qc;
+        qc.setQueryData(key, [
+          { caId: "ca-1", certificates: [certificate()], nextCursor: undefined, error: undefined, outdated: false },
+        ]);
+      },
+    );
+    await wrapper.get('[data-testid="revoke-open"]').trigger("click");
+    await wrapper.get('[data-testid="revoke-submit"]').trigger("submit");
+    await flushPromises();
+    const cached = client?.getQueryData<{ certificates: unknown[] }[]>(key);
+    expect(cached?.[0]?.certificates).toEqual([]);
     wrapper.unmount();
   });
 

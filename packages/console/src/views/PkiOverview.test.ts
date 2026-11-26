@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRouter } from "vue-router";
 import type { PkiCaSummary, PkiCertificateSummary, PkiExternalCaSummary } from "../api/pki-schemas";
+import { ApiError } from "../api/errors";
 import { useAppStore } from "../stores/app";
 import PkiOverview from "./PkiOverview.vue";
 
@@ -107,7 +108,7 @@ const mountView = async (
     },
   });
   await flushPromises();
-  return { wrapper, getPkiCa, listPkiCas, listPkiCertificates, router };
+  return { wrapper, getPkiCa, listPkiCas, listPkiCertificates, listExternalCas, router };
 };
 
 describe("PkiOverview", () => {
@@ -274,6 +275,126 @@ describe("PkiOverview", () => {
       expect(wrapper.text()).toContain("issuer-b");
       expect(wrapper.findAll("tbody tr")).toHaveLength(1);
       expect(wrapper.text()).toContain("the certificates of issuer-b");
+    });
+  });
+
+  describe("Certificates tab review fixes", () => {
+    const certsTab = { tab: "certificates" };
+    const refreshButton = (w: Awaited<ReturnType<typeof mountView>>["wrapper"]) =>
+      w.findAll("button").find((b) => b.text() === "Refresh")!;
+    const page = (certificates: PkiCertificateSummary[], nextCursor?: string) => ({
+      certificates,
+      ...(nextCursor === undefined ? {} : { nextCursor }),
+      generatedAt: "2026-11-01T00:00:00Z",
+    });
+
+    it("drops a load-more page that a Refresh overtook", async () => {
+      let release: (() => void) | undefined;
+      let firstReads = 0;
+      const list = vi.fn<ListCerts>(async (caId, input) => {
+        if (input.cursor !== undefined) {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return page([cert({ serial: "page2" })]);
+        }
+        if (caId !== "ca-a") {
+          return page([]);
+        }
+        firstReads += 1;
+        return firstReads === 1 ? page([cert({ serial: "old" })], "c1") : page([cert({ serial: "fresh" })]);
+      });
+      const { wrapper } = await mountView(
+        [ca({ caId: "ca-a" }), ca({ caId: "ca-b", name: "b" })], [], vi.fn(), list, certsTab,
+      );
+      await wrapper.get('[data-testid="cert-load-more"]').trigger("click");
+      await flushPromises();
+      await refreshButton(wrapper).trigger("click");
+      await flushPromises();
+      release?.();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="cert-load-more"]').exists()).toBe(false);
+      const serials = wrapper.findAll("tbody .mono[title]").map((e) => e.attributes("title"));
+      expect(serials).toEqual(["fresh"]);
+    });
+
+    it("uses the first SAN, then the serial, when the subject has no CN", async () => {
+      const list = vi.fn<ListCerts>(async (caId) =>
+        page(caId === "ca-a" ? [cert({ serial: "s1", subject: "" }), cert({ serial: "s2", subject: "", sans: {}, notAfter: "2099-02-01T00:00:00Z" })] : []),
+      );
+      const { wrapper } = await mountView([ca({ caId: "ca-a" })], [], vi.fn(), list, certsTab);
+      const links = wrapper.findAll("tbody tr").map((r) => r.find("a").text());
+      expect(links).toEqual(["svc.example.com", "s2"]);
+    });
+
+    it("orders by expiry and holds back rows past an unfinished CA, so Load more only appends", async () => {
+      const list = vi.fn<ListCerts>(async (caId, input) => {
+        if (caId === "ca-a") {
+          return input.cursor === undefined
+            ? page([cert({ serial: "a1", notAfter: "2030-01-01T00:00:00Z" })], "n")
+            : page([cert({ serial: "a2", notAfter: "2032-01-01T00:00:00Z" })]);
+        }
+        return page([cert({ caId: "ca-b", serial: "b1", notAfter: "2031-01-01T00:00:00Z" })]);
+      });
+      const { wrapper } = await mountView(
+        [ca({ caId: "ca-a" }), ca({ caId: "ca-b", name: "b" })], [], vi.fn(), list, certsTab,
+      );
+      const serials = () => wrapper.findAll("tbody .mono[title]").map((e) => e.attributes("title"));
+      expect(serials()).toEqual(["a1"]);
+      expect(wrapper.get('[data-testid="cert-partial"]').text()).toContain("ordered by expiry");
+      await wrapper.get('[data-testid="cert-load-more"]').trigger("click");
+      await flushPromises();
+      expect(serials()).toEqual(["a1", "b1", "a2"]);
+    });
+
+    it("does not fan out twice when Refresh finds the CA set changed", async () => {
+      const cas = [ca({ caId: "ca-a" })];
+      const list = vi.fn<ListCerts>(async () => page([]));
+      const { wrapper } = await mountView(cas, [], vi.fn(), list, certsTab);
+      expect(list).toHaveBeenCalledTimes(1);
+      cas.push(ca({ caId: "ca-b", name: "b" }));
+      await refreshButton(wrapper).trigger("click");
+      await flushPromises();
+      expect(list).toHaveBeenCalledTimes(3); // 1 + the new key's two CAs, once
+      list.mockClear();
+      await refreshButton(wrapper).trigger("click");
+      await flushPromises();
+      expect(list).toHaveBeenCalledTimes(2); // unchanged set: one refetch
+    });
+
+    it("reads no offline roots on the Certificates tab, and skips FAILED, pending and (for Active) revoked CAs", async () => {
+      const cas = [
+        ca({ caId: "ca-a" }),
+        ca({ caId: "ca-p", status: "PENDING_CERTIFICATE" }),
+        ca({ caId: "ca-f", status: "FAILED" }),
+        ca({ caId: "ca-r", status: "REVOKED" }),
+      ];
+      const list = vi.fn<ListCerts>(async () => page([]));
+      const { wrapper, listExternalCas } = await mountView(cas, [], vi.fn(), list, certsTab);
+      expect(listExternalCas).not.toHaveBeenCalled();
+      expect(list.mock.calls.map((c) => c[0])).toEqual(["ca-a"]);
+      await refreshButton(wrapper).trigger("click");
+      await flushPromises();
+      expect(listExternalCas).not.toHaveBeenCalled();
+      await wrapper.get('[data-testid="cert-filter-all"]').trigger("click");
+      await flushPromises();
+      expect(list.mock.calls.map((c) => c[0]).slice(-2)).toEqual(["ca-a", "ca-r"]);
+    });
+
+    it("turns an expired cursor into a Refresh prompt, not an error", async () => {
+      const list = vi.fn<ListCerts>(async (_caId, input) => {
+        if (input.cursor !== undefined) {
+          throw new ApiError(400, "bad_request", "cursor expired");
+        }
+        return page([cert({})], "stale");
+      });
+      const { wrapper } = await mountView([ca({ caId: "ca-a" })], [], vi.fn(), list, certsTab);
+      await wrapper.get('[data-testid="cert-load-more"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="cert-outdated"]').text()).toContain("out of date");
+      expect(wrapper.find('[data-testid="cert-load-more"]').exists()).toBe(false);
+      expect(wrapper.text()).not.toContain("cursor expired");
+      expect(wrapper.findAll("tbody tr")).toHaveLength(1);
     });
   });
 });

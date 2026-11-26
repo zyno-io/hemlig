@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
+import { ApiError } from "../api/errors";
 import {
   certificateSans,
   daysUntil,
@@ -8,7 +9,11 @@ import {
   isoDate,
   subjectCommonName,
 } from "../api/pki-format";
-import { PKI_QUERY_OPTIONS, pkiKeys } from "../api/pki-query";
+import {
+  PKI_QUERY_OPTIONS,
+  pkiKeys,
+  type EnvCertificateSlice as CaSlice,
+} from "../api/pki-query";
 import type { PkiCaSummary, PkiCertificateSummary } from "../api/pki-schemas";
 import { useAppStore } from "../stores/app";
 import ErrorNotice from "./ErrorNotice.vue";
@@ -28,26 +33,29 @@ const FILTERS: readonly { id: CertFilter; label: string; status?: string; empty:
 ];
 const filter = ref<CertFilter>("active");
 const search = ref("");
-const loadingMore = ref(false);
+const loadingKeys = ref<ReadonlySet<string>>(new Set());
 const MAX_SANS_SHOWN = 1;
 
 const activeFilter = computed(() => FILTERS.find((f) => f.id === filter.value) ?? FILTERS[0]!);
 
-/** One CA's slice of the merged list. */
-interface CaSlice {
-  readonly caId: string;
-  readonly certificates: readonly PkiCertificateSummary[];
-  readonly nextCursor: string | undefined;
-  /** The last list call for this CA failed; the earlier pages (if any) are kept. */
-  readonly error: unknown;
-}
-
-// A failed FAILED-status CA never issued anything; skip it rather than audit a pointless read.
-const listedCas = computed(() => props.cas.filter((ca) => ca.status !== "FAILED"));
+// A CA that never issued (FAILED, PENDING_CERTIFICATE) has nothing to list, and
+// a revoked CA's certificates are not active, so skip those reads (all audited).
+const listedCas = computed(() =>
+  props.cas.filter(
+    (ca) =>
+      ca.status !== "FAILED" &&
+      ca.status !== "PENDING_CERTIFICATE" &&
+      !(filter.value === "active" && ca.status === "REVOKED"),
+  ),
+);
 const caName = (caId: string): string => {
   const ca = props.cas.find((candidate) => candidate.caId === caId);
   return ca === undefined ? caId : (ca.displayName ?? ca.name);
 };
+
+/** A cursor the server no longer accepts (they last 15 minutes). */
+const isCursorExpired = (error: unknown): boolean =>
+  error instanceof ApiError && (error.status === 400 || error.status === 410 || error.code === "bad_request");
 
 const fetchSlice = async (
   caId: string,
@@ -64,48 +72,60 @@ const fetchSlice = async (
       certificates: [...(previous?.certificates ?? []), ...page.certificates],
       nextCursor: page.nextCursor,
       error: undefined,
+      outdated: false,
     };
   } catch (error) {
+    if (previous !== undefined && isCursorExpired(error)) {
+      return { ...previous, nextCursor: undefined, error: undefined, outdated: true };
+    }
     return {
       caId,
       certificates: previous?.certificates ?? [],
       nextCursor: previous?.nextCursor,
       error,
+      outdated: false,
     };
   }
 };
 
 // Mounted only once the tab is opened, so nothing here reads before then. Never
-// refetches by itself (PKI_QUERY_OPTIONS, and no refetch on remount): reads are
-// audited, so a re-read is the Refresh button or a filter change.
+// refetches by itself (PKI_QUERY_OPTIONS, and no refetch on remount unless a
+// revoke marked it stale): reads are audited, so a re-read is the Refresh
+// button or a filter change. The fetch reads its inputs from the key.
 const queryKey = computed(
   () =>
     [
-      ...pkiKeys.envCertificates(props.env, activeFilter.value.id),
+      ...pkiKeys.envCertificates(props.env, filter.value),
       listedCas.value.map((ca) => ca.caId),
     ] as const,
 );
+const signature = computed(() => JSON.stringify(queryKey.value));
 const slices = useQuery({
   queryKey,
-  queryFn: () =>
-    Promise.all(
-      listedCas.value.map((ca) => fetchSlice(ca.caId, activeFilter.value.status, undefined)),
-    ),
+  queryFn: ({ queryKey: key }) => {
+    const [, , , filterId, caIds] = key;
+    const status = FILTERS.find((f) => f.id === filterId)?.status;
+    return Promise.all(caIds.map((caId) => fetchSlice(caId, status, undefined)));
+  },
   ...PKI_QUERY_OPTIONS,
-  refetchOnMount: false,
+  refetchOnMount: (query) => query.state.isInvalidated,
 });
 
 const failedSlices = computed(() => (slices.data.value ?? []).filter((s) => s.error !== undefined));
+const outdatedSlices = computed(() => (slices.data.value ?? []).filter((s) => s.outdated));
 const hasMore = computed(() => (slices.data.value ?? []).some((s) => s.nextCursor !== undefined));
+const loadingMore = computed(() => loadingKeys.value.has(signature.value));
 
 const loadMore = async (): Promise<void> => {
-  const current = slices.data.value;
-  if (current === undefined || loadingMore.value) {
+  const key = queryKey.value;
+  const id = signature.value;
+  // Raw cache value, to compare by identity when writing back.
+  const current = queryClient.getQueryData<CaSlice[]>(key);
+  if (current === undefined || loadingKeys.value.has(id)) {
     return;
   }
-  const key = queryKey.value;
   const status = activeFilter.value.status;
-  loadingMore.value = true;
+  loadingKeys.value = new Set(loadingKeys.value).add(id);
   try {
     // Only CAs with a cursor are read again; the rest are left as they are.
     const next = await Promise.all(
@@ -113,38 +133,67 @@ const loadMore = async (): Promise<void> => {
         slice.nextCursor === undefined ? slice : fetchSlice(slice.caId, status, slice),
       ),
     );
-    queryClient.setQueryData(key, next);
+    // A Refresh that landed meanwhile replaced the value: drop these pages.
+    queryClient.setQueryData<CaSlice[]>(key, (old) => (old === current ? next : old));
   } finally {
-    loadingMore.value = false;
+    const rest = new Set(loadingKeys.value);
+    rest.delete(id);
+    loadingKeys.value = rest;
   }
 };
 
-const refresh = async (): Promise<void> => {
+/**
+ * Re-reads after the CA list was refetched. When the CA set changed the new key
+ * fetches by itself, so only a refetch of an unchanged key is needed here.
+ */
+const refresh = async (signatureBefore?: string): Promise<void> => {
+  await nextTick();
+  if (signatureBefore !== undefined && signatureBefore !== signature.value) {
+    return;
+  }
   await slices.refetch();
 };
-defineExpose({ refresh });
+defineExpose({ refresh, signature });
 
-const sortKey = (certificate: PkiCertificateSummary): number =>
-  new Date(activeFilter.value.id === "active" ? certificate.notAfter : certificate.issuedAt).getTime();
+const time = (iso: string): number => new Date(iso).getTime();
 
+// The server lists each CA in ascending notAfter order, so order by expiry
+// everywhere: Load more then only appends. Rows past the earliest point any
+// unfinished CA has reached are held back, because that CA's next page can
+// still contain earlier ones.
+const cutoff = computed(() => {
+  let bound = Infinity;
+  for (const slice of slices.data.value ?? []) {
+    if ((slice.nextCursor !== undefined || slice.outdated) && slice.certificates.length > 0) {
+      bound = Math.min(bound, Math.max(...slice.certificates.map((c) => time(c.notAfter))));
+    }
+  }
+  return bound;
+});
+
+const visible = computed(() =>
+  (slices.data.value ?? [])
+    .flatMap((slice) => slice.certificates)
+    .filter((certificate) => time(certificate.notAfter) <= cutoff.value)
+    .sort((a, b) => time(a.notAfter) - time(b.notAfter)),
+);
 const rows = computed(() => {
   const needle = search.value.trim().toLowerCase();
-  const merged = (slices.data.value ?? []).flatMap((slice) => slice.certificates);
-  const matching =
-    needle === ""
-      ? merged
-      : merged.filter((certificate) =>
-          [certificate.subject, certificate.serial, ...certificateSans(certificate)].some((text) =>
-            text.toLowerCase().includes(needle),
-          ),
-        );
-  // Active: soonest expiry first. Otherwise newest first.
-  const direction = activeFilter.value.id === "active" ? 1 : -1;
-  return [...matching].sort((a, b) => direction * (sortKey(a) - sortKey(b)));
+  return needle === ""
+    ? visible.value
+    : visible.value.filter((certificate) =>
+        [certificate.subject, certificate.serial, ...certificateSans(certificate)].some((text) =>
+          text.toLowerCase().includes(needle),
+        ),
+      );
 });
 const totalLoaded = computed(() =>
   (slices.data.value ?? []).reduce((sum, slice) => sum + slice.certificates.length, 0),
 );
+const heldBack = computed(() => totalLoaded.value - visible.value.length);
+
+const linkText = (certificate: PkiCertificateSummary): string =>
+  subjectCommonName(certificate.subject) || certificateSans(certificate)[0] || certificate.serial;
 
 const expiresSoon = (certificate: PkiCertificateSummary): boolean =>
   effectiveCertificateStatus(certificate) === "ISSUED" && daysUntil(certificate.notAfter) < 30;
@@ -185,6 +234,15 @@ const expiresSoon = (certificate: PkiCertificateSummary): boolean =>
       :context="`the certificates of ${caName(slice.caId)}`"
     />
 
+    <p
+      v-for="slice in outdatedSlices"
+      :key="slice.caId"
+      class="card-body meta"
+      data-testid="cert-outdated"
+    >
+      The list for {{ caName(slice.caId) }} is out of date. Refresh to continue.
+    </p>
+
     <p v-if="slices.isPending.value || slices.isFetching.value && !slices.data.value" class="card-body meta">
       Loading…
     </p>
@@ -219,7 +277,7 @@ const expiresSoon = (certificate: PkiCertificateSummary): boolean =>
                   name: 'pki-certificate',
                   params: { env, caId: certificate.caId, serial: certificate.serial },
                 }"
-              >{{ subjectCommonName(certificate.subject) }}</RouterLink>
+              >{{ linkText(certificate) }}</RouterLink>
               <p v-if="certificateSans(certificate).length > 0" class="meta mono">
                 {{ certificateSans(certificate)[0] }}
                 <span v-if="certificateSans(certificate).length > MAX_SANS_SHOWN">
@@ -263,8 +321,9 @@ const expiresSoon = (certificate: PkiCertificateSummary): boolean =>
         {{ loadingMore ? "Loading…" : "Load more" }}
       </button>
       <span class="meta" data-testid="cert-partial">
-        Partial list: {{ totalLoaded }} loaded so far, and some CAs have more. Filtering
-        covers loaded rows only.
+        Partial list, ordered by expiry: {{ visible.length }} shown<template v-if="heldBack > 0">
+        ({{ heldBack }} more loaded, held back to keep the order)</template>, and some CAs have
+        more. Filtering covers loaded rows only.
       </span>
     </div>
   </section>

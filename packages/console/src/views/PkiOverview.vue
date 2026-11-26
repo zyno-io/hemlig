@@ -18,29 +18,6 @@ const store = useAppStore();
 const router = useRouter();
 const queryClient = useQueryClient();
 
-// Every PKI read is audited: these two list queries are the whole page. The
-// overview never reads a CA detail (see PKI_QUERY_OPTIONS).
-const cas = useQuery({
-  queryKey: computed(() => pkiKeys.cas(props.env)),
-  queryFn: () =>
-    fetchAllPages<PkiCaSummary>(async (cursor) => {
-      const page = await store
-        .requireApi()
-        .listPkiCas({ environment: props.env, cursor });
-      return { items: page.cas, nextCursor: page.nextCursor };
-    }),
-  ...PKI_QUERY_OPTIONS,
-});
-const externalCas = useQuery({
-  queryKey: pkiKeys.externalCas(),
-  queryFn: () =>
-    fetchAllPages<PkiExternalCaSummary>(async (cursor) => {
-      const page = await store.requireApi().listExternalCas({ cursor });
-      return { items: page.externalCas, nextCursor: page.nextCursor };
-    }),
-  ...PKI_QUERY_OPTIONS,
-});
-
 const TABS: readonly { id: PkiTab; label: string }[] = [
   { id: "cas", label: "CAs" },
   { id: "certificates", label: "Certificates" },
@@ -56,6 +33,31 @@ const selectTab = (tab: PkiTab): void => {
   activeTab.value = tab;
   void router.replace({ query: { tab } });
 };
+// Every PKI read is audited: these two list queries are the whole page. The
+// overview never reads a CA detail (see PKI_QUERY_OPTIONS).
+const cas = useQuery({
+  queryKey: computed(() => pkiKeys.cas(props.env)),
+  queryFn: () =>
+    fetchAllPages<PkiCaSummary>(async (cursor) => {
+      const page = await store
+        .requireApi()
+        .listPkiCas({ environment: props.env, cursor });
+      return { items: page.cas, nextCursor: page.nextCursor };
+    }),
+  ...PKI_QUERY_OPTIONS,
+});
+const externalCas = useQuery({
+  queryKey: pkiKeys.externalCas(),
+  // Only the CAs tab shows offline roots; do not audit-read them for the other.
+  enabled: computed(() => activeTab.value !== "certificates"),
+  queryFn: () =>
+    fetchAllPages<PkiExternalCaSummary>(async (cursor) => {
+      const page = await store.requireApi().listExternalCas({ cursor });
+      return { items: page.externalCas, nextCursor: page.nextCursor };
+    }),
+  ...PKI_QUERY_OPTIONS,
+});
+
 const certificatesTab = ref<InstanceType<typeof PkiCertificatesTab> | null>(null);
 
 const hideFailed = ref(true);
@@ -78,8 +80,25 @@ const expiresSoon = (ca: PkiCaSummary): boolean =>
   ca.notAfter !== undefined && ca.status !== "REVOKED" && daysUntil(ca.notAfter) < 30;
 
 const refresh = async (): Promise<void> => {
-  await Promise.all([cas.refetch(), externalCas.refetch(), certificatesTab.value?.refresh()]);
+  const tab = certificatesTab.value;
+  const before = tab?.signature;
+  // The CA list first: the certificate fan-out depends on it.
+  await Promise.all([
+    cas.refetch().then(() => tab?.refresh(before)),
+    activeTab.value === "certificates" ? undefined : externalCas.refetch(),
+  ]);
 };
+
+// Mount the tab once the CA list is settled (not while a stale list is being
+// refetched), then keep it, so the fan-out is not run for a list about to change.
+const certificatesReady = ref(false);
+watch(
+  () => cas.data.value !== undefined && !cas.isFetching.value,
+  (settled) => {
+    certificatesReady.value ||= settled;
+  },
+  { immediate: true },
+);
 
 const onUploaded = async (): Promise<void> => {
   await Promise.all([
@@ -125,7 +144,7 @@ const onUploaded = async (): Promise<void> => {
       <ErrorNotice v-if="cas.error.value" :error="cas.error.value" context="the CA list" />
 
       <template v-if="activeTab === 'certificates'">
-        <p v-if="cas.isPending.value" class="card-body meta">Loading…</p>
+        <p v-if="!certificatesReady" class="card-body meta">Loading…</p>
         <PkiCertificatesTab v-else-if="cas.data.value" ref="certificatesTab" :env="env" :cas="cas.data.value" />
       </template>
 

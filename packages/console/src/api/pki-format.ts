@@ -109,9 +109,9 @@ export const subjectCommonName = (subject: string): string =>
   /(?:^|,)\s*CN=((?:\\.|[^,\\])+)/i.exec(subject)?.[1]?.trim() ?? subject;
 
 /**
- * The status to show for a certificate. The server reports a certificate past
- * `notAfter` as `EXPIRED` only when asked; a stale or cached row can still say
- * `ISSUED`, so derive it from the clock.
+ * The status to show for a certificate. The server derives EXPIRED from its
+ * clock when it builds a listing, but a cached or stale row keeps the status it
+ * had when it was fetched, so also derive it from the browser's clock.
  */
 export const effectiveCertificateStatus = (
   certificate: PkiCertificateSummary,
