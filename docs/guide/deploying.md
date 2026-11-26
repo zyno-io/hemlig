@@ -99,7 +99,8 @@ const config: DeploymentConfig = {
   apiFqdn: "api.example.com",
   zoneDomain: "example.com",
   oidcIssuer: "https://login.example.com/tenant/v2.0",
-  oidcAudience: "00000000-0000-0000-0000-000000000000", // DeploymentConfig takes resolved values; only the context path defaults it
+  oidcClientId: "00000000-0000-0000-0000-000000000000", // one app registration; also the default audience
+  oidcAdminScope: "hemlig.admin",
   oidcSubjectClaim: "sub",
   existingHostedZoneId: "Z0123456789ABCDEF", // omit to create a new zone
 };
@@ -110,15 +111,15 @@ Your app owns the account, region and pipeline. TypeScript needs `moduleResoluti
 
 ## 3. Fill in the OIDC values
 
-Four values connect the administrator API to your identity provider. In the reference app (CDK context), one app registration can serve as both the API and the console client, so you set the client ID once and leave `oidcAudience` out. In your own CDK app, `DeploymentConfig` takes resolved values: set `oidcAudience` (and, with the console, `oidcConsoleAccessScope`) yourself.
+Four values connect the administrator API to your identity provider. One app registration can serve as both the API and the console client, so you set the client ID once and leave `oidcAudience` and `oidcConsoleAccessScope` out. This holds both for CDK context and for `HemligStack` props in your own CDK app.
 
 
 
 | Field | Value |
 | --- | --- |
 | `oidcIssuer` | HTTPS issuer URL, exactly as it appears in the token's `iss` claim |
-| `oidcAudience` | Exact access-token `aud`. For Microsoft Entra v2 this is the API's bare client ID, never the `api://` URI. Required in `DeploymentConfig`. In context only it defaults to `oidcClientId`, which requires `oidcAdminScope`; set it explicitly for an API-only deployment without the console, or a split API and console app |
-| `oidcClientId` | Context path with the console: the one app registration's client ID, also used as the default audience |
+| `oidcAudience` | Exact access-token `aud`. For Microsoft Entra v2 this is the API's bare client ID, never the `api://` URI. Defaults to `oidcClientId`, which requires `oidcAdminScope`; set it explicitly for an API-only deployment without the console, or a split API and console app |
+| `oidcClientId` | The one app registration's client ID, used by the console and as the default audience |
 | `oidcSubjectClaim` | Immutable actor claim. The reference app defaults it to `sub` |
 
 [Connect your identity provider](identity-provider.md) shows where to find each one per provider. Console fields are covered in [Console](console.md).

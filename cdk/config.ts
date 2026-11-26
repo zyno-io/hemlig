@@ -10,10 +10,11 @@ export interface DeploymentConfig {
   readonly zoneDomain: string;
   readonly oidcIssuer: string;
   /**
-   * Exact access-token `aud`. Required here: only deploymentConfigFromContext
-   * (the CDK context path) defaults it to oidcClientId.
+   * Exact access-token `aud`. Defaults to oidcClientId (one app registration),
+   * which then requires oidcAdminScope. Set it for a split API and console app
+   * or an API-only deployment without oidcClientId.
    */
-  readonly oidcAudience: string;
+  readonly oidcAudience?: string;
   readonly oidcSubjectClaim: string;
   /** Required administrator OAuth scope when the console origin is enabled. */
   readonly oidcAdminScope?: string;
@@ -21,11 +22,9 @@ export interface DeploymentConfig {
    * Resource-qualified OAuth scope requested by the console SPA, for example
    * `api://<application-id>/hemlig.admin` on Microsoft Entra. This differs
    * from oidcAdminScope, the short value enforced from the access token's
-   * `scp` claim by API Gateway. HemligStack requires it when consoleFqdn is
-   * set. deploymentConfigFromContext (context only) defaults it, when
-   * oidcAdminScope and oidcClientId are set, to
-   * `api://<audience>/<oidcAdminScope>` on Microsoft Entra issuers and to
-   * oidcAdminScope as-is on any other issuer.
+   * `scp` claim by API Gateway. Defaults, when oidcAdminScope and
+   * oidcClientId are set, to `api://<audience>/<oidcAdminScope>` on Microsoft
+   * Entra issuers and to oidcAdminScope as-is on any other issuer.
    */
   readonly oidcConsoleAccessScope?: string;
   /** Optional external IdP role required by the Lambda after JWT validation. */
@@ -70,6 +69,63 @@ const isEntraIssuer = (issuer: string): boolean => {
   } catch {
     return false;
   }
+};
+
+/** The console scope derived for one app: `api://<audience>/<scope>` on Entra, the bare scope elsewhere. */
+export const deriveConsoleAccessScope = (
+  issuer: string,
+  audience: string,
+  adminScope: string,
+): string => (isEntraIssuer(issuer) ? `api://${audience}/${adminScope}` : adminScope);
+
+/** The OIDC fields that resolveOidcDefaults fills in. */
+export interface OidcDefaultsInput {
+  readonly oidcIssuer: string;
+  readonly oidcAudience?: string;
+  readonly oidcClientId?: string;
+  readonly oidcAdminScope?: string;
+  readonly oidcConsoleAccessScope?: string;
+}
+
+const present = (value: string | undefined): string | undefined =>
+  value === undefined || value.trim() === "" ? undefined : value;
+
+/**
+ * Applies the one-app OIDC defaults, so a deployment names its client ID once:
+ * `oidcAudience` defaults to `oidcClientId`, and `oidcConsoleAccessScope` is
+ * derived from `oidcAdminScope` (see deriveConsoleAccessScope). Explicit values
+ * always win. A derived audience requires `oidcAdminScope`: with one app an ID
+ * token carries the same `aud`, and the `scp` check is what rejects it.
+ * HemligStack applies this to its props; deploymentConfigFromContext applies
+ * the same rules with context-named errors.
+ */
+export const resolveOidcDefaults = <T extends OidcDefaultsInput>(
+  config: T,
+): T & { readonly oidcAudience: string } => {
+  const explicitAudience = present(config.oidcAudience);
+  const clientId = present(config.oidcClientId);
+  const adminScope = present(config.oidcAdminScope);
+  const audience = explicitAudience ?? clientId;
+  if (audience === undefined) {
+    throw new Error(
+      "set oidcClientId (or oidcAudience for an API-only deployment without the console)",
+    );
+  }
+  if (explicitAudience === undefined && adminScope === undefined) {
+    throw new Error(
+      "oidcAdminScope is required when oidcAudience is omitted (it defaults to oidcClientId, and the scope check is what rejects ID tokens issued to the same app).",
+    );
+  }
+  const consoleAccessScope =
+    present(config.oidcConsoleAccessScope) ??
+    (adminScope !== undefined && clientId !== undefined
+      ? deriveConsoleAccessScope(config.oidcIssuer, audience, adminScope)
+      : undefined);
+  return {
+    ...config,
+    oidcAudience: audience,
+    ...(consoleAccessScope === undefined ? {} : { oidcConsoleAccessScope: consoleAccessScope }),
+  };
 };
 
 export const DEFAULT_PKI_ISSUANCE_RATE_LIMIT = 20;
@@ -136,9 +192,7 @@ export const deploymentConfigFromContext = (context: {
   const oidcConsoleAccessScope =
     explicitConsoleAccessScope ??
     (oidcAdminScope !== undefined && oidcClientId !== undefined
-      ? isEntraIssuer(oidcIssuer)
-        ? `api://${oidcAudience}/${oidcAdminScope}`
-        : oidcAdminScope
+      ? deriveConsoleAccessScope(oidcIssuer, oidcAudience, oidcAdminScope)
       : undefined);
   const existingHostedZoneId = optionalContext(context, "existingHostedZoneId");
   const existingApplicationKeyArn = optionalContext(
