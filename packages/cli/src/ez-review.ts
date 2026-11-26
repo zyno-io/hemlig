@@ -117,3 +117,63 @@ export const renderCrlReview = (input: {
     row("Why", input.why),
     "",
   ].join("\n")}\n`;
+
+export interface AdoptReview {
+  /** Where the root comes from, for example `OpenSSL directory /path` or `YubiKey 12345678, slot 9c`. */
+  readonly source: string;
+  readonly subjectDn: string;
+  readonly fingerprint: string;
+  readonly serial: string;
+  readonly notBefore: Date;
+  readonly notAfter: Date;
+  readonly key: string;
+  readonly spkiSha256: string;
+  readonly storage: string;
+  readonly crl: { readonly lastNumber: bigint; readonly sources: readonly string[]; readonly signNumber?: number; readonly nextUpdate: Date; readonly adopted: boolean };
+  readonly revocations: { readonly count: number; readonly sources: readonly string[] };
+  readonly importedIssued: number;
+  readonly reissue?: { readonly serial: string; readonly notAfter: Date; readonly keepsSki: boolean; readonly keptFile: string; readonly pathLen?: number; readonly droppedPathLen?: number };
+  readonly slotCertificate?: boolean;
+  readonly warnings: readonly string[];
+}
+
+/** What the operator reads before typing `confirm` for `adopt-ca`. */
+export const renderAdoptReview = (review: AdoptReview): string => {
+  const lines = [
+    "",
+    "=== Review: this will ADOPT an existing root under EZ management ===",
+    row("Source", displaySafe(review.source)),
+    row("Subject", displaySafe(review.subjectDn)),
+    row("Fingerprint", `SHA-256 ${review.fingerprint}`),
+    row("Serial", review.serial),
+    row("Validity", `${review.notBefore.toISOString()} to ${review.notAfter.toISOString()}`),
+    row("Key", `${displaySafe(review.key)}, SPKI SHA-256 ${review.spkiSha256}`),
+    row("Key storage", displaySafe(review.storage)),
+    row("CRL number", `last issued ${review.crl.lastNumber} (from ${review.crl.sources.join(", ")})`),
+    row(
+      "Revocations",
+      review.revocations.count === 0
+        ? `none (${review.revocations.sources.join(", ")})`
+        : `${review.revocations.count} carried over (${review.revocations.sources.join(", ")})`,
+    ),
+    ...(review.importedIssued === 0 ? [] : [row("Issued records", `${review.importedIssued} imported from index.txt`)]),
+    "",
+    "  What will be signed with the root key:",
+    row("  test", "a 32-byte random challenge (nothing is issued)"),
+    ...(review.reissue === undefined
+      ? []
+      : [
+          row("  root certificate", `NEW self-signed certificate, serial ${review.reissue.serial}, valid to ${review.reissue.notAfter.toISOString()}`),
+          row("  ", review.reissue.keepsSki ? "same subject and key; the old SubjectKeyIdentifier is kept" : "same subject and key; a new SubjectKeyIdentifier"),
+          row("  path length", review.reissue.pathLen !== undefined ? `limit ${review.reissue.pathLen} (kept)` : review.reissue.droppedPathLen !== undefined ? `NO limit: the old limit of ${review.reissue.droppedPathLen} is dropped, since it would stop the root signing an intermediate` : "no limit"),
+          row("  WARNING", `the root FINGERPRINT CHANGES: redistribute root.pem to anything that pins the certificate; the old one is kept as ${displaySafe(review.reissue.keptFile)}`),
+        ]),
+    review.crl.adopted
+      ? row("  CRL", `none: the adopted CRL number ${review.crl.lastNumber} stays current (next update ${review.crl.nextUpdate.toISOString()})`)
+      : row("  CRL", `root CRL number ${review.crl.signNumber}, next update about ${review.crl.nextUpdate.toISOString()}`),
+    ...(review.slotCertificate === undefined ? [] : [row("Device writes", review.slotCertificate ? "the root certificate is stored in the slot (management key required)" : "none")]),
+    ...review.warnings.map((w) => row("Warning", displaySafe(w))),
+    "",
+  ];
+  return `${lines.join("\n")}\n`;
+};

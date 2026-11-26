@@ -50,7 +50,7 @@ hemlig consumer revoke-identity --consumer-id payments-prod --fingerprint 41ab9c
 `--fingerprint` is the full 64-hex SHA-256 or a unique prefix of at least 12 hex
 characters; an unknown or ambiguous prefix exits 2 without revoking anything.
 
-Offline root (`hemlig pki ez`): `generate-ca`, `import-key`, `sign-cert`, `activate`,
+Offline root (`hemlig pki ez`): `generate-ca`, `adopt-ca` (bring an existing OpenSSL or YubiKey root under EZ), `import-key`, `sign-cert`, `activate`,
 `revoke-cert`, `renew-crl`, `upload-crl` and `status` create and run the offline root that signs
 `EXTERNAL_INTERMEDIATE` CAs, with a software key in an encrypted file or a key in a YubiKey PIV slot (`--yubikey`,
 needs `ykman` 5.x). On a terminal,

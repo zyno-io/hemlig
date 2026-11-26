@@ -1,9 +1,9 @@
-import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, randomBytes, sign, type KeyObject } from "node:crypto";
 import {
-  bitString, bool, extension, octetString, oid, seq, set, smallInt, tlv,
+  bitString, bool, extension, explicit, octetString, oid, seq, set, smallInt, time, tlv, uint,
 } from "./ez-der";
 import { encodeSubject, parseCidr, type Subject } from "./ez-name";
-import { keyIdentifier, OID, toPem } from "./ez-x509";
+import { keyIdentifier, OID, signatureAlgorithmForSpki, toPem } from "./ez-x509";
 
 /** Test helpers: builds PKCS#10 requests like the server's Hemlig CSR, with switches to break them. Not used at runtime. */
 export interface TestCsrOptions {
@@ -90,3 +90,40 @@ export const makeTestCsr = (options: TestCsrOptions = {}): TestCsr => {
   return { der, pem: toPem(der, "CERTIFICATE REQUEST"), spkiDer, subject, privateKey: pair.privateKey };
 };
 
+
+export interface BareRootOptions {
+  readonly privateKey: KeyObject;
+  readonly subject?: Subject;
+  readonly notBefore?: Date;
+  readonly notAfter?: Date;
+  /** Extension TLVs (`extension(...)`) to include; none gives a v3 certificate without extensions (like ykman's). */
+  readonly extensions?: readonly Buffer[];
+  readonly serial?: Buffer;
+}
+
+/** A self-signed v3 root with exactly the extensions given, for adoption tests (a ykman-style root has none). */
+export const makeBareRoot = (options: BareRootOptions): { der: Buffer; pem: string; spkiDer: Buffer; subject: Subject } => {
+  const subject = options.subject ?? { O: "Example Corp", CN: "Bare Root" };
+  const spkiDer = createPublicKey(options.privateKey).export({ type: "spki", format: "der" });
+  const algorithm = signatureAlgorithmForSpki(spkiDer);
+  const name = encodeSubject(subject);
+  const notBefore = options.notBefore ?? new Date(Math.floor(Date.now() / 1000) * 1000 - 3_600_000);
+  const notAfter = options.notAfter ?? new Date(notBefore.getTime() + 3650 * 86_400_000);
+  const exts = options.extensions ?? [];
+  const tbs = seq(
+    explicit(0, smallInt(2)),
+    uint(options.serial ?? Buffer.concat([Buffer.from([0x01]), randomBytes(15)])),
+    algorithm.algorithmIdentifier,
+    name,
+    seq(time(notBefore), time(notAfter)),
+    name,
+    spkiDer,
+    ...(exts.length === 0 ? [] : [explicit(3, seq(...exts))]),
+  );
+  const signature =
+    algorithm.keyType === "ec"
+      ? sign(algorithm.hash, tbs, { key: options.privateKey, dsaEncoding: "der" })
+      : sign(algorithm.hash, tbs, options.privateKey);
+  const der = seq(tbs, algorithm.algorithmIdentifier, bitString(signature));
+  return { der, pem: toPem(der, "CERTIFICATE"), spkiDer, subject };
+};

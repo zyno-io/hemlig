@@ -96,7 +96,7 @@ export const pendingCa = (
   };
 };
 
-interface FakeExternal {
+export interface FakeExternal {
   extId: string;
   fingerprint: string;
   crlPem?: string;
@@ -228,6 +228,13 @@ export class FakeServer implements HemligTransport {
         headers: {},
         body: { externalCas: [...this.externals.values()].map((e) => this.externalDetail(e)), generatedAt: "2026-11-25T00:00:00.000Z" },
       };
+    }
+    match = /^\/v1\/admin\/pki\/crls\/([^/]+)$/.exec(path);
+    if (match !== null && request.method === "GET") {
+      const ext = this.externals.get(match[1] as string);
+      if (ext?.crlPem === undefined) return errorResponse(404, "not_found");
+      const bytes = fromPem(ext.crlPem, "X509 CRL");
+      return { status: 200, headers: { "content-type": "application/pkix-crl", etag: `"${sha256Hex(bytes)}"` }, bytes };
     }
     match = /^\/v1\/admin\/pki\/external-cas\/([^/]+)$/.exec(path);
     if (match !== null && request.method === "GET") {

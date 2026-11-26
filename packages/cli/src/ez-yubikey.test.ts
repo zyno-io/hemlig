@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { createPublicKey } from "node:crypto";
+import { createPrivateKey, createPublicKey } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runCli } from "./index";
 import { FakeServer, FakeTerminal, pendingCa, pipeInput, type FakeCa } from "./ez-fake";
-import { fromPem, parseCertificate, parseCrl, verifyCertificateSignature, verifyCrlSignature } from "./ez-x509";
+import { bitString, bool, extension, octetString, seq } from "./ez-der";
+import { prepareCrl, signPrepared } from "./ez-issue";
+import { SoftwareSigner } from "./ez-signer";
+import { makeBareRoot } from "./ez-testkit";
+import { fromPem, keyIdentifier, OID, parseCertificate, parseCrl, verifyCertificateSignature, verifyCrlSignature } from "./ez-x509";
 import type { EzState } from "./ez-state";
 import { createFakeYkman, forbiddenSerials, makeDevice, randomSlot, type FakeBehavior, type FakeDevice, type FakeYkman } from "./ez-yubikey-testkit";
 import { ALLOWED_SLOTS, firmwareAtLeast, parseSlot } from "./ez-yubikey";
@@ -675,4 +679,245 @@ test("no script file is ever written: the script goes to ykman on an inherited p
   }
 });
 
-void ({} as FakeCa);
+
+// -- adopt-ca --yubikey ----------------------------------------------------------------------------------------------
+
+const ADOPT_NOT_AFTER = (): Date => new Date(clock.value + 3000 * 86_400_000);
+
+/** A device whose slot 9c already holds a root key (and, as asked, its certificate), like a root made with ykman. */
+const adoptable = (options: { cert: "full" | "bare" | "none"; touchPolicy?: string; serial?: number }) => {
+  const slot = randomSlot("ECCP256", { touchPolicy: options.touchPolicy ?? "never", generated: false });
+  const privateKey = createPrivateKey({ key: Buffer.from(slot.priv, "base64"), format: "der", type: "pkcs8" });
+  const signer = new SoftwareSigner(privateKey);
+  const root = makeBareRoot({
+    privateKey,
+    subject: { O: "Example Corp", CN: "Yubi Root" },
+    notBefore: new Date(Math.floor(clock.value / 1000) * 1000 - 86_400_000),
+    notAfter: ADOPT_NOT_AFTER(),
+    extensions:
+      options.cert !== "bare"
+        ? [extension(OID.basicConstraints, true, seq(bool(true))), extension(OID.keyUsage, true, bitString(Buffer.from([0x06]), 1)), extension(OID.ski, false, octetString(keyIdentifier(signer.spkiDer)))]
+        : [],
+  });
+  if (options.cert !== "none") slot.cert = root.der.toString("base64");
+  const device = makeDevice(options.serial ?? SERIAL);
+  device.slots["9c"] = slot;
+  return { device, slot, privateKey, signer, root, parsed: parseCertificate(root.der) };
+};
+
+const oldCrl = async (a: ReturnType<typeof adoptable>, dir: string, number: number, entries: { serial: string }[] = []): Promise<string> => {
+  const [crl] = await signPrepared(a.signer, [
+    prepareCrl(a.signer, a.parsed, { number, thisUpdate: new Date(Math.floor(clock.value / 1000) * 1000 - 60_000), validityDays: 180, entries: entries.map((e) => ({ serial: e.serial, revokedAt: new Date(clock.value - 86_400_000), reason: "keyCompromise" as const })) }),
+  ] as const);
+  const path = join(dir, "old.crl.pem");
+  await fs.writeFile(path, crl.pem);
+  return path;
+};
+
+const adoptYubi = (env: Env, extra: string[], keys: string[], more: { server?: FakeServer } = {}) =>
+  run(env.ykman, ["adopt-ca", "--dir", env.dir, "--yubikey", "--offline", ...extra], { stdin: new FakeTerminal(...keys), ...more });
+
+test("adopt-ca --yubikey adopts the slot certificate read-only, signs one test challenge, keeps the CRL it was given, then every command works", async () => {
+  const a = adoptable({ cert: "full", touchPolicy: "always" });
+  const env = await setup([a.device]);
+  try {
+    const before = await snapshots(env, [SERIAL]);
+    const slotBefore = JSON.stringify((await env.ykman.state()).devices[0]?.slots["9c"]);
+    const crlPath = await oldCrl(a, env.dir, 7, [{ serial: "0a0b" }]);
+    const result = await adoptYubi(env, ["--crl", crlPath], ["confirm\r", `${PIN}\r`]);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stderr, /Review: this will ADOPT/);
+    assert.match(result.stderr, /EZ holds no backup of this YubiKey's key/);
+    assert.match(result.stderr, /Touch the YubiKey \(serial 11111111\) now to sign: a test challenge/);
+    const calls = await env.ykman.calls();
+    assert.deepEqual(writes(calls), [], "nothing is written to the device");
+    assert.deepEqual([...new Set(calls.map((c) => c.op))].sort(), ["info", "sign"]);
+    assert.deepEqual(calls.filter((c) => c.op === "sign").map((c) => c.items), [[], ["test"]], "the PIN is checked, then one test challenge is signed");
+    assert.equal(JSON.stringify((await env.ykman.state()).devices[0]?.slots["9c"]), slotBefore);
+    await assertOnlySlot(env, "9c", [SERIAL], before);
+    const state = await readState(env.dir);
+    assert.equal(state.root.origin, "adopted");
+    assert.equal(state.key.storage, "yubikey");
+    assert.equal(state.key.file, null);
+    assert.equal(state.key.kdf, null);
+    assert.equal(state.key.yubikey?.slot, "9c");
+    assert.equal(state.key.yubikey?.keyType, "ECCP256");
+    assert.equal(state.key.yubikey?.generatedOnDevice, false);
+    assert.equal(state.key.yubikey?.devices[0]?.serial, SERIAL);
+    assert.equal(state.adoption?.source, "yubikey");
+    assert.equal(state.crl.current?.number, 7);
+    assert.equal(result.json.data.crl.adopted, true);
+    assert.deepEqual(state.revoked.map((r) => [r.serial, r.reason, r.listedInCrl]), [["0a0b", "keyCompromise", 7]]);
+    assert.equal(await fs.stat(join(env.dir, "root.key.pem")).then(() => true, () => false), false);
+    assert.equal((await fs.readFile(join(env.dir, "root.pem"), "utf8")), a.root.pem);
+
+    // sign-cert, renew-crl, revoke-cert, upload-crl and status work on the adopted root unchanged
+    const ca = pendingCa(1);
+    const server = new FakeServer();
+    server.add(ca.record);
+    const sign = await run(env.ykman, ["sign-cert", ca.record.caId, "--dir", env.dir, "--environment", "prod", "--yes"], { server, stdin: new FakeTerminal("confirm\r", `${PIN}\r`) });
+    assert.equal(sign.exitCode, 0, sign.stderr);
+    const issued = parseCertificate(fromPem(await fs.readFile(join(env.dir, "issued", `${sign.json.data.serial}.pem`), "utf8"), "CERTIFICATE"));
+    assert.equal(verifyCertificateSignature(issued, a.parsed.spkiDer), true);
+    const revoke = await run(env.ykman, ["revoke-cert", ca.record.caId, "--dir", env.dir, "--reason", "caCompromise"], { server, stdin: new FakeTerminal("confirm\r", `${PIN}\r`) });
+    assert.equal(revoke.exitCode, 0, revoke.stderr);
+    const crl = parseCrl(fromPem(await fs.readFile(join(env.dir, "root.crl.pem"), "utf8"), "X509 CRL"));
+    assert.equal(crl.number, 8n);
+    assert.deepEqual(crl.entries.map((e) => e.serial).sort(), ["0a0b", sign.json.data.serial].sort());
+    const renew = await run(env.ykman, ["renew-crl", "--dir", env.dir, "--offline", "--crl-out", join(env.dir, "next.crl.pem")], { stdin: new FakeTerminal(`${PIN}\r`) });
+    assert.equal(renew.exitCode, 0, renew.stderr);
+    assert.equal((await run(env.ykman, ["upload-crl", "--dir", env.dir], { server })).exitCode, 0);
+    const status = await run(env.ykman, ["status", "--dir", env.dir], { server });
+    assert.equal(status.json.data.root.origin, "adopted");
+    assert.equal(status.json.data.key.storage, "yubikey");
+    await assertOnlySlot(env, "9c", [SERIAL], before);
+    assert.deepEqual(writes(await env.ykman.calls()), []);
+  } finally {
+    await env.done();
+  }
+});
+
+test("adopt-ca --yubikey with --cert (the slot holds none) and no CRL: a new CRL is signed in the same batch", async () => {
+  const a = adoptable({ cert: "none" });
+  const env = await setup([a.device]);
+  try {
+    const certPath = join(env.dir, "..", "given.pem");
+    await fs.writeFile(certPath, a.root.pem);
+    const missing = await adoptYubi(env, ["--no-prior-revocations", "--crl-number", "4"], ["confirm\r", `${PIN}\r`]);
+    assert.equal(missing.exitCode, 2);
+    assert.equal(missing.error.code, "root_certificate_required");
+    const result = await adoptYubi(env, ["--cert", certPath, "--no-prior-revocations", "--crl-number", "4"], ["confirm\r", `${PIN}\r`]);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const calls = await env.ykman.calls();
+    assert.deepEqual(calls.filter((c) => c.op === "sign").map((c) => c.items), [[], ["test", "crl"]]);
+    assert.deepEqual(writes(calls), []);
+    const state = await readState(env.dir);
+    assert.equal(state.crl.current?.number, 5);
+    assert.equal(state.crl.lastNumber, 5);
+    assert.deepEqual(state.adoption?.revocationSource, ["none-declared"]);
+    assert.equal(result.json.data.crl.signed, true);
+    const crl = parseCrl(fromPem(await fs.readFile(join(env.dir, "root.crl.pem"), "utf8"), "X509 CRL"));
+    assert.equal(verifyCrlSignature(crl, a.parsed.spkiDer), true);
+    assert.equal(crl.number, 5n);
+  } finally {
+    await env.done();
+  }
+});
+
+test("adopt-ca --yubikey refuses a certificate whose key is not the slot's (key_mismatch), signs nothing and writes nothing", async () => {
+  const a = adoptable({ cert: "full" });
+  const other = adoptable({ cert: "full" });
+  const env = await setup([a.device]);
+  try {
+    const certPath = join(env.dir, "..", "other.pem");
+    await fs.writeFile(certPath, other.root.pem);
+    const result = await adoptYubi(env, ["--cert", certPath, "--no-prior-revocations", "--crl-number", "1"], ["confirm\r", `${PIN}\r`]);
+    assert.equal(result.exitCode, 5);
+    assert.equal(result.error.code, "key_mismatch");
+    const calls = await env.ykman.calls();
+    assert.equal(calls.some((c) => c.op === "sign"), false);
+    assert.deepEqual(writes(calls), []);
+    assert.deepEqual(await fs.readdir(env.dir), []);
+    // an empty slot has nothing to adopt
+    const empty = await setup([makeDevice(SERIAL)]);
+    try {
+      const none = await adoptYubi(empty, ["--no-prior-revocations", "--crl-number", "1"], ["confirm\r"]);
+      assert.equal(none.exitCode, 5);
+      assert.equal(none.error.code, "slot_empty");
+    } finally {
+      await empty.done();
+    }
+  } finally {
+    await env.done();
+  }
+});
+
+test("adopt-ca --yubikey: an extension-less slot certificate needs --reissue-root-certificate; the device is written only with --store-certificate-in-slot", async () => {
+  const a = adoptable({ cert: "bare" });
+  const env = await setup([a.device]);
+  try {
+    const refused = await adoptYubi(env, ["--no-prior-revocations", "--crl-number", "2"], ["confirm\r", `${PIN}\r`]);
+    assert.equal(refused.exitCode, 5);
+    assert.equal(refused.error.code, "root_profile_invalid");
+    assert.match(refused.error.message, /--reissue-root-certificate/);
+    assert.equal((await env.ykman.calls()).some((c) => c.op === "sign"), false);
+
+    const before = await snapshots(env, [SERIAL]);
+    const slotCert = (await env.ykman.state()).devices[0]?.slots["9c"]?.cert;
+    const result = await adoptYubi(env, ["--no-prior-revocations", "--crl-number", "2", "--reissue-root-certificate"], ["confirm\r", `${PIN}\r`]);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const calls = await env.ykman.calls();
+    assert.deepEqual(writes(calls), [], "by default nothing is written to the device");
+    assert.deepEqual(calls.filter((c) => c.op === "sign").map((c) => c.items), [[], ["test", "root-certificate", "crl"]]);
+    assert.equal((await env.ykman.state()).devices[0]?.slots["9c"]?.cert, slotCert, "the slot still holds the old certificate");
+    const root = parseCertificate(fromPem(await fs.readFile(join(env.dir, "root.pem"), "utf8"), "CERTIFICATE"));
+    assert.equal(root.spkiDer.equals(a.parsed.spkiDer), true);
+    assert.equal(root.subjectDer.equals(a.parsed.subjectDer), true);
+    assert.notEqual(root.fingerprint, a.parsed.fingerprint);
+    assert.equal(await fs.readFile(join(env.dir, "root.original.pem"), "utf8"), a.root.pem);
+    assert.equal((await readState(env.dir)).root.reissuedFrom?.fingerprint, a.parsed.fingerprint);
+    await assertOnlySlot(env, "9c", [SERIAL], before);
+  } finally {
+    await env.done();
+  }
+  // --store-certificate-in-slot: typed serial, management key (the factory key here), and only put-certificate
+  const b = adoptable({ cert: "bare" });
+  const env2 = await setup([b.device]);
+  try {
+    const before = await snapshots(env2, [SERIAL]);
+    const wrong = await adoptYubi(env2, ["--no-prior-revocations", "--crl-number", "2", "--reissue-root-certificate", "--store-certificate-in-slot"], ["confirm\r", "99999999\r", `${PIN}\r`]);
+    assert.equal(wrong.exitCode, 2);
+    assert.equal(wrong.error.code, "confirmation_declined");
+    assert.equal((await env2.ykman.calls()).some((c) => c.op === "sign"), false, "nothing was signed or written");
+    assert.deepEqual(await fs.readdir(env2.dir), []);
+    const result = await adoptYubi(env2, ["--no-prior-revocations", "--crl-number", "2", "--reissue-root-certificate", "--store-certificate-in-slot"], ["confirm\r", `${SERIAL}\r`, `${PIN}\r`]);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.deepEqual(writes(await env2.ykman.calls()), ["put-certificate"]);
+    const root = parseCertificate(fromPem(await fs.readFile(join(env2.dir, "root.pem"), "utf8"), "CERTIFICATE"));
+    assert.equal((await env2.ykman.state()).devices[0]?.slots["9c"]?.cert, root.der.toString("base64"));
+    assert.equal(result.stderr.includes(PIN), false);
+    await assertOnlySlot(env2, "9c", [SERIAL], before);
+  } finally {
+    await env2.done();
+  }
+});
+
+test("adopt-ca --yubikey: a declined confirm and a wrong PIN leave nothing behind, and the PIN is tried once", async () => {
+  const a = adoptable({ cert: "full" });
+  const env = await setup([a.device]);
+  try {
+    const flags = ["--no-prior-revocations", "--crl-number", "3"];
+    const declined = await adoptYubi(env, flags, ["no\r"]);
+    assert.equal(declined.exitCode, 2);
+    assert.equal(declined.error.code, "confirmation_declined");
+    assert.equal((await env.ykman.calls()).some((c) => c.op === "sign"), false);
+    assert.deepEqual(await fs.readdir(env.dir), []);
+    const wrong = await adoptYubi(env, flags, ["confirm\r", "000000\r"]);
+    assert.equal(wrong.exitCode, 3);
+    assert.equal(wrong.error.code, "pin_invalid");
+    assert.equal((await env.ykman.calls()).filter((c) => c.op === "sign").length, 1);
+    assert.equal((await env.ykman.state()).devices[0]?.pinAttempts, 2);
+    assert.deepEqual(await fs.readdir(env.dir), []);
+    // a second adoption into the same directory refuses to overwrite
+    assert.equal((await adoptYubi(env, flags, ["confirm\r", `${PIN}\r`])).exitCode, 0);
+    const again = await adoptYubi(env, flags, ["confirm\r", `${PIN}\r`]);
+    assert.equal(again.exitCode, 5);
+    assert.equal(again.error.code, "already_exists");
+  } finally {
+    await env.done();
+  }
+});
+
+test("adopt-ca --yubikey: flags for the other kind of source are rejected", async () => {
+  const a = adoptable({ cert: "full" });
+  const env = await setup([a.device]);
+  try {
+    for (const extra of [["--passphrase-stdin"], ["--key", "k.pem"], ["--key-file", "k.pem"], ["--openssl-dir", "x"]]) {
+      const result = await adoptYubi(env, ["--no-prior-revocations", "--crl-number", "3", ...extra], []);
+      assert.equal(result.exitCode, 2, extra.join(" "));
+    }
+    assert.deepEqual((await env.ykman.calls()).filter((c) => c.op !== "list"), []);
+  } finally {
+    await env.done();
+  }
+});

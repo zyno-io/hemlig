@@ -62,6 +62,8 @@ export interface PrepareRootOptions {
   readonly subject: Subject | Buffer;
   readonly now: Date;
   readonly validityDays?: number;
+  /** An exact end date (re-issuing an adopted root keeps its original); wins over `validityDays`. */
+  readonly notAfter?: Date;
   readonly pathLen?: number;
   /** Re-issuing an adopted root keeps its SKI. */
   readonly subjectKeyIdentifier?: Buffer;
@@ -76,7 +78,7 @@ export const prepareRoot = (signer: RootSigner, options: PrepareRootOptions): Pr
     spkiDer: signer.spkiDer,
     signatureAlgorithm: signer.signatureAlgorithm,
     notBefore: new Date(now.getTime() - EZ_DEFAULTS.backdateMs),
-    notAfter: new Date(now.getTime() + (options.validityDays ?? EZ_DEFAULTS.rootValidityDays) * DAY_MS),
+    notAfter: options.notAfter ?? new Date(now.getTime() + (options.validityDays ?? EZ_DEFAULTS.rootValidityDays) * DAY_MS),
     pathLen: options.pathLen,
     subjectKeyIdentifier: options.subjectKeyIdentifier,
     serial: options.serial,
