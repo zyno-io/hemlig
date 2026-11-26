@@ -98,7 +98,11 @@ A fresh deployment has no environments. The console prompts you to create the fi
 
 ## PKI
 
-The PKI tab lists the environment's certificate authorities and the offline roots they chain to. Create a CA there, or roll one over: "Roll over" pre-fills the old CA's settings with an incremented name and common name, and blocks Create while the subject DN equals the old one, because a DN is never reused. See [Roll over a CA](../operations/pki-ca-rollover.md).
+The PKI page has two tabs. CAs (the default) lists the environment's certificate authorities and the offline roots they chain to. Certificates lists every certificate across the environment's CAs, filtered Active (the default), Expired, Revoked or All. It is addressable as `?tab=certificates`.
+
+The server lists certificates one CA at a time, so the Certificates tab fetches the first page per CA, only when you open it or change the filter. "Load more" fetches the next page for each CA that has one, and the list is partial until it disappears. A CA whose listing fails is named in an error, and the other CAs still show.
+
+Create a CA there, or roll one over: "Roll over" pre-fills the old CA's settings with an incremented name and common name, and blocks Create while the subject DN equals the old one, because a DN is never reused. See [Roll over a CA](../operations/pki-ca-rollover.md).
 
 The kind picker offers three choices. "Intermediate signed by your offline root (recommended)" is `EXTERNAL_INTERMEDIATE`: Hemlig creates the key and a CSR, you sign the CSR with your root, and you paste back the certificate.
 

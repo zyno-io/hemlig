@@ -26,6 +26,8 @@ export const pkiKeys = {
     ["pki", "consumer-grants", consumerId, includeDeleted] as const,
   grant: (consumerId: string, name: string) =>
     ["pki", "grant", consumerId, name] as const,
+  envCertificates: (env: string, filter: string) =>
+    ["pki", "env-certificates", env, filter] as const,
   caCertificates: (caId: string, filters: PkiCertificateFilters = {}) =>
     ["pki", "ca-certificates", caId, filters] as const,
   certificate: (caId: string, serial: string) =>

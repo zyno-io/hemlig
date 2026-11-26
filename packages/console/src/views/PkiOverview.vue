@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import ErrorNotice from "../components/ErrorNotice.vue";
+import PkiCertificatesTab from "../components/PkiCertificatesTab.vue";
 import RootCrlUploadDialog from "../components/RootCrlUploadDialog.vue";
 import StateBadge from "../components/StateBadge.vue";
 import { CA_KIND_SHORT_LABEL, daysUntil, isoDate, keyAlgorithmLabel } from "../api/pki-format";
@@ -9,8 +11,11 @@ import { fetchAllPages, PKI_QUERY_OPTIONS, pkiKeys } from "../api/pki-query";
 import type { PkiCaSummary, PkiExternalCaSummary } from "../api/pki-schemas";
 import { useAppStore } from "../stores/app";
 
-const props = defineProps<{ env: string }>();
+type PkiTab = "cas" | "certificates";
+
+const props = defineProps<{ env: string; tab?: PkiTab | undefined }>();
 const store = useAppStore();
+const router = useRouter();
 const queryClient = useQueryClient();
 
 // Every PKI read is audited: these two list queries are the whole page. The
@@ -36,6 +41,23 @@ const externalCas = useQuery({
   ...PKI_QUERY_OPTIONS,
 });
 
+const TABS: readonly { id: PkiTab; label: string }[] = [
+  { id: "cas", label: "CAs" },
+  { id: "certificates", label: "Certificates" },
+];
+const activeTab = ref<PkiTab>(props.tab ?? "cas");
+watch(
+  () => props.tab,
+  (tab) => {
+    activeTab.value = tab ?? "cas";
+  },
+);
+const selectTab = (tab: PkiTab): void => {
+  activeTab.value = tab;
+  void router.replace({ query: { tab } });
+};
+const certificatesTab = ref<InstanceType<typeof PkiCertificatesTab> | null>(null);
+
 const hideFailed = ref(true);
 const uploadTarget = ref<PkiExternalCaSummary | undefined>();
 
@@ -56,7 +78,7 @@ const expiresSoon = (ca: PkiCaSummary): boolean =>
   ca.notAfter !== undefined && ca.status !== "REVOKED" && daysUntil(ca.notAfter) < 30;
 
 const refresh = async (): Promise<void> => {
-  await Promise.all([cas.refetch(), externalCas.refetch()]);
+  await Promise.all([cas.refetch(), externalCas.refetch(), certificatesTab.value?.refresh()]);
 };
 
 const onUploaded = async (): Promise<void> => {
@@ -86,8 +108,28 @@ const onUploaded = async (): Promise<void> => {
     </div>
 
     <div class="space-y-4">
+      <div class="flex gap-1" role="tablist">
+        <button
+          v-for="tab in TABS"
+          :key="tab.id"
+          type="button"
+          role="tab"
+          class="btn btn-sm"
+          :class="activeTab === tab.id ? 'bg-surface-3! text-ink!' : ''"
+          :aria-selected="activeTab === tab.id"
+          :data-testid="`tab-${tab.id}`"
+          @click="selectTab(tab.id)"
+        >{{ tab.label }}</button>
+      </div>
+
       <ErrorNotice v-if="cas.error.value" :error="cas.error.value" context="the CA list" />
 
+      <template v-if="activeTab === 'certificates'">
+        <p v-if="cas.isPending.value" class="card-body meta">Loading…</p>
+        <PkiCertificatesTab v-else-if="cas.data.value" ref="certificatesTab" :env="env" :cas="cas.data.value" />
+      </template>
+
+      <template v-else>
       <section class="card">
         <div class="card-header">
           <h2 class="section-title">Certificate authorities</h2>
@@ -218,6 +260,7 @@ const onUploaded = async (): Promise<void> => {
           </table>
         </div>
       </section>
+      </template>
     </div>
 
     <RootCrlUploadDialog

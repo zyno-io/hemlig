@@ -144,7 +144,10 @@ const routes: RouteRecordRaw[] = [
     path: "/e/:env/pki",
     name: "pki",
     component: () => import("../views/PkiOverview.vue"),
-    props: true,
+    props: (route) => ({
+      env: route.params.env,
+      tab: oneOf(route.query.tab, PKI_TABS),
+    }),
   },
   // Static `cas/new` outranks the dynamic `cas/:caId` regardless of order.
   {
@@ -213,6 +216,7 @@ const firstQueryValue = (
   typeof value === "string" && value.length > 0 ? value : undefined;
 
 const CONSUMER_TABS = ["certificate-grants"] as const;
+const PKI_TABS = ["cas", "certificates"] as const;
 const CA_TABS = ["overview", "certificates", "grants"] as const;
 const CA_KINDS = ["EXTERNAL_INTERMEDIATE", "INTERMEDIATE", "ROOT"] as const;
 

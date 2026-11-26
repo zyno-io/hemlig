@@ -5,6 +5,7 @@ import {
   type PkiCaKind,
   type PkiKeyAlgorithm,
   type PkiLeafKeyAlgorithm,
+  type PkiCertificateSummary,
   type PkiLeafRevocationReason,
 } from "./pki-schemas";
 
@@ -95,6 +96,30 @@ export const daysUntil = (iso: string, now: Date = new Date()): number =>
 
 /** The UTC calendar date of an ISO timestamp, `2031-11-25T08:42:52.000Z` → `2031-11-25`. */
 export const isoDate = (iso: string): string => iso.slice(0, 10);
+
+/** Every SAN of a certificate, DNS then IP then URI. */
+export const certificateSans = (certificate: PkiCertificateSummary): string[] => [
+  ...(certificate.sans.dns ?? []),
+  ...(certificate.sans.ip ?? []),
+  ...(certificate.sans.uri ?? []),
+];
+
+/** The CN of a subject DN, or the whole DN when it has none. */
+export const subjectCommonName = (subject: string): string =>
+  /(?:^|,)\s*CN=((?:\\.|[^,\\])+)/i.exec(subject)?.[1]?.trim() ?? subject;
+
+/**
+ * The status to show for a certificate. The server reports a certificate past
+ * `notAfter` as `EXPIRED` only when asked; a stale or cached row can still say
+ * `ISSUED`, so derive it from the clock.
+ */
+export const effectiveCertificateStatus = (
+  certificate: PkiCertificateSummary,
+  now: Date = new Date(),
+): string =>
+  certificate.status === "ISSUED" && new Date(certificate.notAfter).getTime() <= now.getTime()
+    ? "EXPIRED"
+    : certificate.status;
 
 // --------------------------------------------------------------- Labels
 
