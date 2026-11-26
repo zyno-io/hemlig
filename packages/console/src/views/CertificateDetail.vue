@@ -5,7 +5,7 @@ import CertificateRevokeDialog from "../components/CertificateRevokeDialog.vue";
 import CopyField from "../components/CopyField.vue";
 import ErrorNotice from "../components/ErrorNotice.vue";
 import StateBadge from "../components/StateBadge.vue";
-import { PKI_QUERY_OPTIONS, pkiKeys } from "../api/pki-query";
+import { applyCertificateRevoked, PKI_QUERY_OPTIONS, pkiKeys } from "../api/pki-query";
 import type { PkiRevokeCertificateResponse } from "../api/pki-schemas";
 import { useAppStore } from "../stores/app";
 
@@ -51,6 +51,7 @@ const onRevoked = (result: PkiRevokeCertificateResponse): void => {
   queryClient.setQueryData(pkiKeys.certificate(props.caId, props.serial), result.certificate);
   void queryClient.invalidateQueries({ queryKey: ["pki", "ca-certificates", props.caId] });
   void queryClient.invalidateQueries({ queryKey: ["pki", "consumer-certificates"] });
+  applyCertificateRevoked(queryClient, result.certificate);
 };
 </script>
 

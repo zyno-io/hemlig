@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { useQueryClient } from "@tanstack/vue-query";
 import { computed, ref } from "vue";
+import { markEnvCertificatesStale } from "../api/pki-query";
 import MutationState from "./MutationState.vue";
 import TypedConfirmDialog from "./TypedConfirmDialog.vue";
 import { LEAF_REVOCATION_REASONS, localInputToIso } from "../api/pki-format";
@@ -17,6 +19,7 @@ const props = defineProps<{
   preset?: { issuanceGrant: string; issuanceGrantUid?: string };
 }>();
 const emit = defineEmits<{ done: []; close: [] }>();
+const queryClient = useQueryClient();
 
 /** CLI parity (`cli/src/pki.ts`): the server revokes in batches. */
 const MAX_ATTEMPTS = 20;
@@ -92,6 +95,9 @@ const mutation = useGuardedMutation<PkiBulkRevokeInput, { complete: boolean }>({
         attempts: totals.value.attempts + 1,
       };
       last = response.complete;
+      // The response carries counts, not rows: reload the environment-wide
+      // certificate lists the next time they are opened.
+      markEnvCertificatesStale(queryClient);
     }
     complete.value = last;
     return { complete: last };

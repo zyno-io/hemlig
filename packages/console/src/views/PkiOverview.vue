@@ -1,18 +1,42 @@
 <script setup lang="ts">
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import ErrorNotice from "../components/ErrorNotice.vue";
+import PkiCertificatesTab from "../components/PkiCertificatesTab.vue";
 import RootCrlUploadDialog from "../components/RootCrlUploadDialog.vue";
 import StateBadge from "../components/StateBadge.vue";
-import { daysUntil } from "../api/pki-format";
+import { CA_KIND_SHORT_LABEL, daysUntil, isoDate, keyAlgorithmLabel } from "../api/pki-format";
 import { fetchAllPages, PKI_QUERY_OPTIONS, pkiKeys } from "../api/pki-query";
 import type { PkiCaSummary, PkiExternalCaSummary } from "../api/pki-schemas";
 import { useAppStore } from "../stores/app";
 
-const props = defineProps<{ env: string }>();
+type PkiTab = "cas" | "certificates";
+
+const props = defineProps<{ env: string; tab?: PkiTab | undefined }>();
 const store = useAppStore();
+const router = useRouter();
 const queryClient = useQueryClient();
 
+const TABS: readonly { id: PkiTab; label: string }[] = [
+  { id: "cas", label: "CAs" },
+  { id: "certificates", label: "Certificates" },
+];
+const activeTab = ref<PkiTab>(props.tab ?? "cas");
+const rootsWanted = ref(activeTab.value !== "certificates");
+watch(activeTab, (tab) => {
+  rootsWanted.value ||= tab !== "certificates";
+});
+watch(
+  () => props.tab,
+  (tab) => {
+    activeTab.value = tab ?? "cas";
+  },
+);
+const selectTab = (tab: PkiTab): void => {
+  activeTab.value = tab;
+  void router.replace({ query: { tab } });
+};
 // Every PKI read is audited: these two list queries are the whole page. The
 // overview never reads a CA detail (see PKI_QUERY_OPTIONS).
 const cas = useQuery({
@@ -28,6 +52,9 @@ const cas = useQuery({
 });
 const externalCas = useQuery({
   queryKey: pkiKeys.externalCas(),
+  // Only the CAs tab shows offline roots; do not audit-read them for the other.
+  // Latched: once the CAs tab has been shown, switching tabs must not re-read.
+  enabled: computed(() => rootsWanted.value),
   queryFn: () =>
     fetchAllPages<PkiExternalCaSummary>(async (cursor) => {
       const page = await store.requireApi().listExternalCas({ cursor });
@@ -35,6 +62,8 @@ const externalCas = useQuery({
     }),
   ...PKI_QUERY_OPTIONS,
 });
+
+const certificatesTab = ref<InstanceType<typeof PkiCertificatesTab> | null>(null);
 
 const hideFailed = ref(true);
 const uploadTarget = ref<PkiExternalCaSummary | undefined>();
@@ -56,8 +85,25 @@ const expiresSoon = (ca: PkiCaSummary): boolean =>
   ca.notAfter !== undefined && ca.status !== "REVOKED" && daysUntil(ca.notAfter) < 30;
 
 const refresh = async (): Promise<void> => {
-  await Promise.all([cas.refetch(), externalCas.refetch()]);
+  const tab = certificatesTab.value;
+  const before = tab?.signature;
+  // The CA list first: the certificate fan-out depends on it.
+  await Promise.all([
+    cas.refetch().then(() => tab?.refresh(before)),
+    activeTab.value === "certificates" ? undefined : externalCas.refetch(),
+  ]);
 };
+
+// Mount the tab once the CA list is settled (not while a stale list is being
+// refetched), then keep it, so the fan-out is not run for a list about to change.
+const certificatesReady = ref(false);
+watch(
+  () => cas.data.value !== undefined && !cas.isFetching.value,
+  (settled) => {
+    certificatesReady.value ||= settled;
+  },
+  { immediate: true },
+);
 
 const onUploaded = async (): Promise<void> => {
   await Promise.all([
@@ -86,8 +132,28 @@ const onUploaded = async (): Promise<void> => {
     </div>
 
     <div class="space-y-4">
+      <div class="flex gap-1" role="tablist">
+        <button
+          v-for="tab in TABS"
+          :key="tab.id"
+          type="button"
+          role="tab"
+          class="btn btn-sm"
+          :class="activeTab === tab.id ? 'bg-surface-3! text-ink!' : ''"
+          :aria-selected="activeTab === tab.id"
+          :data-testid="`tab-${tab.id}`"
+          @click="selectTab(tab.id)"
+        >{{ tab.label }}</button>
+      </div>
+
       <ErrorNotice v-if="cas.error.value" :error="cas.error.value" context="the CA list" />
 
+      <template v-if="activeTab === 'certificates'">
+        <p v-if="!certificatesReady && !cas.error.value" class="card-body meta">Loading…</p>
+        <PkiCertificatesTab v-else-if="cas.data.value" ref="certificatesTab" :env="env" :cas="cas.data.value" />
+      </template>
+
+      <template v-else>
       <section class="card">
         <div class="card-header">
           <h2 class="section-title">Certificate authorities</h2>
@@ -115,39 +181,44 @@ const onUploaded = async (): Promise<void> => {
             </thead>
             <tbody>
               <tr v-for="ca in rows" :key="ca.caId">
-                <td>
+                <td class="align-middle">
                   <RouterLink
-                    class="link mono"
+                    class="link font-medium"
                     :to="{ name: 'pki-ca', params: { env, caId: ca.caId } }"
                   >{{ ca.displayName ?? ca.name }}</RouterLink>
                   <p v-if="ca.displayName" class="meta mono">{{ ca.name }}</p>
                 </td>
-                <td class="mono text-xs">{{ ca.kind }}</td>
-                <td><StateBadge :state="ca.status" /></td>
-                <td class="text-xs">
-                  <span class="mono">{{ ca.keyAlgorithm }}</span>
-                  <StateBadge class="ml-1" :state="ca.keyState" />
+                <td class="align-middle text-[13px] whitespace-nowrap">
+                  {{ CA_KIND_SHORT_LABEL[ca.kind] ?? ca.kind }}
                 </td>
-                <td class="text-xs">
+                <td class="align-middle"><StateBadge :state="ca.status" /></td>
+                <td class="align-middle text-[13px] whitespace-nowrap">
+                  {{ keyAlgorithmLabel(ca.keyAlgorithm) }}
+                  <!-- The key's own state only matters when it differs from a working key. -->
+                  <StateBadge v-if="ca.keyState !== 'ACTIVE'" class="ml-1" :state="ca.keyState" />
+                </td>
+                <td class="align-middle text-[13px] whitespace-nowrap">
                   <template v-if="ca.notAfter">
-                    {{ ca.notAfter }}
+                    <span :title="ca.notAfter">{{ isoDate(ca.notAfter) }}</span>
                     <span v-if="expiresSoon(ca)" class="tag tag-warning ml-1">&lt;30 days</span>
                   </template>
                   <span v-else class="meta">not issued</span>
                 </td>
-                <td class="text-xs">
+                <td class="align-middle text-[13px] whitespace-nowrap">
                   <template v-if="ca.kind === 'EXTERNAL_INTERMEDIATE'">
                     <template v-if="rootFor(ca)">
                       <StateBadge :state="rootFor(ca)!.crlState" />
-                      <span v-if="rootFor(ca)!.crl?.nextUpdate" class="meta ml-1">
-                        next {{ rootFor(ca)!.crl?.nextUpdate }}
-                      </span>
+                      <span
+                        v-if="rootFor(ca)!.crl?.nextUpdate"
+                        class="meta ml-2"
+                        :title="rootFor(ca)!.crl?.nextUpdate"
+                      >next {{ isoDate(rootFor(ca)!.crl?.nextUpdate ?? "") }}</span>
                     </template>
                     <span v-else class="meta">none yet</span>
                   </template>
                   <span v-else class="meta">generated, see detail</span>
                 </td>
-                <td class="text-right">
+                <td class="align-middle text-right">
                   <RouterLink
                     class="btn btn-sm"
                     :to="{
@@ -190,11 +261,16 @@ const onUploaded = async (): Promise<void> => {
             </thead>
             <tbody>
               <tr v-for="ext in roots" :key="ext.extId">
-                <td class="mono text-xs break-all">{{ ext.subjectDn }}</td>
-                <td><StateBadge :state="ext.crlState" /></td>
-                <td class="text-xs">{{ ext.crl?.nextUpdate ?? "-" }}</td>
-                <td>{{ ext.dependents.length }}</td>
-                <td class="text-right">
+                <td class="align-middle text-[13px] break-all">{{ ext.subjectDn }}</td>
+                <td class="align-middle"><StateBadge :state="ext.crlState" /></td>
+                <td class="align-middle text-[13px] whitespace-nowrap">
+                  <span v-if="ext.crl?.nextUpdate" :title="ext.crl.nextUpdate">{{
+                    isoDate(ext.crl.nextUpdate)
+                  }}</span>
+                  <span v-else class="meta">-</span>
+                </td>
+                <td class="align-middle text-[13px]">{{ ext.dependents.length }}</td>
+                <td class="align-middle text-right">
                   <button
                     class="btn btn-sm"
                     :data-testid="`upload-crl-${ext.extId}`"
@@ -208,6 +284,7 @@ const onUploaded = async (): Promise<void> => {
           </table>
         </div>
       </section>
+      </template>
     </div>
 
     <RootCrlUploadDialog

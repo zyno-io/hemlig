@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { certificateSans as allSans } from "../api/pki-format";
 import type { PkiCertificateSummary } from "../api/pki-schemas";
 import StateBadge from "./StateBadge.vue";
 
@@ -10,12 +11,6 @@ defineProps<{
 }>();
 
 const MAX_SANS = 3;
-
-const allSans = (certificate: PkiCertificateSummary): string[] => [
-  ...(certificate.sans.dns ?? []),
-  ...(certificate.sans.ip ?? []),
-  ...(certificate.sans.uri ?? []),
-];
 </script>
 
 <template>

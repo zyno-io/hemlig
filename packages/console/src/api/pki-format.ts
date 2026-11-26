@@ -5,6 +5,7 @@ import {
   type PkiCaKind,
   type PkiKeyAlgorithm,
   type PkiLeafKeyAlgorithm,
+  type PkiCertificateSummary,
   type PkiLeafRevocationReason,
 } from "./pki-schemas";
 
@@ -92,6 +93,48 @@ export const isoToLocalInput = (iso: string | undefined): string => {
 /** Whole days from `now` until `iso`; negative once past. */
 export const daysUntil = (iso: string, now: Date = new Date()): number =>
   Math.floor((new Date(iso).getTime() - now.getTime()) / 86_400_000);
+
+/** The UTC calendar date of an ISO timestamp, `2031-11-25T08:42:52.000Z` → `2031-11-25`. */
+export const isoDate = (iso: string): string => iso.slice(0, 10);
+
+/** Every SAN of a certificate, DNS then IP then URI. */
+export const certificateSans = (certificate: PkiCertificateSummary): string[] => [
+  ...(certificate.sans.dns ?? []),
+  ...(certificate.sans.ip ?? []),
+  ...(certificate.sans.uri ?? []),
+];
+
+/** The CN of a subject DN, or the whole DN when it has none. */
+export const subjectCommonName = (subject: string): string =>
+  /(?:^|,)\s*CN=((?:\\.|[^,\\])+)/i.exec(subject)?.[1]?.trim() ?? subject;
+
+/**
+ * The status to show for a certificate. The server derives EXPIRED from its
+ * clock when it builds a listing, but a cached or stale row keeps the status it
+ * had when it was fetched, so also derive it from the browser's clock.
+ */
+export const effectiveCertificateStatus = (
+  certificate: PkiCertificateSummary,
+  now: Date = new Date(),
+): string =>
+  certificate.status === "ISSUED" && new Date(certificate.notAfter).getTime() <= now.getTime()
+    ? "EXPIRED"
+    : certificate.status;
+
+// --------------------------------------------------------------- Labels
+
+/** Short CA kind names for tables, by who signs the CA. */
+export const CA_KIND_SHORT_LABEL: Record<PkiCaKind, string> = {
+  EXTERNAL_INTERMEDIATE: "Intermediate (offline root)",
+  INTERMEDIATE: "Intermediate (Hemlig root)",
+  ROOT: "Hemlig root",
+};
+
+/** `ECDSA_P384` → `ECDSA P-384`, `RSA_3072` → `RSA 3072`, `ED25519` → `Ed25519`. */
+export const keyAlgorithmLabel = (algorithm: string): string =>
+  algorithm === "ED25519"
+    ? "Ed25519"
+    : algorithm.replace(/^ECDSA_P/, "ECDSA P-").replace(/_/g, " ");
 
 // --------------------------------------------------------------- PEM
 

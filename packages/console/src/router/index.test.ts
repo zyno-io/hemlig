@@ -39,11 +39,22 @@ describe("PKI routes", () => {
   it("resolves the overview", () => {
     expect(nameOf("/e/prod/pki")).toBe("pki");
     expect(propsFor("/e/prod/pki")).toMatchObject({ env: "prod" });
+    expect(propsFor("/e/prod/pki").tab).toBeUndefined();
   });
 
   it("resolves cas/new to the create route, not a CA called new", () => {
     expect(nameOf("/e/prod/pki/cas/new")).toBe("pki-ca-new");
     expect(nameOf("/e/prod/pki/cas/ca-abc")).toBe("pki-ca");
+  });
+
+  it("passes the PKI page tab only when it is cas or certificates", () => {
+    expect(propsFor("/e/prod/pki?tab=certificates")).toMatchObject({
+      env: "prod",
+      tab: "certificates",
+    });
+    expect(propsFor("/e/prod/pki?tab=cas").tab).toBe("cas");
+    expect(propsFor("/e/prod/pki?tab=grants").tab).toBeUndefined();
+    expect(propsFor("/e/prod/pki?tab=certificates&tab=cas").tab).toBeUndefined();
   });
 
   it("passes the CA tab only when it is one of the three", () => {
