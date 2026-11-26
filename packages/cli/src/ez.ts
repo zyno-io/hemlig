@@ -84,6 +84,7 @@ import {
   decodeCsrInput,
   CRL_REASON_NAMES,
   describeSpki,
+  displaySafe,
   EZ_KEY_ALGORITHMS,
   fromPem,
   keyIdentifier,
@@ -291,6 +292,8 @@ const parseEzArgs = (args: readonly string[]): Parsed | "help" => {
 interface Progress {
   readonly completed: string[];
   readonly files: Record<string, string>;
+  /** The new root's fingerprint once generate-ca created it (shown with a terminal error; not in the JSON envelope). */
+  fingerprint?: string;
   /** Set when a plain rerun would be wrong; replaces the rerun hint in the error envelope. */
   recovery?: string;
 }
@@ -314,6 +317,8 @@ interface Ctx {
 
 interface Receipt {
   readonly data: Record<string, unknown>;
+  /** Facts for the terminal result only; never part of the JSON receipt. */
+  readonly extra?: Record<string, unknown>;
   readonly next?: readonly string[];
 }
 
@@ -873,6 +878,7 @@ const generateCa = async (ctx: Ctx): Promise<Receipt> => {
     const store = await EzStore.create(options, state, initialArtifacts(state, { rootDer: root.der, crlDer: crl.der, ...(useYubiKey ? {} : { keyFilePem: keyPem }) }));
     try {
       ctx.progress.completed.push("root-created");
+      ctx.progress.fingerprint = root.certificate.fingerprint;
       const files = {
         state: statePath,
         ...(onDevice ? {} : { key: withinDir(dir, keyFile) }),
@@ -1178,7 +1184,7 @@ const pathLength = (text: string): number | undefined => {
 
 const checkOnlineCa = (ca: PkiCaDetail, environment: string): void => {
   if (ca.environment !== environment) {
-    throw new EzError(5, "environment_mismatch", `That CA is in environment ${ca.environment}, not ${environment}.`);
+    throw new EzError(5, "environment_mismatch", `That CA is in environment ${displaySafe(String(ca.environment))}, not ${displaySafe(environment)}.`);
   }
   if (ca.kind !== "EXTERNAL_INTERMEDIATE") {
     throw new EzError(5, "ca_not_external", "Only an EXTERNAL_INTERMEDIATE CA is signed by an offline root.");
@@ -1224,7 +1230,7 @@ const signCert = async (ctx: Ctx): Promise<Receipt> => {
         throw new EzError(5, "ca_activated_elsewhere", "That CA is already active with a certificate this root state did not issue.");
       }
       if (ca.status !== "PENDING_CERTIFICATE" || ca.csrPem === undefined) {
-        throw new EzError(5, "ca_not_pending", `That CA is ${ca.status}, not waiting for a certificate.`);
+        throw new EzError(5, "ca_not_pending", `That CA is ${displaySafe(String(ca.status))}, not waiting for a certificate.`);
       }
       csr = validateCsr(ca.csrPem, {
         spkiSha256: ca.key.spkiSha256,
@@ -1490,7 +1496,7 @@ const activateCommand = async (ctx: Ctx): Promise<Receipt> => {
   if (ca.status === "ACTIVE" && ca.fingerprint === certificate.fingerprint) {
     return { data: { command: "activate", caId, environment, fingerprint: certificate.fingerprint, activated: true, alreadyActive: true, ca: { status: ca.status, version: ca.version } } };
   }
-  if (ca.status !== "PENDING_CERTIFICATE") throw new EzError(5, "ca_not_pending", `That CA is ${ca.status}, not waiting for a certificate.`);
+  if (ca.status !== "PENDING_CERTIFICATE") throw new EzError(5, "ca_not_pending", `That CA is ${displaySafe(String(ca.status))}, not waiting for a certificate.`);
   const ext = await findExternalRoot(session, { spkiSha256: root.spkiSha256, fingerprint: root.fingerprint });
   // The first server response carries its clock; check it before anything is signed or uploaded.
   assertClockSkew(session, ctx.clock());
@@ -2329,6 +2335,7 @@ const adoptCa = async (ctx: Ctx): Promise<Receipt> => {
         }
         const registered = ext !== undefined;
         return {
+          extra: { originalKeys: useYubiKey ? [] : [recipe === undefined ? input(keyFlag as string) : join(recipe, "private", "root.key")], sourceEncrypted: encryptedSource },
           data: {
             command: "adopt-ca",
             dir,
@@ -2457,15 +2464,30 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
     };
     const receipt = await (handlers[parsed.command] as (ctx: Ctx) => Promise<Receipt>)(ctx);
     if (human) {
-      const result = humanFromReceipt(receipt.data, receipt.next ?? [], {
-        command: parsed.command,
-        dir: parsed.command === "activate" ? process.cwd() : directoryOf(parsed.values),
-        cwd: process.cwd(),
-        now: ctx.clock(),
-        environment: str(parsed.values, "environment") ?? env.HEMLIG_ENVIRONMENT,
-      });
-      await stdout(renderHuman(result, makeStyle(colorWanted(env, true))));
-      return 0;
+      // A renderer bug must never change the exit code or hide the result: fall back to the JSON envelope below.
+      let text: string | undefined;
+      try {
+        const data = receipt.data as Record<string, unknown>;
+        const result = humanFromReceipt(
+          data,
+          receipt.next ?? [],
+          {
+            command: parsed.command,
+            dir: typeof data.dir === "string" ? data.dir : parsed.command === "activate" ? process.cwd() : directoryOf(parsed.values),
+            cwd: process.cwd(),
+            now: ctx.clock(),
+            environment: str(parsed.values, "environment") ?? env.HEMLIG_ENVIRONMENT,
+          },
+          receipt.extra,
+        );
+        text = renderHuman(result, makeStyle(colorWanted(env, true)));
+      } catch {
+        text = undefined;
+      }
+      if (text !== undefined) {
+        await stdout(text);
+        return 0;
+      }
     }
     await stdout(`${JSON.stringify({ data: receipt.data, ...(receipt.next === undefined ? {} : { next: receipt.next }) })}\n`);
     return 0;
@@ -2489,12 +2511,36 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
     const code = await reportFailure(error, failure, (text) => {
       envelope += text;
     });
+    let text = envelope;
     try {
-      const parsedError = JSON.parse(envelope.trim().split("\n").pop() as string) as { error: ErrorInfo & { ez?: ErrorInfo["ez"] }; ez?: ErrorInfo["ez"] };
-      await stderr(renderHumanError({ ...parsedError.error, ez: parsedError.ez ?? parsedError.error.ez }, makeStyle(colorWanted(env, true))));
+      const parsedError = JSON.parse(envelope.trim().split("\n").pop() as string) as { error: ErrorInfo; ez?: ErrorInfo["ez"] };
+      text = renderHumanError({ ...parsedError.error, ez: parsedError.ez ?? parsedError.error.ez }, makeStyle(colorWanted(env, true)), {
+        fingerprint: progress.fingerprint,
+        flagFor: outputFlagFor(args),
+      });
     } catch {
-      await stderr(envelope);
+      // keep the plain envelope
+    }
+    try {
+      await stderr(text);
+    } catch {
+      // A closed or failing stderr cannot carry the message; the exit code is the same as for the JSON envelope.
+      return 9;
     }
     return code;
   }
 }
+
+/** The output flag (`--out`, `--crl-out`, ...) whose value names `file`, for the already_exists hint. */
+const outputFlagFor = (args: readonly string[]): ((file: string) => string | undefined) => {
+  const at = args.indexOf("--dir");
+  const dir = resolve(at >= 0 && args[at + 1] !== undefined ? (args[at + 1] as string) : process.cwd());
+  return (file) => {
+    for (const flagName of ["--out", "--chain-out", "--crl-out", "--key-file", "--cert-file", "--crl-file"]) {
+      const index = args.indexOf(flagName);
+      const value = index >= 0 ? args[index + 1] : undefined;
+      if (value !== undefined && withinDir(dir, value) === file) return flagName;
+    }
+    return undefined;
+  };
+};

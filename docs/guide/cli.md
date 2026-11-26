@@ -396,7 +396,7 @@ Success prints exactly one JSON object on stdout and nothing on stderr, except `
 
 On a terminal, `hemlig pki ez` prints a short human-readable result on stdout instead of the JSON receipt: a `✓` headline, a few aligned facts (fingerprint, CRL number and next update, CA ID, the directory once), `!` warnings and a numbered "Next steps" list with ready-to-run commands (your `--dir`, CA ID and file names already filled in).
 
-A failure prints `✗`, the message, `(code, exit N)` and a hint where there is one, on stderr. Color is used only on a terminal and is off with `NO_COLOR` or `TERM=dumb`.
+A failure prints `✗`, the message, `(code, exit N)`, a hint where there is one and the same details the JSON error carries (`details`, API code and details, the files and steps completed before the failure), on stderr. Color is used only on a terminal and is off with `NO_COLOR` or `TERM=dumb`.
 
 When stdout is piped or redirected, or with `--json`, stdout is the JSON object described above, unchanged, so scripts keep working: in that mode the human summary of a run stays on stderr, as before, and a failure is the JSON error object. The exit codes never depend on the mode.
 

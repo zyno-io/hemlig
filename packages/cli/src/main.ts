@@ -15,6 +15,9 @@ async function main(): Promise<void> {
   const exitCode = await runCli(process.argv.slice(2), {
     stdout: writer(process.stdout),
     stderr: writer(process.stderr),
+    // The writers above are always injected, so the real streams are asked here: a terminal gets the human result.
+    stdoutIsTTY: process.stdout.isTTY === true,
+    stderrIsTTY: process.stderr.isTTY === true,
   });
   process.exitCode = exitCode;
 }

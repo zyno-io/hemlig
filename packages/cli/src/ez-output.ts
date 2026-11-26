@@ -39,10 +39,16 @@ const indent = (text: string, by: string): string => text.split("\n").map((line,
  * result, and this strips any control, C1 or bidirectional-override character that is left (keeping newlines).
  */
 const backstop = (text: string): string =>
-  text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+  text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, (c) => {
+    const code = c.charCodeAt(0);
+    return code < 256 ? `\\x${code.toString(16).padStart(2, "0")}` : `\\u${code.toString(16).padStart(4, "0")}`;
+  });
+
+/** For a value that must stay on one line: the same, and a newline is escaped too. */
+const oneLine = (text: string): string => backstop(text).replace(/\n/g, "\\x0a");
 
 export const renderHuman = (result: HumanResult, style: Style): string => {
-  const safe = backstop;
+  const safe = oneLine;
   const mark = result.mark ?? "ok";
   const out: string[] = [];
   out.push(`${mark === "ok" ? `${style.green("✓")} ` : mark === "warn" ? `${style.yellow("!")} ` : ""}${style.bold(safe(result.headline))}`);
@@ -55,7 +61,7 @@ export const renderHuman = (result: HumanResult, style: Style): string => {
   if ((result.warnings ?? []).length > 0) out.push("", ...(result.warnings as string[]).map((w) => `${style.yellow("!")} ${safe(w)}`));
   if ((result.next ?? []).length > 0) {
     out.push("", style.bold("Next steps"));
-    (result.next as string[]).forEach((step, i) => out.push(`  ${i + 1}. ${indent(safe(step), "     ")}`));
+    (result.next as string[]).forEach((step, i) => out.push(`  ${i + 1}. ${indent(backstop(step), "     ")}`));
   }
   return `${out.join("\n")}\n`;
 };
@@ -69,6 +75,7 @@ const ERROR_HINTS: Record<string, string> = {
   passphrase_invalid: "Check the passphrase for the key file and try again.",
   pin_invalid: "The PIN is never retried automatically. Check it, and mind the attempts left, before running the command again.",
   already_exists: "Nothing was overwritten. Choose another --dir, or remove the files only if you know they are leftovers.",
+  already_exists_output: "Nothing was overwritten. Choose another name for that output, or remove the file if it is a leftover.",
   state_locked: "Another hemlig pki ez command is running in this directory. If it crashed, run again with --break-stale-lock.",
   state_behind_server: "The server knows a newer root CRL than this state. Restore the latest copy of this directory before signing anything.",
   state_forked: "Two copies of this root are signing. Keep one active copy of the directory.",
@@ -88,18 +95,39 @@ export interface ErrorInfo {
   readonly exitCode: number;
   readonly code: string;
   readonly message: string;
+  readonly details?: Record<string, unknown>;
+  readonly status?: number;
+  readonly apiCode?: string;
+  readonly apiDetails?: unknown;
   /** What had already happened when the command failed, from the JSON envelope's `ez` object. */
-  readonly ez?: { readonly completed?: readonly string[]; readonly rerun?: string; readonly recovery?: string };
+  readonly ez?: { readonly completed?: readonly string[]; readonly files?: Readonly<Record<string, string>>; readonly rerun?: string; readonly recovery?: string };
 }
 
-export const renderHumanError = (error: ErrorInfo, style: Style): string => {
-  const safe = backstop;
-  const lines = [`${style.red("✗")} ${style.bold(safe(error.message))}`, `  ${style.dim(`(${safe(error.code)}, exit ${error.exitCode})`)}`];
-  const hint = ERROR_HINTS[error.code];
-  if (hint !== undefined) lines.push(`  ${safe(hint)}`);
-  if (error.ez?.completed !== undefined && error.ez.completed.length > 0) lines.push(`  Done before the failure: ${safe(error.ez.completed.join(", "))}.`);
-  if (error.ez?.recovery !== undefined) lines.push(`  ${safe(error.ez.recovery)}`);
-  else if (error.ez?.rerun !== undefined) lines.push(`  To retry: ${safe(error.ez.rerun)}`);
+export interface ErrorOptions {
+  /** Facts of a partly completed run that are not in the JSON envelope (the new root's fingerprint). */
+  readonly fingerprint?: string;
+  /** The flag (`--out`, `--crl-out`, ...) that names this output file, when it is one. */
+  readonly flagFor?: (file: string) => string | undefined;
+}
+
+const compact = (value: unknown): string => oneLine(typeof value === "string" ? value : (JSON.stringify(value) ?? String(value))).slice(0, 400);
+
+export const renderHumanError = (error: ErrorInfo, style: Style, options: ErrorOptions = {}): string => {
+  const lines = [`${style.red("✗")} ${style.bold(oneLine(error.message))}`, `  ${style.dim(`(${oneLine(error.code)}, exit ${error.exitCode})`)}`];
+  const files = Array.isArray(error.details?.files) ? (error.details?.files as unknown[]) : [];
+  const outputFlag = error.code === "already_exists" && files.length === 1 ? options.flagFor?.(String(files[0])) : undefined;
+  const hint = outputFlag !== undefined ? ERROR_HINTS.already_exists_output?.replace("that output", `${outputFlag} (${compact(files[0])})`) : ERROR_HINTS[error.code];
+  if (hint !== undefined) lines.push(`  ${oneLine(hint)}`);
+  // Everything the JSON envelope would say, compactly: a person fixing a failed mutation needs the same facts a script gets.
+  for (const [key, value] of Object.entries(error.details ?? {})) lines.push(`  ${oneLine(key)}: ${compact(value)}`);
+  if (error.status !== undefined) lines.push(`  HTTP status: ${compact(error.status)}`);
+  if (error.apiCode !== undefined) lines.push(`  API code: ${compact(error.apiCode)}`);
+  if (error.apiDetails !== undefined) lines.push(`  API details: ${compact(error.apiDetails)}`);
+  if (error.ez?.completed !== undefined && error.ez.completed.length > 0) lines.push(`  Done before the failure: ${compact(error.ez.completed.join(", "))}.`);
+  if (options.fingerprint !== undefined) lines.push(`  Root fingerprint: ${compact(options.fingerprint)} (SHA-256)`);
+  for (const [name, file] of Object.entries(error.ez?.files ?? {})) lines.push(`  File ${oneLine(name)}: ${compact(file)}`);
+  if (error.ez?.recovery !== undefined) lines.push(`  ${oneLine(error.ez.recovery)}`);
+  else if (error.ez?.rerun !== undefined) lines.push(`  To retry: ${oneLine(error.ez.rerun)}`);
   return `${lines.join("\n")}\n`;
 };
 
@@ -179,7 +207,8 @@ const backupStep = (ctx: HumanContext): string => `Back up ${ctx.dir} (for examp
 const signStep = (ctx: HumanContext): string =>
   `Create an intermediate CA in Hemlig (console PKI tab, or \`hemlig pki ca create --kind EXTERNAL_INTERMEDIATE …\`), then sign it:\n${cmd(ctx, "sign-cert", `<ca-id> --environment ${ctx.environment ?? "<env>"}`)}`;
 
-export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: HumanContext): HumanResult => {
+/** `extra` carries facts the JSON receipt does not (kept out of the JSON so it stays unchanged). */
+export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: HumanContext, extra: Data = {}): HumanResult => {
   const warnings = warningsOf(data);
   switch (data.command ?? ctx.command) {
     case "generate-ca": {
@@ -189,7 +218,7 @@ export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: 
       return {
         headline: `Root created: ${displaySafe(String(root.subject))}`,
         facts: [
-          ["Fingerprint", `${shortFingerprint(root.fingerprint)} (SHA-256)`],
+          ["Fingerprint", `${root.fingerprint} (SHA-256)`],
           ["Key", `${displaySafe(String(root.keyAlgorithm))}, ${keyFact({ ...key, file: (data.files as Data).key }, ctx.dir)}`],
           ["Valid", `${day(root.notBefore)} to ${day(root.notAfter)}`],
           ["CRL", crlFact(data.crl, ctx.now)],
@@ -213,7 +242,7 @@ export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: 
       return {
         headline: `Root adopted: ${displaySafe(String(root.subject))}`,
         facts: [
-          ["Fingerprint", `${shortFingerprint(root.fingerprint)} (SHA-256)`],
+          ["Fingerprint", `${root.fingerprint} (SHA-256)`],
           ["CRL", `${crlFact(crl, ctx.now)}${crl.signed === true ? ", signed now" : ", the supplied CRL stays current"}`],
           ["Revocations", `${(data.revocations as Data).count} carried over${sources === undefined ? "" : ` (${sources.map(sourceWord).join(", ")})`}`],
           ["Key", keyFact(key, ctx.dir)],
@@ -223,7 +252,13 @@ export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: 
         warnings: [
           ...(reissued ? [`The root certificate was reissued: its fingerprint changed (was ${shortFingerprint(root.originalFingerprint)}). Redistribute ${relativeTo(ctx.dir, (data.files as Data).certificate)} to anything that pins it.`] : []),
           ...warnings,
-          ...(key.storage === "software" ? ["The original key file(s) remain where they were. Secure or delete them once the new copy is backed up."] : []),
+          ...(key.storage === "software"
+            ? [
+                `The original key file(s) remain: ${((extra.originalKeys as string[] | undefined) ?? []).map((p) => displaySafe(p)).join(", ") || "where they were"}. ${
+                  extra.sourceEncrypted === false ? "They are NOT encrypted." : "OpenSSL's -aes256 protects them with only a few thousand PBKDF2 iterations (the new copy uses 1,000,000)."
+                } Secure or delete them once you have backed up ${relativeTo(ctx.dir, (data.files as Data).key)}.`,
+              ]
+            : []),
         ],
         next: [
           backupStep(ctx),
@@ -237,13 +272,13 @@ export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: 
       return {
         headline: `Root key imported into YubiKey ${yk.serial}`,
         facts: [
-          ["Fingerprint", `${shortFingerprint((data.root as Data).fingerprint)} (SHA-256)`],
+          ["Fingerprint", `${(data.root as Data).fingerprint} (SHA-256)`],
           ["Key", `${displaySafe(String(yk.keyType))}, slot ${displaySafe(String(yk.slot))}, touch ${displaySafe(String(yk.touchPolicy))}`],
           ["Firmware", String(yk.firmware)],
           ["Directory", ctx.dir],
         ],
         warnings,
-        next: [`Record YubiKey ${Number(yk.serial)} with your other root-key custody records.`, `Check it signs: ${cmd(ctx, "renew-crl", `--offline --crl-out root.crl.pem --yubikey-serial ${yk.serial}`)}`],
+        next: [...nextHints.slice(0, 1), `Record YubiKey ${Number(yk.serial)} with your other root-key custody records.`],
       };
     }
     case "add-yubikey": {
@@ -252,7 +287,7 @@ export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: 
       return {
         headline: `YubiKey ${serial} recorded as another holder of the root key`,
         facts: [
-          ["Fingerprint", `${shortFingerprint(String((data.root as Data).fingerprint))} (SHA-256)`],
+          ["Fingerprint", `${String((data.root as Data).fingerprint)} (SHA-256)`],
           ["YubiKey", `${serial}, firmware ${displaySafe(String(yk.firmware))}`],
           ["Slot", `${displaySafe(String(yk.slot))}, ${displaySafe(String(yk.keyType))}, touch ${displaySafe(String(yk.touchPolicy))}`],
           ["Recorded", (data.devices as number[]).join(", ")],
@@ -300,9 +335,9 @@ export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: 
         facts: [
           ["CA ID", displaySafe(String(data.caId))],
           ["Environment", displaySafe(String(data.environment))],
-          ["Serial", String(data.serial)],
-          ["Fingerprint", `${shortFingerprint(String(data.fingerprint))} (SHA-256)`],
-          ["Root ID", displaySafe(String((data.root as Data).extId))],
+          ...(data.serial === undefined ? [] : ([["Serial", displaySafe(String(data.serial))]] as [string, string][])),
+          ...(data.fingerprint === undefined ? [] : ([["Fingerprint", `${shortFingerprint(String(data.fingerprint))} (SHA-256)`]] as [string, string][])),
+          ...((data.root as Data | undefined)?.extId === undefined ? [] : ([["Root ID", displaySafe(String((data.root as Data).extId))]] as [string, string][])),
           ...(data.crl === undefined ? [] : ([["Root CRL", `#${(data.crl as Data).number}${(data.crl as Data).uploaded === true ? ", uploaded" : (data.crl as Data).skipped !== undefined ? `, not uploaded (${displaySafe(String((data.crl as Data).skipped))})` : ""}`]] as [string, string][])),
         ],
         warnings,
@@ -334,7 +369,7 @@ export const humanFromReceipt = (data: Data, nextHints: readonly string[], ctx: 
         mark: "ok",
         facts: [
           ["Root CRL", crlFact(crl, ctx.now)],
-          ...(data.uploaded === undefined ? [] : ([["Server", data.uploaded === true ? "uploaded" : "already up to date"]] as [string, string][])),
+          ...(data.uploaded === undefined ? [] : ([["Server", (data.root as Data | undefined)?.registered === false ? "not registered with Hemlig yet (no CA is active under this root)" : data.uploaded === true ? "uploaded" : "already up to date"]] as [string, string][])),
           ...((data.root as Data | undefined)?.extId === undefined ? [] : ([["Root ID", displaySafe(String((data.root as Data).extId))]] as [string, string][])),
           ...(offline ? ([["CRL file", relativeTo(ctx.dir, data.crlFile)]] as [string, string][]) : []),
           ["Directory", ctx.dir],
@@ -372,6 +407,8 @@ const statusResult = (data: Data, ctx: HumanContext): HumanResult => {
   const server = data.server as Data | undefined;
   const behind = (data.deploymentsBehind as string[]) ?? [];
   const warnings: string[] = [];
+  const pending = revoked.filter((r) => r.listedInCrl === null);
+  if (pending.length > 0) warnings.push(`${plural(pending.length, "revocation")} recorded but not yet in a signed CRL (serial ${pending.map((r) => displaySafe(String(r.serial))).join(", ")}).`);
   if (crl?.due === true) warnings.push(`The root CRL is due for renewal (${plural(Number(crl.daysLeft), "day")} left).`);
   if (crl === null) warnings.push("There is no current CRL.");
   if (data.pending !== null && data.pending !== undefined) warnings.push("An operation is pending; the next command will recover it.");
@@ -393,7 +430,7 @@ const statusResult = (data: Data, ctx: HumanContext): HumanResult => {
     mark: warnings.length === 0 ? "ok" : "warn",
     facts: [
       ["Origin", `${displaySafe(String(root.origin))}, ${displaySafe(String(root.keyAlgorithm))}, valid until ${day(root.notAfter)}`],
-      ["Fingerprint", `${shortFingerprint(String(root.fingerprint))} (SHA-256)`],
+      ["Fingerprint", `${String(root.fingerprint)} (SHA-256)`],
       ["Key", (data.key as Data).storage === "yubikey" ? "YubiKey" : `software key file ${relativeTo(ctx.dir, (data.key as Data).file)}`],
       ["CRL", crl === null ? "none" : `${crlFact(crl, ctx.now)}${crl.due === true ? " — renewal due" : ""}`],
       ["Issued", `${plural(issued.length, "certificate")}${issued.length === 0 ? "" : `, ${active} active`}`],
@@ -402,6 +439,11 @@ const statusResult = (data: Data, ctx: HumanContext): HumanResult => {
       ["Directory", ctx.dir],
     ],
     warnings,
-    next: crl?.due === true || crl === null ? [`Renew the root CRL:\n${cmd(ctx, "renew-crl")}`] : undefined,
+    next:
+      pending.length > 0
+        ? [`Finish the pending revocation${pending.length === 1 ? "" : "s"} (renew-crl refuses until then); each shows its review and asks you to type confirm:\n${pending.slice(0, 5).map((r) => cmd(ctx, "revoke-cert", `--serial ${shellQuote(String(r.serial))} --reason ${shellQuote(String(r.reason))}`)).join("\n")}`]
+        : crl?.due === true || crl === null
+          ? [`Renew the root CRL:\n${cmd(ctx, "renew-crl")}`]
+          : undefined,
   };
 };
