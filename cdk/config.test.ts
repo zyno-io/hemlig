@@ -58,23 +58,6 @@ describe("deploymentConfigFromContext", () => {
     ).toThrow("oidcAdminScope is required");
   });
 
-  it("requires the browser access scope when a console origin is configured", () => {
-    expect(() =>
-      deploymentConfigFromContext(
-        context({
-          adminFqdn: "admin.example.com",
-          apiFqdn: "api.example.com",
-          consoleFqdn: "console.example.com",
-          zoneDomain: "example.com",
-          oidcIssuer: "https://login.example.com/tenant/v2.0",
-          oidcAudience: "hemlig-api",
-          oidcAdminScope: "hemlig.admin",
-          oidcClientId: "console-client",
-        }),
-      ),
-    ).toThrow("oidcConsoleAccessScope is required");
-  });
-
   it("accepts a scoped console origin in the deployment zone", () => {
     const config = deploymentConfigFromContext(
       context({
@@ -254,6 +237,203 @@ describe("deploymentConfigFromContext", () => {
         }),
       ),
     ).toThrow("must not be supplied unless consoleFqdn");
+  });
+});
+
+describe("one-app OIDC defaults", () => {
+  const base = {
+    adminFqdn: "admin.example.com",
+    apiFqdn: "api.example.com",
+    zoneDomain: "example.com",
+  };
+  const entra = "https://login.microsoftonline.com/tenant/v2.0";
+
+  it("defaults the audience to the client ID", () => {
+    const config = deploymentConfigFromContext(
+      context({
+        ...base,
+        oidcIssuer: entra,
+        oidcClientId: "app-id",
+        oidcAdminScope: "hemlig.admin",
+      }),
+    );
+    expect(config.oidcAudience).toBe("app-id");
+  });
+
+  it("lets an explicit audience win over the client ID", () => {
+    const config = deploymentConfigFromContext(
+      context({
+        ...base,
+        oidcIssuer: entra,
+        oidcClientId: "console-id",
+        oidcAudience: "api-id",
+      }),
+    );
+    expect(config.oidcAudience).toBe("api-id");
+  });
+
+  it("requires oidcAdminScope when the audience is derived from the client ID", () => {
+    expect(() =>
+      deploymentConfigFromContext(
+        context({ ...base, oidcIssuer: entra, oidcClientId: "app-id" }),
+      ),
+    ).toThrow("oidcAdminScope is required when oidcAudience is omitted");
+  });
+
+  it("fails when neither client ID nor audience is set", () => {
+    expect(() =>
+      deploymentConfigFromContext(context({ ...base, oidcIssuer: entra })),
+    ).toThrow(
+      "set oidcClientId (or oidcAudience for an API-only deployment without the console)",
+    );
+  });
+
+  it("still validates the resolved audience", () => {
+    expect(() =>
+      deploymentConfigFromContext(
+        context({
+          ...base,
+          oidcIssuer: entra,
+          oidcClientId: "x".repeat(513),
+          oidcAdminScope: "hemlig.admin",
+        }),
+      ),
+    ).toThrow("oidcAudience must be at most 512 characters");
+  });
+
+  it("derives an api:// console scope on Entra issuers", () => {
+    for (const host of [
+      "login.microsoftonline.com",
+      "login.microsoftonline.us",
+      "login.chinacloudapi.cn",
+    ]) {
+      const config = deploymentConfigFromContext(
+        context({
+          ...base,
+          consoleFqdn: "console.example.com",
+          oidcIssuer: `https://${host}/tenant/v2.0`,
+          oidcClientId: "app-id",
+          oidcAdminScope: "hemlig.admin",
+        }),
+      );
+      expect(config.oidcConsoleAccessScope).toBe("api://app-id/hemlig.admin");
+    }
+  });
+
+  it("derives the scope from the audience when it differs from the client ID", () => {
+    const config = deploymentConfigFromContext(
+      context({
+        ...base,
+        oidcIssuer: entra,
+        oidcAudience: "api-id",
+        oidcClientId: "console-id",
+        oidcAdminScope: "hemlig.admin",
+      }),
+    );
+    expect(config.oidcConsoleAccessScope).toBe("api://api-id/hemlig.admin");
+  });
+
+  it("uses the bare admin scope on non-Entra issuers", () => {
+    const config = deploymentConfigFromContext(
+      context({
+        ...base,
+        consoleFqdn: "console.example.com",
+        oidcIssuer: "https://login.example.com/tenant/v2.0",
+        oidcClientId: "console-client",
+        oidcAdminScope: "hemlig.admin",
+      }),
+    );
+    expect(config.oidcConsoleAccessScope).toBe("hemlig.admin");
+  });
+
+  it("lets an explicit console scope win", () => {
+    const config = deploymentConfigFromContext(
+      context({
+        ...base,
+        oidcIssuer: entra,
+        oidcClientId: "app-id",
+        oidcAdminScope: "hemlig.admin",
+        oidcConsoleAccessScope: "https://custom.example.com/hemlig.admin",
+      }),
+    );
+    expect(config.oidcConsoleAccessScope).toBe(
+      "https://custom.example.com/hemlig.admin",
+    );
+  });
+
+  it("does not derive a console scope without an admin scope or client ID", () => {
+    const audienceOnly = deploymentConfigFromContext(
+      context({ ...base, oidcIssuer: entra, oidcAudience: "api-id" }),
+    );
+    expect(audienceOnly.oidcConsoleAccessScope).toBeUndefined();
+    const noScope = deploymentConfigFromContext(
+      context({
+        ...base,
+        oidcIssuer: entra,
+        oidcClientId: "app-id",
+        oidcAudience: "api-id",
+      }),
+    );
+    expect(noScope.oidcConsoleAccessScope).toBeUndefined();
+  });
+
+  it("still requires oidcAdminScope and oidcClientId with a console origin", () => {
+    expect(() =>
+      deploymentConfigFromContext(
+        context({
+          ...base,
+          consoleFqdn: "console.example.com",
+          oidcIssuer: entra,
+          oidcAudience: "api-id",
+          oidcAdminScope: "hemlig.admin",
+        }),
+      ),
+    ).toThrow("oidcClientId is required");
+    expect(() =>
+      deploymentConfigFromContext(
+        context({
+          ...base,
+          consoleFqdn: "console.example.com",
+          oidcIssuer: entra,
+          oidcClientId: "app-id",
+        }),
+      ),
+    ).toThrow("oidcAdminScope is required");
+  });
+
+  it("accepts an API-only deployment with just an audience", () => {
+    const config = deploymentConfigFromContext(
+      context({ ...base, oidcIssuer: entra, oidcAudience: "api-id" }),
+    );
+    expect(config.oidcAudience).toBe("api-id");
+    expect(config.consoleFqdn).toBeUndefined();
+    expect(config.oidcClientId).toBeUndefined();
+  });
+
+  it("keeps an explicit two-app context's resolved config unchanged", () => {
+    const config = deploymentConfigFromContext(
+      context({
+        ...base,
+        consoleFqdn: "console.example.com",
+        oidcIssuer: entra,
+        oidcAudience: "api-id",
+        oidcAdminScope: "hemlig.admin",
+        oidcConsoleAccessScope: "api://api-id/hemlig.admin",
+        oidcClientId: "console-id",
+      }),
+    );
+    expect(config).toEqual({
+      environmentName: "dev",
+      ...base,
+      consoleFqdn: "console.example.com",
+      zoneDomain: "example.com",
+      oidcIssuer: entra,
+      oidcAudience: "api-id",
+      oidcSubjectClaim: "sub",
+      oidcAdminScope: "hemlig.admin",
+      oidcConsoleAccessScope: "api://api-id/hemlig.admin",
+      oidcClientId: "console-id",
+    });
   });
 });
 

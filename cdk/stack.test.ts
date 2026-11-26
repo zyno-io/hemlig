@@ -2,6 +2,7 @@ import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import { PKI_METRICS } from "../src/pki/metrics";
+import { deploymentConfigFromContext } from "./config";
 import { existingIndexKeyAttributes, HemligStack } from "./stack";
 
 const defaultCsp =
@@ -1442,5 +1443,79 @@ describe("HemligStack", () => {
       expect(carrying).toHaveLength(3);
       expect(everything).toContain("pki-ca");
     });
+  });
+});
+
+describe("OIDC context defaults reach the synthesized template", () => {
+  const base: Record<string, string> = {
+    environment: "test",
+    adminFqdn: "admin.test.example.com",
+    apiFqdn: "api.test.example.com",
+    consoleFqdn: "console.test.example.com",
+    consoleCertificateArn:
+      "arn:aws:acm:us-east-1:123456789012:certificate/12345678-1234-1234-1234-123456789012",
+    zoneDomain: "test.example.com",
+    oidcIssuer: "https://login.microsoftonline.com/tenant/v2.0",
+    oidcSubjectClaim: "oid",
+    oidcAdminScope: "hemlig.admin",
+    oidcAdminRole: "Hemlig.Administrator",
+  };
+  const synth = (values: Record<string, string>): unknown => {
+    const config = deploymentConfigFromContext({
+      tryGetContext: (name: string) => values[name],
+    });
+    return Template.fromStack(
+      new HemligStack(new App(), "hml-test", config),
+    ).toJSON();
+  };
+
+  it("one-app context minus the derivable fields is byte-identical to the explicit one", () => {
+    const explicit = synth({
+      ...base,
+      oidcAudience: "app-id",
+      oidcConsoleAccessScope: "api://app-id/hemlig.admin",
+      oidcClientId: "app-id",
+    });
+    const derived = synth({ ...base, oidcClientId: "app-id" });
+    expect(JSON.stringify(derived)).toBe(JSON.stringify(explicit));
+  });
+
+  it("two-app explicit context equals the template built from the literal props, as on main", () => {
+    const explicit = synth({
+      ...base,
+      oidcAudience: "api-id",
+      oidcConsoleAccessScope: "api://api-id/hemlig.admin",
+      oidcClientId: "console-id",
+    });
+    const literal = Template.fromStack(
+      new HemligStack(new App(), "hml-test", {
+        environmentName: "test",
+        adminFqdn: "admin.test.example.com",
+        apiFqdn: "api.test.example.com",
+        consoleFqdn: "console.test.example.com",
+        consoleCertificateArn: base.consoleCertificateArn as string,
+        zoneDomain: "test.example.com",
+        oidcIssuer: "https://login.microsoftonline.com/tenant/v2.0",
+        oidcAudience: "api-id",
+        oidcSubjectClaim: "oid",
+        oidcAdminScope: "hemlig.admin",
+        oidcConsoleAccessScope: "api://api-id/hemlig.admin",
+        oidcAdminRole: "Hemlig.Administrator",
+        oidcClientId: "console-id",
+      }),
+    ).toJSON();
+    expect(JSON.stringify(explicit)).toBe(JSON.stringify(literal));
+  });
+
+  it("an audience-only API deployment with no console still synthesizes", () => {
+    const template = synth({
+      environment: "test",
+      adminFqdn: base.adminFqdn as string,
+      apiFqdn: base.apiFqdn as string,
+      zoneDomain: "test.example.com",
+      oidcIssuer: base.oidcIssuer as string,
+      oidcAudience: "api-id",
+    }) as { Outputs: Record<string, { Value: string }> };
+    expect(template.Outputs.AdminOidcAudience?.Value).toBe("api-id");
   });
 });

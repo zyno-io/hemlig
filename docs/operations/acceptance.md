@@ -43,7 +43,7 @@ yarn cdk:deploy $CTX
 
 | Check | Pass | Fail means |
 | --- | --- | --- |
-| `cdk:synth` | Exits `0` without AWS credentials | A config rule failed, and the message names it. `consoleFqdn` requires `oidcAdminScope`, `oidcConsoleAccessScope` and `oidcClientId` |
+| `cdk:synth` | Exits `0` without AWS credentials | A config rule failed, and the message names it. `consoleFqdn` requires `oidcAdminScope` and `oidcClientId` |
 | `cdk:deploy` | Completes and prints `AdminUrl`, `ApiUrl`, `ConsoleUrl` and `ConsoleDistributionId` | A CloudFormation error. Read the failing resource |
 | No `ConsoleAssetsPending` output | Absent | The console build was missing at synth time and every request returns `403`. Run `yarn console:build` and redeploy |
 
@@ -85,7 +85,7 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 
 | Check | Pass | Fail means |
 | --- | --- | --- |
-| `aud` | Equals `oidcAudience` (on Entra, the bare client ID) | You requested an ID token or the wrong resource. Ask for a resource-scoped access token |
+| `aud` | Equals `oidcAudience` (on Entra, the bare client ID) | The wrong resource. Ask for a resource-scoped access token. In a one-app setup an ID token also has this `aud`; it fails the `scp` row below instead |
 | `iss` | Equals `oidcIssuer` exactly | A trailing slash or `/v2.0` suffix differs. The handler compares issuers exactly |
 | `scp` or `scope` | Contains `oidcAdminScope` | The scope was not requested or not granted |
 | Status | `200` | `401`: the gateway rejected the token (missing, invalid, audience, signature, expiry). `403`: insufficient scope at the gateway, or gateway and Lambda disagree on issuer, audience, scope or role. Re-authenticating will not fix a configuration `403` |

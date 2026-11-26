@@ -9,6 +9,10 @@ export interface DeploymentConfig {
   readonly consoleCertificateArn?: string;
   readonly zoneDomain: string;
   readonly oidcIssuer: string;
+  /**
+   * Exact access-token `aud`. Required here: only deploymentConfigFromContext
+   * (the CDK context path) defaults it to oidcClientId.
+   */
   readonly oidcAudience: string;
   readonly oidcSubjectClaim: string;
   /** Required administrator OAuth scope when the console origin is enabled. */
@@ -17,7 +21,11 @@ export interface DeploymentConfig {
    * Resource-qualified OAuth scope requested by the console SPA, for example
    * `api://<application-id>/hemlig.admin` on Microsoft Entra. This differs
    * from oidcAdminScope, the short value enforced from the access token's
-   * `scp` claim by API Gateway.
+   * `scp` claim by API Gateway. HemligStack requires it when consoleFqdn is
+   * set. deploymentConfigFromContext (context only) defaults it, when
+   * oidcAdminScope and oidcClientId are set, to
+   * `api://<audience>/<oidcAdminScope>` on Microsoft Entra issuers and to
+   * oidcAdminScope as-is on any other issuer.
    */
   readonly oidcConsoleAccessScope?: string;
   /** Optional external IdP role required by the Lambda after JWT validation. */
@@ -48,6 +56,21 @@ export interface DeploymentConfig {
    */
   readonly tracing?: boolean;
 }
+
+/** Entra cloud hosts whose resource-qualified scopes take the `api://<app>/<scope>` form. */
+const ENTRA_ISSUER_HOSTS: ReadonlySet<string> = new Set([
+  "login.microsoftonline.com",
+  "login.microsoftonline.us",
+  "login.chinacloudapi.cn",
+]);
+
+const isEntraIssuer = (issuer: string): boolean => {
+  try {
+    return ENTRA_ISSUER_HOSTS.has(new URL(issuer).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+};
 
 export const DEFAULT_PKI_ISSUANCE_RATE_LIMIT = 20;
 export const DEFAULT_PKI_ISSUANCE_BURST_LIMIT = 40;
@@ -84,11 +107,10 @@ export const deploymentConfigFromContext = (context: {
   );
   const zoneDomain = requiredContext(context, "zoneDomain").toLowerCase();
   const oidcIssuer = requiredContext(context, "oidcIssuer");
-  const oidcAudience = requiredContext(context, "oidcAudience");
   const oidcSubjectClaim =
     optionalContext(context, "oidcSubjectClaim") ?? "sub";
   const oidcAdminScope = optionalContext(context, "oidcAdminScope");
-  const oidcConsoleAccessScope = optionalContext(
+  const explicitConsoleAccessScope = optionalContext(
     context,
     "oidcConsoleAccessScope",
   );
@@ -104,6 +126,20 @@ export const deploymentConfigFromContext = (context: {
     "pkiIssuanceBurstLimit",
   );
   const oidcClientId = optionalContext(context, "oidcClientId");
+  const explicitAudience = optionalContext(context, "oidcAudience");
+  const oidcAudience = explicitAudience ?? oidcClientId;
+  if (oidcAudience === undefined) {
+    throw new Error(
+      "set oidcClientId (or oidcAudience for an API-only deployment without the console)",
+    );
+  }
+  const oidcConsoleAccessScope =
+    explicitConsoleAccessScope ??
+    (oidcAdminScope !== undefined && oidcClientId !== undefined
+      ? isEntraIssuer(oidcIssuer)
+        ? `api://${oidcAudience}/${oidcAdminScope}`
+        : oidcAdminScope
+      : undefined);
   const existingHostedZoneId = optionalContext(context, "existingHostedZoneId");
   const existingApplicationKeyArn = optionalContext(
     context,
@@ -162,9 +198,21 @@ export const deploymentConfigFromContext = (context: {
   if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/.test(oidcSubjectClaim)) {
     throw new Error("context oidcSubjectClaim is not a valid JWT claim name.");
   }
+  // With one app, an Entra ID token has aud == client ID. The scp check is what
+  // rejects it, so a derived audience must come with an enforced admin scope.
+  if (explicitAudience === undefined && oidcAdminScope === undefined) {
+    throw new Error(
+      "context oidcAdminScope is required when oidcAudience is omitted (it defaults to oidcClientId, and the scope check is what rejects ID tokens issued to the same app).",
+    );
+  }
   if (consoleFqdn !== undefined && oidcAdminScope === undefined) {
     throw new Error(
       "context oidcAdminScope is required when consoleFqdn is configured.",
+    );
+  }
+  if (consoleFqdn !== undefined && oidcClientId === undefined) {
+    throw new Error(
+      "context oidcClientId is required when consoleFqdn is configured.",
     );
   }
   if (consoleFqdn !== undefined && oidcConsoleAccessScope === undefined) {
@@ -204,11 +252,6 @@ export const deploymentConfigFromContext = (context: {
     pkiIssuanceRateLimit ?? DEFAULT_PKI_ISSUANCE_RATE_LIMIT,
     pkiIssuanceBurstLimit ?? DEFAULT_PKI_ISSUANCE_BURST_LIMIT,
   );
-  if (consoleFqdn !== undefined && oidcClientId === undefined) {
-    throw new Error(
-      "context oidcClientId is required when consoleFqdn is configured.",
-    );
-  }
   if (consoleCertificateArn !== undefined && consoleFqdn === undefined) {
     throw new Error(
       "context consoleCertificateArn must not be supplied unless consoleFqdn is configured.",
