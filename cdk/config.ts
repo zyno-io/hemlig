@@ -102,6 +102,16 @@ const present = (value: string | undefined): string | undefined =>
 export const resolveOidcDefaults = <T extends OidcDefaultsInput>(
   config: T,
 ): T & { readonly oidcAudience: string } => {
+  // A blank value that was set (an unset variable, say) must not quietly become
+  // the client ID: that could point a split-app deployment at the wrong app.
+  for (const [name, value] of [
+    ["oidcAudience", config.oidcAudience],
+    ["oidcConsoleAccessScope", config.oidcConsoleAccessScope],
+  ] as const) {
+    if (value !== undefined && present(value) === undefined) {
+      throw new Error(`${name} must not be blank; omit it to use the default.`);
+    }
+  }
   const explicitAudience = present(config.oidcAudience);
   const clientId = present(config.oidcClientId);
   const adminScope = present(config.oidcAdminScope);

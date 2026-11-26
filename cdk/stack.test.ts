@@ -1571,5 +1571,13 @@ describe("OIDC defaults on the library path (HemligStack props)", () => {
     expect(() => new HemligStack(new App(), "hml-test", { ...apiOnly })).toThrow(
       "set oidcClientId (or oidcAudience",
     );
+    expect(
+      () =>
+        new HemligStack(new App(), "hml-test", {
+          ...props,
+          oidcAudience: "  ",
+          oidcClientId: "console-id",
+        }),
+    ).toThrow("oidcAudience must not be blank");
   });
 });

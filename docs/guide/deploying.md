@@ -118,7 +118,7 @@ Four values connect the administrator API to your identity provider. One app reg
 | Field | Value |
 | --- | --- |
 | `oidcIssuer` | HTTPS issuer URL, exactly as it appears in the token's `iss` claim |
-| `oidcAudience` | Exact access-token `aud`. For Microsoft Entra v2 this is the API's bare client ID, never the `api://` URI. Defaults to `oidcClientId`, which requires `oidcAdminScope`; set it explicitly for an API-only deployment without the console, or a split API and console app |
+| `oidcAudience` | Exact access-token `aud`. For Microsoft Entra v2 this is the API's bare client ID, never the `api://` URI. Defaults to `oidcClientId`, which requires `oidcAdminScope`; set it explicitly for a split API and console app, or an API-only deployment with no client ID |
 | `oidcClientId` | The one app registration's client ID, used by the console and as the default audience |
 | `oidcSubjectClaim` | Immutable actor claim. The reference app defaults it to `sub` |
 
@@ -144,7 +144,8 @@ yarn cdk:deploy \
   -c zoneDomain=example.com \
   -c existingHostedZoneId=Z0123456789ABCDEF \
   -c oidcIssuer=https://login.example.com/tenant/v2.0 \
-  -c oidcAudience=00000000-0000-0000-0000-000000000000
+  -c oidcClientId=00000000-0000-0000-0000-000000000000 \
+  -c oidcAdminScope=hemlig.admin
 ```
 
 :::
