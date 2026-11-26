@@ -9,6 +9,7 @@ export interface DeploymentConfig {
   readonly consoleCertificateArn?: string;
   readonly zoneDomain: string;
   readonly oidcIssuer: string;
+  /** Exact access-token `aud`. Defaults to oidcClientId (one app registration). */
   readonly oidcAudience: string;
   readonly oidcSubjectClaim: string;
   /** Required administrator OAuth scope when the console origin is enabled. */
@@ -17,7 +18,9 @@ export interface DeploymentConfig {
    * Resource-qualified OAuth scope requested by the console SPA, for example
    * `api://<application-id>/hemlig.admin` on Microsoft Entra. This differs
    * from oidcAdminScope, the short value enforced from the access token's
-   * `scp` claim by API Gateway.
+   * `scp` claim by API Gateway. Defaults, when oidcAdminScope and
+   * oidcClientId are set, to `api://<audience>/<oidcAdminScope>` on Microsoft
+   * Entra issuers and to oidcAdminScope as-is on any other issuer.
    */
   readonly oidcConsoleAccessScope?: string;
   /** Optional external IdP role required by the Lambda after JWT validation. */
@@ -48,6 +51,21 @@ export interface DeploymentConfig {
    */
   readonly tracing?: boolean;
 }
+
+/** Entra cloud hosts whose resource-qualified scopes take the `api://<app>/<scope>` form. */
+const ENTRA_ISSUER_HOSTS: ReadonlySet<string> = new Set([
+  "login.microsoftonline.com",
+  "login.microsoftonline.us",
+  "login.chinacloudapi.cn",
+]);
+
+const isEntraIssuer = (issuer: string): boolean => {
+  try {
+    return ENTRA_ISSUER_HOSTS.has(new URL(issuer).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+};
 
 export const DEFAULT_PKI_ISSUANCE_RATE_LIMIT = 20;
 export const DEFAULT_PKI_ISSUANCE_BURST_LIMIT = 40;
@@ -84,11 +102,10 @@ export const deploymentConfigFromContext = (context: {
   );
   const zoneDomain = requiredContext(context, "zoneDomain").toLowerCase();
   const oidcIssuer = requiredContext(context, "oidcIssuer");
-  const oidcAudience = requiredContext(context, "oidcAudience");
   const oidcSubjectClaim =
     optionalContext(context, "oidcSubjectClaim") ?? "sub";
   const oidcAdminScope = optionalContext(context, "oidcAdminScope");
-  const oidcConsoleAccessScope = optionalContext(
+  const explicitConsoleAccessScope = optionalContext(
     context,
     "oidcConsoleAccessScope",
   );
@@ -104,6 +121,19 @@ export const deploymentConfigFromContext = (context: {
     "pkiIssuanceBurstLimit",
   );
   const oidcClientId = optionalContext(context, "oidcClientId");
+  const oidcAudience = optionalContext(context, "oidcAudience") ?? oidcClientId;
+  if (oidcAudience === undefined) {
+    throw new Error(
+      "set oidcClientId (or oidcAudience for an API-only deployment without the console)",
+    );
+  }
+  const oidcConsoleAccessScope =
+    explicitConsoleAccessScope ??
+    (oidcAdminScope !== undefined && oidcClientId !== undefined
+      ? isEntraIssuer(oidcIssuer)
+        ? `api://${oidcAudience}/${oidcAdminScope}`
+        : oidcAdminScope
+      : undefined);
   const existingHostedZoneId = optionalContext(context, "existingHostedZoneId");
   const existingApplicationKeyArn = optionalContext(
     context,
@@ -167,6 +197,11 @@ export const deploymentConfigFromContext = (context: {
       "context oidcAdminScope is required when consoleFqdn is configured.",
     );
   }
+  if (consoleFqdn !== undefined && oidcClientId === undefined) {
+    throw new Error(
+      "context oidcClientId is required when consoleFqdn is configured.",
+    );
+  }
   if (consoleFqdn !== undefined && oidcConsoleAccessScope === undefined) {
     throw new Error(
       "context oidcConsoleAccessScope is required when consoleFqdn is configured.",
@@ -204,11 +239,6 @@ export const deploymentConfigFromContext = (context: {
     pkiIssuanceRateLimit ?? DEFAULT_PKI_ISSUANCE_RATE_LIMIT,
     pkiIssuanceBurstLimit ?? DEFAULT_PKI_ISSUANCE_BURST_LIMIT,
   );
-  if (consoleFqdn !== undefined && oidcClientId === undefined) {
-    throw new Error(
-      "context oidcClientId is required when consoleFqdn is configured.",
-    );
-  }
   if (consoleCertificateArn !== undefined && consoleFqdn === undefined) {
     throw new Error(
       "context consoleCertificateArn must not be supplied unless consoleFqdn is configured.",

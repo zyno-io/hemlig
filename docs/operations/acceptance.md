@@ -43,7 +43,7 @@ yarn cdk:deploy $CTX
 
 | Check | Pass | Fail means |
 | --- | --- | --- |
-| `cdk:synth` | Exits `0` without AWS credentials | A config rule failed, and the message names it. `consoleFqdn` requires `oidcAdminScope`, `oidcConsoleAccessScope` and `oidcClientId` |
+| `cdk:synth` | Exits `0` without AWS credentials | A config rule failed, and the message names it. `consoleFqdn` requires `oidcAdminScope` and `oidcClientId` |
 | `cdk:deploy` | Completes and prints `AdminUrl`, `ApiUrl`, `ConsoleUrl` and `ConsoleDistributionId` | A CloudFormation error. Read the failing resource |
 | No `ConsoleAssetsPending` output | Absent | The console build was missing at synth time and every request returns `403`. Run `yarn console:build` and redeploy |
 

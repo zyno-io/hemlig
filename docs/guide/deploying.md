@@ -99,7 +99,7 @@ const config: DeploymentConfig = {
   apiFqdn: "api.example.com",
   zoneDomain: "example.com",
   oidcIssuer: "https://login.example.com/tenant/v2.0",
-  oidcAudience: "00000000-0000-0000-0000-000000000000",
+  oidcAudience: "00000000-0000-0000-0000-000000000000", // DeploymentConfig takes resolved values; only the context path defaults it
   oidcSubjectClaim: "sub",
   existingHostedZoneId: "Z0123456789ABCDEF", // omit to create a new zone
 };
@@ -110,12 +110,13 @@ Your app owns the account, region and pipeline. TypeScript needs `moduleResoluti
 
 ## 3. Fill in the OIDC values
 
-Three values connect the administrator API to your identity provider:
+Three values connect the administrator API to your identity provider. With the console, one app registration serves as both the API and the console client, so you set the client ID once and leave `oidcAudience` out:
 
 | Field | Value |
 | --- | --- |
 | `oidcIssuer` | HTTPS issuer URL, exactly as it appears in the token's `iss` claim |
-| `oidcAudience` | Exact access-token `aud`. For Microsoft Entra v2 this is the API's bare client ID, never the `api://` URI |
+| `oidcClientId` | The one app registration's client ID. It is also the access-token `aud` (the bare client ID on Microsoft Entra v2, never the `api://` URI). Required with the console |
+| `oidcAudience` | Optional. Defaults to `oidcClientId`. Set it only for an API-only deployment without the console, or a split API and console app |
 | `oidcSubjectClaim` | Immutable actor claim. The reference app defaults it to `sub` |
 
 [Connect your identity provider](identity-provider.md) shows where to find each one per provider. Console fields are covered in [Console](console.md).

@@ -19,14 +19,14 @@ Imported from `hemlig/cdk`. The reference app (`cdk/app.ts`) reads the same name
 | `apiFqdn` | yes | none | Public mTLS delivery API host |
 | `zoneDomain` | yes | none | Route 53 zone name. Every FQDN must be the zone or inside it |
 | `oidcIssuer` | yes | none | HTTPS OIDC issuer URL; RSA-signed JWTs |
-| `oidcAudience` | yes | none | Exact access-token `aud`, at most 512 characters. Entra v2: the API's bare client ID |
+| `oidcAudience` | no | `oidcClientId` | Exact access-token `aud`, at most 512 characters. Entra v2: the API's bare client ID. Set it only for a split-app (two-app) deployment or an API-only deployment with no console; with neither it and `oidcClientId`, synthesis fails |
 | `oidcSubjectClaim` | yes | `sub` (context only) | Immutable actor claim name, `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$` |
 | `existingHostedZoneId` | no | creates a zone | Use an existing Route 53 zone |
 | `existingApplicationKeyArn` | no | creates a key | Adopt an existing [application CMK](glossary.md#application-cmk). Must be a full KMS key ARN |
 | `consoleFqdn` | no | console off | Enables [console](../guide/console.md) hosting and admin-API CORS for the console origin |
 | `oidcAdminScope` | with `consoleFqdn` | none | One scope token enforced from the token's `scope` or `scp` |
-| `oidcConsoleAccessScope` | with `consoleFqdn` | none | Resource-qualified scope the browser requests |
-| `oidcClientId` | with `consoleFqdn` | none | The console single-page app's OAuth client ID |
+| `oidcConsoleAccessScope` | no | derived | Resource-qualified scope the browser requests. Default, from `oidcAdminScope` and `oidcClientId`: `api://<audience>/<oidcAdminScope>` when the issuer host is `login.microsoftonline.com`, `login.microsoftonline.us` or `login.chinacloudapi.cn`; otherwise `oidcAdminScope` as-is. An explicit value always wins (custom identifier URIs) |
+| `oidcClientId` | with `consoleFqdn` | none | The console single-page app's OAuth client ID. In a one-app deployment it is also the audience |
 | `oidcAdminRole` | no | none | Role required from `roles` or `role` after JWT validation. One role token |
 | `oidcPkiCaAdminRole` | no | none | Role additionally required for PKI CA lifecycle and root CRL upload. One role token. Passed to the PKI admin Lambda as `ADMIN_PKI_CA_ROLE`. Checked, after the administrator JWT, on create, update, delete, activate, retire, destroy-key and root CRL upload. Unset means any administrator may. Reads need only the JWT |
 | `oidcPkiOperatorRole` | no | none | Role additionally required for PKI grants, admin issuance, revocation and CRL force-publish. One role token. Passed as `ADMIN_PKI_OPERATOR_ROLE`. Checked, after the administrator JWT, on grant create, update and delete, administrator issuance, revoke, bulk revoke and CRL force-publish. Unset means any administrator may. Reads and `evaluate` need only the JWT |
@@ -36,7 +36,7 @@ Imported from `hemlig/cdk`. The reference app (`cdk/app.ts`) reads the same name
 | `bootstrapQualifier` | no | none | CDK bootstrap qualifier, 1 to 10 lowercase letters or digits. Set it whenever you use a non-default synthesizer |
 | `tracing` | no | `false` | `true` turns on AWS X-Ray active tracing for every Lambda function. Off by default: traces add cost and little beyond CloudWatch Logs and Lambda metrics |
 
-Synthesis fails with a message naming the rule if the `adminFqdn`, `apiFqdn` and `consoleFqdn` are not distinct, an FQDN is outside the zone, or `consoleFqdn` is set without `oidcAdminScope`, `oidcConsoleAccessScope` and `oidcClientId`.
+Synthesis fails with a message naming the rule if the `adminFqdn`, `apiFqdn` and `consoleFqdn` are not distinct, an FQDN is outside the zone, or `consoleFqdn` is set without `oidcAdminScope` and `oidcClientId`.
 
 ## Controller Helm values
 

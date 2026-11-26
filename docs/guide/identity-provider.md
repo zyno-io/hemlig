@@ -41,10 +41,10 @@ Replace the placeholder hosts, tenant and application IDs with your own.
 
 ```text [Entra]
 oidcIssuer   https://login.microsoftonline.com/TENANT_ID/v2.0
-oidcAudience API application (client) ID, not the api:// URI
+oidcClientId    the one app registration's (client) ID; also the audience
 oidcAdminScope  hemlig.admin   (short name, as carried in scp)
-oidcConsoleAccessScope  api://API_APP_ID/hemlig.admin
 oidcAdminRole   app role value, carried in roles
+                (oidcAudience and oidcConsoleAccessScope are derived; see below)
 ```
 
 ```text [Okta]
@@ -72,10 +72,39 @@ oidcAdminRole   a mapper that emits a multivalued claim named roles
 
 Points that commonly go wrong:
 
-- **Entra** must issue v2 tokens: set `accessTokenAcceptedVersion` to `2` in the API app's manifest. A v1 token has a different issuer and an `api://` audience, and fails at the gateway. A browser requests the resource-qualified scope; the token carries only the short name.
+- **Entra** is simplest as one app registration: the API app is also the console's single-page client. See [One app on Entra](#one-app-on-entra). It must issue v2 tokens: set `accessTokenAcceptedVersion` to `2` in the API app's manifest. A v1 token has a different issuer and an `api://` audience, and fails at the gateway. A browser requests the resource-qualified scope; the token carries only the short name.
 - **Okta** needs a custom authorization server. Org-server tokens are not meant for your own API.
 - **Auth0** normally ignores custom claims without a namespaced name, so it cannot emit the plain `roles` claim Hemlig reads. Use the scope instead.
 - **Keycloak** puts realm roles in a nested `realm_access.roles` claim. Add a mapper to emit a top-level `roles` claim.
+
+### One app on Entra
+
+Use one app registration as both the API and the console client, so the client ID appears once.
+
+1. In the API app registration, expose the `hemlig.admin` scope and set `accessTokenAcceptedVersion` to `2` in the manifest.
+2. On the same registration, add the **Single-page application** platform and the console redirect URIs listed under [Console client registration](#console-client-registration).
+3. On the matching enterprise application (Enterprise applications, Properties), set **Assignment required** to Yes and assign only the administrators and groups that should reach Hemlig. Without it, any user in the tenant can obtain a token for the app.
+4. Deploy with the client ID once, as in the block below.
+
+```text
+oidcIssuer      https://login.microsoftonline.com/TENANT_ID/v2.0
+oidcClientId    APP_ID
+oidcAdminScope  hemlig.admin
+oidcSubjectClaim  oid
+oidcAdminRole   Hemlig.Administrator
+```
+
+From these, `oidcAudience` defaults to `APP_ID` and `oidcConsoleAccessScope` defaults to `api://APP_ID/hemlig.admin`. The scope default applies to the issuer hosts `login.microsoftonline.com`, `login.microsoftonline.us` and `login.chinacloudapi.cn`. For any other issuer the default is `oidcAdminScope` as-is.
+
+::: details Advanced: split apps or custom identifier URIs
+Keep two registrations, or a custom identifier URI, by setting the explicit fields. An explicit value always wins over the default.
+
+```text
+oidcAudience            API_APP_ID
+oidcConsoleAccessScope  api://API_APP_ID/hemlig.admin
+oidcClientId            CONSOLE_APP_ID
+```
+:::
 
 ### Console client registration
 
@@ -87,7 +116,7 @@ The console is a browser app using the authorization-code flow with PKCE. Regist
 | Silent token renewal | `https://console.example.com/silent.html` |
 | Post-logout | `https://console.example.com` |
 
-The client ID becomes `oidcClientId`. The console also requests `openid`, `profile` and `email`; `email` is display-only.
+These three are the only redirect URIs the console needs. The CLI sign-in (`hemlig login`) reuses the console's session through its `/cli-login` page, either POSTing to a `127.0.0.1` listener or showing a copy code, so it registers no redirect URI with your provider. The client ID becomes `oidcClientId`. The console also requests `openid`, `profile` and `email`; `email` is display-only.
 
 ## Verify your token
 

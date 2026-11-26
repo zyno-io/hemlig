@@ -24,8 +24,8 @@ They must be set together.
 | --- | --- | --- |
 | `consoleFqdn` | yes | Console host, for example `console.example.com`. May be the zone apex |
 | `oidcAdminScope` | yes | Short scope carried in the access token, for example `hemlig.admin` |
-| `oidcConsoleAccessScope` | yes | Resource-qualified scope the browser requests |
-| `oidcClientId` | yes | The single-page app's OAuth client ID |
+| `oidcClientId` | yes | The single-page app's OAuth client ID. With one app registration it is also the audience |
+| `oidcConsoleAccessScope` | no | Resource-qualified scope the browser requests. Derived from `oidcAdminScope`: `api://<client ID>/<scope>` on Microsoft Entra issuers, the bare scope elsewhere. Set it to override |
 | `consoleCertificateArn` | no | ACM certificate in `us-east-1`. The simplest path |
 | `oidcAdminRole` | no | Role the Lambda requires after the gateway validates the token |
 
@@ -41,11 +41,9 @@ yarn cdk:deploy \
   -c consoleFqdn=console.example.com \
   -c zoneDomain=example.com \
   -c existingHostedZoneId=Z0123456789ABCDEF \
-  -c oidcIssuer=https://login.example.com/tenant/v2.0 \
-  -c oidcAudience=00000000-0000-0000-0000-000000000000 \
+  -c oidcIssuer=https://login.microsoftonline.com/TENANT_ID/v2.0 \
   -c oidcAdminScope=hemlig.admin \
-  -c oidcConsoleAccessScope=api://00000000-0000-0000-0000-000000000000/hemlig.admin \
-  -c oidcClientId=11111111-1111-1111-1111-111111111111 \
+  -c oidcClientId=00000000-0000-0000-0000-000000000000 \
   -c consoleCertificateArn=arn:aws:acm:us-east-1:123456789012:certificate/11111111-2222-3333-4444-555555555555
 ```
 
