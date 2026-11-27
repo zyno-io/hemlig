@@ -78,15 +78,15 @@ describe("pki-http", () => {
   });
 
   it("falls back to the administrator when no role is configured", () => {
-    expect(() => assertPkiRole({}, {}, "ca-admin")).not.toThrow();
+    expect(() => assertPkiRole(new Set(), {}, "ca-admin")).not.toThrow();
     expect(() =>
-      assertPkiRole({ roles: ["x"] }, { adminPkiCaRole: "y" }, "ca-admin"),
+      assertPkiRole(new Set(["x"]), { adminPkiCaRole: "y" }, "ca-admin"),
     ).toThrow(expect.objectContaining({ statusCode: 403 }));
     expect(() =>
-      assertPkiRole({ roles: ["y"] }, { adminPkiCaRole: "y" }, "ca-admin"),
+      assertPkiRole(new Set(["y"]), { adminPkiCaRole: "y" }, "ca-admin"),
     ).not.toThrow();
     expect(() =>
-      assertPkiRole({}, { adminPkiCaRole: "y" }, "read"),
+      assertPkiRole(new Set(), { adminPkiCaRole: "y" }, "read"),
     ).not.toThrow();
   });
 });

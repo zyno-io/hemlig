@@ -69,3 +69,27 @@ describe("PKI configuration", () => {
     });
   });
 });
+
+describe("administrator role claim configuration", () => {
+  it("is unset by default, keeping the legacy roles claim", () => {
+    expect(loadConfig(base).adminRoleClaim).toBeUndefined();
+    expect(loadConfig({ ...base, ADMIN_ROLE_CLAIM: "  " }).adminRoleClaim).toBeUndefined();
+  });
+
+  it("accepts a claim name or a JSON Pointer", () => {
+    expect(loadConfig({ ...base, ADMIN_ROLE_CLAIM: "groups", ADMIN_JWT_ROLE: "g" }).adminRoleClaim).toBe("groups");
+    expect(loadConfig({ ...base, ADMIN_ROLE_CLAIM: "/realm_access/roles", ADMIN_JWT_ROLE: "g" }).adminRoleClaim).toBe(
+      "/realm_access/roles",
+    );
+  });
+
+  it("rejects a malformed JSON Pointer at load time", () => {
+    expect(() => loadConfig({ ...base, ADMIN_ROLE_CLAIM: "/a~2", ADMIN_JWT_ROLE: "g" })).toThrow("JSON Pointer");
+  });
+
+  it("refuses a role claim with no role to enforce", () => {
+    expect(() => loadConfig({ ...base, ADMIN_ROLE_CLAIM: "groups" })).toThrow(
+      "ADMIN_ROLE_CLAIM requires ADMIN_JWT_ROLE.",
+    );
+  });
+});

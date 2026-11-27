@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import forge from "node-forge";
 import type { IdentityRecord } from "../domain/types";
 import { consumerActorFromEvent, humanActorFromEvent } from "./actors";
+import { adminJwtEvent } from "./test-support";
 
 const config: AppConfig = {
   region: "us-east-1",
@@ -32,12 +33,7 @@ const config: AppConfig = {
   maxPayloadBytes: 768000,
 };
 
-const jwtEvent = (
-  claims: Record<string, string | string[]>,
-): APIGatewayProxyEventV2WithJWTAuthorizer =>
-  ({
-    requestContext: { authorizer: { jwt: { claims, scopes: [] } } },
-  }) as unknown as APIGatewayProxyEventV2WithJWTAuthorizer;
+const jwtEvent = (claims: Record<string, string | string[]>) => adminJwtEvent(claims);
 
 describe("humanActorFromEvent", () => {
   beforeEach(() => {
@@ -142,34 +138,32 @@ describe("humanActorFromEvent", () => {
     ).toMatchObject({ id: "external-subject" });
   });
 
-  it("accepts a JSON-encoded role array from an HTTP API JWT integration", () => {
+  it("reads roles from the bearer, not the gateway's flattened rendering", () => {
     const roleScoped = { ...config, adminJwtRole: "Hemlig.Administrator" };
-    expect(
+    const claims = {
+      iss: "https://issuer.example.test",
+      aud: "hemlig-api",
+      sub: "external-subject",
+    };
+    // The gateway may render the array as a JSON or `[a b]` string; only the bearer's roles count.
+    for (const flattened of ['["Hemlig.Administrator"]', "[Hemlig.Administrator]"]) {
+      expect(
+        humanActorFromEvent(
+          adminJwtEvent(
+            { ...claims, roles: flattened },
+            { bearer: { ...claims, roles: ["Hemlig.Administrator"] } },
+          ),
+          roleScoped,
+        ),
+      ).toMatchObject({ id: "external-subject" });
+    }
+    // A flattened string in the bearer itself is one whole value, never split.
+    expect(() =>
       humanActorFromEvent(
-        jwtEvent({
-          iss: "https://issuer.example.test",
-          aud: "hemlig-api",
-          sub: "external-subject",
-          roles: '["Hemlig.Administrator"]',
-        }),
+        jwtEvent({ ...claims, roles: "[Hemlig.Administrator]" }),
         roleScoped,
       ),
-    ).toMatchObject({ id: "external-subject" });
-  });
-
-  it("accepts a delimiter-encoded role array from an HTTP API JWT integration", () => {
-    const roleScoped = { ...config, adminJwtRole: "Hemlig.Administrator" };
-    expect(
-      humanActorFromEvent(
-        jwtEvent({
-          iss: "https://issuer.example.test",
-          aud: "hemlig-api",
-          sub: "external-subject",
-          roles: "[Hemlig.Administrator]",
-        }),
-        roleScoped,
-      ),
-    ).toMatchObject({ id: "external-subject" });
+    ).toThrow("does not satisfy");
   });
 });
 

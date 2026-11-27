@@ -1,4 +1,5 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
+import { bearerFor, testExp } from "../auth/test-support";
 import { ApiError } from "../domain/errors";
 import type { PkiApplication } from "../pki/app";
 import { createPkiAdminHandler, type PkiAdminRoute } from "./pki-admin";
@@ -26,7 +27,16 @@ const event = (
 ) =>
   ({
     rawPath,
-    headers: {},
+    headers: withClaims
+      ? {
+          authorization: bearerFor({
+            iss: "https://issuer.example.test",
+            aud: "hemlig",
+            sub: "admin-1",
+            ...extraClaims,
+          }),
+        }
+      : {},
     requestContext: {
       requestId: "req-1",
       http: { method, sourceIp: "203.0.113.9" },
@@ -37,6 +47,7 @@ const event = (
                 iss: "https://issuer.example.test",
                 aud: "hemlig",
                 sub: "admin-1",
+                exp: testExp,
                 ...extraClaims,
               },
               scopes: null,
@@ -311,8 +322,10 @@ describe("pki-admin handler", () => {
         pkiAdminRoutes,
         phase4Respond,
       )({
-        ...event(true, `/v1/admin/pki${path}`, method, options.claims),
-        headers: options.headers ?? {},
+        ...(base => ({
+          ...base,
+          headers: { ...base.headers, ...options.headers },
+        }))(event(true, `/v1/admin/pki${path}`, method, options.claims)),
         ...(options.query === undefined
           ? {}
           : { queryStringParameters: options.query }),

@@ -789,6 +789,10 @@ export class HemligStack extends Stack {
       {
         authorizerName: `${prefix}-admin`,
         jwtAudience: [props.oidcAudience],
+        // The Lambda reads claims from this header's bearer and binds them to
+        // the authorizer's claims, so the identity source must never change.
+        // This is also the construct's default: the template is unchanged.
+        identitySource: ["$request.header.Authorization"],
       },
     );
     const adminIntegration = new HttpLambdaIntegration(

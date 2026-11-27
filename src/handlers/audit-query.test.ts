@@ -1,3 +1,4 @@
+import { bearerFor, testExp } from "../auth/test-support";
 import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
@@ -47,7 +48,13 @@ const buildEvent = (
 ): APIGatewayProxyEventV2 =>
   ({
     rawPath: "/v1/admin/audit",
-    headers: {},
+    headers: {
+      authorization: bearerFor({
+        iss: config.adminJwtIssuer,
+        aud: config.adminJwtAudience,
+        sub: "admin-1",
+      }),
+    },
     queryStringParameters,
     requestContext: {
       http: { method: "GET", sourceIp: "203.0.113.10" },
@@ -58,6 +65,7 @@ const buildEvent = (
             iss: config.adminJwtIssuer,
             aud: config.adminJwtAudience,
             sub: "admin-1",
+            exp: testExp,
           },
         },
       },

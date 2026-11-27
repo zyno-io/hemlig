@@ -85,6 +85,9 @@ export interface OidcDefaultsInput {
   readonly oidcClientId?: string;
   readonly oidcAdminScope?: string;
   readonly oidcConsoleAccessScope?: string;
+  readonly oidcAdminRole?: string;
+  readonly oidcPkiCaAdminRole?: string;
+  readonly oidcPkiOperatorRole?: string;
 }
 
 const present = (value: string | undefined): string | undefined =>
@@ -110,6 +113,17 @@ export const resolveOidcDefaults = <T extends OidcDefaultsInput>(
   ] as const) {
     if (value !== undefined && present(value) === undefined) {
       throw new Error(`${name} must not be blank; omit it to use the default.`);
+    }
+  }
+  // The Lambda splits role env values on commas, so a comma inside one role
+  // would silently become two. One role token per value here.
+  for (const [name, value] of [
+    ["oidcAdminRole", config.oidcAdminRole],
+    ["oidcPkiCaAdminRole", config.oidcPkiCaAdminRole],
+    ["oidcPkiOperatorRole", config.oidcPkiOperatorRole],
+  ] as const) {
+    if (value !== undefined && !/^[A-Za-z0-9._:/-]{1,256}$/.test(value)) {
+      throw new Error(`${name} must be one role token.`);
     }
   }
   const explicitAudience = present(config.oidcAudience);

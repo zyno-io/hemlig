@@ -166,6 +166,11 @@ describe("HemligStack", () => {
       RouteKey: "OPTIONS /{proxy+}",
       AuthorizationType: "NONE",
     });
+    // The Lambda binds the bearer in this header to the authorizer's claims.
+    template.hasResourceProperties("AWS::ApiGatewayV2::Authorizer", {
+      AuthorizerType: "JWT",
+      IdentitySource: ["$request.header.Authorization"],
+    });
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "$default",
       AuthorizationScopes: ["hemlig.admin"],

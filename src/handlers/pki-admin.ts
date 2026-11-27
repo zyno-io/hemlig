@@ -3,7 +3,7 @@ import type {
   APIGatewayProxyEventV2WithJWTAuthorizer,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
-import { humanActorFromEvent } from "../auth/actors";
+import { adminTokenFromEvent } from "../auth/admin-token";
 import type { Actor } from "../domain/types";
 import type { PkiApplication } from "../pki/app";
 import { withPkiErrorResponse } from "./pki-shared";
@@ -40,7 +40,7 @@ export const createPkiAdminHandler =
   ): Promise<APIGatewayProxyStructuredResultV2> =>
     respond(event, async (app, correlationId, setAuditContext) => {
       // A bad JWT configuration is a 403 with no audit, as in admin.ts.
-      const actor = humanActorFromEvent(
+      const { actor, roleValues } = adminTokenFromEvent(
         event as APIGatewayProxyEventV2WithJWTAuthorizer,
         app.config,
       );
@@ -69,8 +69,7 @@ export const createPkiAdminHandler =
       });
       // After the audit context is set, so a missing role is an audited failure with reason `pki_role_required`.
       assertPkiRole(
-        (event as APIGatewayProxyEventV2WithJWTAuthorizer).requestContext
-          .authorizer?.jwt?.claims,
+        roleValues,
         app.config,
         matched.route.role ?? "read",
       );
