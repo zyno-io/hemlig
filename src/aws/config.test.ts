@@ -77,13 +77,19 @@ describe("administrator role claim configuration", () => {
   });
 
   it("accepts a claim name or a JSON Pointer", () => {
-    expect(loadConfig({ ...base, ADMIN_ROLE_CLAIM: "groups" }).adminRoleClaim).toBe("groups");
-    expect(loadConfig({ ...base, ADMIN_ROLE_CLAIM: "/realm_access/roles" }).adminRoleClaim).toBe(
+    expect(loadConfig({ ...base, ADMIN_ROLE_CLAIM: "groups", ADMIN_JWT_ROLE: "g" }).adminRoleClaim).toBe("groups");
+    expect(loadConfig({ ...base, ADMIN_ROLE_CLAIM: "/realm_access/roles", ADMIN_JWT_ROLE: "g" }).adminRoleClaim).toBe(
       "/realm_access/roles",
     );
   });
 
   it("rejects a malformed JSON Pointer at load time", () => {
-    expect(() => loadConfig({ ...base, ADMIN_ROLE_CLAIM: "/a~2" })).toThrow("JSON Pointer");
+    expect(() => loadConfig({ ...base, ADMIN_ROLE_CLAIM: "/a~2", ADMIN_JWT_ROLE: "g" })).toThrow("JSON Pointer");
+  });
+
+  it("refuses a role claim with no role to enforce", () => {
+    expect(() => loadConfig({ ...base, ADMIN_ROLE_CLAIM: "groups" })).toThrow(
+      "ADMIN_ROLE_CLAIM requires ADMIN_JWT_ROLE.",
+    );
   });
 });

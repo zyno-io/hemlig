@@ -243,6 +243,78 @@ describe("bearer and binding", () => {
     expect(adminTokenFromEvent(event, multi).actor.id).toBe("subject-1");
   });
 
+  it("denies a forged bearer that copies the identity claims and adds the admin role", () => {
+    const identity = { iss: ISS, aud: "hemlig-api", sub: "subject-1", oid: "oid-1" };
+    const gatewayReader = { ...identity, roles: ["Reader"] };
+    for (const forged of [
+      { ...identity, roles: ["Hemlig.Administrator"] },
+      { ...identity, roles: ["Reader", "Hemlig.Administrator"] },
+      { ...identity, roles: ["Reader", { x: 1 }, "Hemlig.Administrator"] },
+      identity, // forged claim set without roles, gateway reported roles
+    ]) {
+      expect(() => adminTokenFromEvent(adminJwtEvent(gatewayReader, { bearer: forged }), config)).toThrow(
+        expect.objectContaining({ statusCode: 403 }),
+      );
+    }
+    // The forged token adds a claim the gateway never saw.
+    expect(() =>
+      adminTokenFromEvent(adminJwtEvent(identity, { bearer: { ...identity, roles: ["Hemlig.Administrator"] } }), config),
+    ).toThrow(expect.objectContaining({ statusCode: 403 }));
+    expect(reasonOf()).toContain('"reason":"binding"');
+    // Gateway claims the bearer lacks.
+    expect(() =>
+      adminTokenFromEvent(adminJwtEvent({ ...identity, extra: "x" }, { bearer: identity }), config),
+    ).toThrow(expect.objectContaining({ statusCode: 403 }));
+  });
+
+  it("binds the duplicate-key case: the last value parsed must match the gateway", () => {
+    const payload = (roles: string) =>
+      `{"iss":"${ISS}","aud":"hemlig-api","sub":"subject-1","exp":${testExp},"roles":["Reader"],"roles":${roles}}`;
+    const header = (json: string) => `Bearer h.${Buffer.from(json).toString("base64url")}.s`;
+    const reader = { ...good, roles: ["Reader"] };
+    expect(() =>
+      adminTokenFromEvent(adminJwtEvent(reader, { bearer: header(payload('["Hemlig.Administrator"]')) }), config),
+    ).toThrow(expect.objectContaining({ statusCode: 403 }));
+    expect(() =>
+      adminTokenFromEvent(adminJwtEvent(reader, { bearer: header(payload('["Reader"]')) }), config),
+    ).toThrow("does not satisfy"); // binds, then no admin role
+  });
+
+  it("compares aud as a true set", () => {
+    const withAud = (gateway: unknown, bearer: unknown) =>
+      adminJwtEvent({ ...good, aud: gateway as string }, { bearer: { ...good, aud: bearer } });
+    expect(() => adminTokenFromEvent(withAud("[hemlig-api other]", ["hemlig-api", "hemlig-api"]), config)).toThrow();
+    expect(() => adminTokenFromEvent(withAud("[hemlig-api]", ["hemlig-api", "other"]), config)).toThrow();
+    expect(adminTokenFromEvent(withAud("[hemlig-api other]", ["other", "hemlig-api"]), config).actor.id).toBe("subject-1");
+    expect(adminTokenFromEvent(withAud(["hemlig-api", "other"], ["hemlig-api", "other"]), config).actor.id).toBe("subject-1");
+  });
+
+  it("treats aud null as absent", () => {
+    const noAud = { iss: ISS, sub: "subject-1", client_id: "hemlig-api", roles: ["Hemlig.Administrator"] };
+    expect(
+      adminTokenFromEvent(adminJwtEvent(noAud, { bearer: { ...noAud, aud: null } }), config).actor.id,
+    ).toBe("subject-1");
+    // A gateway that reports an aud contradicts a null aud in the bearer.
+    expect(() =>
+      adminTokenFromEvent(adminJwtEvent({ ...noAud, aud: "other" }, { bearer: { ...noAud, aud: null } }), config),
+    ).toThrow(expect.objectContaining({ statusCode: 403 }));
+  });
+
+  it.each([[""], [true], ["01"], ["1e9"], [1.5], [`${testExp}.0`]])(
+    "requires the gateway exp to be a canonical integer (%p)",
+    (exp) => {
+      const event = adminJwtEvent(good);
+      (event.requestContext.authorizer.jwt.claims as Record<string, unknown>).exp = exp;
+      expect(() => adminTokenFromEvent(event, config)).toThrow(expect.objectContaining({ statusCode: 403 }));
+    },
+  );
+
+  it("does not let a scalar claim differ between gateway and bearer", () => {
+    expect(() =>
+      adminTokenFromEvent(adminJwtEvent({ ...good, email: "a@x.test" }, { bearer: { ...good, email: "b@x.test" } }), config),
+    ).toThrow(expect.objectContaining({ statusCode: 403 }));
+  });
+
   it("never logs the token or claim values", () => {
     const secret = unsignedJwt({ exp: testExp, ...good, email: "secret@example.test" });
     expect(() =>

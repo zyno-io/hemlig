@@ -127,6 +127,10 @@ const optionalRoleClaim = (environment: NodeJS.ProcessEnv): string | undefined =
   const claim = optional(environment, "ADMIN_ROLE_CLAIM")?.trim();
   if (claim !== undefined) {
     assertRoleClaim(claim);
+    // A claim with no role to look for would enforce nothing: refuse it.
+    if (optional(environment, "ADMIN_JWT_ROLE") === undefined) {
+      throw new Error("ADMIN_ROLE_CLAIM requires ADMIN_JWT_ROLE.");
+    }
   }
   return claim;
 };

@@ -232,7 +232,7 @@ const hasRequiredScope = (claims: Claims, requiredScope: string | undefined): bo
 
 /** `aud` as a string or array; `client_id` only when `aud` is absent (Cognito access tokens). */
 const audienceClaim = (claims: Claims): string[] => {
-    const value = claims.aud ?? claims.client_id;
+    const value = claims.aud ?? claims.client_id; // null counts as absent
     return typeof value === 'string' ? [value] : Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
 };
 
@@ -268,36 +268,95 @@ const decodeBearer = (headers: Record<string, string | undefined> | undefined): 
     }
 };
 
+const isCanonicalInteger = (value: unknown): value is number | string =>
+    (typeof value === 'number' && Number.isSafeInteger(value))
+    || (typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) && Number.isSafeInteger(Number(value)));
+
+const tokens = (values: readonly string[]): Set<string> =>
+    new Set(values.flatMap((value) => value.split(/[\s,[\]"]+/)).filter((entry) => entry.length > 0));
+
+const gatewayTokens = (value: string | number | boolean | string[]): Set<string> =>
+    tokens(Array.isArray(value) ? value.map(String) : [String(value)]);
+
+const isScalar = (value: unknown): value is string | number | boolean =>
+    typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+
 /**
- * The decoded payload must be the token the gateway validated: equal `iss`,
- * numerically equal `exp` (the gateway may render it as a string), an equal
- * subject claim, and equal `aud` (or `client_id` when `aud` is absent). Any
- * claim the gateway did not carry or that differs refuses.
+ * Whether one decoded claim agrees with the gateway's rendering of it.
+ * - Scalars compare as `String()`; a gateway array or bracketed string never
+ *   equals a bearer scalar.
+ * - Arrays of scalars compare as true token sets against the gateway's array or
+ *   `[a b]` string, so a duplicate or extra element on either side fails.
+ * - Arrays holding objects, nulls or arrays: every string element must appear
+ *   in the gateway's rendering (a forged role cannot hide in a mixed array).
+ * - Objects and null cannot be rendered reliably by the gateway, so only the
+ *   key's presence is required (see the module limit above).
+ */
+const claimAgrees = (decoded: unknown, gateway: string | number | boolean | string[]): boolean => {
+    if (isScalar(decoded)) {
+        return !Array.isArray(gateway) && String(gateway) === String(decoded);
+    }
+    if (Array.isArray(decoded)) {
+        const strings = decoded.filter((entry): entry is string => typeof entry === 'string');
+        if (decoded.every(isScalar)) {
+            const expected = tokens(decoded.map(String));
+            const actual = gatewayTokens(gateway);
+            return expected.size === actual.size && [...expected].every((entry) => actual.has(entry));
+        }
+        const actual = gatewayTokens(gateway);
+        return [...tokens(strings)].every((entry) => actual.has(entry));
+    }
+    return true;
+};
+
+/**
+ * The decoded payload must be the token the gateway validated. Rules, all
+ * fail-closed:
+ * 1. Identity claims: `iss` string-equal; `exp` a canonical integer on both
+ *    sides and numerically equal; the subject claim a string, equal; and `aud`
+ *    (or `client_id` when the bearer's `aud` is absent or null) equal as a set.
+ * 2. Every claim the gateway reports must exist in the bearer and agree.
+ * 3. Every scalar, and every array, claim in the bearer must be reported by the
+ *    gateway and agree, so a forged bearer cannot add claims (such as roles)
+ *    that the validated token did not carry.
+ *
+ * Limit: nested object claims (Keycloak `realm_access`, Zitadel role objects)
+ * cannot be rendered reliably by the gateway, so they are bound only by key
+ * presence in rule 2. A forged bearer could differ inside such an object. Full
+ * protection needs JWKS signature verification, which is out of scope; the
+ * defence is that the authorizer's identity source is pinned to this same
+ * `Authorization` header, so the Lambda reads the bearer the gateway validated.
  */
 const bindsToGateway = (decoded: Claims, gateway: RawClaims, subjectClaim: string): boolean => {
-    const exp = decoded.exp;
-    const gatewayExp = gateway.exp;
-    if (typeof exp !== 'number' || !Number.isFinite(exp) || gatewayExp === undefined || Array.isArray(gatewayExp)) {
+    if (typeof decoded.exp !== 'number' || !isCanonicalInteger(decoded.exp) || !isCanonicalInteger(gateway.exp) || Number(decoded.exp) !== Number(gateway.exp)) {
         return false;
     }
-    if (typeof decoded.iss !== 'string' || decoded.iss !== gateway.iss || Number(gatewayExp) !== exp) {
+    if (typeof decoded.iss !== 'string' || decoded.iss !== gateway.iss) {
         return false;
     }
     const subject = stringClaim(decoded, subjectClaim);
     if (subject === undefined || subject !== gateway[subjectClaim]) {
         return false;
     }
-    const audienceName = decoded.aud === undefined ? 'client_id' : 'aud';
-    const gatewayAudience = gateway[audienceName];
-    const decodedAudience = audienceClaim(decoded);
-    if (gatewayAudience === undefined || (audienceName === 'client_id' && gateway.aud !== undefined)) {
+    const audienceName = decoded.aud == null ? 'client_id' : 'aud';
+    if (audienceName === 'client_id' && gateway.aud !== undefined) {
         return false;
     }
-    // The gateway renders an array `aud` as a string (`[a b]`) or an array.
-    const gatewayValues = Array.isArray(gatewayAudience)
-        ? gatewayAudience
-        : String(gatewayAudience).split(/[\s,[\]"]+/).filter((entry) => entry.length > 0);
-    return decodedAudience.length > 0
-        && decodedAudience.length === gatewayValues.length
-        && decodedAudience.every((value) => gatewayValues.includes(value));
+    const gatewayAudience = gateway[audienceName];
+    const decodedAudience = audienceClaim(decoded);
+    if (gatewayAudience === undefined || decodedAudience.length === 0) {
+        return false;
+    }
+    const expected = new Set(decodedAudience);
+    const actual = gatewayTokens(gatewayAudience);
+    if (expected.size !== actual.size || ![...expected].every((entry) => actual.has(entry))) {
+        return false;
+    }
+    for (const [name, reported] of Object.entries(gateway)) {
+        if (!Object.hasOwn(decoded, name) || !claimAgrees(decoded[name], reported)) {
+            return false;
+        }
+    }
+    return Object.entries(decoded).every(([name, value]) =>
+        (!isScalar(value) && !Array.isArray(value)) || (Object.hasOwn(gateway, name) && gateway[name] !== undefined));
 };

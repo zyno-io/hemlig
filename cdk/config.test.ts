@@ -1,4 +1,4 @@
-import { deploymentConfigFromContext } from "./config";
+import { deploymentConfigFromContext, resolveOidcDefaults } from "./config";
 
 const context = (values: Record<string, string | undefined>) => ({
   tryGetContext: (name: string): unknown => values[name],
@@ -512,4 +512,18 @@ describe("PKI deployment context", () => {
       "pkiIssuanceBurstLimit must be at least pkiIssuanceRateLimit.",
     );
   });
+});
+
+describe("resolveOidcDefaults role tokens (props path)", () => {
+  const input = { oidcIssuer: "https://issuer.example.test", oidcAudience: "api" };
+
+  it.each(["oidcAdminRole", "oidcPkiCaAdminRole", "oidcPkiOperatorRole"] as const)(
+    "rejects a comma, space or blank in %s",
+    (name) => {
+      for (const value of ["Hemlig,Admin", "Hemlig Admin", ""]) {
+        expect(() => resolveOidcDefaults({ ...input, [name]: value })).toThrow(`${name} must be one role token.`);
+      }
+      expect((resolveOidcDefaults({ ...input, [name]: "Hemlig.Administrator" }) as Record<string, unknown>)[name]).toBe("Hemlig.Administrator");
+    },
+  );
 });
