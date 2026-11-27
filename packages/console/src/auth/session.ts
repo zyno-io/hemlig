@@ -60,6 +60,9 @@ class OidcDriver implements AuthDriver {
       userStore: new WebStorageStateStore({ store: new InMemoryStorage() }),
       stateStore: new WebStorageStateStore({ store: window.sessionStorage }),
       loadUserInfo: false,
+      // Sent on sign-in only: signOut() overrides it so it never reaches a
+      // logout URL (oidc-client-ts reuses this setting for both requests).
+      ...(config.extraQueryParams === undefined ? {} : { extraQueryParams: config.extraQueryParams }),
     });
     this.manager.events.addUserLoaded((user) => {
       this.adopt(user);
@@ -101,7 +104,26 @@ class OidcDriver implements AuthDriver {
   public async signOut(): Promise<void> {
     this.token = undefined;
     this.expiresAt = 0;
-    await this.manager.signoutRedirect();
+    // oidc-client-ts (v3) removes the stored user and then throws
+    // "No end session endpoint" when discovery lacks one (Cognito, Google, Dex).
+    // Check first so those providers still get a clean local sign-out.
+    let hasEndSession = false;
+    try {
+      hasEndSession = Boolean(await this.manager.metadataService.getEndSessionEndpoint());
+    } catch {
+      // Discovery unreachable: fall through to the local sign-out.
+    }
+    if (hasEndSession) {
+      try {
+        // `{}` stops the sign-in extraQueryParams (Auth0 `audience`) leaking into the logout URL.
+        await this.manager.signoutRedirect({ extraQueryParams: {} });
+        return;
+      } catch {
+        // The user is already removed; finish locally below.
+      }
+    }
+    await this.manager.removeUser();
+    window.location.assign(window.location.origin);
   }
 
   public async accessToken(minValidityMs = 30_000): Promise<string | undefined> {

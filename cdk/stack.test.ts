@@ -1,5 +1,5 @@
 import { App } from "aws-cdk-lib";
-import { Match, Template } from "aws-cdk-lib/assertions";
+import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import { PKI_METRICS } from "../src/pki/metrics";
 import { deploymentConfigFromContext } from "./config";
@@ -1584,5 +1584,195 @@ describe("OIDC defaults on the library path (HemligStack props)", () => {
           oidcClientId: "console-id",
         }),
     ).toThrow("oidcAudience must not be blank");
+  });
+});
+
+describe("provider-neutral OIDC config surface", () => {
+  const legacy = {
+    environmentName: "test",
+    adminFqdn: "admin.test.example.com",
+    apiFqdn: "api.test.example.com",
+    consoleFqdn: "console.test.example.com",
+    consoleCertificateArn:
+      "arn:aws:acm:us-east-1:123456789012:certificate/12345678-1234-1234-1234-123456789012",
+    zoneDomain: "test.example.com",
+    oidcIssuer: "https://login.microsoftonline.com/tenant/v2.0",
+    oidcAudience: "api-id",
+    oidcSubjectClaim: "oid",
+    oidcAdminScope: "hemlig.admin",
+    oidcConsoleAccessScope: "api://api-id/hemlig.admin",
+    oidcAdminRole: "Hemlig.Administrator",
+    oidcClientId: "console-id",
+  };
+  const entraCsp = defaultCsp.replaceAll(
+    "https://login.example.com",
+    "https://login.microsoftonline.com",
+  );
+  type Props = ConstructorParameters<typeof HemligStack>[2];
+  const stackFor = (extra: Partial<Props>) =>
+    new HemligStack(new App(), "hml-test", { ...legacy, ...extra });
+  const templateFor = (extra: Partial<Props>) =>
+    Template.fromStack(stackFor(extra));
+  const lambdaEnv = (template: Template, name: string) => {
+    const fn = Object.values(template.findResources("AWS::Lambda::Function")).find(
+      (resource) => resource.Properties.FunctionName === name,
+    );
+    return fn?.Properties.Environment.Variables as Record<string, string>;
+  };
+
+  it("legacy props: list forms of the same values give a byte-identical template", () => {
+    const base = JSON.stringify(templateFor({}).toJSON());
+    expect(
+      JSON.stringify(
+        templateFor({
+          oidcAudience: ["api-id"],
+          oidcAdminRole: ["Hemlig.Administrator"],
+          oidcProviderOrigins: [],
+          oidcAuthorizeParams: {},
+        }).toJSON(),
+      ),
+    ).toBe(base);
+  });
+
+  it("legacy context: the same values as context strings give that same template", () => {
+    const values: Record<string, string> = {
+      environment: "test",
+      adminFqdn: legacy.adminFqdn,
+      apiFqdn: legacy.apiFqdn,
+      consoleFqdn: legacy.consoleFqdn,
+      consoleCertificateArn: legacy.consoleCertificateArn,
+      zoneDomain: legacy.zoneDomain,
+      oidcIssuer: legacy.oidcIssuer,
+      oidcAudience: "api-id",
+      oidcSubjectClaim: "oid",
+      oidcAdminScope: "hemlig.admin",
+      oidcConsoleAccessScope: "api://api-id/hemlig.admin",
+      oidcAdminRole: "Hemlig.Administrator",
+      oidcClientId: "console-id",
+    };
+    const config = deploymentConfigFromContext({
+      tryGetContext: (name: string) => values[name],
+    });
+    const fromContext = Template.fromStack(
+      new HemligStack(new App(), "hml-test", config),
+    );
+    expect(JSON.stringify(fromContext.toJSON())).toBe(
+      JSON.stringify(templateFor({}).toJSON()),
+    );
+  });
+
+  it("legacy values keep today's literal env, authorizer audience and CSP", () => {
+    const template = templateFor({
+      oidcPkiCaAdminRole: "ca-admin",
+      oidcPkiOperatorRole: "pki-op",
+    });
+    const env = lambdaEnv(template, "hml-test-admin");
+    expect(env.ADMIN_JWT_AUDIENCE).toBe("api-id");
+    expect(env.ADMIN_JWT_ROLE).toBe("Hemlig.Administrator");
+    expect(env).not.toHaveProperty("ADMIN_ROLE_CLAIM");
+    const pki = lambdaEnv(template, "hml-test-pki-admin");
+    expect(pki.ADMIN_PKI_CA_ROLE).toBe("ca-admin");
+    expect(pki.ADMIN_PKI_OPERATOR_ROLE).toBe("pki-op");
+    template.hasResourceProperties("AWS::ApiGatewayV2::Authorizer", {
+      JwtConfiguration: Match.objectLike({ Audience: ["api-id"] }),
+    });
+    template.hasResourceProperties("AWS::CloudFront::ResponseHeadersPolicy", {
+      ResponseHeadersPolicyConfig: Match.objectLike({
+        SecurityHeadersConfig: Match.objectLike({
+          ContentSecurityPolicy: Match.objectLike({
+            ContentSecurityPolicy: entraCsp,
+          }),
+        }),
+      }),
+    });
+  });
+
+  it("role lists, role claim and audience lists reach the gateway and every Lambda", () => {
+    const template = templateFor({
+      oidcAudience: ["api-a", "api-b"],
+      oidcAdminRole: ["Hemlig Admins", "Hemlig.Administrator"],
+      oidcPkiCaAdminRole: ["ca one", "ca-two"],
+      oidcPkiOperatorRole: ["op one", "op-two"],
+      oidcRoleClaim: "/realm_access/roles",
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Authorizer", {
+      JwtConfiguration: Match.objectLike({ Audience: ["api-a", "api-b"] }),
+    });
+    const lambdas = Object.values(
+      template.findResources("AWS::Lambda::Function"),
+    );
+    const withAdminEnv = lambdas.filter(
+      (fn) => fn.Properties.Environment?.Variables?.ADMIN_JWT_ISSUER !== undefined,
+    );
+    expect(withAdminEnv.length).toBeGreaterThan(3);
+    for (const fn of withAdminEnv) {
+      const vars = fn.Properties.Environment.Variables as Record<string, string>;
+      expect(vars.ADMIN_JWT_AUDIENCE).toBe("api-a,api-b");
+      expect(vars.ADMIN_JWT_ROLE).toBe("Hemlig Admins,Hemlig.Administrator");
+      expect(vars.ADMIN_ROLE_CLAIM).toBe("/realm_access/roles");
+    }
+    const pki = lambdaEnv(template, "hml-test-pki-admin");
+    expect(pki.ADMIN_PKI_CA_ROLE).toBe("ca one,ca-two");
+    expect(pki.ADMIN_PKI_OPERATOR_ROLE).toBe("op one,op-two");
+    const outputs = template.toJSON().Outputs as Record<string, { Value: string }>;
+    expect(outputs.AdminOidcAudience?.Value).toBe("api-a, api-b");
+    expect(outputs.AdminOidcRole?.Value).toBe("Hemlig Admins, Hemlig.Administrator");
+    expect(outputs.AdminOidcClientId?.Value).toBe("console-id");
+  });
+
+  it("oidcProviderOrigins extend connect-src and frame-src only", () => {
+    const template = templateFor({
+      oidcProviderOrigins: [
+        "https://auth.example.org",
+        "https://login.microsoftonline.com",
+      ],
+    });
+    const csp = entraCsp
+      .replace(
+        "connect-src 'self' https://admin.test.example.com https://login.microsoftonline.com;",
+        "connect-src 'self' https://admin.test.example.com https://login.microsoftonline.com https://auth.example.org;",
+      )
+      .replace(
+        "frame-src 'self' https://login.microsoftonline.com;",
+        "frame-src 'self' https://login.microsoftonline.com https://auth.example.org;",
+      );
+    template.hasResourceProperties("AWS::CloudFront::ResponseHeadersPolicy", {
+      ResponseHeadersPolicyConfig: Match.objectLike({
+        SecurityHeadersConfig: Match.objectLike({
+          ContentSecurityPolicy: Match.objectLike({ ContentSecurityPolicy: csp }),
+        }),
+      }),
+    });
+  });
+
+  it("warns, without failing, when the console is on and no admin role is set", () => {
+    const { oidcAdminRole: _role, ...noRole } = legacy;
+    const warned = new HemligStack(new App(), "hml-test", noRole);
+    expect(
+      Annotations.fromStack(warned).findWarning(
+        "*",
+        Match.stringLikeRegexp("no oidcAdminRole"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      Annotations.fromStack(stackFor({})).findWarning(
+        "*",
+        Match.stringLikeRegexp("no oidcAdminRole"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("refuses a role claim without an admin role, and bad new values, on the props path", () => {
+    const { oidcAdminRole: _role, ...noRole } = legacy;
+    const make = (extra: Record<string, unknown>) => () =>
+      new HemligStack(new App(), "hml-test", { ...noRole, ...extra } as Props);
+    expect(make({ oidcRoleClaim: "roles" })).toThrow("oidcRoleClaim requires oidcAdminRole");
+    expect(() => stackFor({ oidcRoleClaim: "/a/~2" })).toThrow("JSON Pointer");
+    expect(() => stackFor({ oidcProviderOrigins: ["http://x.example.com"] })).toThrow(
+      "bare HTTPS origin",
+    );
+    expect(() => stackFor({ oidcAuthorizeParams: { scope: "x" } })).toThrow(
+      'must not set "scope"',
+    );
   });
 });

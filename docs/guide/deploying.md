@@ -122,6 +122,16 @@ Four values connect the administrator API to your identity provider. One app reg
 | `oidcClientId` | The one app registration's client ID, used by the console and as the default audience |
 | `oidcSubjectClaim` | Immutable actor claim. The reference app defaults it to `sub` |
 
+Optional fields for other providers are specified in the [configuration reference](../reference/configuration.md):
+
+- `oidcAudience`, `oidcAdminRole` and the two PKI roles, as lists;
+- `oidcRoleClaim`, a claim name or JSON Pointer;
+- `oidcAuthorizeParams` and `oidcProviderOrigins`, for the console.
+
+In CDK context, lists are comma-separated strings and `oidcAuthorizeParams` is a JSON object string. As `HemligStack` props, lists are `string[]` and a single string still works.
+
+Enabling the console without `oidcAdminRole` makes synthesis warn that any holder of the admin scope becomes an administrator.
+
 [Connect your identity provider](identity-provider.md) shows where to find each one per provider. Console fields are covered in [Console](console.md).
 
 ## 4. Deploy
@@ -156,7 +166,8 @@ Run `yarn cdk:synth` with the same `-c` flags first if you want to check the con
 | --- | --- |
 | `AdminUrl`, `ApiUrl` | The two API origins |
 | `IotEndpoint` | AWS IoT data endpoint used for change hints |
-| `AdminOidcIssuer`, `AdminOidcAudience` | Echo of your config |
+| `AdminOidcIssuer`, `AdminOidcAudience` | Echo of your config (lists are joined with `, `) |
+| `AdminOidcClientId` | Only when `oidcClientId` is set. The console's client ID |
 | `AdminOidcScope`, `AdminOidcRole` | Only when configured |
 | `RevisionBucketName`, `AuditBucketName` | The two Object Lock buckets |
 | `CreatedHostedZoneNameServers` | Only when the stack created the zone |

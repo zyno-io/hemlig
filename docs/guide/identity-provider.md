@@ -21,13 +21,24 @@ With separate API and console apps the audience check rejects an ID token. In a 
 | Requirement | Config field | Checked by | Token claim |
 | --- | --- | --- | --- |
 | Issuer matches exactly | `oidcIssuer` | Gateway and Lambda | `iss` |
-| Audience matches | `oidcAudience` | Gateway and Lambda | `aud` (or `client_id` when `aud` is absent) |
+| Audience matches (any of a list) | `oidcAudience` | Gateway and Lambda | `aud` (or `client_id` when `aud` is absent) |
 | Signature and expiry | none | Gateway | n/a |
 | Administrator scope | `oidcAdminScope` | Gateway and Lambda, when set | `scope` or `scp` |
-| Administrator role | `oidcAdminRole` | Lambda, when set | `roles` or `role` |
+| Administrator role (any of a list) | `oidcAdminRole` | Lambda, when set | the claim named by `oidcRoleClaim`, else `roles` or `role` |
 | Stable identity | `oidcSubjectClaim` (default `sub`) | Lambda | the configured claim must be present |
 
 The scope and role are optional for API-only use, but `oidcAdminScope` is **required** when you enable the [console](console.md). A scope is one token, not a list.
+
+Where the role lives is provider-specific. `oidcRoleClaim` names a top-level claim, or an RFC 6901 JSON Pointer such as `/realm_access/roles`. Leave it unset for the `roles`/`role` default.
+
+Role values may contain spaces (`Hemlig Admins`) but not commas. `oidcRoleClaim` requires `oidcAdminRole`. A console without `oidcAdminRole` makes synthesis warn that any holder of the admin scope is an administrator.
+
+Two console-only fields cover providers that differ from the Entra shape:
+
+- `oidcAuthorizeParams` adds authorize query parameters, such as Auth0's `audience`.
+- `oidcProviderOrigins` adds CSP origins when the token endpoint is on another origin.
+
+When discovery has no `end_session_endpoint` (Cognito, Google, Dex), sign-out clears the console session and returns to the console origin. Per-provider recipes follow in a later revision.
 
 `oidcSubjectClaim` is recorded as the owner of every change and drives idempotency. Pick a claim that never changes for a person.
 

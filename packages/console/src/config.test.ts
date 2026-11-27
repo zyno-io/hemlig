@@ -82,4 +82,28 @@ describe("runtime configuration", () => {
     });
     expect(config).not.toHaveProperty("environments");
   });
+
+  it("accepts extraQueryParams on an OIDC deployment and still parses without them", () => {
+    const auth = {
+      mode: "oidc",
+      authority: "https://tenant.auth0.com/",
+      clientId: "abc",
+      scopes: ["openid"],
+    };
+    const withParams = parseRuntimeConfig({
+      ...base,
+      adminApiUrl: "https://admin.dev.example.com",
+      auth: { ...auth, extraQueryParams: { audience: "https://api.example.com" } },
+    });
+    expect(withParams.auth.mode === "oidc" && withParams.auth.extraQueryParams).toEqual({
+      audience: "https://api.example.com",
+    });
+    expect(() =>
+      parseRuntimeConfig({
+        ...base,
+        adminApiUrl: "https://admin.dev.example.com",
+        auth: { ...auth, extraQueryParams: { audience: 5 } },
+      }),
+    ).toThrow();
+  });
 });

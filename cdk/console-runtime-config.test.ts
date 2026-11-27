@@ -33,4 +33,27 @@ describe("consoleRuntimeConfig", () => {
       ]);
     }
   });
+
+  it("emits extraQueryParams only when authorize params are set, and the console schema accepts them", () => {
+    const input = {
+      deploymentName: "hml-test",
+      adminFqdn: "admin.test.example.com",
+      oidcIssuer: "https://tenant.auth0.com/",
+      oidcClientId: "console-client",
+      oidcConsoleAccessScope: "hemlig.admin",
+    };
+    expect(consoleRuntimeConfig(input).auth).not.toHaveProperty("extraQueryParams");
+    expect(
+      consoleRuntimeConfig({ ...input, oidcAuthorizeParams: {} }).auth,
+    ).not.toHaveProperty("extraQueryParams");
+    const parsed = parseRuntimeConfig(
+      consoleRuntimeConfig({
+        ...input,
+        oidcAuthorizeParams: { audience: "https://api.example.com" },
+      }),
+    );
+    expect(parsed.auth.mode === "oidc" && parsed.auth.extraQueryParams).toEqual({
+      audience: "https://api.example.com",
+    });
+  });
 });
