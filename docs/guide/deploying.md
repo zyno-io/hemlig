@@ -132,7 +132,7 @@ In CDK context, lists are comma-separated strings and `oidcAuthorizeParams` is a
 
 An API-only deployment that sets `oidcAudience` equal to `oidcClientId` must also set `oidcAdminScope`; synthesis refuses it otherwise.
 
-Enabling the console without `oidcAdminRole` makes synthesis warn that any holder of the admin scope becomes an administrator.
+Omitting `oidcAdminRole`, with or without the console, makes synthesis warn that anyone the issuer will mint a token for, with the right audience, becomes an administrator.
 
 [Connect your identity provider](identity-provider.md) shows where to find each one per provider. Console fields are covered in [Console](console.md).
 

@@ -107,6 +107,21 @@ export default withMermaid(
                 link: "/guide/identity-provider",
               },
               {
+                text: "Identity provider recipes",
+                collapsed: true,
+                items: [
+                  { text: "Microsoft Entra ID", link: "/guide/identity-providers/entra" },
+                  { text: "Okta", link: "/guide/identity-providers/okta" },
+                  { text: "Auth0", link: "/guide/identity-providers/auth0" },
+                  { text: "Keycloak", link: "/guide/identity-providers/keycloak" },
+                  { text: "Google (via a broker)", link: "/guide/identity-providers/google" },
+                  {
+                    text: "Authentik, Zitadel, Cognito",
+                    link: "/guide/identity-providers/others",
+                  },
+                ],
+              },
+              {
                 text: "Validate in a real AWS account",
                 link: "/operations/acceptance",
               },
