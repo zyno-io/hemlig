@@ -6,7 +6,7 @@ pageType: reference
 
 # Administrator CLI
 
-The `hemlig` command manages secrets on the [administrator API](../reference/glossary.md#administrator-api). Every command prints one JSON object, so it is safe to script.
+The `hemlig` command manages secrets on the [administrator API](../reference/glossary.md#administrator-api). On a terminal every command prints a short human-readable result; piped, or with `--json`, it prints one JSON object, so it is safe to script (see [Output](#output)).
 
 It lives in `packages/cli` as `@zyno-io/hemlig-cli` and needs Node.js 24 or later. It manages secrets in an existing [environment](../reference/glossary.md#environment), and reads consumers and revokes their client certificates. It does not deploy Hemlig, enroll consumers, redeem bootstrap tokens or manage Kubernetes resources.
 
@@ -392,15 +392,54 @@ After a lost response, read the secret to see what happened. Do not mint a new k
 
 ## Output
 
-Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr (with `--no-localhost` it also prints a prompt on stderr and reads the login code from stdin), `hemlig pki ca create`, which prints a `warning:` line for an Ed25519 key or a `ROOT`.
+### Output modes
 
-`hemlig pki ez` also prints its settings form, review and prompts on stderr, and reads passphrases, YubiKey PINs and the typed `confirm` from the terminal. There are no banners, and no other prompts. `--help` also prints JSON.
+Every command has two output modes. The mode never changes what a command does or its [exit code](#exit-codes).
 
-On a terminal, `hemlig pki ez` prints a short human-readable result on stdout instead of the JSON receipt: a `✓` headline, a few aligned facts (fingerprint, CRL number and next update, CA ID, the directory once), `!` warnings and a numbered "Next steps" list with ready-to-run commands (your `--dir`, CA ID and file names already filled in).
+| Mode  | When                                                          | Result on stdout                  | Error on stderr                   |
+| ----- | ------------------------------------------------------------- | --------------------------------- | --------------------------------- |
+| Human | stdout is a terminal and `--json` is absent                   | Text: a headline, facts or a table | Text if stderr is a terminal and `--json` is absent: `✗`, message, `(code, exit N)`, hints |
+| JSON  | stdout is piped or redirected, or `--json` is given          | One JSON object, described below  | One JSON object unless the rule above gives text |
 
-A failure prints `✗`, the message, `(code, exit N)`, a hint where there is one and the same details the JSON error carries (`details`, API code and details, the files and steps completed before the failure), on stderr. Color is used only on a terminal and is off with `NO_COLOR` or `TERM=dumb`.
+`--json` is accepted by every command, before or after the command name, and forces the JSON mode even on a terminal. The JSON mode is byte-for-byte what scripts have always received, so existing scripts, `$(hemlig ...)` captures and `| jq` pipelines keep working unchanged. An error is rendered as text only when stderr is a terminal too, so `hemlig ... 2>err.json` still captures the JSON error.
 
-When stdout is piped or redirected, or with `--json`, stdout is the JSON object described above, unchanged, so scripts keep working: in that mode the human summary of a run stays on stderr, as before, and a failure is the JSON error object. The exit codes never depend on the mode.
+Human mode prints:
+
+- **Mutations** (create, update, delete, revoke, issue, activate, `login`, `logout`): a `✓` headline plus the key facts (ID, name, environment, state or status, expiry) and the idempotency key. A step still to do is shown under "Next steps".
+- **Lists:** an aligned table of the important columns, a row count, and a note when the output is one page of several. The note carries the `--cursor` value for the next page.
+- **Gets:** an aligned facts block. Nested values are summarized, for example `Access  2 consumers: prod-east, prod-west`.
+- **Anything else:** indented key/value text, never raw JSON.
+- **Help:** `hemlig --help`, `hemlig <group> --help` and `hemlig <group> <command> --help` print a usage line, a short description and an aligned options list. Help is the JSON help object when piped or with `--json`.
+- **Errors:** `✗`, the message, `(code, exit N)`, a hint where there is one, and the details the JSON error carries (API status and code, `outcome`, and for a failed mutation the idempotency key to replay it with).
+
+Some output is deliberately not text:
+
+- `hemlig secret read-payload` always prints its JSON receipt, payload included, because it is the one command whose purpose is to emit a secret value. No other command prints a payload, in either mode.
+- PEM text in a PKI result (a CA's CSR, an issued certificate) is summarized, not printed. Write it with `--out`, `--chain-out`, `--ca-out` or `--csr-out`, or add `--json`.
+- `hemlig idempotency-key` prints the bare UUID on a terminal.
+
+Every string that came from the server or a file is escaped before it is printed to a terminal, so control characters and bidirectional overrides appear as `\x1b`-style escapes instead of moving the cursor.
+
+Color is used only in human mode, and is off when `NO_COLOR` is set (to any value) or `TERM=dumb`.
+
+```console
+$ hemlig consumer list --environment production
+2 consumers on this page
+
+  CONSUMER ID  STATUS   ENVIRONMENT  CREATED
+  prod-east    ACTIVE   production   2030-01-01
+  prod-west    PENDING  production   2030-02-03
+
+  More results: pass --cursor eyJwIjoyfQ for the next page.
+```
+
+### JSON output
+
+Success prints exactly one JSON object on stdout and nothing on stderr, except `hemlig login`, which prints its URL and confirmation code on stderr (with `--no-localhost` it also prints a prompt on stderr and reads the login code from stdin), `hemlig pki ca create`, which prints a `warning:` line for an Ed25519 key or a `ROOT`. Those login prompts are the same in both modes.
+
+`hemlig pki ez` also prints its settings form, review and prompts on stderr, and reads passphrases, YubiKey PINs and the typed `confirm` from the terminal. There are no banners, and no other prompts.
+
+On a terminal, `hemlig pki ez` prints a short human-readable result like the other commands, with a numbered "Next steps" list of ready-to-run commands (your `--dir`, CA ID and file names already filled in). Its failure output also lists the files and steps completed before the failure. In JSON mode the human summary of a `pki ez` run stays on stderr, as before.
 
 | Field            | Meaning                                                     |
 | ---------------- | ----------------------------------------------------------- |

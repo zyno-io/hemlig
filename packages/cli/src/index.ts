@@ -24,7 +24,6 @@ import {
   loadCachedLogin,
   parseTimeoutMs,
   readText,
-  reportFailure,
   resolveAdminOrigin,
   resolveAdminToken,
   resolveIdempotencyKey,
@@ -32,6 +31,9 @@ import {
   type CliDependencies,
 } from "./common";
 import { pkiFirstPositional, pkiHelp, runPkiCli } from "./pki";
+import { emitHelp, helpPath, indexHelpPage, optionHelp, type IndexHelpContext } from "./help";
+import { loginResult, logoutResult, renderResult } from "./human";
+import { emitResult, reportFailureFor, resolveMode, renderHuman } from "./output";
 import { runEzCli } from "./ez";
 import {
   ConsumerInputError,
@@ -52,6 +54,16 @@ const commands = [
 ] as const;
 type Command = (typeof commands)[number];
 
+/** What each `hemlig secret` command does, for terminal help (the JSON help lists only the names). */
+const secretCommandHelp: Record<Command, string> = {
+  create: "Create a secret's control record (metadata and access list) from --input. The value is written separately with write-payload.",
+  update: "Change a secret's metadata and/or access list from --input. Needs --if-match.",
+  "write-payload": "Write the secret's value (payload entries) from --input. Needs --if-match. The value is never printed.",
+  read: "Read a secret's control record: metadata, access list and versions. Never the value. Use --secret-uid for an archived record.",
+  "read-payload": "Print the secret's current value as the raw JSON receipt, on a terminal too. The only command that prints a value.",
+  archive: "Archive a secret so it can no longer be read or written. Needs --if-match.",
+};
+
 const help = {
   usage:
     "hemlig secret <command> [options] | hemlig pki <ca|external-ca|grant|cert|consumer|ez> <command> [options] | hemlig consumer <list|get|identities|revoke-identity> [options] | hemlig login [--console-url <url>] [--no-browser] [--no-localhost|--localhost] | hemlig logout | hemlig idempotency-key",
@@ -71,37 +83,7 @@ const help = {
     logout: "Delete the cached login token.",
     "idempotency-key": "Print a newly minted UUID operation key.",
   },
-  options: {
-    "--console-url":
-      "Console HTTPS origin for login; defaults to HEMLIG_CONSOLE_URL.",
-    "--no-browser": "login only: print the URL instead of opening a browser.",
-    "--no-localhost":
-      "login only: no local callback listener; copy the login code shown by the console and paste it into the terminal. Default when SSH_CONNECTION or SSH_TTY is set.",
-    "--localhost":
-      "login only: use the 127.0.0.1 callback listener even in an SSH session. Cannot be combined with --no-localhost.",
-    "--admin-url":
-      "Administrator origin; defaults to HEMLIG_ADMIN_URL, then the API recorded by hemlig login when the cached login is the token source.",
-    "--environment":
-      "Logical environment; defaults to HEMLIG_ENVIRONMENT. Not used by consumer get, identities or revoke-identity.",
-    "--token-file":
-      "OIDC bearer token file; defaults to HEMLIG_ADMIN_TOKEN_FILE, then HEMLIG_ADMIN_TOKEN, then the token cached by hemlig login.",
-    "--consumer-id":
-      "Consumer ID, for hemlig consumer get|identities|revoke-identity.",
-    "--fingerprint":
-      "revoke-identity only: full 64-hex SHA-256 or a unique prefix of at least 12 hex characters, resolved against the consumer's identities.",
-    "--cursor":
-      "consumer list|identities: nextCursor from the previous page; one page is returned per call.",
-    "--secret-id": "Reusable secret ID for active records.",
-    "--secret-uid": "Immutable UID for archived records (read only).",
-    "--input":
-      "JSON file, or - for stdin. Required for create, update, write-payload.",
-    "--if-match":
-      "Known controlVersionId/strong ETag, or current to fetch it once. Required for update, write-payload, archive.",
-    "--idempotency-key":
-      "Durable operation key (secret mutations and consumer revoke-identity); defaults to a newly minted UUID for each mutation.",
-    "--timeout-ms":
-      "Per-request timeout (1–300000 milliseconds); default 30000.",
-  },
+  options: optionHelp,
   output:
     "One JSON receipt on stdout; one JSON error on stderr. No prompts or automatic retries. Exceptions: login prints its sign-in URL and confirmation code on stderr on success, and with --no-localhost (default over SSH) also prints a prompt on stderr and reads the login code from stdin; pki ez prompts on stderr for passphrases and the typed confirm and reads them from the terminal.",
   exitCodes: {
@@ -132,6 +114,7 @@ export async function runCli(
     dependencies.stderr ?? ((text: string) => process.stderr.write(text));
   const now = dependencies.now ?? Date.now;
   const configDir = dependencies.configDir ?? defaultConfigDir(env);
+  const mode = resolveMode(dependencies, args, env);
   const pkiAt = pkiTokenIndex(args);
   if (pkiAt >= 0) {
     const rest = [...args.slice(0, pkiAt), ...args.slice(pkiAt + 1)];
@@ -158,6 +141,7 @@ export async function runCli(
         tokens: true,
         options: {
           help: { type: "boolean" },
+          json: { type: "boolean" },
           "admin-url": { type: "string" },
           "console-url": { type: "string" },
           "no-browser": { type: "boolean" },
@@ -187,8 +171,11 @@ export async function runCli(
       if (seen.has(token.name)) usage("An option was supplied more than once.");
       seen.add(token.name);
     }
+    // --json only picks the output format (see resolveMode); it is no option of any command.
+    seen.delete("json");
     if (parsed.values.help) {
-      await stdout(`${JSON.stringify(help)}\n`);
+      const path = helpPath(args.filter((a) => a !== "--help" && a !== "--json"), globalValueFlags);
+      await emitHelp(mode, stdout, help, () => indexHelpPage(path, helpContext));
       return 0;
     }
     if (
@@ -196,13 +183,16 @@ export async function runCli(
       parsed.positionals[0] === "idempotency-key"
     ) {
       if (seen.size !== 0) usage("idempotency-key does not accept options.");
-      await stdout(`${JSON.stringify({ idempotencyKey: randomUUID() })}\n`);
+      const idempotencyKey = randomUUID();
+      // A terminal gets the bare key, ready to copy; a pipe gets the JSON object.
+      if (mode.human) await stdout(`${idempotencyKey}\n`);
+      else await stdout(`${JSON.stringify({ idempotencyKey })}\n`);
       return 0;
     }
     if (parsed.positionals.length === 1 && parsed.positionals[0] === "logout") {
       if (seen.size !== 0) usage("logout does not accept options.");
       await removeCachedToken(configDir);
-      await stdout(`${JSON.stringify({ loggedIn: false })}\n`);
+      await emitResult(mode, stdout, { loggedIn: false }, (style) => renderHuman(logoutResult(), style));
       return 0;
     }
     if (parsed.positionals.length === 1 && parsed.positionals[0] === "login") {
@@ -267,8 +257,9 @@ export async function runCli(
         consoleOrigin: consoleOrigin.origin,
         adminOrigin: result.adminOrigin,
       });
-      await stdout(
-        `${JSON.stringify({ loggedIn: true, adminUrl: result.adminOrigin, expiresAt: result.expiresAt.toISOString() })}\n`,
+      const loggedIn = { loggedIn: true, adminUrl: result.adminOrigin, expiresAt: result.expiresAt.toISOString() };
+      await emitResult(mode, stdout, loggedIn, (style) =>
+        renderHuman(loginResult(result.adminOrigin, loggedIn.expiresAt, new Date(now())), style),
       );
       return 0;
     }
@@ -292,20 +283,7 @@ export async function runCli(
     const needsInput =
       !isConsumer && ["create", "update", "write-payload"].includes(command);
     const needsMatch = !isConsumer && mutation && command !== "create";
-    const allowed = new Set(["admin-url", "token-file", "timeout-ms"]);
-    if (isConsumer) {
-      if (command === "list") allowed.add("environment");
-      else allowed.add("consumer-id");
-      if (command === "list" || command === "identities") allowed.add("cursor");
-      if (command === "revoke-identity") allowed.add("fingerprint");
-    } else {
-      allowed.add("environment");
-      allowed.add("secret-id");
-    }
-    if (command === "read" && !isConsumer) allowed.add("secret-uid");
-    if (mutation) allowed.add("idempotency-key");
-    if (needsInput) allowed.add("input");
-    if (needsMatch) allowed.add("if-match");
+    const allowed = new Set(allowedOptions(isConsumer, command));
     for (const name of seen) {
       if (!allowed.has(name))
         usage("An option is not supported by this command.");
@@ -439,7 +417,10 @@ export async function runCli(
           break;
         }
       }
-      await stdout(`${JSON.stringify({ data: result, idempotencyKey })}\n`);
+      const envelope = { data: result, idempotencyKey };
+      await emitResult(mode, stdout, envelope, (style) =>
+        renderResult(`consumer ${command}`, envelope, { now: new Date(now()) }, style),
+      );
       return 0;
     }
     let data:
@@ -510,18 +491,66 @@ export async function runCli(
         break;
     }
     const etag = responseVersion(data);
-    await stdout(
-      `${JSON.stringify({ data, etag, idempotencyKey, ifMatch })}\n`,
-    );
+    const envelope = { data, etag, idempotencyKey, ifMatch };
+    // The payload read stays the raw JSON receipt even on a terminal: it is the one command that prints a secret value.
+    if (command === "read-payload") await stdout(`${JSON.stringify(envelope)}\n`);
+    else
+      await emitResult(mode, stdout, envelope, (style) =>
+        renderResult(`secret ${command}`, envelope, { now: new Date(now()) }, style),
+      );
     return 0;
   } catch (error) {
-    return reportFailure(
+    return reportFailureFor(
+      mode,
       error,
       { group, idempotencyKey, ifMatch, mutationAttempted },
       stderr,
     );
   }
 }
+
+/** Option names (no dashes) a secret or consumer command accepts: the validation and the terminal help both read this. */
+function allowedOptions(isConsumer: boolean, command: string): string[] {
+  const mutation = isConsumer ? command === "revoke-identity" : ["create", "update", "write-payload", "archive"].includes(command);
+  const needsInput = !isConsumer && ["create", "update", "write-payload"].includes(command);
+  const needsMatch = !isConsumer && mutation && command !== "create";
+  const allowed = ["admin-url", "token-file", "timeout-ms"];
+  if (isConsumer) {
+    if (command === "list") allowed.push("environment");
+    else allowed.push("consumer-id");
+    if (command === "list" || command === "identities") allowed.push("cursor");
+    if (command === "revoke-identity") allowed.push("fingerprint");
+  } else {
+    allowed.push("environment", "secret-id");
+  }
+  if (command === "read" && !isConsumer) allowed.push("secret-uid");
+  if (mutation) allowed.push("idempotency-key");
+  if (needsInput) allowed.push("input");
+  if (needsMatch) allowed.push("if-match");
+  return allowed;
+}
+
+/** Options a command cannot run without (the environment may come from HEMLIG_ENVIRONMENT instead). */
+function requiredOptions(isConsumer: boolean, command: string): string[] {
+  if (isConsumer) {
+    if (command === "list") return ["environment"];
+    return command === "revoke-identity" ? ["consumer-id", "fingerprint"] : ["consumer-id"];
+  }
+  return [
+    "environment",
+    "secret-id",
+    ...(["create", "update", "write-payload"].includes(command) ? ["input"] : []),
+    ...(["update", "write-payload", "archive"].includes(command) ? ["if-match"] : []),
+  ];
+}
+
+const helpContext: IndexHelpContext = {
+  help: help as unknown as IndexHelpContext["help"],
+  secretCommands: secretCommandHelp,
+  optionsOf: (group, command) => allowedOptions(group === "consumer", command),
+  requiredOf: (group, command) => requiredOptions(group === "consumer", command),
+  loginOptions: ["console-url", "no-browser", "no-localhost", "localhost"],
+};
 
 function controlVersion(value: string): string {
   const raw =

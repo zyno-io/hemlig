@@ -109,7 +109,9 @@ import {
   type ValidatedCsr,
 } from "./ez-x509";
 import { resolveCa, isCaId } from "./pki";
-import { humanFromReceipt, warningText, makeStyle, renderHuman, renderHumanError, type ErrorInfo } from "./ez-output";
+import { humanFromReceipt, warningText, renderHumanError } from "./ez-output";
+import { emitHelp, tableHelpPage } from "./help";
+import { colorWanted, makeStyle, renderHuman, reportFailureFor, resolveMode } from "./output";
 import type { TerminalInput } from "./tty";
 
 export const ezHelp = {
@@ -407,9 +409,6 @@ const subjectOf = (record: PkiCaSubject): Subject => ({
   ...(record.locality === undefined ? {} : { L: record.locality }),
   ...(record.state === undefined ? {} : { ST: record.state }),
 });
-
-const colorWanted = (env: NodeJS.ProcessEnv, interactive: boolean): boolean =>
-  interactive && env.NO_COLOR === undefined && env.TERM !== "dumb";
 
 /** Writes a file that leaves the machine. An identical existing file is fine (a rerun); a different one is never overwritten. */
 const writeOutput = async (path: string, data: Buffer, mode = 0o644): Promise<void> => {
@@ -2417,16 +2416,22 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
   const nowMs = dependencies.now ?? Date.now;
   // Terminals get a human result; pipes, redirects and --json keep the JSON envelope. Injected writers are not terminals
   // unless a test says so.
-  const stdoutTty = dependencies.stdoutIsTTY ?? (dependencies.stdout === undefined && process.stdout.isTTY === true);
-  const stderrTty = dependencies.stderrIsTTY ?? (dependencies.stderr === undefined && process.stderr.isTTY === true);
-  const jsonRequested = args.includes("--json");
-  const human = stdoutTty && !jsonRequested;
+  const mode = resolveMode(dependencies, args, env);
+  const human = mode.human;
   const progress: Progress = { completed: [], files: {} };
   let ykmanClient: YkmanClient | undefined;
   try {
     const parsed = parseEzArgs(args);
     if (parsed === "help") {
-      await stdout(`${JSON.stringify(ezHelp)}\n`);
+      const typed = args.find((arg) => !arg.startsWith("-"));
+      await emitHelp(mode, stdout, ezHelp, () =>
+        tableHelpPage(ezHelp, {
+          prefix: "hemlig pki ez",
+          path: typed === undefined ? [] : [typed],
+          summary: "Create and operate the offline root CA that signs EXTERNAL_INTERMEDIATE CAs.",
+          sharedOptions: [],
+        }),
+      );
       return 0;
     }
     const prompter = new Prompter({
@@ -2510,29 +2515,10 @@ export async function runEzCli(args: readonly string[], dependencies: CliDepende
             },
           }),
     };
-    if (!stderrTty || jsonRequested) return reportFailure(error, failure, stderr);
-    // A terminal: the same exit code and the same classification, printed for a person.
-    let envelope = "";
-    const code = await reportFailure(error, failure, (text) => {
-      envelope += text;
-    });
-    let text = envelope;
-    try {
-      const parsedError = JSON.parse(envelope.trim().split("\n").pop() as string) as { error: ErrorInfo; ez?: ErrorInfo["ez"] };
-      text = renderHumanError({ ...parsedError.error, ez: parsedError.ez ?? parsedError.error.ez }, makeStyle(colorWanted(env, true)), {
-        fingerprint: progress.fingerprint,
-        flagFor: outputFlagFor(args),
-      });
-    } catch {
-      // keep the plain envelope
-    }
-    try {
-      await stderr(text);
-    } catch {
-      // A closed or failing stderr cannot carry the message; the exit code is the same as for the JSON envelope.
-      return 9;
-    }
-    return code;
+    // A terminal gets the same exit code and the same classification, printed for a person.
+    return reportFailureFor(mode, error, failure, stderr, (info, style) =>
+      renderHumanError(info, style, { fingerprint: progress.fingerprint, flagFor: outputFlagFor(args) }),
+    );
   }
 }
 
