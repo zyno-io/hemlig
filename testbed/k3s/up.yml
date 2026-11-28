@@ -1,0 +1,264 @@
+---
+# Bring up a disposable single-node k3s cluster with cert-manager.
+# Idempotent: a second run changes nothing.
+- name: Hemlig k3s testbed up
+  hosts: testbed
+  become: true
+  vars:
+    # Pinned versions; both releases were at least two weeks old when chosen.
+    k3s_version: v1.36.6+k3s1
+    cert_manager_version: v1.20.5
+    # sha256 of cert-manager.yaml for the default cert_manager_version.
+    # Pinning is recommended. Override it together with the version, or set
+    # it to "" to skip verification.
+    cert_manager_manifest_sha256: f015cc08b45072695fd63ea4e0382953cd87f95fc4a837c7c8a9810c0bd7366e
+    testbed_api_address: "{{ ansible_host | default(inventory_hostname) }}"
+    testbed_extra_manifests: []
+    testbed_work_dir: /var/lib/hemlig-testbed
+    testbed_pod_resolv_conf: /etc/rancher/k3s/resolv.conf
+    testbed_kubeconfig_name: "hemlig-testbed-{{ inventory_hostname }}"
+    testbed_kubeconfig_path: "{{ playbook_dir }}/../.kube/{{ inventory_hostname }}.yaml"
+
+  tasks:
+    - name: Preflight, check OS, resources and architecture
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] in ['Debian', 'Ubuntu']
+          - ansible_facts['processor_vcpus'] | int >= 2
+          # A 4 GiB VM reports slightly under 4096 MiB.
+          - ansible_facts['memtotal_mb'] | int >= 3800
+          - ansible_facts['architecture'] in ['x86_64', 'aarch64']
+        fail_msg: >-
+          The testbed needs Debian or Ubuntu, at least 2 vCPUs, 4 GiB RAM and
+          amd64 or arm64. Found {{ ansible_facts['distribution'] }},
+          {{ ansible_facts['processor_vcpus'] }} vCPUs,
+          {{ ansible_facts['memtotal_mb'] }} MiB, {{ ansible_facts['architecture'] }}.
+        quiet: true
+
+    # ---- k3s ----
+    - name: Check the installed k3s
+      ansible.builtin.command: /usr/local/bin/k3s --version
+      register: k3s_current
+      failed_when: false
+      changed_when: false
+
+    - name: Decide whether k3s needs installing
+      ansible.builtin.set_fact:
+        k3s_needs_install: >-
+          {{ k3s_current.rc != 0 or (k3s_version not in k3s_current.stdout) }}
+        k3s_already_installed: "{{ k3s_current.rc == 0 }}"
+
+    - name: Check for systemd-resolved's upstream resolv.conf
+      ansible.builtin.stat:
+        path: /run/systemd/resolve/resolv.conf
+      register: host_resolved
+
+    - name: Create k3s config directory
+      ansible.builtin.file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: "0755"
+
+    - name: Read the host's upstream resolvers
+      ansible.builtin.slurp:
+        src: "{{ '/run/systemd/resolve/resolv.conf' if host_resolved.stat.exists else '/etc/resolv.conf' }}"
+      register: host_resolv
+
+    - name: Choose upstream nameservers for pods
+      ansible.builtin.set_fact:
+        testbed_pod_nameservers: >-
+          {{ (host_resolv.content | b64decode)
+             | regex_findall('(?m)^nameserver[ \t]+([^ \t\r\n#]+)')
+             | reject('match', '^127[.]')
+             | list }}
+
+    - name: Require at least one non-loopback upstream nameserver
+      ansible.builtin.assert:
+        that: testbed_pod_nameservers | length > 0
+        fail_msg: >-
+          No non-loopback nameserver found in the host's resolv.conf; pods
+          would have no working DNS.
+
+    - name: Write the pod resolv.conf (nameservers only, no search domains)
+      ansible.builtin.copy:
+        dest: "{{ testbed_pod_resolv_conf }}"
+        mode: "0644"
+        content: |
+          # Managed by Ansible (testbed/k3s/up.yml). Upstream nameservers only.
+          {% for ns in testbed_pod_nameservers %}
+          nameserver {{ ns }}
+          {% endfor %}
+      register: k3s_resolv
+
+    - name: Write k3s server config
+      ansible.builtin.template:
+        src: config.yaml.j2
+        dest: /etc/rancher/k3s/config.yaml
+        mode: "0600"
+      register: k3s_config
+
+    - name: Install k3s
+      when: k3s_needs_install | bool
+      block:
+        - name: Create work directory
+          ansible.builtin.file:
+            path: "{{ testbed_work_dir }}"
+            state: directory
+            mode: "0700"
+
+        - name: Download the k3s install script
+          ansible.builtin.get_url:
+            url: https://get.k3s.io
+            dest: "{{ testbed_work_dir }}/k3s-install.sh"
+            mode: "0700"
+            force: true
+
+        - name: Run the k3s install script
+          ansible.builtin.command: "{{ testbed_work_dir }}/k3s-install.sh"
+          environment:
+            INSTALL_K3S_VERSION: "{{ k3s_version }}"
+          changed_when: true
+
+    - name: Restart k3s to apply a changed config
+      ansible.builtin.systemd_service:
+        name: k3s
+        state: restarted
+      when:
+        - k3s_config is changed or k3s_resolv is changed
+        - not (k3s_needs_install | bool)
+        - k3s_already_installed | bool
+
+    - name: Ensure k3s is running
+      ansible.builtin.systemd_service:
+        name: k3s
+        state: started
+        enabled: true
+
+    - name: Wait for the node to be Ready
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl wait --for=condition=Ready node --all --timeout=10s
+      register: node_ready
+      until: node_ready.rc == 0
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    # ---- cert-manager ----
+    - name: Create work directory
+      ansible.builtin.file:
+        path: "{{ testbed_work_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Download the cert-manager manifest
+      ansible.builtin.get_url:
+        url: "https://github.com/cert-manager/cert-manager/releases/download/{{ cert_manager_version }}/cert-manager.yaml"
+        dest: "{{ testbed_work_dir }}/cert-manager-{{ cert_manager_version }}.yaml"
+        checksum: "{{ ('sha256:' ~ cert_manager_manifest_sha256) if cert_manager_manifest_sha256 else omit }}"
+        mode: "0600"
+
+    # Server-side apply owns only the fields in the manifest, so the caBundle
+    # that cainjector writes into the webhook configurations is not reverted
+    # on every run. `kubectl diff` exits 1 when there is drift. It cannot
+    # dry-run namespaced objects before their namespace exists, so a fresh
+    # cluster skips the diff and applies directly.
+    - name: Check whether cert-manager is installed
+      ansible.builtin.command: /usr/local/bin/k3s kubectl get namespace cert-manager
+      register: cert_manager_namespace
+      changed_when: false
+      failed_when: false
+
+    - name: Check cert-manager for drift
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl diff --server-side
+        --field-manager=hemlig-testbed --force-conflicts -f
+        {{ testbed_work_dir }}/cert-manager-{{ cert_manager_version }}.yaml
+      register: cert_manager_diff
+      changed_when: false
+      failed_when: cert_manager_diff.rc > 1
+      when: cert_manager_namespace.rc == 0
+
+    - name: Apply cert-manager
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl apply --server-side
+        --field-manager=hemlig-testbed --force-conflicts -f
+        {{ testbed_work_dir }}/cert-manager-{{ cert_manager_version }}.yaml
+      when: cert_manager_namespace.rc != 0 or cert_manager_diff.rc == 1
+      changed_when: true
+
+    - name: Wait for the cert-manager deployments to be Available
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl -n cert-manager wait
+        --for=condition=Available deployment --all --timeout=10s
+      register: cert_manager_ready
+      until: cert_manager_ready.rc == 0
+      retries: 40
+      delay: 5
+      changed_when: false
+
+    # ---- optional extra manifests ----
+    - name: Apply extra manifests
+      ansible.builtin.command: /usr/local/bin/k3s kubectl apply -f -
+      args:
+        stdin: "{{ lookup('ansible.builtin.file', item) }}"
+      loop: "{{ testbed_extra_manifests }}"
+      register: extra_apply
+      changed_when: "'created' in extra_apply.stdout or 'configured' in extra_apply.stdout"
+
+    # ---- kubeconfig ----
+    - name: Read the cluster kubeconfig
+      ansible.builtin.slurp:
+        src: /etc/rancher/k3s/k3s.yaml
+      register: k3s_kubeconfig_raw
+      no_log: true
+
+    - name: Build the local kubeconfig
+      ansible.builtin.set_fact:
+        local_kubeconfig: >-
+          {{ (k3s_kubeconfig_raw.content | b64decode
+              | replace('https://127.0.0.1:6443', 'https://' ~ testbed_api_address ~ ':6443')
+              | from_yaml) }}
+      no_log: true
+
+    - name: Rename the kubeconfig context, cluster and user
+      ansible.builtin.set_fact:
+        local_kubeconfig_final:
+          apiVersion: v1
+          kind: Config
+          preferences: {}
+          current-context: "{{ testbed_kubeconfig_name }}"
+          clusters:
+            - name: "{{ testbed_kubeconfig_name }}"
+              cluster: "{{ local_kubeconfig.clusters[0].cluster }}"
+          users:
+            - name: "{{ testbed_kubeconfig_name }}"
+              user: "{{ local_kubeconfig.users[0].user }}"
+          contexts:
+            - name: "{{ testbed_kubeconfig_name }}"
+              context:
+                cluster: "{{ testbed_kubeconfig_name }}"
+                user: "{{ testbed_kubeconfig_name }}"
+      no_log: true
+
+    - name: Create the local kubeconfig directory
+      ansible.builtin.file:
+        path: "{{ testbed_kubeconfig_path | dirname }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Write the local kubeconfig
+      ansible.builtin.copy:
+        content: "{{ local_kubeconfig_final | to_nice_yaml }}"
+        dest: "{{ testbed_kubeconfig_path }}"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Show how to use the cluster
+      ansible.builtin.debug:
+        msg: "export KUBECONFIG={{ testbed_kubeconfig_path | realpath }}"
+      delegate_to: localhost
+      become: false

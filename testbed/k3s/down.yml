@@ -1,0 +1,46 @@
+---
+# Remove k3s from the testbed VM. Destroys all cluster state; leaves the OS.
+- name: Hemlig k3s testbed down
+  hosts: testbed
+  become: true
+  gather_facts: false
+  vars:
+    testbed_work_dir: /var/lib/hemlig-testbed
+    testbed_kubeconfig_path: "{{ playbook_dir }}/../.kube/{{ inventory_hostname }}.yaml"
+
+  tasks:
+    - name: Require explicit confirmation
+      ansible.builtin.assert:
+        that: confirm | default('no') == 'yes'
+        fail_msg: >-
+          This destroys the k3s cluster, its data and its containers.
+          Re-run with -e confirm=yes to proceed.
+        quiet: true
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: Check for the k3s uninstall script
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s-uninstall.sh
+      register: k3s_uninstall
+
+    - name: Run the k3s uninstall script
+      ansible.builtin.command: /usr/local/bin/k3s-uninstall.sh
+      when: k3s_uninstall.stat.exists
+      changed_when: true
+
+    - name: Remove k3s config and testbed work files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/rancher/k3s
+        - "{{ testbed_work_dir }}"
+
+    - name: Remove the local kubeconfig
+      ansible.builtin.file:
+        path: "{{ testbed_kubeconfig_path }}"
+        state: absent
+      delegate_to: localhost
+      become: false
