@@ -80,6 +80,54 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.ministack.yml down -v
 
+  oidc-keycloak:
+    name: Keycloak OIDC admin auth verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Resolve Yarn cache directory
+        id: yarn-cache
+        run: echo "path=$(yarn config get cacheFolder)" >> "$GITHUB_OUTPUT"
+      - name: Restore Yarn cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.yarn-cache.outputs.path }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('yarn.lock') }}
+      - name: Install dependencies
+        run: yarn install --immutable
+      - name: Start Keycloak with the test realm
+        run: docker compose -f docker-compose.oidc.yml up -d
+      - name: Wait for Keycloak (bounded)
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/realms/hemlig-test/.well-known/openid-configuration > /dev/null; then
+              echo "Keycloak ready after $attempt attempt(s)."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Keycloak did not become ready within 120 seconds." >&2
+          docker compose -f docker-compose.oidc.yml logs --tail 100 >&2
+          exit 1
+      - name: Verify admin auth against Keycloak tokens
+        env:
+          KEYCLOAK_URL: http://localhost:8080
+        run: yarn verify:oidc
+      - name: Show Keycloak logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.oidc.yml logs --tail 200
+      - name: Stop Keycloak
+        if: always()
+        run: docker compose -f docker-compose.oidc.yml down -v
+
   controller-image:
     name: Controller image build and publish
     needs: [verify, ministack, helm-chart, release-artifacts]
