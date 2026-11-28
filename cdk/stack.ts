@@ -1023,9 +1023,9 @@ export class HemligStack extends Stack {
     if (props.oidcClientId !== undefined) {
       new CfnOutput(this, "AdminOidcClientId", { value: props.oidcClientId });
     }
-    if (props.consoleFqdn !== undefined && props.oidcAdminRole === undefined) {
+    if (props.oidcAdminRole === undefined) {
       Annotations.of(this).addWarning(
-        "consoleFqdn is set but no oidcAdminRole is configured: every identity that can obtain a token with the admin scope from this provider is a Hemlig administrator. Set oidcAdminRole (and oidcRoleClaim where the provider does not use roles/role) to restrict access.",
+        "no oidcAdminRole is configured: anyone the issuer will mint a token for, with the configured audience (and the admin scope, when set), is a Hemlig administrator. Set oidcAdminRole (and oidcRoleClaim where the provider does not use roles/role) to restrict access.",
       );
     }
     new CfnOutput(this, "RevisionBucketName", {

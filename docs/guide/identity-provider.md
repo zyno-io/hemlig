@@ -18,7 +18,7 @@ Every administrator request is checked twice: by API Gateway, then again by the 
 
 | Need | Why | Config field |
 | --- | --- | --- |
-| A JWT access token, not an opaque string | API Gateway verifies the signature (RSA) and reads the claims. Only access tokens are supported; ID-token mode is not shipped | none |
+| A JWT access token, not an opaque string | API Gateway verifies the signature (RSA) and reads the claims. Only access tokens are supported; ID-token mode is not shipped, and with the console the required scope is what rejects ID tokens | none |
 | `iss` equal to the issuer, character for character | Both checks compare it exactly | `oidcIssuer` |
 | An `aud` that contains your audience (or `client_id` when `aud` is absent) | Binds the token to this API | `oidcAudience`, default `oidcClientId` |
 | A scope claim (`scope` or `scp`) containing the admin scope | Rejects ID tokens and tokens minted for other purposes | `oidcAdminScope` |
@@ -27,7 +27,11 @@ Every administrator request is checked twice: by API Gateway, then again by the 
 | A public single-page client with the authorization-code flow and PKCE | The console is a browser app with no client secret | `oidcClientId` |
 | CORS allowed on the token endpoint for the console origin | The browser redeems the code directly | none (provider setting) |
 
-The scope and role are optional for API-only use, but `oidcAdminScope` is **required** whenever the [console](console.md) is enabled or `oidcAudience` is omitted. A scope is one token, not a list. Role checks are optional, but a console without `oidcAdminRole` makes synthesis warn that any holder of the admin scope is an administrator.
+The scope and role are optional for API-only use, but `oidcAdminScope` is **required** whenever the [console](console.md) is enabled or `oidcAudience` is omitted. A scope is one token, not a list. Role checks are optional, but a deployment without `oidcAdminRole` makes synthesis warn that anyone the issuer will mint a token for, with the right audience, is an administrator.
+
+::: tip Scope on automation tokens
+When `oidcAdminScope` is set, every administrator token must carry it, including tokens for automation. Some providers put machine-to-machine grants in a `roles` claim and no scope, and those tokens fail once `oidcAdminScope` is set. For such tokens, leave `oidcAdminScope` unset (API-only, no console) and restrict access with `oidcAdminRole`.
+:::
 
 ### Why the scope matters
 
@@ -83,7 +87,7 @@ Every field is specified in the [configuration reference](../reference/configura
 | --- | --- | --- |
 | Entra (app roles) | unset (`roles`) | `Hemlig.Administrator` |
 | Okta (groups claim) | `groups` | `Hemlig Admins` |
-| Auth0 (RBAC permissions) | `permissions` | `admin:hemlig` |
+| Auth0 (RBAC permissions) | `permissions` | `hemlig.admin` |
 | Keycloak (realm roles) | `/realm_access/roles` | `hemlig-admin` |
 | Keycloak (client roles) | `/resource_access/CLIENT_ID/roles` | `admin` |
 | Cognito (user pool groups) | `cognito:groups` | `hemlig-admins` |
@@ -197,15 +201,14 @@ The body is a Hemlig error with code `forbidden` and the message "The administra
 | --- | --- | --- |
 | `role` | The role claim is missing, holds no `oidcAdminRole` value, or `oidcRoleClaim` points at the wrong place. Check `roleClaimType` in the log: `missing` means the path resolved to nothing | Fix `oidcRoleClaim` or the value. On Entra it is a role value such as `Hemlig.Administrator`, not a group name. On Keycloak a group path starts with `/` |
 | `role_overage` | An Entra `groups` claim was replaced by a reference. The message is "The administrator JWT carries a group-overage reference instead of its groups, so roles cannot be read. Use app roles, or restrict the groups claim to the groups assigned to this application." | Use app roles, or `ApplicationGroup` group membership claims with groups assigned to the enterprise app |
-| `binding` | The bearer's claims differ from the gateway's: `iss`, `exp`, the subject claim, `aud`, or any other claim. A proxy rewrote the token, or the claim is missing | Send the validated token unchanged. A missing subject claim also lands here |
+| `binding` | The bearer's claims differ from the gateway's: `iss`, `exp`, the subject claim, `aud`, or any other claim. A proxy rewrote the token, or the claim is missing | Send the validated token unchanged. A missing or non-string subject claim also lands here: choose a claim the token carries as a string (`oid` on Entra, `uid` on Okta) |
 | `bearer_unreadable` | The `Authorization` header is absent or is not a three-part JWT with a JSON payload | Send `Authorization: Bearer <JWT>` |
 | `audience`, `issuer` | The Lambda re-check disagrees with the gateway config | Fix the config so both agree, then redeploy |
 | `scope` | The scope is not in `scope` or `scp` | As for the gateway 403 |
-| `subject` | `oidcSubjectClaim` is absent or not a string | Choose a claim the token carries as a string (`oid` on Entra, `uid` on Okta) |
 | `tenant` | A configured tenant pin did not match | Not set by the CDK stack; check any manual Lambda environment edits |
 | none (not logged) | The request has no validated authorizer claims. The body message is "A validated administrator JWT is required." The route is not behind the JWT authorizer | Do not invoke the Lambda directly |
 
-A PKI route can also return `403` with code `pki_role_required` and "The administrator role for this PKI operation is required." That is `oidcPkiCaAdminRole` or `oidcPkiOperatorRole` missing from the same role claim.
+A PKI route can also return `403` with code `forbidden`, `details.reason` `pki_role_required` (and `details.role`), and "The administrator role for this PKI operation is required." That is `oidcPkiCaAdminRole` or `oidcPkiOperatorRole` missing from the same role claim.
 
 ### Console sign-in loops
 
@@ -234,7 +237,7 @@ The CLI compares `exp` with the local clock. A hand-off fails with "Token is exp
 
 ### Signed straight back in
 
-You select sign-out and, after the provider returns, the console is in again with no password prompt. When discovery has no `end_session_endpoint`, the console cannot end the provider's session. It clears its own session, remembers the sign-out for the tab and shows "You're signed out", but **Sign in** reuses the provider session.
+You select sign-out and the console shows "You're signed out", but clicking **Sign in**, or opening the console in a new tab, signs you in with no password prompt. When discovery has no `end_session_endpoint`, the console cannot end the provider's session. It clears its own session and remembers the sign-out only for that tab (in `sessionStorage`), so the provider's session is reused as soon as you sign in again.
 
 | Cause | Fix |
 | --- | --- |

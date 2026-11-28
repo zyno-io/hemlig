@@ -44,14 +44,14 @@ Use one Auth0 single-page application and an Auth0 API, so the console gets a JW
 }
 ```
 
-Auth0 also puts the permission in `scope`, so the same value serves as scope and role here. If you want a separate gate, add an Action that writes a namespaced roles claim and point `oidcRoleClaim` at it, such as `https://hemlig.example.com/roles`. Auth0 normally ignores custom claims without a namespaced name.
+Auth0 also puts the permission in `scope`, so the same value serves as scope and role here. If you want a separate gate, add an Action that writes a namespaced roles claim and point `oidcRoleClaim` at it, such as `https://hemlig.example.com/roles`. Auth0 recommends a namespaced claim name for custom claims, and reserves some names.
 
 `oidcAuthorizeParams` is sent on sign-in only; sign-out does not send it. In CDK context pass it as a JSON object or a JSON object string.
 
 ## Caveats
 
 - **Issuer slash:** the trailing slash is part of the issuer. Without it every token fails the issuer check.
-- **Missing `audience`:** the symptom is a `401` with an opaque token. Check `oidcAuthorizeParams` in the console's `config.json`.
+- **Missing `audience`:** the symptom is a `401` with an opaque token. Check `auth.extraQueryParams` in the console's `config.json`, which `oidcAuthorizeParams` writes.
 - **Sign-out:** whether discovery advertises an end-session endpoint can depend on your tenant settings. Verify in your tenant; without one the console signs out locally only.
 - **Token lifetime:** the API's token expiration is a setting. Lower it for administrators.
 

@@ -1762,6 +1762,17 @@ describe("provider-neutral OIDC config surface", () => {
     ).toHaveLength(0);
   });
 
+  it("warns about a missing admin role on an API-only deployment too", () => {
+    const { oidcAdminRole: _role, consoleFqdn: _fqdn, consoleCertificateArn: _arn, ...apiOnly } = legacy;
+    const warned = new HemligStack(new App(), "hml-test", apiOnly);
+    expect(
+      Annotations.fromStack(warned).findWarning(
+        "*",
+        Match.stringLikeRegexp("anyone the issuer will mint a token for"),
+      ),
+    ).toHaveLength(1);
+  });
+
   it("refuses a role claim without an admin role, and bad new values, on the props path", () => {
     const { oidcAdminRole: _role, ...noRole } = legacy;
     const make = (extra: Record<string, unknown>) => () =>

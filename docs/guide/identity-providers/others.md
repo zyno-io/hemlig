@@ -56,6 +56,8 @@ Zitadel emits roles as an object, `urn:zitadel:iam:org:project:roles`, whose key
 }
 ```
 
+The project ID as audience covers every app in the project, so keep Hemlig in its own Zitadel project.
+
 Verify in your tenant:
 
 - the contents of `aud` in the JWT access token, so you can pick `oidcAudience`;
