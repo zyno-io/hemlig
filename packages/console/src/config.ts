@@ -11,6 +11,8 @@ const oidcConfig = z.object({
   authority: z.string().url(),
   clientId: z.string().min(1),
   scopes: z.array(z.string().min(1)).min(1),
+  /** Extra authorize-request query parameters, for example Auth0's `audience`. */
+  extraQueryParams: z.record(z.string(), z.string()).optional(),
 });
 
 /**

@@ -4,6 +4,30 @@ import { HemligApi } from "../api/client";
 import type { RuntimeConfig } from "../config";
 import { createAuthDriver, type AuthDriver, type CompletedSession, type Session } from "../auth/session";
 
+const SIGNED_OUT_KEY = "hemlig.signedOut";
+
+// Survives the identity-provider round trip (and the local-only fallback's page
+// load) so an explicit sign-out is not undone by an automatic sign-in. Storage
+// can be unavailable; the in-memory ref still holds for the current page.
+const readSignedOut = (): boolean => {
+  try {
+    return window.sessionStorage.getItem(SIGNED_OUT_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+const writeSignedOut = (value: boolean): void => {
+  try {
+    if (value) {
+      window.sessionStorage.setItem(SIGNED_OUT_KEY, "1");
+    } else {
+      window.sessionStorage.removeItem(SIGNED_OUT_KEY);
+    }
+  } catch {
+    // Not persisted; see above.
+  }
+};
+
 /**
  * Holds only session and environment context. Nothing derived from the API is
  * cached here; server state belongs to vue-query, and payload material belongs
@@ -15,13 +39,17 @@ export const useAppStore = defineStore("app", () => {
   const api = shallowRef<HemligApi | undefined>();
   const session = ref<Session | undefined>();
   const bootError = ref<string | undefined>();
+  /** Set by an explicit sign-out; cleared only by the Sign in button or a completed sign-in. */
+  const signedOut = ref(readSignedOut());
 
   const initialize = async (runtime: RuntimeConfig): Promise<void> => {
     config.value = runtime;
     const driver = createAuthDriver(runtime);
     auth.value = driver;
     api.value = new HemligApi(runtime, driver);
-    session.value = await driver.initialize();
+    // After an explicit sign-out, do not silently renew from the provider's
+    // session (providers without an end-session endpoint still hold one).
+    session.value = signedOut.value ? undefined : await driver.initialize();
   };
 
   const requireAuth = (): AuthDriver => {
@@ -47,6 +75,8 @@ export const useAppStore = defineStore("app", () => {
 
   const signIn = async (returnTo?: string): Promise<void> => {
     const driver = requireAuth();
+    signedOut.value = false;
+    writeSignedOut(false);
     await driver.signIn(returnTo);
   };
 
@@ -60,6 +90,8 @@ export const useAppStore = defineStore("app", () => {
     }
     const { returnTo: _returnTo, ...rest } = completed;
     session.value = rest;
+    signedOut.value = false;
+    writeSignedOut(false);
     return completed;
   };
 
@@ -68,8 +100,12 @@ export const useAppStore = defineStore("app", () => {
     requireAuth().accessToken(minValidityMs);
 
   const signOut = async (): Promise<void> => {
-    session.value = undefined;
     const driver = requireAuth();
+    // The flag goes up before the session clears, so App.vue's watcher sees
+    // "signed out" and cannot start a sign-in that races the end-session redirect.
+    signedOut.value = true;
+    writeSignedOut(true);
+    session.value = undefined;
     await driver.signOut();
   };
 
@@ -82,6 +118,7 @@ export const useAppStore = defineStore("app", () => {
     api,
     session,
     bootError,
+    signedOut,
     initialize,
     requireApi,
     requireConfig,

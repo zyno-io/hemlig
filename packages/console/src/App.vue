@@ -19,7 +19,13 @@ let redirectStarted = false;
  * or make an unauthenticated API request.
  */
 const redirectToSignIn = (): void => {
-  if (redirectStarted || store.bootError !== undefined || isAuthCallback.value || hasSession.value) {
+  if (
+    redirectStarted ||
+    store.bootError !== undefined ||
+    store.signedOut ||
+    isAuthCallback.value ||
+    hasSession.value
+  ) {
     return;
   }
   redirectStarted = true;
@@ -29,7 +35,14 @@ const redirectToSignIn = (): void => {
 };
 
 onMounted(redirectToSignIn);
-watch([hasSession, isAuthCallback, () => store.bootError], redirectToSignIn);
+watch([hasSession, isAuthCallback, () => store.bootError, () => store.signedOut], redirectToSignIn);
+
+const signInAgain = (): void => {
+  redirectStarted = true;
+  void store.signIn("/").catch((error: unknown) => {
+    store.bootError = error instanceof Error ? error.message : String(error);
+  });
+};
 </script>
 
 <template>
@@ -45,4 +58,11 @@ watch([hasSession, isAuthCallback, () => store.bootError], redirectToSignIn);
   <AppShell v-else-if="hasSession">
     <RouterView />
   </AppShell>
+  <div v-else-if="store.signedOut" class="page max-w-2xl">
+    <h1 class="page-title">You're signed out</h1>
+    <p class="mt-2 text-ink-2">
+      The console session has ended. Your identity provider may keep its own session open.
+    </p>
+    <button type="button" class="btn btn-primary mt-4" @click="signInAgain">Sign in</button>
+  </div>
 </template>

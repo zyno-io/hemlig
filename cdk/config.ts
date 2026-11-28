@@ -1,3 +1,10 @@
+import {
+  collapse,
+  normaliseOidcExtras,
+  splitContextList,
+  type StringOrList,
+} from "./oidc";
+
 export interface DeploymentConfig {
   readonly environmentName: string;
   readonly adminFqdn: string;
@@ -12,9 +19,11 @@ export interface DeploymentConfig {
   /**
    * Exact access-token `aud`. Defaults to oidcClientId (one app registration),
    * which then requires oidcAdminScope. Set it for a split API and console app
-   * or an API-only deployment without oidcClientId.
+   * or an API-only deployment without oidcClientId. A list (1-8 values; a
+   * comma-separated string in CDK context) accepts any of them: the gateway
+   * gets the array and the Lambdas the comma-joined `ADMIN_JWT_AUDIENCE`.
    */
-  readonly oidcAudience?: string;
+  readonly oidcAudience?: StringOrList;
   readonly oidcSubjectClaim: string;
   /** Required administrator OAuth scope when the console origin is enabled. */
   readonly oidcAdminScope?: string;
@@ -27,12 +36,34 @@ export interface DeploymentConfig {
    * Entra issuers and to oidcAdminScope as-is on any other issuer.
    */
   readonly oidcConsoleAccessScope?: string;
-  /** Optional external IdP role required by the Lambda after JWT validation. */
-  readonly oidcAdminRole?: string;
+  /**
+   * Optional external IdP role required by the Lambda after JWT validation.
+   * A list (comma-separated string in CDK context) means any-of. A value may
+   * contain spaces ("Hemlig Admins") but not a comma. Same for the two PKI roles.
+   */
+  readonly oidcAdminRole?: StringOrList;
   /** Optional IdP role additionally required for PKI CA lifecycle and root CRL upload. */
-  readonly oidcPkiCaAdminRole?: string;
+  readonly oidcPkiCaAdminRole?: StringOrList;
   /** Optional IdP role additionally required for grants, admin issuance, revocation and CRL force-publish. */
-  readonly oidcPkiOperatorRole?: string;
+  readonly oidcPkiOperatorRole?: StringOrList;
+  /**
+   * Where the bearer carries roles: a top-level claim name, or an RFC 6901 JSON
+   * Pointer such as `/realm_access/roles`. Unset reads `roles`, then `role`.
+   * Requires oidcAdminRole. Passed to the Lambdas as `ADMIN_ROLE_CLAIM`.
+   */
+  readonly oidcRoleClaim?: string;
+  /**
+   * Extra authorize-request query parameters the console adds, for example
+   * Auth0's `{ audience: "https://api.example.com" }`. Up to 8 keys matching
+   * `^[a-z_]{1,64}$`; protocol-owned keys (client_id, scope, state, ...) are refused.
+   */
+  readonly oidcAuthorizeParams?: Readonly<Record<string, string>>;
+  /**
+   * Extra HTTPS origins (up to 4) added to the console CSP `connect-src` and
+   * `frame-src`, for providers whose token endpoint is not on the issuer's
+   * origin (Cognito's hosted-UI domain, for example).
+   */
+  readonly oidcProviderOrigins?: readonly string[];
   /** Stage throttle on POST /v1/pki/{proxy+} (requests/s). Default 20. */
   readonly pkiIssuanceRateLimit?: number;
   /** Stage burst on POST /v1/pki/{proxy+}. Default 40. */
@@ -81,13 +112,16 @@ export const deriveConsoleAccessScope = (
 /** The OIDC fields that resolveOidcDefaults fills in. */
 export interface OidcDefaultsInput {
   readonly oidcIssuer: string;
-  readonly oidcAudience?: string;
+  readonly oidcAudience?: StringOrList;
   readonly oidcClientId?: string;
   readonly oidcAdminScope?: string;
   readonly oidcConsoleAccessScope?: string;
-  readonly oidcAdminRole?: string;
-  readonly oidcPkiCaAdminRole?: string;
-  readonly oidcPkiOperatorRole?: string;
+  readonly oidcAdminRole?: StringOrList;
+  readonly oidcPkiCaAdminRole?: StringOrList;
+  readonly oidcPkiOperatorRole?: StringOrList;
+  readonly oidcRoleClaim?: string;
+  readonly oidcAuthorizeParams?: Readonly<Record<string, string>>;
+  readonly oidcProviderOrigins?: readonly string[];
 }
 
 const present = (value: string | undefined): string | undefined =>
@@ -104,33 +138,30 @@ const present = (value: string | undefined): string | undefined =>
  */
 export const resolveOidcDefaults = <T extends OidcDefaultsInput>(
   config: T,
-): T & { readonly oidcAudience: string } => {
+): T & { readonly oidcAudience: StringOrList } => {
   // A blank value that was set (an unset variable, say) must not quietly become
   // the client ID: that could point a split-app deployment at the wrong app.
   for (const [name, value] of [
     ["oidcAudience", config.oidcAudience],
     ["oidcConsoleAccessScope", config.oidcConsoleAccessScope],
   ] as const) {
-    if (value !== undefined && present(value) === undefined) {
+    if (typeof value === "string" && present(value) === undefined) {
       throw new Error(`${name} must not be blank; omit it to use the default.`);
     }
   }
-  // The Lambda splits role env values on commas, so a comma inside one role
-  // would silently become two. One role token per value here.
-  for (const [name, value] of [
-    ["oidcAdminRole", config.oidcAdminRole],
-    ["oidcPkiCaAdminRole", config.oidcPkiCaAdminRole],
-    ["oidcPkiOperatorRole", config.oidcPkiOperatorRole],
-  ] as const) {
-    if (value !== undefined && !/^[A-Za-z0-9._:/-]{1,256}$/.test(value)) {
-      throw new Error(`${name} must be one role token.`);
-    }
-  }
-  const explicitAudience = present(config.oidcAudience);
+  const extras = normaliseOidcExtras(
+    {
+      ...config,
+      oidcClientId: present(config.oidcClientId),
+      oidcAdminScope: present(config.oidcAdminScope),
+    },
+    "",
+  );
+  const explicitAudience = extras.audiences;
   const clientId = present(config.oidcClientId);
   const adminScope = present(config.oidcAdminScope);
-  const audience = explicitAudience ?? clientId;
-  if (audience === undefined) {
+  const audiences = explicitAudience ?? (clientId === undefined ? undefined : [clientId]);
+  if (audiences === undefined) {
     throw new Error(
       "set oidcClientId (or oidcAudience for an API-only deployment without the console)",
     );
@@ -143,11 +174,18 @@ export const resolveOidcDefaults = <T extends OidcDefaultsInput>(
   const consoleAccessScope =
     present(config.oidcConsoleAccessScope) ??
     (adminScope !== undefined && clientId !== undefined
-      ? deriveConsoleAccessScope(config.oidcIssuer, audience, adminScope)
+      ? deriveConsoleAccessScope(config.oidcIssuer, audiences[0] as string, adminScope)
       : undefined);
   return {
     ...config,
-    oidcAudience: audience,
+    oidcAudience: collapse(audiences),
+    ...(extras.adminRoles === undefined ? {} : { oidcAdminRole: collapse(extras.adminRoles) }),
+    ...(extras.pkiCaRoles === undefined ? {} : { oidcPkiCaAdminRole: collapse(extras.pkiCaRoles) }),
+    ...(extras.pkiOperatorRoles === undefined
+      ? {}
+      : { oidcPkiOperatorRole: collapse(extras.pkiOperatorRoles) }),
+    ...(extras.authorizeParams === undefined ? {} : { oidcAuthorizeParams: extras.authorizeParams }),
+    ...(extras.providerOrigins.length === 0 ? {} : { oidcProviderOrigins: extras.providerOrigins }),
     ...(consoleAccessScope === undefined ? {} : { oidcConsoleAccessScope: consoleAccessScope }),
   };
 };
@@ -194,9 +232,12 @@ export const deploymentConfigFromContext = (context: {
     context,
     "oidcConsoleAccessScope",
   );
-  const oidcAdminRole = optionalContext(context, "oidcAdminRole");
-  const oidcPkiCaAdminRole = optionalContext(context, "oidcPkiCaAdminRole");
-  const oidcPkiOperatorRole = optionalContext(context, "oidcPkiOperatorRole");
+  const rawAdminRole = splitContextList("oidcAdminRole", context.tryGetContext("oidcAdminRole"));
+  const rawPkiCaAdminRole = splitContextList("oidcPkiCaAdminRole", context.tryGetContext("oidcPkiCaAdminRole"));
+  const rawPkiOperatorRole = splitContextList("oidcPkiOperatorRole", context.tryGetContext("oidcPkiOperatorRole"));
+  const oidcRoleClaim = optionalContext(context, "oidcRoleClaim");
+  const rawAuthorizeParams = objectContext(context, "oidcAuthorizeParams");
+  const rawProviderOrigins = splitContextList("oidcProviderOrigins", context.tryGetContext("oidcProviderOrigins"));
   const pkiIssuanceRateLimit = optionalIntegerContext(
     context,
     "pkiIssuanceRateLimit",
@@ -206,9 +247,33 @@ export const deploymentConfigFromContext = (context: {
     "pkiIssuanceBurstLimit",
   );
   const oidcClientId = optionalContext(context, "oidcClientId");
-  const explicitAudience = optionalContext(context, "oidcAudience");
-  const oidcAudience = explicitAudience ?? oidcClientId;
-  if (oidcAudience === undefined) {
+  const rawAudience = splitContextList("oidcAudience", context.tryGetContext("oidcAudience"));
+  const extras = normaliseOidcExtras(
+    {
+      ...(rawAudience === undefined ? {} : { oidcAudience: rawAudience }),
+      ...(oidcClientId === undefined ? {} : { oidcClientId }),
+      ...(oidcAdminScope === undefined ? {} : { oidcAdminScope }),
+      ...(rawAdminRole === undefined ? {} : { oidcAdminRole: rawAdminRole }),
+      ...(rawPkiCaAdminRole === undefined
+        ? {}
+        : { oidcPkiCaAdminRole: rawPkiCaAdminRole }),
+      ...(rawPkiOperatorRole === undefined
+        ? {}
+        : { oidcPkiOperatorRole: rawPkiOperatorRole }),
+      ...(oidcRoleClaim === undefined ? {} : { oidcRoleClaim }),
+      ...(rawAuthorizeParams === undefined
+        ? {}
+        : { oidcAuthorizeParams: rawAuthorizeParams }),
+      ...(rawProviderOrigins === undefined
+        ? {}
+        : { oidcProviderOrigins: rawProviderOrigins }),
+    },
+    "context ",
+  );
+  const explicitAudience = extras.audiences;
+  const audiences =
+    explicitAudience ?? (oidcClientId === undefined ? undefined : [oidcClientId]);
+  if (audiences === undefined) {
     throw new Error(
       "set oidcClientId (or oidcAudience for an API-only deployment without the console)",
     );
@@ -216,8 +281,13 @@ export const deploymentConfigFromContext = (context: {
   const oidcConsoleAccessScope =
     explicitConsoleAccessScope ??
     (oidcAdminScope !== undefined && oidcClientId !== undefined
-      ? deriveConsoleAccessScope(oidcIssuer, oidcAudience, oidcAdminScope)
+      ? deriveConsoleAccessScope(oidcIssuer, audiences[0] as string, oidcAdminScope)
       : undefined);
+  const oidcAudience = collapse(audiences);
+  const oidcAdminRole = extras.adminRoles && collapse(extras.adminRoles);
+  const oidcPkiCaAdminRole = extras.pkiCaRoles && collapse(extras.pkiCaRoles);
+  const oidcPkiOperatorRole =
+    extras.pkiOperatorRoles && collapse(extras.pkiOperatorRoles);
   const existingHostedZoneId = optionalContext(context, "existingHostedZoneId");
   const existingApplicationKeyArn = optionalContext(
     context,
@@ -270,8 +340,10 @@ export const deploymentConfigFromContext = (context: {
   if (!isHttpsUrl(oidcIssuer)) {
     throw new Error("context oidcIssuer must be an HTTPS issuer URL.");
   }
-  if (oidcAudience.length > 512) {
-    throw new Error("context oidcAudience must be at most 512 characters.");
+  // Audience length and shape: normaliseOidcExtras. An audience derived from
+  // oidcClientId is held to the same limit.
+  if (explicitAudience === undefined) {
+    normaliseOidcExtras({ oidcAudience: audiences }, "context ");
   }
   if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/.test(oidcSubjectClaim)) {
     throw new Error("context oidcSubjectClaim is not a valid JWT claim name.");
@@ -311,20 +383,6 @@ export const deploymentConfigFromContext = (context: {
     throw new Error(
       "context oidcConsoleAccessScope must be one OAuth scope token.",
     );
-  }
-  if (
-    oidcAdminRole !== undefined &&
-    !/^[A-Za-z0-9._:/-]{1,256}$/.test(oidcAdminRole)
-  ) {
-    throw new Error("context oidcAdminRole must be one role token.");
-  }
-  for (const [name, value] of Object.entries({
-    oidcPkiCaAdminRole,
-    oidcPkiOperatorRole,
-  })) {
-    if (value !== undefined && !/^[A-Za-z0-9._:/-]{1,256}$/.test(value)) {
-      throw new Error(`context ${name} must be one role token.`);
-    }
   }
   assertPkiIssuanceThrottle(
     pkiIssuanceRateLimit ?? DEFAULT_PKI_ISSUANCE_RATE_LIMIT,
@@ -378,6 +436,13 @@ export const deploymentConfigFromContext = (context: {
     ...(oidcAdminRole === undefined ? {} : { oidcAdminRole }),
     ...(oidcPkiCaAdminRole === undefined ? {} : { oidcPkiCaAdminRole }),
     ...(oidcPkiOperatorRole === undefined ? {} : { oidcPkiOperatorRole }),
+    ...(oidcRoleClaim === undefined ? {} : { oidcRoleClaim }),
+    ...(extras.authorizeParams === undefined
+      ? {}
+      : { oidcAuthorizeParams: extras.authorizeParams }),
+    ...(extras.providerOrigins.length === 0
+      ? {}
+      : { oidcProviderOrigins: extras.providerOrigins }),
     ...(pkiIssuanceRateLimit === undefined ? {} : { pkiIssuanceRateLimit }),
     ...(pkiIssuanceBurstLimit === undefined ? {} : { pkiIssuanceBurstLimit }),
     ...(oidcClientId === undefined ? {} : { oidcClientId }),
@@ -420,6 +485,31 @@ const optionalContext = (
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : undefined;
+};
+
+/** An object context value, or a JSON object string (`-c oidcAuthorizeParams='{"audience":"x"}'`). */
+const objectContext = (
+  context: { tryGetContext(name: string): unknown },
+  name: string,
+): Record<string, string> | undefined => {
+  let value = context.tryGetContext(name);
+  if (typeof value === "string") {
+    if (value.trim() === "") {
+      return undefined;
+    }
+    try {
+      value = JSON.parse(value);
+    } catch {
+      throw new Error(`context ${name} must be a JSON object.`);
+    }
+  }
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`context ${name} must be a JSON object.`);
+  }
+  return value as Record<string, string>;
 };
 
 const optionalIntegerContext = (

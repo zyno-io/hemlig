@@ -54,8 +54,8 @@ const excluded = [
         <p class="mt-1 max-w-2xl text-[13px] text-ink-2">
           Hemlig has no internal user directory. The identity provider controls
           administrator assignment; the API requires its configured issuer,
-          audience, scope, and optional role. This console cannot grant or
-          restrict that access.
+          audience, admin scope, and, when one is configured, the admin role
+          claim. This console cannot grant or restrict that access.
         </p>
       </section>
 

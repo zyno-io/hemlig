@@ -8,6 +8,8 @@ export interface ConsoleRuntimeConfigInput {
   readonly oidcClientId: string;
   /** Resource-qualified scope the browser requests from the identity provider. */
   readonly oidcConsoleAccessScope: string;
+  /** Extra authorize query parameters (Auth0 `audience`); omitted from config.json when empty. */
+  readonly oidcAuthorizeParams?: Readonly<Record<string, string>>;
 }
 
 export const consoleRuntimeConfig = (input: ConsoleRuntimeConfigInput) => ({
@@ -20,5 +22,9 @@ export const consoleRuntimeConfig = (input: ConsoleRuntimeConfigInput) => ({
     // `email` is a display-only claim. The API continues to authorize and
     // persist the configured immutable subject claim, normally `sub`.
     scopes: ["openid", "profile", "email", input.oidcConsoleAccessScope],
+    ...(input.oidcAuthorizeParams === undefined ||
+    Object.keys(input.oidcAuthorizeParams).length === 0
+      ? {}
+      : { extraQueryParams: { ...input.oidcAuthorizeParams } }),
   },
 });

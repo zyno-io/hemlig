@@ -71,7 +71,7 @@ If you use a non-default CDK bootstrap qualifier, also set `bootstrapQualifier` 
 
 Every response carries a strict Content-Security-Policy. `silent.html` is the only framable document, because OIDC silent renewal loads your provider in a hidden iframe that redirects back to it. Without that exception every token renewal fails and each session falls back to a full redirect.
 
-`connect-src` names exactly the admin API origin and the issuer origin. A provider that serves tokens or keys from a different origin than its issuer (Google, for example) needs both origins allowed, which the stack does not do today.
+`connect-src` names the admin API origin and the issuer origin, and `frame-src` the issuer origin. A provider that serves tokens or keys from a different origin than its issuer (Cognito's hosted-UI domain, for example) needs that origin added with `oidcProviderOrigins`, which extends both directives.
 
 The generated `config.json` carries the deployment name, the admin API URL and the OIDC client settings. The console is deliberately cross-origin to the admin API; the [console plan](../design/console-plan.md) explains why CloudFront stays out of the credential path.
 

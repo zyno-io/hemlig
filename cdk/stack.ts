@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import {
+  Annotations,
   Arn,
   CfnOutput,
   Duration,
@@ -49,6 +50,7 @@ import {
   type DeploymentConfig,
 } from "./config";
 import { consoleRuntimeConfig } from "./console-runtime-config";
+import { asList, joinEnv } from "./oidc";
 
 const workflowDueIndex = "workflow-due";
 const retentionDueIndex = "retention-due";
@@ -406,14 +408,17 @@ export class HemligStack extends Stack {
       IOT_NOTIFICATION_POLICY_NAME: notificationPolicyName,
       IOT_NOTIFICATION_TOPIC_PREFIX: notificationTopicPrefix,
       ADMIN_JWT_ISSUER: props.oidcIssuer,
-      ADMIN_JWT_AUDIENCE: props.oidcAudience,
+      ADMIN_JWT_AUDIENCE: joinEnv(asList(props.oidcAudience)),
       ADMIN_ACTOR_SUBJECT_CLAIM: props.oidcSubjectClaim,
       ...(props.oidcAdminScope === undefined
         ? {}
         : { ADMIN_JWT_SCOPE: props.oidcAdminScope }),
       ...(props.oidcAdminRole === undefined
         ? {}
-        : { ADMIN_JWT_ROLE: props.oidcAdminRole }),
+        : { ADMIN_JWT_ROLE: joinEnv(asList(props.oidcAdminRole)) }),
+      ...(props.oidcRoleClaim === undefined
+        ? {}
+        : { ADMIN_ROLE_CLAIM: props.oidcRoleClaim }),
       MAX_PAYLOAD_BYTES: "768000",
     };
     const adminFunction = this.function(
@@ -482,10 +487,14 @@ export class HemligStack extends Stack {
         ...pkiEnvironment,
         ...(props.oidcPkiCaAdminRole === undefined
           ? {}
-          : { ADMIN_PKI_CA_ROLE: props.oidcPkiCaAdminRole }),
+          : { ADMIN_PKI_CA_ROLE: joinEnv(asList(props.oidcPkiCaAdminRole)) }),
         ...(props.oidcPkiOperatorRole === undefined
           ? {}
-          : { ADMIN_PKI_OPERATOR_ROLE: props.oidcPkiOperatorRole }),
+          : {
+              ADMIN_PKI_OPERATOR_ROLE: joinEnv(
+                asList(props.oidcPkiOperatorRole),
+              ),
+            }),
       },
       // CRL self-verification parses up to 12,000 entries: 512 MB leaves too little headroom.
       { memorySize: 1024 },
@@ -788,7 +797,7 @@ export class HemligStack extends Stack {
       props.oidcIssuer,
       {
         authorizerName: `${prefix}-admin`,
-        jwtAudience: [props.oidcAudience],
+        jwtAudience: [...asList(props.oidcAudience)],
         // The Lambda reads claims from this header's bearer and binds them to
         // the authorizer's claims, so the identity source must never change.
         // This is also the construct's default: the template is unchanged.
@@ -1000,12 +1009,24 @@ export class HemligStack extends Stack {
     });
     new CfnOutput(this, "IotEndpoint", { value: iotEndpoint });
     new CfnOutput(this, "AdminOidcIssuer", { value: props.oidcIssuer });
-    new CfnOutput(this, "AdminOidcAudience", { value: props.oidcAudience });
+    new CfnOutput(this, "AdminOidcAudience", {
+      value: asList(props.oidcAudience).join(", "),
+    });
     if (props.oidcAdminScope !== undefined) {
       new CfnOutput(this, "AdminOidcScope", { value: props.oidcAdminScope });
     }
     if (props.oidcAdminRole !== undefined) {
-      new CfnOutput(this, "AdminOidcRole", { value: props.oidcAdminRole });
+      new CfnOutput(this, "AdminOidcRole", {
+        value: asList(props.oidcAdminRole).join(", "),
+      });
+    }
+    if (props.oidcClientId !== undefined) {
+      new CfnOutput(this, "AdminOidcClientId", { value: props.oidcClientId });
+    }
+    if (props.consoleFqdn !== undefined && props.oidcAdminRole === undefined) {
+      Annotations.of(this).addWarning(
+        "consoleFqdn is set but no oidcAdminRole is configured: every identity that can obtain a token with the admin scope from this provider is a Hemlig administrator. Set oidcAdminRole (and oidcRoleClaim where the provider does not use roles/role) to restrict access.",
+      );
     }
     new CfnOutput(this, "RevisionBucketName", {
       value: revisionBucket.bucketName,
@@ -1088,7 +1109,15 @@ export class HemligStack extends Stack {
     });
 
     const api = `https://${consoleProps.adminFqdn}`;
-    const idp = new URL(consoleProps.oidcIssuer).origin;
+    // The issuer origin, plus any extra provider origins (a token endpoint on
+    // another host), as one CSP source list for connect-src and frame-src.
+    const issuerOrigin = new URL(consoleProps.oidcIssuer).origin;
+    const idp = [
+      issuerOrigin,
+      ...(consoleProps.oidcProviderOrigins ?? []).filter(
+        (origin) => origin !== issuerOrigin,
+      ),
+    ].join(" ");
     const sharedSecurityHeadersBehavior: cloudfront.ResponseSecurityHeadersBehavior =
       {
         strictTransportSecurity: {
@@ -1274,6 +1303,9 @@ export class HemligStack extends Stack {
       oidcIssuer: consoleProps.oidcIssuer,
       oidcClientId: consoleProps.oidcClientId,
       oidcConsoleAccessScope: consoleProps.oidcConsoleAccessScope,
+      ...(consoleProps.oidcAuthorizeParams === undefined
+        ? {}
+        : { oidcAuthorizeParams: consoleProps.oidcAuthorizeParams }),
     });
     if (consoleDist === undefined) {
       // An installer may build and publish the console output as a separate pipeline
