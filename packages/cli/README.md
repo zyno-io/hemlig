@@ -2,7 +2,7 @@
 
 `@zyno-io/hemlig-cli` is a small, machine-friendly CLI for the Hemlig
 **administrator API**. It installs the `hemlig` executable (Node.js 24 or later), emits
-exactly one JSON object per invocation, and never retries. It prompts only for the login code in `hemlig login --no-localhost`.
+one JSON object per invocation when piped (or with `--json`), and never retries. On a terminal it prints a short human-readable result instead (see below). It prompts only for the login code in `hemlig login --no-localhost`.
 
 ```sh
 npm install --global @zyno-io/hemlig-cli
@@ -33,7 +33,7 @@ Commands: `secret create | update | write-payload | read | read-payload | archiv
 `consumer list | get | identities | revoke-identity`, `login`, `logout` and
 `idempotency-key`. `update`, `write-payload` and `archive` take `--if-match <etag>`
 (or `current`) and an optional `--idempotency-key`. `consumer revoke-identity` takes
-`--idempotency-key` only, not `--if-match`. Run `hemlig --help` for the JSON command reference.
+`--idempotency-key` only, not `--if-match`. Run `hemlig --help`, `hemlig <group> --help` or `hemlig <group> <command> --help` for the command reference.
 
 It uses the typed [`@zyno-io/hemlig-client`](https://github.com/zyno-io/hemlig/tree/main/packages/client),
 does not provision Hemlig infrastructure, enroll consumers, redeem bootstrap tokens,
@@ -56,6 +56,19 @@ Offline root (`hemlig pki ez`): `generate-ca`, `adopt-ca` (bring an existing Ope
 needs `ykman` 5.5 or later). On a terminal,
 `generate-ca` and `sign-cert` show a settings form, and signing or revoking always
 asks you to type `confirm` (`--yes` does not skip it). Run `hemlig pki ez --help`.
+
+## Output modes
+
+On a terminal every command, its `--help` and its errors print as readable text: a `✓`
+headline and facts for a change, an aligned table with a row count and a `--cursor` note
+for a list, a facts block for a read, and `✗ message (code, exit N)` with a hint for a
+failure. When stdout is piped or redirected, or with `--json` (accepted by every
+command), output is the JSON object scripts have always received, byte for byte, and the
+exit codes never depend on the mode. An error is text only when stderr is a terminal.
+
+`hemlig secret read-payload` always prints its raw JSON receipt, so `$(hemlig ...)` keeps
+working; no other command prints a secret value. Color is off with `NO_COLOR` or
+`TERM=dumb`. Server-provided text is escaped before it reaches a terminal.
 
 ## Documentation
 

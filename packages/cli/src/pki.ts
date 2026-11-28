@@ -35,12 +35,14 @@ import {
   CliError,
   createTransport,
   parseTimeoutMs,
-  reportFailure,
   resolveAdminSession,
   resolveIdempotencyKey,
   usage,
   type CliDependencies,
 } from "./common";
+import { emitHelp, tableHelpPage } from "./help";
+import { renderResult } from "./human";
+import { emitResult, reportFailureFor, resolveMode } from "./output";
 
 const CA_KEY_ALGORITHMS = [
   "ECDSA_P256",
@@ -427,6 +429,7 @@ const parseOptions = (
     { type: "string" | "boolean"; multiple?: boolean }
   > = {
     help: { type: "boolean" },
+    json: { type: "boolean" },
     "accept-broader-constraints": { type: "boolean" },
     "validate-only": { type: "boolean" },
     "dry-run": { type: "boolean" },
@@ -460,6 +463,8 @@ const parseOptions = (
       usage("An option was supplied more than once.");
     seen.add(token.name);
   }
+  // --json only picks the output format; it is no option of any command.
+  seen.delete("json");
   return {
     values: parsed.values as PkiValues,
     positionals: parsed.positionals,
@@ -994,6 +999,7 @@ export async function runPkiCli(
     dependencies.stderr ?? ((text: string) => process.stderr.write(text));
   const now = dependencies.now ?? Date.now;
   const configDir = dependencies.configDir ?? defaultConfigDir(env);
+  const mode = resolveMode(dependencies, args, env);
   let idempotencyKey: string | undefined;
   let ifMatch: string | undefined;
   let mutationAttempted = false;
@@ -1003,7 +1009,14 @@ export async function runPkiCli(
   try {
     const { values, positionals, seen } = parseOptions(args);
     if (values.help === true) {
-      await stdout(`${JSON.stringify(pkiHelp)}\n`);
+      await emitHelp(mode, stdout, pkiHelp, () =>
+        tableHelpPage(pkiHelp, {
+          prefix: "hemlig pki",
+          path: positionals,
+          summary: "Certificate authorities, issuance grants and certificates.",
+          sharedOptions: ["admin-url", "token-file", "timeout-ms"],
+        }),
+      );
       return 0;
     }
     const group = positionals[0];
@@ -1424,8 +1437,9 @@ export async function runPkiCli(
       etag?: string,
       extra: Record<string, unknown> = {},
     ): Promise<number> => {
-      await stdout(
-        `${JSON.stringify({ data, etag, idempotencyKey, ifMatch, ...extra })}\n`,
+      const envelope = { data, etag, idempotencyKey, ifMatch, ...extra };
+      await emitResult(mode, stdout, envelope, (style) =>
+        renderResult(`pki ${name}`, envelope, { now: new Date(now()) }, style),
       );
       return 0;
     };
@@ -2141,7 +2155,8 @@ export async function runPkiCli(
       // Nothing was created: remove the empty placeholder claimed for --csr-out.
       await unlink(csrPlaceholder).catch(() => undefined);
     }
-    return reportFailure(
+    return reportFailureFor(
+      mode,
       error,
       { group: "pki", idempotencyKey, ifMatch, mutationAttempted },
       stderr,
