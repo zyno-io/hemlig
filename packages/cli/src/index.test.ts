@@ -878,7 +878,7 @@ test("revoke-identity with a full fingerprint deletes directly, with a minted id
   assert.equal(receipt.data.status, "REVOKED");
 });
 
-test("revoke-identity resolves a unique prefix, honouring an explicit idempotency key", async () => {
+test("revoke-identity resolves a unique prefix, honoring an explicit idempotency key", async () => {
   const requests: TransportRequest[] = [];
   const result = await execute(
     [

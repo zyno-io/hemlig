@@ -26,7 +26,7 @@ import {
  *
  * This is a development convenience, not a deployment path. It creates no
  * Object Lock configuration and no API Gateway, so it cannot exercise
- * retention behaviour, mTLS, CORS preflight, or the JWT authorizer. Those
+ * retention behavior, mTLS, CORS preflight, or the JWT authorizer. Those
  * still require an isolated AWS account.
  */
 const endpoint = process.env.AWS_ENDPOINT_URL ?? "http://127.0.0.1:4566";

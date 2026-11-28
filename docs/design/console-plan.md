@@ -8,7 +8,7 @@ This plans **Hemlig Console**, a browser management interface for the
 administrator API. The console UI and static-hosting work remain unimplemented;
 the API-readiness work recorded below is implemented in v0.3.
 
-The document is organised around one structural rule: **the console is an
+The document is organized around one structural rule: **the console is an
 ordinary HTTP client of a public API, and nothing else.** Everything in it is
 either backend work, frontend work, or work on the seam between them, and it is
 filed accordingly. If a proposal cannot be filed on one side of that line, it

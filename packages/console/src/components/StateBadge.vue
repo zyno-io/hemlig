@@ -4,7 +4,7 @@ import { computed } from "vue";
 const props = defineProps<{ state: string }>();
 
 // DESIGN.md "Hemlig status mapping". Status always reads as a word in a tag;
-// colour is never the only signal.
+// color is never the only signal.
 const tone = computed(() => {
   switch (props.state) {
     case "ACTIVE":

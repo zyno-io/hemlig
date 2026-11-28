@@ -1,6 +1,6 @@
 ---
 name: Hemlig console
-description: 'The PixelCI design system adopted as-is: white cards on a cool grey desk, one indigo accent for the action, status in small coloured tags.'
+description: 'The PixelCI design system adopted as-is: white cards on a cool gray desk, one indigo accent for the action, status in small colored tags.'
 source: 'PixelCI DESIGN.md (zyno-io/pixelci, 5e073c7) — tokens, type, shape, elevation and component rules are inherited verbatim; this file records only the Hemlig mapping.'
 ---
 
@@ -81,7 +81,7 @@ them.
 - The top bar carries, left to right: the Hemlig wordmark, the environment
   switcher (a select, with "Manage" as a ghost link), the primary nav (Secrets,
   Consumers, Environments, Audit, Trust, About), then on the right the
-  dev-bridge warning tag when applicable, the signed-in name in Meta Grey, the
+  dev-bridge warning tag when applicable, the signed-in name in Meta Gray, the
   theme menu and Sign out (ghost).
 - Collections (secrets, folders, consumers, identities, revisions, audit
   events) are one card with hairline-divided rows; tables keep their columns

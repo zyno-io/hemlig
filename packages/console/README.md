@@ -30,7 +30,7 @@ and is never bundled into a Lambda or the published construct. `config.json`
 likewise refuses `dev-bridge` mode against a non-loopback API.
 
 What this cannot exercise: mTLS, the JWT authorizer, CORS preflight against the
-real `$default` route, Object Lock retention behaviour, or IAM. Those need the
+real `$default` route, Object Lock retention behavior, or IAM. Those need the
 isolated AWS acceptance environment.
 
 ## Rules that are not obvious

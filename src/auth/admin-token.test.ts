@@ -213,7 +213,7 @@ describe("bearer and binding", () => {
     ["missing subject", { ...good, sub: undefined }],
     ["aud", { ...good, aud: "another-api" }],
     ["aud as an extra array element", { ...good, aud: ["hemlig-api", "extra"] }],
-    ["aud removed in favour of client_id", { ...good, aud: undefined, client_id: "hemlig-api" }],
+    ["aud removed in favor of client_id", { ...good, aud: undefined, client_id: "hemlig-api" }],
   ])("refuses a bearer whose %s differs from the gateway", (_name, bearer) => {
     expect(() => adminTokenFromEvent(adminJwtEvent(good, { bearer }), config)).toThrow(
       expect.objectContaining({ statusCode: 403 }),

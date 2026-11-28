@@ -1050,7 +1050,7 @@ test("R13b: a watch event whose rotation annotation equals the consumed request 
   await stop();
 });
 
-/** Default CA-signing behaviour, reused by tests that wrap the rotate mock. */
+/** Default CA-signing behavior, reused by tests that wrap the rotate mock. */
 const rotateDefault = async (_f: Fixture, csrPem: string) => {
   const csr = forge.pki.certificationRequestFromPem(csrPem);
   const now = Date.now();

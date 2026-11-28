@@ -53,7 +53,7 @@ export const derToPem = (der: Uint8Array): string => {
   return `-----BEGIN X509 CRL-----\n${lines.join("\n")}\n-----END X509 CRL-----\n`;
 };
 
-/** The same pattern and normalisation as the server's `pemBlocks`. */
+/** The same pattern and normalization as the server's `pemBlocks`. */
 export const pemCertificateBlocks = (pem: string): string[] =>
   (
     pem.match(

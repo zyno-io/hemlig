@@ -8,7 +8,7 @@ pageType: explanation
 
 Hemlig writes an immutable audit event for nearly every authenticated request, keeps it for seven years, and never lets a secret value leave before its event is stored.
 
-This page describes behaviour in v0.3.2, plus the rows marked v0.3.6. Terms: [audit event](../reference/glossary.md#audit-event), [audit archive](../reference/glossary.md#audit-archive), [Object Lock](../reference/glossary.md#object-lock).
+This page describes behavior in v0.3.2, plus the rows marked v0.3.6. Terms: [audit event](../reference/glossary.md#audit-event), [audit archive](../reference/glossary.md#audit-archive), [Object Lock](../reference/glossary.md#object-lock).
 
 ## What is audited
 
@@ -34,7 +34,7 @@ Two points are easy to miss:
 
 - A successful `GET /v1/agent/sync` and a `304` are skipped on purpose. Neither returns a secret value, and controllers poll both, so auditing them would fill the archive with noise. Failures are still recorded.
 
-Reading the audit archive is not audited. Querying it creates no events, and this is current behaviour, not a promise to change. The query Lambda has no code path that writes one.
+Reading the audit archive is not audited. Querying it creates no events, and this is current behavior, not a promise to change. The query Lambda has no code path that writes one.
 
 ## Order of events
 

@@ -201,7 +201,7 @@ const normaliseValues = (value: unknown): { values: string[]; type: string } => 
 };
 
 const resolveRoleValues = (claims: Claims, roleClaim: string | undefined): { values: string[]; type: string } => {
-    // Unset keeps the legacy `roles`, falling back to `role`, behaviour.
+    // Unset keeps the legacy `roles`, falling back to `role`, behavior.
     const value = roleClaim === undefined ? claims.roles ?? claims.role : resolveClaim(claims, roleClaim);
     return normaliseValues(value);
 };
@@ -324,7 +324,7 @@ const claimAgrees = (decoded: unknown, gateway: string | number | boolean | stri
  * cannot be rendered reliably by the gateway, so they are bound only by key
  * presence in rule 2. A forged bearer could differ inside such an object. Full
  * protection needs JWKS signature verification, which is out of scope; the
- * defence is that the authorizer's identity source is pinned to this same
+ * defense is that the authorizer's identity source is pinned to this same
  * `Authorization` header, so the Lambda reads the bearer the gateway validated.
  */
 const bindsToGateway = (decoded: Claims, gateway: RawClaims, subjectClaim: string): boolean => {
