@@ -171,9 +171,9 @@ control/payload object receives the bucket's initial 90-day Compliance
 retention. Before a head can be superseded, the mutation/recovery workflow
 extends each exact old S3 object version to at least `now + 91 days`. It then
 switches the head in the same bounded attempt; recovery repeats the extension
-with a fresh date before any delayed finalisation. The one-day safety margin
+with a fresh date before any delayed finalization. The one-day safety margin
 guarantees at least 90 days from the actual head transition, while a failed
-finalisation merely leaves the still-current revision locked longer. After the
+finalization merely leaves the still-current revision locked longer. After the
 recorded retention date, a separate handler may delete only the recorded S3
 version of an object no longer referenced by a `HEAD`; no request-serving role
 can delete revisions. Thus superseded revisions are WORM for at least 90 days
@@ -271,14 +271,14 @@ For every secret mutation:
    lease; a crash in this in-memory phase leaves no durable lock.
 3. In one DynamoDB transaction, condition on the expected head and new
    idempotency key, acquire the head lease, and create indexed `PREPARED`
-   control/payload records with their checksums, expiry, and finalisation
+   control/payload records with their checksums, expiry, and finalization
    intent. Recovery can therefore see every durable lease.
 4. Conditionally write all new S3 objects, record the returned S3 version IDs,
    and immediately drop plaintext data-key/payload buffers as far as Node
    permits. Before switching the head, extend the exact prior control/payload
    S3 versions to `now + 91 days` in Compliance mode. If this fails, retain the
    old head and leave the preparation recoverable. In a final DynamoDB
-   transaction, finalise the records/head, record the applied retention time
+   transaction, finalize the records/head, record the applied retention time
    for replaced versions, and atomically update each affected current
    consumer/secret row. ACL updates include revocation tombstones; payload
    updates advance the payload pointer for existing readers.

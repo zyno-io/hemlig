@@ -659,7 +659,7 @@ test("--reissue-root-certificate: an extension-less root is refused naming the f
   }
 });
 
-test("--reissue-root-certificate keeps an existing SKI value, honours --validity, and --store-certificate-in-slot needs --yubikey", needsOpenssl, async () => {
+test("--reissue-root-certificate keeps an existing SKI value, honors --validity, and --store-certificate-in-slot needs --yubikey", needsOpenssl, async () => {
   const recipe = await buildRecipe({ rootExtensions: "v3_ski_only", crls: 1 });
   const dir = await tempDir();
   try {

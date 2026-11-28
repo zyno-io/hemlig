@@ -65,7 +65,7 @@ Caveats:
 
 ## Caveats
 
-- **Sign-out:** Google's discovery has no `end_session_endpoint`. If you sign in to the broker with Google, sign-out behaviour follows the broker.
+- **Sign-out:** Google's discovery has no `end_session_endpoint`. If you sign in to the broker with Google, sign-out behavior follows the broker.
 - **Silent renew:** whether `accounts.google.com` can be framed for silent renewal: verify in your tenant. Brokers are not affected.
 
 ## Next steps

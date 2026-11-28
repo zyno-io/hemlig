@@ -20,7 +20,7 @@ const names = computed(() => environments.data.value?.environments.map((e) => e.
 
 // Fires once a non-empty list is available (including after a retry). A
 // remembered name that is no longer in the list is a stale per-viewer hint,
-// not something to send to the API — it is dropped in favour of the first
+// not something to send to the API — it is dropped in favor of the first
 // defined environment rather than passed through.
 watch(
   () => environments.data.value,

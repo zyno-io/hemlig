@@ -466,7 +466,7 @@ const FIELD_BY_PATH: readonly (readonly [RegExp, string])[] = [
 
 /**
  * Maps a validation issue path such as `policy.names.dns.allow[1]` to the
- * form field and zero-based line it points at. Anything unrecognised is
+ * form field and zero-based line it points at. Anything unrecognized is
  * `general`, so it is still shown rather than swallowed.
  */
 export const issuePathToField = (path: string): FieldIssue => {

@@ -442,7 +442,7 @@ See: [Install the Kubernetes controller](../guide/kubernetes.md).
 
 ### Import target
 
-The Kubernetes Secret an import writes and owns, labelled `hemlig.zyno.io/managed-by=import`.
+The Kubernetes Secret an import writes and owns, labeled `hemlig.zyno.io/managed-by=import`.
 
 See: [Revocation and deletion safety](../operations/safety.md).
 

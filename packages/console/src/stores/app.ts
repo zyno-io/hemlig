@@ -54,21 +54,21 @@ export const useAppStore = defineStore("app", () => {
 
   const requireAuth = (): AuthDriver => {
     if (auth.value === undefined) {
-      throw new Error("The console is not initialised.");
+      throw new Error("The console is not initialized.");
     }
     return auth.value;
   };
 
   const requireApi = (): HemligApi => {
     if (api.value === undefined) {
-      throw new Error("The console is not initialised.");
+      throw new Error("The console is not initialized.");
     }
     return api.value;
   };
 
   const requireConfig = (): RuntimeConfig => {
     if (config.value === undefined) {
-      throw new Error("The console is not initialised.");
+      throw new Error("The console is not initialized.");
     }
     return config.value;
   };

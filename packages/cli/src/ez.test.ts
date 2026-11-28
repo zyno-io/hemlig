@@ -181,7 +181,7 @@ test("generate-ca on a terminal: the form edits settings, the passphrase is aske
   }
 });
 
-test("generate-ca honours custom file names, an absolute key location and rejects colliding names", async () => {
+test("generate-ca honors custom file names, an absolute key location and rejects colliding names", async () => {
   const dir = await tempDir();
   const usb = await tempDir();
   try {
@@ -721,7 +721,7 @@ test("revoke-cert: a failed upload reruns without signing; revocation_not_applie
   }
 });
 
-test("renew-crl: --if-due is a no-op when the CRL is fresh; otherwise it signs, uploads and honours --expect-ext-id", async () => {
+test("renew-crl: --if-due is a no-op when the CRL is fresh; otherwise it signs, uploads and honors --expect-ext-id", async () => {
   const dir = await tempDir();
   try {
     await newRoot(dir);

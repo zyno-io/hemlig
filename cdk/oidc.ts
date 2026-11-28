@@ -281,7 +281,7 @@ const normaliseProviderOrigins = (
 };
 
 /**
- * Validates and normalises the list-valued and console-facing OIDC fields.
+ * Validates and normalizes the list-valued and console-facing OIDC fields.
  * `prefix` is "context " on the CDK-context path and "" on the props path, so
  * errors name the thing the caller actually set.
  */

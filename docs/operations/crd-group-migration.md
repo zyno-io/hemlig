@@ -168,7 +168,7 @@ Verify the counts per file and the Secret kinds:
 
 ```sh
 for f in "$BACKUP_DIR"/*.json; do echo "$(jq '.items | length' "$f") ${f##*/}"; done
-jq -r '.items[] | (.metadata.labels["hemlig.io/managed-by"] // "unlabelled")' "$BACKUP_DIR/secrets.json" | sort | uniq -c
+jq -r '.items[] | (.metadata.labels["hemlig.io/managed-by"] // "unlabeled")' "$BACKUP_DIR/secrets.json" | sort | uniq -c
 ```
 
 Expected output, with your own counts:
@@ -269,7 +269,7 @@ kubectl replace -f "$BACKUP_DIR/secrets.new.json"
 
 Expected output: one `secret/… replaced` line per Secret.
 
-A `Conflict` means that Secret changed since step 3. Never rerun step 3: relabelled Secrets would drop out of `secrets.json`. Back up only the conflicted Secret, under its own name, then relabel it:
+A `Conflict` means that Secret changed since step 3. Never rerun step 3: relabeled Secrets would drop out of `secrets.json`. Back up only the conflicted Secret, under its own name, then relabel it:
 
 ```sh
 export CONFLICT_NS=payments CONFLICT_NAME=stripe-api-key
@@ -286,10 +286,10 @@ kubectl get secrets -A -o json | jq -r '.items[]
       (if .metadata.labels["hemlig.zyno.io/managed-by"] == "consumer" then .data // {} else {} end) | keys[]]
       | any(startswith("hemlig.io")))
   | "\(.metadata.namespace)/\(.metadata.name)"'
-echo "$(kubectl get secrets -A -l hemlig.zyno.io/managed-by -o name | wc -l | tr -d ' ') relabelled, $(jq '[.items[] | select(.metadata.labels["hemlig.io/managed-by"])] | length' "$BACKUP_DIR/secrets.json") in backup"
+echo "$(kubectl get secrets -A -l hemlig.zyno.io/managed-by -o name | wc -l | tr -d ' ') relabeled, $(jq '[.items[] | select(.metadata.labels["hemlig.io/managed-by"])] | length' "$BACKUP_DIR/secrets.json") in backup"
 ```
 
-Expected output: no Secret names, then two equal counts, such as `11 relabelled, 11 in backup`.
+Expected output: no Secret names, then two equal counts, such as `11 relabeled, 11 in backup`.
 
 ## 7. Upgrade the chart and start the controller
 

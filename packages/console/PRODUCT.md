@@ -51,7 +51,7 @@ change confidently and see exactly what state a secret or identity is in.
 - Not in the console, by decision: CA policy edit, CA revoke and local
   distrust, admin certificate issuance, and bulk grant migration. Use the CLI
   or Pulumi.
-- Behaviour and tests in `src/**/*.test.ts` are the contract; visual work must
+- Behavior and tests in `src/**/*.test.ts` are the contract; visual work must
   not change them.
 
 ## Brand Commitments

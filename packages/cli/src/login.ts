@@ -361,7 +361,7 @@ export async function loginViaConsole(
         if (request.method !== "POST" || path !== "/callback") {
           return reply(response, 404, "Not found");
         }
-        // Origin is only a coarse filter. Browsers serialise it as `null` (or omit
+        // Origin is only a coarse filter. Browsers serialize it as `null` (or omit
         // it) for a cross-origin form POST under several referrer policies, so an
         // exact match would be fragile. Absent, `null` or the console origin pass;
         // any other origin is refused. The real authenticator is `state`: a

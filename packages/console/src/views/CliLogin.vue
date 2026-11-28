@@ -38,7 +38,7 @@ const state = computed(() => {
 });
 // `mode=code` takes no port; a link with both is malformed.
 const codeMode = computed(() => single(route.query.mode) === "code");
-// Only an absent mode (loopback) or `code` is recognised.
+// Only an absent mode (loopback) or `code` is recognized.
 const modeKnown = computed(
   () => route.query.mode === undefined || codeMode.value,
 );

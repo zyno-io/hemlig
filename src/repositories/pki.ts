@@ -2487,7 +2487,7 @@ export class PkiRepository {
   }
 
   /**
-   * Reads one `pki-directory` partition. Defence in depth: an item whose `pk` does not start with `PKI_` is ignored
+   * Reads one `pki-directory` partition. Defense in depth: an item whose `pk` does not start with `PKI_` is ignored
    * even if it carries the index attributes, and paging continues until `limit` valid items are found. Phase 3 and 4
    * readers use this rather than querying the index directly.
    */
