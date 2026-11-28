@@ -77,7 +77,7 @@ The generated `config.json` carries the deployment name, the admin API URL and t
 
 ## Sign in
 
-Open the console URL. It redirects to your provider and returns with an access token (not an ID token) that it sends to the admin API. The API then applies the same checks as for curl, described in [Connect your identity provider](identity-provider.md#what-the-api-checks).
+Open the console URL. It redirects to your provider and returns with an access token (not an ID token) that it sends to the admin API. The API then applies the same checks as for curl, described in [Connect your identity provider](identity-provider.md#what-hemlig-needs-from-any-provider).
 
 A `401` comes from API Gateway: sign in again. A `403` means the Lambda refused a token the gateway accepted, which is a deployment configuration mismatch. See [Troubleshooting](../operations/troubleshooting.md#administrator-api).
 

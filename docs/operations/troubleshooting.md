@@ -14,8 +14,8 @@ For a Kubernetes status `reason`, go straight to [Status reasons](../reference/c
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `401` before any Hemlig error body | API Gateway rejected the token: missing, wrong audience, bad signature or expired | Get a fresh token and check it with [Verify your token](../guide/identity-provider.md#verify-your-token) |
-| `403` | Insufficient scope (API Gateway, no Hemlig body), or the handler refused an accepted token (Hemlig error body: the gateway and the Lambda disagree about issuer, audience, scope or role) | Request the required scope, or fix the deployment configuration. A new token without the scope will not help. See [Identity provider](../guide/identity-provider.md) |
+| `401` before any Hemlig error body | API Gateway rejected the token: missing, wrong audience, bad signature or expired | Get a fresh token and check it with [Verify your token](../guide/identity-provider.md#verify-your-token). Causes in [401 from the gateway](../guide/identity-provider.md#_401-from-the-gateway) |
+| `403` | Insufficient scope (API Gateway, no Hemlig body), or the handler refused an accepted token (Hemlig error body: the gateway and the Lambda disagree about issuer, audience, scope or role) | Request the required scope, or fix the deployment configuration. A new token without the scope will not help. The log `reason` decides: see [403 from the Lambda](../guide/identity-provider.md#_403-from-the-lambda) |
 | `404` listing or writing in an environment | The environment does not exist. A new deployment has none | Create it with `POST /v1/admin/environments` |
 | `409` creating an AgentGrant | The consumer ID is already enrolled | Use a new consumer ID |
 | Creating an AgentGrant fails for a secret ID | Each secret in the grant must already exist | Create the secrets first, or add `dependsOn` in Pulumi |

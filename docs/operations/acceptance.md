@@ -33,10 +33,8 @@ export CTX="-c environment=acc \
   -c zoneDomain=acc.example.com \
   -c existingHostedZoneId=Z0123456789ABCDEF \
   -c oidcIssuer=https://login.example.com/tenant/v2.0 \
-  -c oidcAudience=00000000-0000-0000-0000-000000000000 \
   -c oidcAdminScope=hemlig.admin \
-  -c oidcConsoleAccessScope=api://00000000-0000-0000-0000-000000000000/hemlig.admin \
-  -c oidcClientId=11111111-1111-1111-1111-111111111111 \
+  -c oidcClientId=00000000-0000-0000-0000-000000000000 \
   -c consoleCertificateArn=arn:aws:acm:us-east-1:123456789012:certificate/11111111-2222-3333-4444-555555555555"
 yarn cdk:synth $CTX --quiet
 yarn cdk:deploy $CTX
@@ -86,9 +84,10 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 
 | Check | Pass | Fail means |
 | --- | --- | --- |
-| `aud` | Equals `oidcAudience` (on Entra, the bare client ID) | The wrong resource. Ask for a resource-scoped access token. In a one-app setup an ID token also has this `aud`; it fails the `scp` row below instead |
+| `aud` | Contains `oidcAudience` (on Entra, the bare client ID) | The wrong resource. Ask for a resource-scoped access token. In a one-app setup an ID token also has this `aud`; it fails the `scp` row below instead |
 | `iss` | Equals `oidcIssuer` exactly | A trailing slash or `/v2.0` suffix differs. The handler compares issuers exactly |
 | `scp` or `scope` | Contains `oidcAdminScope` | The scope was not requested or not granted |
+| Role claim | The claim `oidcRoleClaim` names (default `roles`, then `role`) contains an `oidcAdminRole` value, when configured | The Lambda returns `403` with log `reason` `role`, or `role_overage` on Entra. See [403 from the Lambda](../guide/identity-provider.md#_403-from-the-lambda) |
 | Status | `200` | `401`: the gateway rejected the token (missing, invalid, audience, signature, expiry). `403`: insufficient scope at the gateway, or gateway and Lambda disagree on issuer, audience, scope or role. Re-authenticating will not fix a configuration `403` |
 
 ## Gate 3: the console loads and reads
