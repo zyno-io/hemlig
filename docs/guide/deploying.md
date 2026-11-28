@@ -130,6 +130,8 @@ Optional fields for other providers are specified in the [configuration referenc
 
 In CDK context, lists are comma-separated strings and `oidcAuthorizeParams` is a JSON object string. As `HemligStack` props, lists are `string[]` and a single string still works.
 
+An API-only deployment that sets `oidcAudience` equal to `oidcClientId` must also set `oidcAdminScope`; synthesis refuses it otherwise.
+
 Enabling the console without `oidcAdminRole` makes synthesis warn that any holder of the admin scope becomes an administrator.
 
 [Connect your identity provider](identity-provider.md) shows where to find each one per provider. Console fields are covered in [Console](console.md).

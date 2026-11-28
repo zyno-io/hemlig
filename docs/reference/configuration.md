@@ -19,7 +19,7 @@ Imported from `hemlig/cdk`. The reference app (`cdk/app.ts`) reads the same name
 | `apiFqdn` | yes | none | Public mTLS delivery API host |
 | `zoneDomain` | yes | none | Route 53 zone name. Every FQDN must be the zone or inside it |
 | `oidcIssuer` | yes | none | HTTPS OIDC issuer URL; RSA-signed JWTs |
-| `oidcAudience` | no | `oidcClientId` | Exact access-token `aud`, each at most 512 characters. A list (1 to 8 values; comma-separated in CDK context) accepts any of them: the gateway gets the array and the Lambdas the comma-joined `ADMIN_JWT_AUDIENCE`. A value has no whitespace or comma and does not start with `[`. If a value equals `oidcClientId`, `oidcAdminScope` is required. Entra v2: the API's bare client ID. Set it only for a split-app (two-app) deployment or an API-only deployment with no console; with neither it and `oidcClientId`, synthesis fails. When omitted, `oidcAdminScope` is required, so the scope check rejects ID tokens issued to the same app |
+| `oidcAudience` | no | `oidcClientId` | Exact access-token `aud`, each at most 512 characters. A list (1 to 8 values; comma-separated in CDK context) accepts any of them: the gateway gets the array and the Lambdas the comma-joined `ADMIN_JWT_AUDIENCE`. A value has no whitespace or comma and does not start with `[`. If a value equals `oidcClientId`, `oidcAdminScope` is required: an explicit audience equal to the client ID without a scope is refused, which also applies to an API-only deployment. Entra v2: the API's bare client ID. Set it only for a split-app (two-app) deployment or an API-only deployment with no console; with neither it and `oidcClientId`, synthesis fails. When omitted, `oidcAdminScope` is required, so the scope check rejects ID tokens issued to the same app |
 | `oidcSubjectClaim` | yes | `sub` (context only) | Immutable actor claim name, `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$` |
 | `existingHostedZoneId` | no | creates a zone | Use an existing Route 53 zone |
 | `existingApplicationKeyArn` | no | creates a key | Adopt an existing [application CMK](glossary.md#application-cmk). Must be a full KMS key ARN |
@@ -38,6 +38,8 @@ Imported from `hemlig/cdk`. The reference app (`cdk/app.ts`) reads the same name
 | `consoleCertificateArn` | no | sibling stack | ACM certificate in `us-east-1`. Needs `consoleFqdn`. Without it the stack creates a certificate stack, which needs a concrete `env` and `existingHostedZoneId` |
 | `bootstrapQualifier` | no | none | CDK bootstrap qualifier, 1 to 10 lowercase letters or digits. Set it whenever you use a non-default synthesizer |
 | `tracing` | no | `false` | `true` turns on AWS X-Ray active tracing for every Lambda function. Off by default: traces add cost and little beyond CloudWatch Logs and Lambda metrics |
+
+The audience, role and role-claim values together may encode to at most 1536 bytes of Lambda environment (Lambda allows 4096 in total), and synthesis refuses more. Each `oidcProviderOrigins` entry must be a plain DNS host with an optional port: no `;`, `,`, quotes or `*`. A non-string list entry (a number or null) is an error, not ignored.
 
 Synthesis fails with a message naming the rule if the `adminFqdn`, `apiFqdn` and `consoleFqdn` are not distinct, an FQDN is outside the zone, or `consoleFqdn` is set without `oidcAdminScope` and `oidcClientId`.
 

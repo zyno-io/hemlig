@@ -37,15 +37,27 @@ export const asList = (value: StringOrList | undefined): readonly string[] =>
 /** Comma-joined form read by the Lambdas (`ADMIN_JWT_AUDIENCE`, `ADMIN_JWT_ROLE`, ...). */
 export const joinEnv = (values: readonly string[]): string => values.join(",");
 
-/** Splits a comma-separated context string; arrays pass through. */
-export const splitContextList = (value: unknown): readonly string[] | undefined => {
+/**
+ * Splits a comma-separated context string; an all-string array passes through.
+ * An unset (undefined or null) value is `undefined`. Anything else, such as a
+ * number or an array holding a non-string, throws: dropping it silently would
+ * turn a role or audience restriction off.
+ */
+export const splitContextList = (
+  name: string,
+  value: unknown,
+): readonly string[] | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
   if (Array.isArray(value)) {
-    return value.every((entry) => typeof entry === "string")
-      ? (value as string[])
-      : undefined;
+    if (!value.every((entry) => typeof entry === "string")) {
+      throw new Error(`context ${name} must be a string or a list of strings.`);
+    }
+    return value as string[];
   }
   if (typeof value !== "string") {
-    return undefined;
+    throw new Error(`context ${name} must be a string or a list of strings.`);
   }
   const trimmed = value.trim();
   if (trimmed === "") {
@@ -80,11 +92,31 @@ const fail = (prefix: string, message: string): never => {
   throw new Error(`${prefix}${message}`);
 };
 
+/** Props-path guard: a list field must be a string or an array of strings. */
+const assertStringOrList = (
+  name: string,
+  value: unknown,
+  prefix: string,
+): void => {
+  const ok =
+    typeof value === "string" ||
+    (Array.isArray(value) && value.every((entry) => typeof entry === "string"));
+  if (!ok) {
+    fail(prefix, `${name} must be a string or a list of strings.`);
+  }
+};
+
+// Lambda's environment is limited to 4 KiB in total. The stack's other
+// variables use roughly 1.3 KiB on the PKI admin function, so the OIDC
+// variables that vary with these fields share a conservative 1.5 KiB.
+const MAX_OIDC_ENV_BYTES = 1536;
+
 /** V2: 1-8 audiences, each 1-512 characters, no whitespace or comma, not starting with `[`. */
 const normaliseAudiences = (
   value: StringOrList,
   prefix: string,
 ): readonly string[] => {
+  assertStringOrList("oidcAudience", value, prefix);
   const entries = asList(value);
   if (entries.length < 1 || entries.length > MAX_AUDIENCES) {
     fail(prefix, `oidcAudience must list 1 to ${MAX_AUDIENCES} audiences.`);
@@ -120,6 +152,7 @@ const normaliseRoles = (
   value: StringOrList,
   prefix: string,
 ): readonly string[] => {
+  assertStringOrList(name, value, prefix);
   const entries = asList(value);
   if (entries.length < 1 || entries.length > MAX_ROLES) {
     fail(prefix, `${name} must list 1 to ${MAX_ROLES} roles.`);
@@ -216,7 +249,7 @@ const normaliseProviderOrigins = (
   value: readonly string[],
   prefix: string,
 ): readonly string[] => {
-  if (!Array.isArray(value)) {
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
     fail(prefix, "oidcProviderOrigins must be a list of HTTPS origins.");
   }
   if (value.length > 4) {
@@ -233,7 +266,9 @@ const normaliseProviderOrigins = (
       parsed === undefined ||
       parsed.protocol !== "https:" ||
       parsed.origin !== origin ||
-      origin.includes("*")
+      // The origin goes straight into a CSP source list, so reject anything
+      // but a plain DNS host and optional port (no `;`, `,`, quotes, `*`).
+      !/^https:\/\/[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$/.test(origin)
     ) {
       fail(
         prefix,
@@ -288,6 +323,19 @@ export const normaliseOidcExtras = (
     fail(
       prefix,
       "oidcAdminScope is required when an oidcAudience equals oidcClientId (an ID token issued to the same app would otherwise be accepted).",
+    );
+  }
+  const envBytes = [
+    audiences ?? (input.oidcClientId === undefined ? [] : [input.oidcClientId]),
+    adminRoles ?? [],
+    pkiCaRoles ?? [],
+    pkiOperatorRoles ?? [],
+    input.oidcRoleClaim === undefined ? [] : [input.oidcRoleClaim],
+  ].reduce((sum, list) => sum + Buffer.byteLength(joinEnv(list), "utf8"), 0);
+  if (envBytes > MAX_OIDC_ENV_BYTES) {
+    fail(
+      prefix,
+      `the audience, role and role-claim values encode to ${envBytes} bytes of Lambda environment; the combined limit is ${MAX_OIDC_ENV_BYTES} (Lambda allows 4096 bytes in total). Shorten or remove some.`,
     );
   }
   return {

@@ -232,18 +232,12 @@ export const deploymentConfigFromContext = (context: {
     context,
     "oidcConsoleAccessScope",
   );
-  const rawAdminRole = splitContextList(context.tryGetContext("oidcAdminRole"));
-  const rawPkiCaAdminRole = splitContextList(
-    context.tryGetContext("oidcPkiCaAdminRole"),
-  );
-  const rawPkiOperatorRole = splitContextList(
-    context.tryGetContext("oidcPkiOperatorRole"),
-  );
+  const rawAdminRole = splitContextList("oidcAdminRole", context.tryGetContext("oidcAdminRole"));
+  const rawPkiCaAdminRole = splitContextList("oidcPkiCaAdminRole", context.tryGetContext("oidcPkiCaAdminRole"));
+  const rawPkiOperatorRole = splitContextList("oidcPkiOperatorRole", context.tryGetContext("oidcPkiOperatorRole"));
   const oidcRoleClaim = optionalContext(context, "oidcRoleClaim");
   const rawAuthorizeParams = objectContext(context, "oidcAuthorizeParams");
-  const rawProviderOrigins = splitContextList(
-    context.tryGetContext("oidcProviderOrigins"),
-  );
+  const rawProviderOrigins = splitContextList("oidcProviderOrigins", context.tryGetContext("oidcProviderOrigins"));
   const pkiIssuanceRateLimit = optionalIntegerContext(
     context,
     "pkiIssuanceRateLimit",
@@ -253,7 +247,7 @@ export const deploymentConfigFromContext = (context: {
     "pkiIssuanceBurstLimit",
   );
   const oidcClientId = optionalContext(context, "oidcClientId");
-  const rawAudience = splitContextList(context.tryGetContext("oidcAudience"));
+  const rawAudience = splitContextList("oidcAudience", context.tryGetContext("oidcAudience"));
   const extras = normaliseOidcExtras(
     {
       ...(rawAudience === undefined ? {} : { oidcAudience: rawAudience }),

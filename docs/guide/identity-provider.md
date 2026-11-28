@@ -38,7 +38,7 @@ Two console-only fields cover providers that differ from the Entra shape:
 - `oidcAuthorizeParams` adds authorize query parameters, such as Auth0's `audience`.
 - `oidcProviderOrigins` adds CSP origins when the token endpoint is on another origin.
 
-When discovery has no `end_session_endpoint` (Cognito, Google, Dex), sign-out clears the console session and returns to the console origin. Per-provider recipes follow in a later revision.
+When discovery has no `end_session_endpoint` (Cognito, Google, Dex), sign-out clears only the console session and returns to the console origin. It does not end your provider's own session. The console then shows "You're signed out" with a **Sign in** button rather than signing straight back in, but the next sign-in may complete without a password prompt until the provider's session expires. Per-provider recipes follow in a later revision.
 
 `oidcSubjectClaim` is recorded as the owner of every change and drives idempotency. Pick a claim that never changes for a person.
 

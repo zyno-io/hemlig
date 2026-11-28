@@ -616,3 +616,76 @@ describe("provider-neutral OIDC context parsing", () => {
     ).toBe("api");
   });
 });
+
+describe("review follow-ups: list typing, origin characters, env budget", () => {
+  const base: Record<string, unknown> = {
+    adminFqdn: "admin.example.com",
+    apiFqdn: "api.example.com",
+    zoneDomain: "example.com",
+    oidcIssuer: "https://login.example.com/realms/hemlig",
+    oidcAudience: "hemlig-api",
+  };
+  const load = (extra: Record<string, unknown>) =>
+    deploymentConfigFromContext({
+      tryGetContext: (name: string): unknown => ({ ...base, ...extra })[name],
+    });
+
+  it.each(["oidcAdminRole", "oidcPkiCaAdminRole", "oidcPkiOperatorRole", "oidcAudience", "oidcProviderOrigins"])(
+    "context %s refuses a list holding null or a number, and a bare number",
+    (name) => {
+      for (const value of [["ok", null], ["ok", 7], 7, { a: 1 }, true]) {
+        expect(() => load({ [name]: value })).toThrow(`context ${name} must be a string or a list of strings.`);
+      }
+    },
+  );
+
+  it("an unset (null) list context value is just unset", () => {
+    expect(load({ oidcAdminRole: null })).not.toHaveProperty("oidcAdminRole");
+  });
+
+  it.each(["oidcAdminRole", "oidcPkiCaAdminRole", "oidcPkiOperatorRole", "oidcAudience"] as const)(
+    "props %s refuses a non-string entry",
+    (name) => {
+      for (const value of [["ok", null], ["ok", 7], 7]) {
+        expect(() =>
+          resolveOidcDefaults({
+            oidcIssuer: "https://issuer.example.test",
+            oidcAudience: "api",
+            [name]: value,
+          } as never),
+        ).toThrow(`${name} must be a string or a list of strings.`);
+      }
+    },
+  );
+
+  it("props oidcProviderOrigins refuses a non-string entry", () => {
+    expect(() =>
+      resolveOidcDefaults({
+        oidcIssuer: "https://issuer.example.test",
+        oidcAudience: "api",
+        oidcProviderOrigins: ["https://a.example.com", 5],
+      } as never),
+    ).toThrow("oidcProviderOrigins must be a list of HTTPS origins");
+  });
+
+  it.each(["https://evil;sandbox", "https://a,b", "https://a'b", "https://a b", "https://-.x"])(
+    "refuses CSP metacharacters in an origin: %s",
+    (origin) => {
+      expect(() => load({ oidcProviderOrigins: [origin] })).toThrow("bare HTTPS origin");
+    },
+  );
+
+  it("accepts a host with a port", () => {
+    expect(load({ oidcProviderOrigins: ["https://auth.example.com:8443"] }).oidcProviderOrigins).toEqual([
+      "https://auth.example.com:8443",
+    ]);
+  });
+
+  it("caps the combined audience, role and role-claim bytes", () => {
+    const roles = Array.from({ length: 3 }, (_, i) => `${i}`.repeat(256)).join(",");
+    expect(() => load({ oidcAdminRole: roles, oidcPkiCaAdminRole: roles, oidcPkiOperatorRole: roles })).toThrow(
+      "combined limit is 1536",
+    );
+    expect(() => load({ oidcAdminRole: roles })).not.toThrow();
+  });
+});

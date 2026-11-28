@@ -5,6 +5,12 @@ import { createMemoryHistory, createRouter, type Router } from "vue-router";
 import App from "./App.vue";
 import { useAppStore } from "./stores/app";
 
+const authDriver = vi.hoisted(() => ({
+  initialize: vi.fn(async () => ({ subject: "admin" })),
+  signOut: vi.fn(async () => {}),
+}));
+vi.mock("./auth/session", () => ({ createAuthDriver: () => authDriver }));
+
 vi.mock("./components/AppShell.vue", () => ({
   default: { template: '<div data-testid="app-shell"><slot /></div>' },
 }));
@@ -33,12 +39,13 @@ const createRouterForPath = (): Router =>
 
 const mountApp = async (
   path: string,
-  { session = false }: { session?: boolean } = {},
+  { session = false, signedOut = false }: { session?: boolean; signedOut?: boolean } = {},
 ): Promise<{ wrapper: ReturnType<typeof mount>; signIn: MockInstance<(returnTo?: string) => Promise<void>> }> => {
   const pinia = createPinia();
   setActivePinia(pinia);
   const store = useAppStore();
   const signIn = vi.spyOn(store, "signIn").mockResolvedValue();
+  store.signedOut = signedOut;
   if (session) {
     store.adoptSession({ subject: "admin" });
   }
@@ -54,6 +61,7 @@ const mountApp = async (
 
 afterEach(() => {
   vi.restoreAllMocks();
+  window.sessionStorage?.clear();
 });
 
 describe("App", () => {
@@ -85,5 +93,34 @@ describe("App", () => {
     expect(signIn).not.toHaveBeenCalled();
     expect(wrapper.find('[data-testid="auth-callback"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="callback-route-content"]').exists()).toBe(false);
+  });
+
+  it("after an explicit sign-out shows a signed-out state and does not start sign-in", async () => {
+    const { wrapper, signIn } = await mountApp("/", { signedOut: true });
+
+    expect(signIn).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("You're signed out");
+    expect(wrapper.find('[data-testid="app-shell"]').exists()).toBe(false);
+
+    await wrapper.find("button").trigger("click");
+    expect(signIn).toHaveBeenCalledOnce();
+  });
+
+  it("signing out does not race a sign-in redirect against the end-session redirect", async () => {
+    const { wrapper, signIn } = await mountApp("/", { session: true });
+    const store = useAppStore();
+    await store.initialize({
+      deploymentName: "d",
+      adminApiUrl: "https://admin.example.test",
+      auth: { mode: "oidc", authority: "https://login.example.test", clientId: "c", scopes: ["openid"] },
+    });
+    await flushPromises();
+    signIn.mockClear();
+    await store.signOut();
+    await flushPromises();
+
+    expect(authDriver.signOut).toHaveBeenCalledOnce();
+    expect(signIn).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("You're signed out");
   });
 });
