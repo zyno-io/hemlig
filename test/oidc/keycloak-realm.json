@@ -4,7 +4,6 @@
   "sslRequired": "none",
   "registrationAllowed": false,
   "accessTokenLifespan": 900,
-  "_comment": "TEST-ONLY realm for the Hemlig OIDC integration check (src/scripts/verify-oidc.ts). Every credential here is a throwaway value that protects nothing. Never import this into a real Keycloak.",
   "roles": {
     "realm": [
       {
